@@ -4662,6 +4662,11 @@ const WALK_COLD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6
 /// probe answers "unchanged". That is rare and a walk costs the player frames,
 /// hence the long interval.
 const WALK_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_secs(900);
+/// Nothing changes the inventory without a sync, and a sync is always logged,
+/// so this only covers syncs that both marker sources missed. Kept below
+/// [`WALK_MAX_INTERVAL`] so the walk intervals still get evaluated on their own
+/// schedule.
+const BLOB_PROBE_FALLBACK: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Whether a full region walk is worth its cost this tick.
 ///
@@ -4898,6 +4903,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
             .collect();
         let mut last_walk_time: Option<std::time::Instant> = None;
         let mut last_probe_time: Option<std::time::Instant> = None;
+        let mut last_blob_probe: Option<std::time::Instant> = None;
         // Guard against overlapping captures: a full memory walk can take >10 s on large
         // game processes, so without this flag we'd stack up concurrent scan threads.
         let blob_scan_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -5121,6 +5127,8 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
             let game_running = cached_game_running;
             if game_running {
                 // ── Blob capture: cheap probe, rate-limited walk ──────────────
+                // The marker is read at this cadence; re-reading the blob is
+                // gated separately, on BLOB_PROBE_FALLBACK below.
                 const PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
                 let walk_in_flight = blob_scan_active.load(Ordering::SeqCst);
@@ -5132,7 +5140,17 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 let mut should_capture = false;
                 if probe_due && !walk_in_flight {
                     last_probe_time = Some(std::time::Instant::now());
-                    let outcome = memory_scanner::probe_cached_blob(blob_tx.clone());
+                    let stitch_due = last_blob_probe
+                        .map_or(true, |t: std::time::Instant| t.elapsed() >= BLOB_PROBE_FALLBACK)
+                        || blob_sync_pending.load(Ordering::SeqCst)
+                        || !memory_scanner::has_cached_blob();
+                    let (outcome, sync_marker) = match last_pid {
+                        Some(pid) => memory_scanner::probe_tick(pid, blob_tx.clone(), stitch_due),
+                        None => (None, false),
+                    };
+                    if outcome.is_some() {
+                        last_blob_probe = Some(std::time::Instant::now());
+                    }
                     // Two sources for the same marker. The tail sees it only
                     // after Warframe flushes, which lags the event by tens of
                     // seconds; reading the log text out of the process sees it
@@ -5143,36 +5161,36 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     // has to be folded into the held flag rather than read
                     // beside it. Otherwise a marker arriving on a tick that
                     // cannot act on it is lost.
-                    if memory_scanner::probe_inventory_sync_marker() {
+                    if sync_marker {
                         blob_sync_pending.store(true, Ordering::SeqCst);
                     }
                     let sync_seen = blob_sync_pending.load(Ordering::SeqCst);
+                    let blob_known = memory_scanner::has_cached_blob();
                     let since_walk = last_walk_time
                         .map_or(std::time::Duration::MAX, |t: std::time::Instant| t.elapsed());
-                    should_capture = walk_is_due(
-                        &outcome,
-                        sync_seen,
-                        memory_scanner::has_cached_blob(),
-                        since_walk,
-                    );
+                    // A tick that did not re-read the blob has no fresh evidence
+                    // to escalate on, and the marker that would justify a walk
+                    // is exactly what makes the probe run in the first place.
+                    should_capture = outcome
+                        .as_ref()
+                        .is_some_and(|outcome| walk_is_due(outcome, sync_seen, blob_known, since_walk));
                     // Hold the marker unless it was acted on, or the probe
                     // already delivered the inventory it was announcing. A
                     // marker dropped while the rate limit says "not yet" is
                     // never revisited.
-                    if should_capture || outcome == memory_scanner::ScanOutcome::Updated {
+                    if should_capture || outcome == Some(memory_scanner::ScanOutcome::Updated) {
                         blob_sync_pending.store(false, Ordering::SeqCst);
                     }
                     if should_capture {
-                        eprintln!("[monitor] escalating to full walk (outcome={outcome:?} sync_marker={sync_seen} blob_known={} since_last_walk={})",
-                            memory_scanner::has_cached_blob(),
-                            match last_walk_time {
-                                Some(t) => format!("{:.1}s", t.elapsed().as_secs_f64()),
-                                None => "never".into(),
-                            });
+                        let since = match last_walk_time {
+                            Some(t) => format!("{:.1}s", t.elapsed().as_secs_f64()),
+                            None => "never".into(),
+                        };
+                        eprintln!("[monitor] escalating to full walk (outcome={outcome:?} sync_marker={sync_seen} blob_known={blob_known} since_last_walk={since})");
                     }
                 }
 
-                if should_capture && !walk_in_flight {
+                if should_capture {
                     blob_scan_active.store(true, Ordering::SeqCst);
                     last_walk_time = Some(std::time::Instant::now());
                     let ts     = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();

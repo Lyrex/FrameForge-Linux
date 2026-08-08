@@ -136,8 +136,12 @@ pub fn init_watched_log_path(settings_path: &Path) {
 /// applying the response, so gating a memory read on it risks reading a
 /// half-written buffer. This matches the completion line only.
 pub fn is_inventory_sync_line(line: &str) -> bool {
-    line.contains("OnInventoryResults completed in")
+    line.contains(INVENTORY_SYNC_MARKER)
 }
+
+/// The wording both marker readers match: this tail, and `memory_scanner`
+/// scanning the same line in the game's in-memory log buffers.
+pub const INVENTORY_SYNC_MARKER: &str = "OnInventoryResults completed in";
 
 // A mismatch here degrades to plain interval polling, which is hard to tell
 // from working correctly, so the marker is pinned against verbatim lines.
