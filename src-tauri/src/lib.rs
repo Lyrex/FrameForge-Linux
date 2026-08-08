@@ -20,15 +20,8 @@ use tauri::{Emitter, Manager, State};
 
 mod console_login; // [console-login feature] remove this line to drop the feature
 mod db;
-// EE.log lives at a different path per platform (Proton prefix on Linux), so
-// path construction lives here rather than being inlined at each watcher.
-mod log_parser;
 mod memory_scanner;
 mod ocr;
-// Overlay placement is X11 work with no Windows counterpart — the Windows
-// overlay needs nothing beyond the window options Tauri already sets.
-#[cfg(target_os = "linux")]
-mod overlay_linux;
 mod wfcd;
 
 use db::{QuantityChange, SnapshotPoint, Trade, TrackedItem};
@@ -570,11 +563,64 @@ async fn scan_warframe_credentials() -> Result<(String, String, String), String>
 }
 
 fn scan_warframe_credentials_sync() -> Result<(String, String, String), String> {
-    memory_scanner::scan_warframe_credentials_process()
+    #[cfg(not(target_os = "windows"))]
+    { return Err("Only supported on Windows".into()); }
+    #[cfg(target_os = "windows")]
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::{
+            Diagnostics::Debug::ReadProcessMemory,
+            Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS},
+            Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
+        },
+    };
+    use std::ffi::c_void;
+    use std::mem;
+
+    let pid = memory_scanner::find_warframe_pid_pub()
+        .ok_or("Warframe is not running")?;
+
+    unsafe {
+        let process = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, 0, pid);
+        if process == 0 { return Err("Cannot open Warframe process".into()); }
+
+        let mut address: usize = 0x10000;
+        let mbi_size = mem::size_of::<MEMORY_BASIC_INFORMATION>();
+
+        loop {
+            let mut mbi: MEMORY_BASIC_INFORMATION = mem::zeroed();
+            if VirtualQueryEx(process, address as *const c_void, &mut mbi, mbi_size) == 0 { break; }
+            let region_end = (mbi.BaseAddress as usize).saturating_add(mbi.RegionSize);
+            if region_end <= address { break; }
+            address = region_end;
+
+            if mbi.State != MEM_COMMIT { continue; }
+            let p = mbi.Protect;
+            if p & PAGE_NOACCESS != 0 || p & PAGE_GUARD != 0 { continue; }
+            if p == 0x10 || p == 0x20 { continue; }
+            if mbi.RegionSize > 128 * 1024 * 1024 { continue; }
+
+            let mut buffer = vec![0u8; mbi.RegionSize];
+            let mut bytes_read: usize = 0;
+            let ok = ReadProcessMemory(
+                process, mbi.BaseAddress as *const c_void,
+                buffer.as_mut_ptr() as *mut c_void, mbi.RegionSize, &mut bytes_read,
+            );
+            if ok == 0 || bytes_read == 0 { continue; }
+
+            if let Some((id, nonce)) = memory_scanner::scan_auth_credentials(&buffer[..bytes_read]) {
+                let steam_id = memory_scanner::scan_steam_id(&buffer[..bytes_read]).unwrap_or_default();
+                CloseHandle(process);
+                return Ok((id, nonce, steam_id));
+            }
+        }
+        CloseHandle(process);
+    }
+    Err("Credentials not found in memory. Make sure you are in the orbiter (not loading screen) and Warframe has been running for a few minutes.".into())
+
 }
 
 /// Scan Warframe memory for API request URLs — reveals exact endpoints the game uses.
-#[cfg(target_os = "windows")]
 #[tauri::command]
 async fn scan_warframe_api_urls() -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -652,20 +698,6 @@ async fn scan_warframe_api_urls() -> Result<Vec<String>, String> {
         }
         Ok(found)
     }).await.map_err(|e| e.to_string())?
-}
-
-#[cfg(target_os = "linux")]
-#[tauri::command]
-async fn scan_warframe_api_urls() -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(memory_scanner::scan_api_url_strings)
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-#[tauri::command]
-async fn scan_warframe_api_urls() -> Result<Vec<String>, String> {
-    Err("Only supported on Windows and Linux".into())
 }
 
 /// Persist mastery data (unique_name → rank 0-30) from the Companion API or any other source.
@@ -1795,193 +1827,6 @@ async fn wfm_delete_credentials() -> Result<(), String> {
     Ok(())
 }
 
-// ==============================================================================
-// Linux credential storage
-// ==============================================================================
-//
-// gnome-keyring, KWallet and KeePassXC all implement this interface, so one
-// client reaches every mainstream desktop. Why this client and not libsecret or
-// the `keyring` crate: docs/adr/0001.
-//
-// The commands are async and hand their D-Bus calls to spawn_blocking, matching
-// scan_warframe_credentials above. Unlocking a keyring can put a dialog in front
-// of the user for as long as they take to answer, and Tauri runs a sync command
-// on the main thread, so a sync version would freeze the window behind the very
-// prompt it raised.
-
-#[cfg(target_os = "linux")]
-const WFM_SECRET_SERVICE: &str = "FrameForge_WFM";
-#[cfg(target_os = "linux")]
-const WFM_SECRET_ACCOUNT: &str = "wfm-session";
-#[cfg(target_os = "linux")]
-const WFM_SECRET_LABEL: &str = "FrameForge: warframe.market session";
-
-/// Deliberately excludes the email. A record is addressed by where it came from
-/// and what it is, so changing the account you log in with replaces the entry
-/// rather than orphaning one under an address nothing will search for again.
-/// `service` is a parameter only so the test can write somewhere the real
-/// session cannot be clobbered from.
-#[cfg(target_os = "linux")]
-fn wfm_secret_key(service: &str) -> std::collections::HashMap<&str, &str> {
-    std::collections::HashMap::from([("service", service), ("account", WFM_SECRET_ACCOUNT)])
-}
-
-/// `Error::NoResult` is the crate's generic "nothing matched". Only at the
-/// default-collection lookup does it pin down something worth telling the user
-/// about, so it becomes a distinct case there, while the call that produced it
-/// is still in sight.
-#[cfg(target_os = "linux")]
-#[derive(Debug)]
-enum SecretStoreError {
-    NoDefaultCollection,
-    Service(secret_service::Error),
-}
-
-#[cfg(target_os = "linux")]
-impl From<secret_service::Error> for SecretStoreError {
-    fn from(error: secret_service::Error) -> Self {
-        Self::Service(error)
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn wfm_secret_save(service: &str, email: &str, token: &str) -> Result<(), SecretStoreError> {
-    let service_connection = secret_service::blocking::SecretService::connect(
-        secret_service::EncryptionType::Dh,
-    )?;
-    let collection = service_connection.get_default_collection().map_err(|error| match error {
-        secret_service::Error::NoResult => SecretStoreError::NoDefaultCollection,
-        other => SecretStoreError::Service(other),
-    })?;
-    collection.ensure_unlocked()?;
-
-    let mut attributes = wfm_secret_key(service);
-    // Carried purely so the entry is identifiable in Seahorse or KeePassXC,
-    // where "wfm-session" alone tells the user nothing about which account it
-    // belongs to.
-    attributes.insert("email", email);
-
-    collection.create_item(
-        WFM_SECRET_LABEL,
-        attributes,
-        token.as_bytes(),
-        true, // replace: one session per install, so a re-save overwrites
-        "text/plain",
-    )?;
-    Ok(())
-}
-
-/// The email in the returned pair is not needed to use the session. It is
-/// handed back so a re-save can write the same label attribute again instead of
-/// replacing it with whatever the caller happens to have to hand.
-#[cfg(target_os = "linux")]
-fn wfm_secret_load(service: &str) -> Result<Option<(String, String)>, SecretStoreError> {
-    let service_connection = secret_service::blocking::SecretService::connect(
-        secret_service::EncryptionType::Dh,
-    )?;
-
-    // Searching reports locked hits without opening them, which is what keeps
-    // startup quiet: a user who never saved a session matches nothing and is
-    // never asked for a keyring password.
-    let found = service_connection.search_items(wfm_secret_key(service))?;
-    let Some(item) = found.unlocked.first().or_else(|| found.locked.first()) else {
-        return Ok(None);
-    };
-
-    item.ensure_unlocked()?;
-    let email = item.get_attributes()?.get("email").cloned().unwrap_or_default();
-    let token = String::from_utf8_lossy(&item.get_secret()?).into_owned();
-    Ok(Some((email, token)))
-}
-
-#[cfg(target_os = "linux")]
-fn wfm_secret_delete(service: &str) -> Result<(), SecretStoreError> {
-    let service_connection = secret_service::blocking::SecretService::connect(
-        secret_service::EncryptionType::Dh,
-    )?;
-    let found = service_connection.search_items(wfm_secret_key(service))?;
-    for item in found.unlocked.iter().chain(found.locked.iter()) {
-        item.ensure_unlocked()?;
-        item.delete()?;
-    }
-    Ok(())
-}
-
-/// Only the variants a user can act on are worth rewording. The crate's own
-/// Display text for them names D-Bus rather than the thing they would recognise
-/// as their password manager.
-#[cfg(target_os = "linux")]
-fn wfm_secret_error(error: SecretStoreError) -> String {
-    match error {
-        // Creating the keyring is a password-manager decision with its own
-        // setup prompt, not something a companion app should do behind the
-        // user's back.
-        SecretStoreError::NoDefaultCollection =>
-            "No default keyring exists. Create one in your password manager first.".into(),
-        SecretStoreError::Service(secret_service::Error::Unavailable) =>
-            "No password manager is running to keep the session in.".into(),
-        SecretStoreError::Service(secret_service::Error::Prompt) =>
-            "The keyring unlock prompt was dismissed.".into(),
-        SecretStoreError::Service(secret_service::Error::Locked) =>
-            "The keyring is locked.".into(),
-        SecretStoreError::Service(other) => other.to_string(),
-    }
-}
-
-#[cfg(target_os = "linux")]
-#[tauri::command]
-async fn wfm_save_credentials(email: String, token: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || wfm_secret_save(WFM_SECRET_SERVICE, &email, &token))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(wfm_secret_error)
-}
-
-#[cfg(target_os = "linux")]
-#[tauri::command]
-async fn wfm_load_credentials() -> Result<Option<(String, String)>, String> {
-    tauri::async_runtime::spawn_blocking(move || wfm_secret_load(WFM_SECRET_SERVICE))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(wfm_secret_error)
-}
-
-#[cfg(target_os = "linux")]
-#[tauri::command]
-async fn wfm_delete_credentials() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || wfm_secret_delete(WFM_SECRET_SERVICE))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(wfm_secret_error)
-}
-
-// ==============================================================================
-// Credential storage elsewhere
-// ==============================================================================
-//
-// macOS has a Keychain that would serve, but nothing here targets it. Rather
-// than fall back to a plaintext file, the save refuses and the load reports no
-// saved session.
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-#[tauri::command]
-async fn wfm_save_credentials(email: String, token: String) -> Result<(), String> {
-    let _ = (email, token);
-    Err("Saving the session is not supported on this platform".into())
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-#[tauri::command]
-async fn wfm_load_credentials() -> Result<Option<(String, String)>, String> {
-    Ok(None)
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-#[tauri::command]
-async fn wfm_delete_credentials() -> Result<(), String> {
-    Ok(())
-}
-
 /// Clear the stored WFM session.
 ///
 /// A saved token outlives the in-memory session: the next launch restores it
@@ -2262,35 +2107,6 @@ fn parse_stat_groups(s: &str) -> Vec<Vec<String>> {
         }
     }
     all
-}
-
-/// Weapon-name candidates from the "FITS IN" panel's OCR, top to bottom.
-///
-/// The panel is mostly icon and border debris — single glyphs, punctuation —
-/// with the weapon name and the panel's own buttons as the only real words, so a
-/// candidate is a line of at least four letters that is not one of those
-/// buttons. The name sits below the "FITS IN" label and above "SHOW RANKED",
-/// which is why callers take the last candidate rather than the first.
-fn panel_weapon_candidates(panel: &str) -> Vec<String> {
-    panel
-        .lines()
-        .map(|l| l.trim().to_lowercase())
-        .filter(|l| {
-            l.chars().filter(|c| c.is_alphabetic()).count() >= 4
-                && !says_fits_in(l)
-                && !l.contains("show ranked")
-                && !l.contains("close")
-                && !l.contains("cancel")
-        })
-        .collect()
-}
-
-/// Whether `text` (already lowercased) carries the riven screen's "FITS IN"
-/// panel label. The label is small enough on a 4K frame that Tesseract closes
-/// the word gap and reports "FITSIN", so both sides are compared with spaces
-/// removed — matching the spaced form alone rejected every screen tested.
-fn says_fits_in(text: &str) -> bool {
-    text.replace(' ', "").contains("fitsin")
 }
 
 /// Rejoin a riven card's OCR text into one line per stat.
@@ -2659,7 +2475,6 @@ async fn ocr_riven_screen() -> Result<serde_json::Value, String> {
 
     let mut text = String::new();
     let mut full_text_for_fallback = String::new();
-    let mut panel_for_weapon = String::new();
     let mut confirmed = false;
 
     for attempt in 0..MAX_ATTEMPTS {
@@ -2680,30 +2495,17 @@ async fn ocr_riven_screen() -> Result<serde_json::Value, String> {
                 .unwrap_or_default();
             let card_text = ocr::ocr_pixels_rect(&pixels, w, h, 0.20, 0.65, 0.28, 0.82)
                 .unwrap_or_default();
-            // "FITS IN" is a two-word label in the far right panel. Over a whole
-            // 4K frame it is small enough to be missed, so it gets the same
-            // dedicated crop that riven_screen_visible reads it from.
-            //
-            // The crop runs to 95% of frame height because the weapon name sits
-            // under the panel's weapon icon at about 86% — below both this crop's
-            // old 80% bound and the full-frame pass's 82%, which is why the name
-            // was unreadable from anywhere. It is worth reaching for: the panel
-            // names the actual weapon ("Kuva Nukor") while the mod name above the
-            // card gives only the base weapon ("Nukor Crita-hexapha"), and the two
-            // carry different riven dispositions.
-            let panel_text = ocr::ocr_pixels_rect_raw(&pixels, w, h, 0.73, 1.0, 0.30, 0.95)
-                .unwrap_or_default();
             let _ = append_to_file(&riven_log2, &format!(
-                "[STEP 2] OCR attempt {} — {}\n├─ Full text:\n{}\n├─ Panel text:\n{}\n└─ Card text:\n{}\n\n",
-                attempt + 1, ts, full_text, panel_text, card_text
+                "[STEP 2] OCR attempt {} — {}\n├─ Full text:\n{}\n└─ Card text:\n{}\n\n",
+                attempt + 1, ts, full_text, card_text
             ));
-            Ok::<_, String>((full_text, panel_text, card_text))
+            Ok::<_, String>((full_text, card_text))
         }).await.map_err(|e| format!("Task: {}", e))??;
 
-        let (full_text, panel_text, card_text) = attempt_result;
+        let (full_text, card_text) = attempt_result;
         let lower = full_text.to_lowercase();
         let has_header  = lower.contains("inventory") || lower.contains("mods");
-        let has_fits_in = says_fits_in(&lower) || says_fits_in(&panel_text.to_lowercase());
+        let has_fits_in = lower.contains("fits in");
 
         let _ = append_to_file(&riven_log, &format!(
             "[STEP 2] attempt {} — header={} fits_in={}\n",
@@ -2721,7 +2523,6 @@ async fn ocr_riven_screen() -> Result<serde_json::Value, String> {
         if (has_header && has_fits_in) || (has_header && comparison_likely) {
             text = card_text;
             full_text_for_fallback = full_text;
-            panel_for_weapon = panel_text;
             confirmed = true;
             if comparison_likely && !has_fits_in {
                 let _ = append_to_file(&riven_log, &format!(
@@ -2732,7 +2533,6 @@ async fn ocr_riven_screen() -> Result<serde_json::Value, String> {
         }
         text = card_text;
         full_text_for_fallback = full_text;
-        panel_for_weapon = panel_text;
     }
 
     if !confirmed {
@@ -2814,29 +2614,13 @@ async fn ocr_riven_screen() -> Result<serde_json::Value, String> {
         None
     };
 
-    // The "FITS IN" panel is the only place the game states the weapon outright,
-    // and it states the real one: a Kuva Nukor riven is titled "Nukor Crita-
-    // hexapha" above the card, which resolves to the ordinary Nukor and its
-    // different disposition. Take any panel line the database recognises — the
-    // surrounding panel chrome ("SHOW RANKED", icon debris) matches nothing.
-    //
-    // The grading sheet is a curated list, not a weapon index — it carries
-    // "kuva bramma" but not "kuva nukor" — so a panel name it does not know is
-    // still the right answer. Reporting it unmatched costs the roll analysis
-    // (`analyze_riven` returns nothing for an unknown weapon, which the UI
-    // already handles) and buys not silently grading a Kuva Nukor as the base
-    // Nukor it is titled after, on a different disposition.
-    let panel_candidates = panel_weapon_candidates(&panel_for_weapon);
-    let weapon = panel_candidates.iter()
-        .find_map(|l| find_in_db(l))
-        .or_else(|| panel_candidates.last().cloned())
-        .or_else(|| lines.iter().enumerate()
-            .find(|(_, l)| says_fits_in(&l.to_lowercase()))
-            .and_then(|(i, _)| lines.get(i + 1))
-            .and_then(|l| {
-                let lc = l.trim().to_lowercase();
-                find_in_db(&lc).or(Some(lc))
-            }))
+    let weapon = lines.iter().enumerate()
+        .find(|(_, l)| l.to_lowercase().contains("fits in"))
+        .and_then(|(i, _)| lines.get(i + 1))
+        .and_then(|l| {
+            let lc = l.trim().to_lowercase();
+            find_in_db(&lc).or(Some(lc))
+        })
         // Fallback: first non-stat, non-UI line is the mod name "WeaponName RivenId".
         // Only accept if it matches a weapon in the DB — avoids returning currency values
         // like "D '5,598" (Endo count) that pass the basic filter.
@@ -3061,69 +2845,14 @@ fn parse_trade_dialog(raw: &str) -> Option<ParsedTrade> {
     })
 }
 
-// ==============================================================================
-// EE.log wake-up source
-// ==============================================================================
-//
-// Both log watchers want to react the instant Warframe flushes a line. Windows
-// gets that for free from FindFirstChangeNotificationW, which blocks until the
-// log directory is written. Linux has no equivalent wired up here, so it falls
-// back to polling at the caller's interval — a few extra wake-ups per second,
-// but the surrounding loop stays identical on both platforms.
-//
-// ponytail: polling on Linux; switch to inotify if wake-up latency matters.
-
-/// Open a directory-change notification for EE.log's folder, or `None` when the
-/// platform or the call cannot provide one (the caller then polls).
-#[cfg(target_os = "windows")]
-fn open_log_notifier(log_path: &std::path::Path) -> Option<isize> {
-    use windows_sys::Win32::Storage::FileSystem::{
-        FindFirstChangeNotificationW, FILE_NOTIFY_CHANGE_LAST_WRITE,
-    };
-    let dir = log_path.parent().unwrap_or(std::path::Path::new("."));
-    let dir_wide: Vec<u16> = dir.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
-    let handle = unsafe { FindFirstChangeNotificationW(dir_wide.as_ptr(), 0, FILE_NOTIFY_CHANGE_LAST_WRITE) };
-    (handle != -1).then_some(handle) // -1 = INVALID_HANDLE_VALUE
-}
-
-#[cfg(not(target_os = "windows"))]
-fn open_log_notifier(_log_path: &std::path::Path) -> Option<isize> { None }
-
-/// Block until EE.log's directory is written, or until `poll` elapses when no
-/// notifier is available. The 500 ms notification timeout keeps loops that check
-/// a stop flag responsive even while the game is idle.
-#[cfg(target_os = "windows")]
-fn wait_for_log_change(notifier: Option<isize>, poll: std::time::Duration) {
-    use windows_sys::Win32::Storage::FileSystem::FindNextChangeNotification;
-    use windows_sys::Win32::System::Threading::WaitForSingleObject;
-    let Some(handle) = notifier else {
-        std::thread::sleep(poll);
-        return;
-    };
-    unsafe {
-        WaitForSingleObject(handle, 500);
-        FindNextChangeNotification(handle);
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn wait_for_log_change(_notifier: Option<isize>, poll: std::time::Duration) {
-    std::thread::sleep(poll);
-}
-
 /// Start a lightweight EE.log watcher for features that don't need the memory scanner:
 /// riven reroll detection, trade completion detection, WFM whisper detection.
 /// Called unconditionally at app startup — EE.log is plain file I/O, not memory reading.
 #[tauri::command]
 fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
-    let log_path =
-        log_parser::watched_log_path().ok_or("Cannot find the local data directory")?;
-    if !log_path.is_file() {
-        eprintln!(
-            "warning: EE.log not found at {}; log-driven features stay idle until it appears",
-            log_path.display()
-        );
-    }
+    let log_path = dirs::data_local_dir()
+        .map(|d| d.join("Warframe").join("EE.log"))
+        .ok_or("Cannot find LocalAppData")?;
 
     std::thread::spawn(move || {
         use std::io::{Read, Seek, SeekFrom};
@@ -3133,12 +2862,28 @@ fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
         // Guards against the same EE.log buffer being processed twice by React StrictMode listeners.
         let mut last_riven_fire: Option<std::time::Instant> = None;
 
-        // Wake up the instant EE.log is written instead of sleeping and polling.
-        // This is how Overwolf achieves low latency.
-        let notifier = open_log_notifier(&log_path);
+        // Use FindFirstChangeNotificationW so we wake up the instant EE.log is written,
+        // instead of sleeping and polling. This is how Overwolf achieves low latency.
+        let change_handle: isize = {
+            use windows_sys::Win32::Storage::FileSystem::{
+                FindFirstChangeNotificationW, FILE_NOTIFY_CHANGE_LAST_WRITE,
+            };
+            let dir = log_path.parent().unwrap_or(std::path::Path::new("."));
+            let dir_wide: Vec<u16> = dir.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
+            unsafe { FindFirstChangeNotificationW(dir_wide.as_ptr(), 0, FILE_NOTIFY_CHANGE_LAST_WRITE) }
+        };
+        let use_notify = change_handle != -1; // -1 = INVALID_HANDLE_VALUE
 
         loop {
-            wait_for_log_change(notifier, std::time::Duration::from_millis(50));
+            if use_notify {
+                use windows_sys::Win32::System::Threading::WaitForSingleObject;
+                use windows_sys::Win32::Storage::FileSystem::FindNextChangeNotification;
+                // Block until EE.log directory has a write — then process immediately
+                unsafe { WaitForSingleObject(change_handle, 500); } // 500ms safety timeout
+                unsafe { FindNextChangeNotification(change_handle); }
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
             let Ok(mut f) = std::fs::File::open(&log_path) else { continue };
             let len = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
             if len < file_pos { file_pos = 0; }
@@ -3338,12 +3083,19 @@ fn riven_screen_visible() -> bool {
 /// Read the riven validity flag byte. Returns None if Warframe is not running.
 /// Returns Some(true) = screen open, Some(false) = screen closed.
 /// Fails open (Some(true)) on read errors so the overlay is never falsely dismissed.
-///
-/// Takes the PID from the caller: enumerating processes costs a `/proc` walk on
-/// Linux and a snapshot on Windows, and the only caller polls five times a
-/// second, so looking it up again here would double that for no new
-/// information.
-fn read_riven_flag_byte(pid: u32) -> Option<bool> {
+#[cfg(target_os = "windows")]
+fn read_riven_flag_byte() -> Option<bool> {
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::{
+            Diagnostics::Debug::ReadProcessMemory,
+            Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
+        },
+    };
+    use std::ffi::c_void;
+
+    let pid = memory_scanner::find_warframe_pid_pub()?;
+
     let cache = RIVEN_FLAG_VA.get_or_init(|| std::sync::Mutex::new(None));
     let mut cached = cache.lock().unwrap_or_else(|e| e.into_inner());
     if cached.map_or(true, |(p, _)| p != pid) {
@@ -3359,10 +3111,23 @@ fn read_riven_flag_byte(pid: u32) -> Option<bool> {
     };
     drop(cached);
 
-    // Read failure means the mapping moved or access was lost, not that the
-    // screen closed — fail open so an active overlay is never dismissed.
-    Some(memory_scanner::read_process_byte(pid, flag_va).map_or(true, |byte| byte != 0))
+    let handle = unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, 0, pid) };
+    if handle == 0 { return Some(true); }
+
+    let mut byte: u8 = 0;
+    let mut read = 0usize;
+    let ok = unsafe {
+        ReadProcessMemory(handle, flag_va as *const c_void,
+            &mut byte as *mut u8 as *mut c_void, 1, &mut read)
+    };
+    unsafe { CloseHandle(handle); }
+
+    if ok == 0 || read == 0 { return Some(true); } // read failed — fail open
+    Some(byte != 0)
 }
+
+#[cfg(not(target_os = "windows"))]
+fn read_riven_flag_byte() -> Option<bool> { None }
 
 /// Background thread: polls the riven validity flag every 200 ms and emits
 /// riven-screen-open-mem / riven-screen-close-mem on state transitions.
@@ -3382,8 +3147,8 @@ fn start_riven_memory_watcher(app: tauri::AppHandle) {
         loop {
             std::thread::sleep(std::time::Duration::from_millis(200));
 
-            let pid = memory_scanner::find_warframe_pid_pub();
-            let Some(pid) = pid else {
+            let pid_found = memory_scanner::find_warframe_pid_pub().is_some();
+            if !pid_found {
                 // Warframe not running — reset state
                 if warframe_was_running {
                     prev_open = false;
@@ -3391,10 +3156,10 @@ fn start_riven_memory_watcher(app: tauri::AppHandle) {
                     warframe_was_running = false;
                 }
                 continue;
-            };
+            }
             warframe_was_running = true;
 
-            match read_riven_flag_byte(pid) {
+            match read_riven_flag_byte() {
                 None => {
                     // Warframe running but pattern VA not found yet — don't change state,
                     // just wait. This avoids a false open event on app start.
@@ -4522,14 +4287,6 @@ async fn dump_memory_probe(state: State<'_, AppState>) -> Result<String, String>
     Ok(output)
 }
 
-/// Toggle the continuous raw memory string-dump.
-/// One-shot manual capture of the full inventory JSON blob.
-#[tauri::command]
-fn capture_inventory_blob(state: State<'_, AppState>) -> Result<String, String> {
-    let path = state.raw_scan_path.with_file_name("inventory_blob.txt");
-    memory_scanner::capture_inventory_blob(&path)
-}
-
 /// Enable or disable automatic per-pass inventory blob logging to blobs/.
 #[tauri::command]
 fn set_blob_log(enabled: bool, state: State<'_, AppState>) {
@@ -5237,7 +4994,8 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     // Void Fissure reward selection screen becomes active.  All open-source
     // tools (WFInfo, warframeocr, Sentinel) use this string as their trigger.
     // We tail the log file instead of relying on fragile OCR gate heuristics.
-    let ee_log_path = log_parser::watched_log_path();
+    let ee_log_path = dirs::data_local_dir()
+        .map(|d| d.join("Warframe").join("EE.log"));
 
     // Shared flag: true while the reward screen is active according to EE.log
     let reward_screen_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -5361,13 +5119,31 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
             // Created at trigger, BMP written after overlay confirmed, session log at dismiss.
             let diag_arc: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::new(Mutex::new(None));
 
-            // Wake the instant EE.log is written to disk instead of sleeping
-            // 200 ms between checks.
-            let notifier = open_log_notifier(&log_path);
+            // Use FindFirstChangeNotificationW so we wake the instant EE.log is
+            // written to disk instead of sleeping 200 ms between checks.
+            let change_handle: isize = {
+                use windows_sys::Win32::Storage::FileSystem::{
+                    FindFirstChangeNotificationW, FILE_NOTIFY_CHANGE_LAST_WRITE,
+                };
+                let dir = log_path.parent().unwrap_or(std::path::Path::new("."));
+                let dir_wide: Vec<u16> = dir.to_string_lossy()
+                    .encode_utf16().chain(std::iter::once(0)).collect();
+                unsafe { FindFirstChangeNotificationW(dir_wide.as_ptr(), 0, FILE_NOTIFY_CHANGE_LAST_WRITE) }
+            };
+            let use_notify = change_handle != -1isize; // -1 = INVALID_HANDLE_VALUE
 
             loop {
                 if !flag.load(Ordering::SeqCst) { break; }
-                wait_for_log_change(notifier, std::time::Duration::from_millis(200));
+                if use_notify {
+                    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+                    use windows_sys::Win32::Storage::FileSystem::FindNextChangeNotification;
+                    // Block until a write lands in the EE.log directory (500 ms safety timeout
+                    // keeps the flag check alive even when the game isn't writing).
+                    unsafe { WaitForSingleObject(change_handle, 500); }
+                    unsafe { FindNextChangeNotification(change_handle); }
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
                 let Ok(mut f) = std::fs::File::open(&log_path) else { continue };
                 let len = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
                 if len < file_pos { file_pos = 0; }
@@ -5630,7 +5406,9 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         ));
                     }
 
-                    park_overlay_offscreen(&ee_ocr_app, "relic-overlay");
+                    if let Some(win) = ee_ocr_app.get_webview_window("relic-overlay") {
+                        let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x: 0, y: -3000 }));
+                    }
                     if let Ok(mut g) = ee_ocr_app.state::<AppState>().pending_relic_rewards.lock() { *g = None; }
                     let _ = ee_ocr_app.emit("relic-rewards", serde_json::Value::Null);
                 }
@@ -5997,7 +5775,9 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                                                 tokio::time::sleep(std::time::Duration::from_secs(20)).await;
                                                 if let Ok(mut g) = app2.state::<AppState>().pending_relic_rewards.lock() { *g = None; }
                                                 let _ = app2.emit("relic-rewards", serde_json::Value::Null);
-                                                park_overlay_offscreen(&app2, "relic-overlay");
+                                                if let Some(w) = app2.get_webview_window("relic-overlay") {
+                                                    let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x: 0, y: -3000 }));
+                                                }
                                                 append_to_diag(&slog2,
                                                     "[STEP 4] AUTO-DISMISS (20s safety fallback)\n\n");
                                                 if let Ok(mut g) = diag_arc_fb.lock() {
@@ -6053,7 +5833,9 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                                             tokio::time::sleep(std::time::Duration::from_secs(20)).await;
                                             if let Ok(mut g) = app2.state::<AppState>().pending_relic_rewards.lock() { *g = None; }
                                             let _ = app2.emit("relic-rewards", serde_json::Value::Null);
-                                            park_overlay_offscreen(&app2, "relic-overlay");
+                                            if let Some(w) = app2.get_webview_window("relic-overlay") {
+                                                let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x: 0, y: -3000 }));
+                                            }
                                             let _ = append_to_file(&slog2,
                                                 "[STEP 4] AUTO-DISMISS (20s safety fallback)\n\n");
                                             if let Ok(mut g) = diag_arc_fb.lock() {
@@ -6146,7 +5928,9 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                                 let _ = app.emit("relic-rewards", &emit_val);
                                 let _ = append_to_file(&slog,
                                     "[STEP 2] OCR TIMEOUT — 45 seconds elapsed, emitting best result\n\n");
-                                park_overlay_offscreen(&app, "relic-overlay");
+                                if let Some(win) = app.get_webview_window("relic-overlay") {
+                                    let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x: 0, y: -3000 }));
+                                }
                                 active.store(false, Ordering::SeqCst);
                                 if let Ok(mut g) = diag_arc2.lock() {
                                     if let Some(folder) = g.take() {
@@ -6185,7 +5969,9 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         reward_screen_active2.store(false, Ordering::SeqCst);
                         active_since = None;
                         last_dismiss_at = Some(std::time::Instant::now());
-                        park_overlay_offscreen(&ee_ocr_app, "relic-overlay");
+                        if let Some(win) = ee_ocr_app.get_webview_window("relic-overlay") {
+                            let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x: 0, y: -3000 }));
+                        }
                         if let Ok(mut g) = ee_ocr_app.state::<AppState>().pending_relic_rewards.lock() { *g = None; }
                         let _ = ee_ocr_app.emit("relic-rewards", serde_json::Value::Null);
                     }
@@ -7569,26 +7355,6 @@ fn debug_create_window(app: tauri::AppHandle) -> Result<String, String> {
     .map_err(|e| format!("build() failed: {e}"))
 }
 
-/// Visually hide an overlay window without destroying it.
-///
-/// The two platforms need opposite primitives here. On Windows the window is
-/// parked off-screen because `hide()` on a transparent WebView2 window breaks
-/// DirectComposition — JS keeps running but its pixels stop reaching the screen,
-/// so the overlay comes back blank. On Linux `hide()` is the only thing that
-/// works: KWin keeps windows inside the desktop and clamps y=-3000 back to 0,
-/// which would leave the transparent overlay parked over the primary monitor.
-fn park_overlay_offscreen(app: &tauri::AppHandle, label: &str) {
-    use tauri::Manager;
-    let Some(win) = app.get_webview_window(label) else { return };
-    #[cfg(target_os = "linux")]
-    let _ = win.hide();
-    #[cfg(not(target_os = "linux"))]
-    let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-        x: 0,
-        y: -3000,
-    }));
-}
-
 /// Reposition the pre-declared relic-overlay window and bring it on screen.
 /// The overlay is pre-declared in tauri.conf.json at y=-3000 (off-screen) so
 /// WebView2 initialises at app startup. We never create/destroy it — just move it.
@@ -7608,12 +7374,6 @@ fn show_overlay_window(
     ));
     let _ = win.show();
     let _ = win.set_always_on_top(true);
-    // The move above is only honoured on a later turn of the GTK main loop, and
-    // the window manager owns the window's position until then. Ask X directly
-    // so the band is on the game's monitor for its first frame rather than a
-    // second later.
-    #[cfg(target_os = "linux")]
-    overlay_linux::place(&win, x, y, w, h);
 
     // On Windows 10, WebView2 defers loading the page when the window starts
     // off-screen. If it's still on about:blank, navigate to the overlay URL now.
@@ -7638,7 +7398,12 @@ fn show_overlay_window(
 /// Destroying and recreating transparent WebView2 windows deadlocks on Windows.
 #[tauri::command]
 fn move_overlay_offscreen(app: tauri::AppHandle) -> Result<(), String> {
-    park_overlay_offscreen(&app, "relic-overlay");
+    use tauri::Manager;
+    if let Some(win) = app.get_webview_window("relic-overlay") {
+        let _ = win.set_position(tauri::Position::Physical(
+            tauri::PhysicalPosition { x: 0, y: -3000 }
+        ));
+    }
     Ok(())
 }
 
@@ -7682,7 +7447,9 @@ fn hide_test_overlay_window(app: tauri::AppHandle) -> Result<(), String> {
     let win = app.get_webview_window("overlay-test")
         .ok_or_else(|| "overlay-test window not found".to_string())?;
     let _ = win.set_always_on_top(false);
-    park_overlay_offscreen(&app, "overlay-test");
+    let _ = win.set_position(tauri::Position::Physical(
+        tauri::PhysicalPosition { x: 0, y: -3000 }
+    ));
     eprintln!("[OVERLAY-TEST] hide_test_overlay_window: moved offscreen");
     Ok(())
 }
@@ -7831,51 +7598,6 @@ async fn prewarm_image_cache(state: tauri::State<'_, AppState>) -> Result<(), St
     Ok(())
 }
 
-/// What the running platform can actually do, so the UI hides controls that
-/// would only ever return an error instead of letting the user discover the
-/// limitation by clicking.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PlatformCapabilities {
-    linux: bool,
-    ocr: bool,
-    persistent_credentials: bool,
-}
-
-#[tauri::command]
-async fn get_platform_capabilities() -> PlatformCapabilities {
-    PlatformCapabilities {
-        linux: cfg!(target_os = "linux"),
-        // Linux grabs the game window over X11 and reads it with Tesseract, so
-        // every screen-reading feature is available there too.
-        ocr: cfg!(any(target_os = "windows", target_os = "linux")),
-        persistent_credentials: credential_store_available().await,
-    }
-}
-
-/// Whether this machine can persist a session at all.
-///
-/// Unlike the other two capabilities this is not a build-time fact. A Linux
-/// desktop only has somewhere to put the session if it runs a Secret Service
-/// provider, and a minimal window manager may run none, so the answer has to be
-/// asked of the running system rather than the target triple.
-///
-/// Connecting negotiates a session with the provider without opening a
-/// collection, so asking cannot raise an unlock prompt at startup.
-#[cfg(target_os = "linux")]
-async fn credential_store_available() -> bool {
-    tauri::async_runtime::spawn_blocking(|| {
-        secret_service::blocking::SecretService::connect(secret_service::EncryptionType::Dh).is_ok()
-    })
-    .await
-    .unwrap_or(false)
-}
-
-#[cfg(not(target_os = "linux"))]
-async fn credential_store_available() -> bool {
-    cfg!(target_os = "windows")
-}
-
 #[tauri::command]
 fn open_debug_folder(state: State<AppState>, which: String) -> Result<(), String> {
     let path: std::path::PathBuf = match which.as_str() {
@@ -7887,10 +7609,7 @@ fn open_debug_folder(state: State<AppState>, which: String) -> Result<(), String
         _ => return Err("Unknown debug folder".into()),
     };
     std::fs::create_dir_all(&path).ok();
-    // `xdg-open` is the desktop-agnostic equivalent of Windows' `explorer`; it
-    // hands the folder to whichever file manager the session has configured.
-    let file_manager = if cfg!(target_os = "windows") { "explorer" } else { "xdg-open" };
-    std::process::Command::new(file_manager)
+    std::process::Command::new("explorer")
         .arg(path.to_string_lossy().as_ref())
         .spawn()
         .map_err(|e| e.to_string())?;
@@ -8047,12 +7766,8 @@ async fn capture_diagnostics(state: State<'_, AppState>) -> Result<String, Strin
 /// both exclude the window title bar and borders in windowed mode.
 #[tauri::command]
 fn get_warframe_window_rect() -> Result<[i32; 4], String> {
-    // Linux reads the geometry from the same X11 window the capture grabs, so the
-    // rect and the captured frame can never describe different areas.
-    #[cfg(target_os = "linux")]
-    { return ocr::warframe_window_rect(); }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    { return Err("Windows and Linux only".into()); }
+    #[cfg(not(target_os = "windows"))]
+    { return Err("Windows only".into()); }
     #[cfg(target_os = "windows")]
     {
         use windows_sys::Win32::Foundation::{POINT, RECT};
@@ -8094,30 +7809,13 @@ fn get_blueprint_names(state: State<AppState>) -> HashMap<String, String> {
 
 #[tauri::command]
 fn get_system_locale() -> String {
-    #[cfg(target_os = "windows")]
-    {
-        let mut buf = [0u16; 85]; // LOCALE_NAME_MAX_LENGTH
-        let len = unsafe { windows_sys::Win32::Globalization::GetUserDefaultLocaleName(buf.as_mut_ptr(), buf.len() as i32) };
-        if len > 1 {
-            return String::from_utf16_lossy(&buf[..(len as usize - 1)]);
-        }
+    let mut buf = [0u16; 85]; // LOCALE_NAME_MAX_LENGTH
+    let len = unsafe { windows_sys::Win32::Globalization::GetUserDefaultLocaleName(buf.as_mut_ptr(), buf.len() as i32) };
+    if len > 1 {
+        String::from_utf16_lossy(&buf[..(len as usize - 1)])
+    } else {
+        "en-US".to_string()
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        // POSIX locales look like "de_DE.UTF-8" or "de_DE@euro"; the frontend
-        // feeds this to Intl, which wants a BCP-47 tag like "de-DE". LC_TIME
-        // outranks LANG because the locale only ever picks the clock format.
-        let posix = ["LC_ALL", "LC_TIME", "LANG"].iter()
-            .filter_map(|v| std::env::var(v).ok())
-            .find(|s| !s.is_empty());
-        if let Some(lang) = posix {
-            let tag = lang.split(['.', '@']).next().unwrap_or("").replace('_', "-");
-            if !tag.is_empty() && tag != "C" && tag != "POSIX" {
-                return tag;
-            }
-        }
-    }
-    "en-US".to_string()
 }
 
 // ─── App entry point ──────────────────────────────────────────────────────────
@@ -8591,27 +8289,6 @@ fn restore_window_state(app: &tauri::AppHandle, window: &tauri::WebviewWindow, s
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // ==========================================================================
-    // Linux: run the GTK/WebKit side under XWayland, not native Wayland
-    // ==========================================================================
-    //
-    // The relic and riven overlays exist to sit exactly on top of the game
-    // window, and they are hidden by being parked off-screen. Wayland gives a
-    // client no say in where its own surfaces go, so under the native backend
-    // `set_position` silently does nothing: the overlay would appear wherever the
-    // compositor decided, and "hiding" it off-screen would leave it on screen.
-    //
-    // Forcing GDK to the X11 backend restores absolute positioning and
-    // always-on-top, and it costs nothing in fidelity here — Warframe itself runs
-    // under XWayland (it is a Proton/Wine X11 client), so the overlay ends up in
-    // the same coordinate space as the window it tracks.
-    //
-    // Set before any GTK call, which for Tauri means before the builder runs.
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("GDK_BACKEND").is_none() {
-        std::env::set_var("GDK_BACKEND", "x11");
-    }
-
     let data_dir = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("warframe-companion");
@@ -8626,7 +8303,6 @@ pub fn run() {
     let quantities_cache_path = data_dir.join("quantities_cache.json");
     let inventory_state_cache_path = data_dir.join("inventory_state_cache.json");
     let settings_path = data_dir.join("settings.json");
-    log_parser::init_watched_log_path(&settings_path);
     let log_path = data_dir.join("scan_log.txt");
     let changes_log_path = data_dir.join("inventory_changes.txt");
     let raw_scan_path = data_dir.join("raw_scan.txt");
@@ -8758,13 +8434,6 @@ pub fn run() {
         .setup(|app| {
             use tauri::Manager;
 
-            // Every Linux bundle carries its own Tesseract language model. Point
-            // the OCR engine at it before anything can call it.
-            #[cfg(target_os = "linux")]
-            if let Ok(dir) = app.path().resource_dir() {
-                ocr::use_bundled_tessdata(&dir);
-            }
-
             // Spin up a tiny local HTTP server that serves cached item images from disk.
             // This is more reliable than convertFileSrc (which needs assetProtocol scope).
             // Bind the std listener here (sync) to get the port, then convert to tokio
@@ -8797,50 +8466,26 @@ pub fn run() {
             }
 
             // Overlay windows start as visible:false in tauri.conf.json.
-            // Overlay windows start as visible:false in tauri.conf.json. show() here
-            // triggers webview initialisation so the first fissure doesn't pay for it,
-            // and the window is put away again immediately so nothing flashes on
-            // screen. How "away" is achieved differs per platform — see
-            // park_overlay_offscreen.
+            // We call show() here (while they are still at y=-3000) so WebView2 can
+            // initialise their content in the background without flashing on screen.
+            // We NEVER call hide() on relic-overlay — hiding a transparent WebView2
+            // window breaks DirectComposition: JS keeps running but pixels stop reaching
+            // the screen.  Instead we park it at y=-3000 and move it on-screen during
+            // fissures.  overlay-test is not transparent so hide() is safe for it, but
+            // we use the same show()-once pattern for consistency.
+            // show() triggers WebView2 initialisation; immediately park off-screen so
+            // nothing is visible to the user at startup.
+            // We NEVER call hide() on relic-overlay — hiding a transparent WebView2
+            // window breaks DirectComposition.
             // Only relic-overlay needs pre-initialization at startup (to avoid the
             // WebView2 init delay on the first fissure).  overlay-test is on-demand only.
             if let Some(win) = app.get_webview_window("relic-overlay") {
                 let _ = win.show();
                 // Windows may reposition a newly-shown window that is outside all
-                // monitors, and KWin clamps one to y=0 outright — either way the
-                // window has to be put away again right after show().
-                park_overlay_offscreen(app.handle(), "relic-overlay");
-                #[cfg(target_os = "linux")]
-                {
-                    // The band reports on the rewards and is never clicked, so
-                    // the pointer belongs to the game underneath it.
-                    let _ = win.set_ignore_cursor_events(true);
-                    overlay_linux::hint_before_map(&win, overlay_linux::AfterHinting::LeaveHidden);
-                }
-            }
-
-            // The riven panel is created from the frontend on demand and is on
-            // screen the moment it exists, so its hints are written from here
-            // rather than at a call site that would have to know about X11.
-            #[cfg(target_os = "linux")]
-            {
-                use tauri::Listener;
-                let handle = app.handle().clone();
-                app.listen("tauri://window-created", move |event| {
-                    #[derive(serde::Deserialize)]
-                    struct Created {
-                        label: String,
-                    }
-                    let Ok(created) = serde_json::from_str::<Created>(event.payload()) else {
-                        return;
-                    };
-                    if created.label != "riven-overlay" {
-                        return;
-                    }
-                    if let Some(win) = handle.get_webview_window(&created.label) {
-                        overlay_linux::hint_before_map(&win, overlay_linux::AfterHinting::ShowAgain);
-                    }
-                });
+                // monitors.  Force it back off-screen immediately after show().
+                let _ = win.set_position(tauri::Position::Physical(
+                    tauri::PhysicalPosition { x: 0, y: -3000 }
+                ));
             }
 
             // Load relics.run prices in the background. On a cache hit (today's file exists)
@@ -8891,12 +8536,10 @@ pub fn run() {
             clear_cache,
             load_settings,
             save_settings,
-            log_parser::get_ee_log_status,
             read_scan_log,
             log_api_changes,
             dump_memory_probe,
             toggle_raw_scan,
-            capture_inventory_blob,
             set_blob_log,
             set_api_log,
             get_app_version,
@@ -8941,7 +8584,6 @@ pub fn run() {
             wfm_refresh_token,
             wfm_set_jwt,
             wfm_get_jwt,
-            get_platform_capabilities,
             wfm_save_credentials,
             wfm_load_credentials,
             wfm_delete_credentials,
@@ -9263,35 +8905,6 @@ X N,
         );
     }
 
-    /// Verbatim panel OCR from the three example screens. The weapon name has to
-    /// survive whether or not the grading sheet lists it — "kuva nukor" is not in
-    /// the sheet, and reporting the base Nukor in its place would grade the roll
-    /// against a different weapon's disposition.
-    #[test]
-    fn the_panel_yields_the_weapon_name_over_its_own_chrome() {
-        let nukor = "o\n=\n\\\n[\"\no\nIN\nﬁ ‘A l“')\n—\nKuva Nukor\n";
-        assert_eq!(panel_weapon_candidates(nukor).last().unwrap(), "kuva nukor");
-
-        let bramma = "-\nD\n)\nA\n~\n3\n¥\nFITSIN\ne\nKuva Bramma\nSHOW RANKED\n";
-        assert_eq!(panel_weapon_candidates(bramma).last().unwrap(), "kuva bramma");
-
-        // The single-card screen adds a CLOSE button below SHOW RANKED.
-        let single = "\\\nE_ 3\n-\n-~\nFITSIN\n@\nKuva Bramma\nSHOW RANKED\nCLOSE\n";
-        assert_eq!(panel_weapon_candidates(single).last().unwrap(), "kuva bramma");
-
-        // A panel that read as nothing but debris must not name a weapon.
-        assert!(panel_weapon_candidates("\\“ \\\n>~ ‘\n").is_empty());
-    }
-
-    /// Tesseract closes the gap in the panel label on every screen tested.
-    #[test]
-    fn the_fits_in_marker_is_matched_without_its_space() {
-        assert!(says_fits_in("fitsin"));
-        assert!(says_fits_in("fits in"));
-        assert!(says_fits_in("e\nfitsin\nkuva bramma"));
-        assert!(!says_fits_in("inventory/mods"));
-    }
-
     /// Titles must not glue onto a stat, and a negative stat is a real curse
     /// rather than junk. The second title is the one that matters: it follows the
     /// card above with no blank line, and is what the "kuva" noise rule holds back.
@@ -9315,52 +8928,6 @@ MR 11
                 "+52.4% Multishot",
                 "-25.4% Ammo Maximum",
             ]
-        );
-    }
-
-    /// Exercises the Secret Service store against a real provider.
-    ///
-    /// Ignored by default because it needs a running secret service and an
-    /// unlockable keyring, neither of which CI has. Run it on a desktop with
-    /// `cargo test -- --ignored`.
-    #[cfg(target_os = "linux")]
-    #[test]
-    #[ignore]
-    fn secret_store_round_trip() {
-        // Its own service name, so a bug here can never overwrite or delete the
-        // session the developer is actually logged in with.
-        const TEST_SERVICE: &str = "FrameForge_WFM_test";
-
-        // Runs even when an assert unwinds, so a failure cannot leave a stray
-        // entry sitting in a real keyring.
-        struct Cleanup;
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = wfm_secret_delete(TEST_SERVICE);
-            }
-        }
-        let _cleanup = Cleanup;
-
-        wfm_secret_save(TEST_SERVICE, "player@example.com", "{\"accessToken\":\"abc\"}")
-            .expect("saving to an unlocked keyring succeeds");
-        assert_eq!(
-            wfm_secret_load(TEST_SERVICE).expect("loading a just-saved session succeeds"),
-            Some(("player@example.com".to_string(), "{\"accessToken\":\"abc\"}".to_string())),
-        );
-
-        // A second save must replace rather than accumulate, since a re-login
-        // writes over the same key.
-        wfm_secret_save(TEST_SERVICE, "player@example.com", "{\"accessToken\":\"def\"}")
-            .expect("re-saving over an existing session succeeds");
-        let (_, token) = wfm_secret_load(TEST_SERVICE)
-            .expect("loading after a re-save succeeds")
-            .expect("the re-saved session is still there");
-        assert_eq!(token, "{\"accessToken\":\"def\"}");
-
-        wfm_secret_delete(TEST_SERVICE).expect("deleting an existing session succeeds");
-        assert_eq!(
-            wfm_secret_load(TEST_SERVICE).expect("loading after a delete succeeds"),
-            None,
         );
     }
 }

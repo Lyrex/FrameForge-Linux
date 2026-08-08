@@ -3,8 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { usePlatformCapabilities } from "./platform";
-import EeLogSettings from "./EeLogSettings";
 
 // ── Riven overlay — module-level window management ────────────────────────────
 // Stored OUTSIDE React so StrictMode remounts don't destroy/recreate the window.
@@ -723,11 +721,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [wfmInvisibleOnClose,   setWfmInvisibleOnClose]   = useState(false);
   const [wfmAutoInvisible,      setWfmAutoInvisible]      = useState(false);
   const [wfmAutoInvisibleMins,  setWfmAutoInvisibleMins]  = useState(30);
-  const platform = usePlatformCapabilities();
   const [overlayStatus, setOverlayStatus] = useState("");
-  // Without OCR the overlay can never trigger, so treat it as off for this run.
-  // The stored preference is deliberately left untouched: the same settings file
-  // is used on Windows, where the overlay does work.
   const [subsummedWarframes, setSubsummedWarframes] = useState<Set<string>>(new Set());
   const [archonShards, setArchonShards] = useState<Record<string, {type: string; tauforged: boolean; color: string; boost?: string}[]>>({});
   const [lastApiRefresh, setLastApiRefresh] = useState<number | null>(null);
@@ -778,10 +772,9 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [fetchMsg, setFetchMsg] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'general' | 'market' | 'accessibility' | 'data' | 'debugging'>('general');
-  const [overlayEnabledSetting, setOverlayEnabled] = useState<boolean>(
+  const [overlayEnabled, setOverlayEnabled] = useState<boolean>(
     () => localStorage.getItem("ff-overlay-enabled") !== "false"
   );
-  const overlayEnabled = overlayEnabledSetting && platform.ocr;
   const [overlayPriority, setOverlayPriority] = useState<string>(
     () => localStorage.getItem("ff-overlay-priority") ?? "completion"
   );
@@ -833,7 +826,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     modularSectionOrder: ["tracking", "favorites", "timers"] as string[], modularPopout: false,
     wfmInvisibleOnStart: false, wfmInvisibleOnClose: false, wfmAutoInvisible: false, wfmAutoInvisibleMins: 30,
   });
-  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, companionApiEnabled, memoryScannerEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins };
+  settingsRef.current = { overlayEnabled, overlayPriority, textScale, colorblindMode, clockFormat, companionApiEnabled, memoryScannerEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins };
 
   const saveAllSettings = useCallback(() => {
     // Until the on-disk settings have been applied, settingsRef still holds
@@ -2114,17 +2107,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
                   {/* Relic Overlay */}
                   <div className="settings-section">
-                    {/* The overlay is driven by screen capture + OCR, neither of
-                        which the Linux backend provides, so the controls stay
-                        visible but inert rather than silently doing nothing. */}
-                    <div className="settings-section-title">
-                      Relic Overlay
-                      {!platform.ocr && (
-                        <span style={{ fontSize: 10, marginLeft: 8, color: "var(--muted)", fontWeight: 400 }}>
-                          Unavailable on Linux
-                        </span>
-                      )}
-                    </div>
+                    <div className="settings-section-title">Relic Overlay</div>
                     {overlayStatus && (
                       <div style={{ fontSize: 12, padding: '4px 8px', marginBottom: 6,
                         background: 'rgba(255,255,255,0.05)', borderRadius: 4,
@@ -2139,10 +2122,9 @@ if (typeof s.autoDiagEnabled === "boolean") {
                       </div>
                       <button
                         className="btn-secondary"
-                        disabled={!platform.ocr}
                         style={{ minWidth: 64, background: overlayEnabled ? "rgba(56,139,253,.15)" : undefined, borderColor: overlayEnabled ? "var(--accent)" : undefined }}
                         onClick={() => {
-                          const next = !overlayEnabledSetting;
+                          const next = !overlayEnabled;
                           setOverlayEnabled(next);
                           localStorage.setItem("ff-overlay-enabled", String(next));
                           settingsRef.current = { ...settingsRef.current, overlayEnabled: next };
@@ -2163,7 +2145,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                       <select
                         className="settings-select"
                         value={overlayPriority}
-                        disabled={!overlayEnabled || !platform.ocr}
+                        disabled={!overlayEnabled}
                         onChange={e => {
                           const next = e.target.value;
                           setOverlayPriority(next);
@@ -2180,8 +2162,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
                     </div>
                   </div>
 
-                  {platform.linux && <EeLogSettings />}
-
                   {/* Memory Scanner */}
                   <div className="settings-section" style={{ borderColor: memoryScannerEnabled ? "rgba(240,192,64,.3)" : undefined }}>
                     <div className="settings-section-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -2191,7 +2171,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                       </span>
                     </div>
                     <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8, lineHeight: 1.5 }}>
-                      Reads live inventory, crafting jobs, and mod ranks from Warframe's process memory via <code style={{ fontSize: 10 }}>{platform.linux ? "/proc/<pid>/mem" : "ReadProcessMemory"}</code>. DE has historically tolerated read-only tools, but has not given explicit permission. Enable at your own risk.
+                      Reads live inventory, crafting jobs, and mod ranks from Warframe's process memory via <code style={{ fontSize: 10 }}>ReadProcessMemory</code>. DE has historically tolerated read-only tools, but has not given explicit permission. Enable at your own risk.
                     </div>
                     <div className="settings-row">
                       <div>

@@ -1,11 +1,7 @@
-﻿#[cfg(target_os = "linux")]
-use aho_corasick::AhoCorasick;
+﻿use memchr::memmem;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
-#[cfg(target_os = "linux")]
-use std::fs::File;
-#[cfg(target_os = "linux")]
-use std::os::unix::fs::FileExt;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ModCount {
@@ -80,7 +76,6 @@ pub struct PendingRecipe {
     pub completion_ms: i64,
 }
 
-/// One Archon Shard socketed into a Warframe.
 /// One Archon Shard socketed into a Warframe.
 /// `upgrade_type` is the effect path (e.g. `.../ArchonCrystalUpgradeWarframeEnergyMax`).
 /// `color` is the raw string value from the JSON (e.g. `"ACC_CRIMSON"`, `"ACC_AZURE_TAUFORGED"`).
@@ -166,37 +161,6 @@ pub fn xp_to_rank(xp: i64, path: &str) -> u32 {
     ((xp as f64 / base).sqrt().floor() as u32).min(30)
 }
 
-/// Diagnostic: find "CompletionDate" in any format and return a snippet of context.
-#[allow(dead_code)]
-pub fn scan_completion_date_context(data: &[u8]) -> Vec<String> {
-    let key = b"\"CompletionDate\"";
-    let mut results = Vec::new();
-    let mut start = 0usize;
-    loop {
-        let next = match data[start..].iter().position(|&b| b == b'"') {
-            Some(p) => start + p,
-            None => break,
-        };
-        if next + key.len() > data.len() { break; }
-        if data[next..next + key.len()] != *key {
-            start = next + 1; continue;
-        }
-        // Capture 120 bytes of context starting 40 bytes before the key
-        let ctx_start = next.saturating_sub(40);
-        let ctx_end   = (next + 120).min(data.len());
-        let ctx = &data[ctx_start..ctx_end];
-        // Only include printable ASCII so the log is readable
-        let s: String = ctx.iter()
-            .map(|&b| if b >= 0x20 && b < 0x7f { b as char } else { '·' })
-            .collect();
-        results.push(s);
-        start = next + key.len();
-        if results.len() >= 3 { break; } // cap at 3 samples
-    }
-    results
-}
-
-
 // ─── Auth credentials scan ───────────────────────────────────────────────────
 //
 // When Warframe is running and logged in, the game stores the session credentials
@@ -216,26 +180,19 @@ pub fn scan_auth_credentials(data: &[u8]) -> Option<(String, String)> {
     // Search for "id":"<24hexchars>" near "Nonce":<digits>
     let id_key = b"\"id\":\"";
     let nonce_key = b"\"Nonce\":";
-    let mut search = 0usize;
-    while search + id_key.len() < data.len() {
-        let next = match data[search..].iter().position(|&b| b == b'"') {
-            Some(p) => search + p, None => break,
-        };
-        if next + id_key.len() > data.len() { break; }
-        if data[next..next + id_key.len()] != *id_key { search = next + 1; continue; }
-
+    for next in memmem::find_iter(data, id_key) {
         let id_start = next + id_key.len();
         // accountId is exactly 24 lowercase hex chars
         let id_slice = &data[id_start..id_start.saturating_add(26).min(data.len())];
         let close = id_slice.iter().position(|&b| b == b'"').unwrap_or(0);
-        if close != 24 { search = next + 1; continue; }
+        if close != 24 { continue; }
         let id_bytes = &id_slice[..24];
-        if !id_bytes.iter().all(|&b| b.is_ascii_hexdigit()) { search = next + 1; continue; }
+        if !id_bytes.iter().all(|&b| b.is_ascii_hexdigit()) { continue; }
         let account_id = std::str::from_utf8(id_bytes).unwrap_or("").to_string();
 
         // Look for Nonce within 2048 bytes
         let nonce_search_end = (id_start + 2048).min(data.len());
-        if let Some(rel) = data[id_start..nonce_search_end].windows(nonce_key.len()).position(|w| w == *nonce_key) {
+        if let Some(rel) = memmem::find(&data[id_start..nonce_search_end], nonce_key) {
             let ns = id_start + rel + nonce_key.len();
             let ne = digits_end(data, ns);
             if ne > ns && ne - ns >= 5 {
@@ -244,26 +201,19 @@ pub fn scan_auth_credentials(data: &[u8]) -> Option<(String, String)> {
                 }
             }
         }
-        search = next + 1;
     }
 
     // URL-encoded: accountId=<24hexchars>&nonce=<10digits>&ct=STM
     let ak = b"accountId=";
     let nk = b"nonce=";
-    let mut search = 0usize;
-    while search + ak.len() < data.len() {
-        let next = match data[search..].iter().position(|&b| b == b'a') {
-            Some(p) => search + p, None => break,
-        };
-        if next + ak.len() > data.len() { break; }
-        if data[next..next + ak.len()] != *ak { search = next + 1; continue; }
+    for next in memmem::find_iter(data, ak) {
         let id_start = next + ak.len();
         let id_end = data[id_start..].iter().position(|&b| !b.is_ascii_hexdigit()).map(|p| id_start + p).unwrap_or(data.len());
-        if id_end - id_start != 24 { search = next + 1; continue; }
+        if id_end - id_start != 24 { continue; }
         let account_id = std::str::from_utf8(&data[id_start..id_end]).unwrap_or("").to_string();
         // Nonce can appear anywhere within 512 bytes after the accountId
         let nonce_search_end = (id_end + 512).min(data.len());
-        if let Some(rel) = data[id_end..nonce_search_end].windows(nk.len()).position(|w| w == *nk) {
+        if let Some(rel) = memmem::find(&data[id_end..nonce_search_end], nk) {
             let ns = id_end + rel + nk.len();
             let ne = digits_end(data, ns);
             if ne > ns && ne - ns >= 5 {
@@ -272,7 +222,6 @@ pub fn scan_auth_credentials(data: &[u8]) -> Option<(String, String)> {
                 }
             }
         }
-        search = next + 1;
     }
     None
 }
@@ -280,13 +229,7 @@ pub fn scan_auth_credentials(data: &[u8]) -> Option<(String, String)> {
 /// Also extract steamId from memory (found near accountId/nonce in URL params).
 pub fn scan_steam_id(data: &[u8]) -> Option<String> {
     let key = b"steamId=";
-    let mut search = 0usize;
-    loop {
-        let next = match data[search..].iter().position(|&b| b == b's') {
-            Some(p) => search + p, None => break,
-        };
-        if next + key.len() > data.len() { break; }
-        if data[next..next + key.len()] != *key { search = next + 1; continue; }
+    for next in memmem::find_iter(data, key) {
         let id_start = next + key.len();
         let id_end = data[id_start..].iter().position(|&b| !b.is_ascii_digit()).map(|p| id_start + p).unwrap_or(data.len());
         if id_end - id_start >= 15 && id_end - id_start <= 20 {
@@ -294,7 +237,6 @@ pub fn scan_steam_id(data: &[u8]) -> Option<String> {
                 return Some(sid.to_string());
             }
         }
-        search = next + 1;
     }
     None
 }
@@ -304,303 +246,8 @@ pub fn scan_steam_id(data: &[u8]) -> Option<String> {
 #[cfg(target_os = "windows")]
 pub fn find_warframe_pid_pub() -> Option<u32> { find_warframe_pid() }
 
-#[cfg(target_os = "linux")]
-pub fn find_warframe_pid_pub() -> Option<u32> { find_warframe_pid() }
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(not(target_os = "windows"))]
 pub fn find_warframe_pid_pub() -> Option<u32> { None }
-
-#[cfg(target_os = "linux")]
-#[derive(Debug, PartialEq, Eq)]
-struct LinuxRegion {
-    start: usize,
-    len: usize,
-    executable: bool,
-}
-
-#[cfg(target_os = "linux")]
-struct LinuxProcess {
-    memory: File,
-}
-
-#[cfg(target_os = "linux")]
-impl LinuxProcess {
-    fn open(pid: u32) -> Result<Self, String> {
-        open_linux_process_memory(pid).map(|memory| Self { memory })
-    }
-
-    fn read(&self, address: usize, buffer: &mut [u8]) -> std::io::Result<usize> {
-        read_linux_process_memory(&self.memory, address, buffer)
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn parse_linux_maps(maps: &str) -> Vec<LinuxRegion> {
-    maps.lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let (start, end) = fields.next()?.split_once('-')?;
-            let permissions = fields.next()?;
-            if !permissions.starts_with('r') {
-                return None;
-            }
-            let start = usize::from_str_radix(start, 16).ok()?;
-            let end = usize::from_str_radix(end, 16).ok()?;
-            Some(LinuxRegion {
-                start,
-                len: end.checked_sub(start)?,
-                executable: permissions.as_bytes().get(2) == Some(&b'x'),
-            })
-        })
-        .collect()
-}
-
-#[cfg(target_os = "linux")]
-fn linux_process_regions(pid: u32) -> Result<Vec<LinuxRegion>, String> {
-    let path = format!("/proc/{pid}/maps");
-    std::fs::read_to_string(&path)
-        .map(|maps| parse_linux_maps(&maps))
-        .map_err(|error| {
-            format!(
-                "Failed to read {path}: {error}. Ensure kernel.yama.ptrace_scope permits same-user process access"
-            )
-        })
-}
-
-#[cfg(target_os = "linux")]
-fn open_linux_process_memory(pid: u32) -> Result<File, String> {
-    let path = format!("/proc/{pid}/mem");
-    File::open(&path).map_err(|error| {
-        format!(
-            "Failed to open {path}: {error}. Ensure kernel.yama.ptrace_scope permits same-user process access"
-        )
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn read_linux_process_memory(
-    memory: &File,
-    address: usize,
-    buffer: &mut [u8],
-) -> std::io::Result<usize> {
-    memory.read_at(buffer, address as u64)
-}
-
-#[cfg(target_os = "windows")]
-pub fn scan_warframe_credentials_process() -> Result<(String, String, String), String> {
-    use std::ffi::c_void;
-    use std::mem;
-    use windows_sys::Win32::{
-        Foundation::CloseHandle,
-        System::{
-            Diagnostics::Debug::ReadProcessMemory,
-            Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS},
-            Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
-        },
-    };
-
-    let pid = find_warframe_pid_pub().ok_or("Warframe is not running")?;
-
-    unsafe {
-        let process = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, 0, pid);
-        if process == 0 { return Err("Cannot open Warframe process".into()); }
-
-        let mut address: usize = 0x10000;
-        let mbi_size = mem::size_of::<MEMORY_BASIC_INFORMATION>();
-
-        loop {
-            let mut mbi: MEMORY_BASIC_INFORMATION = mem::zeroed();
-            if VirtualQueryEx(process, address as *const c_void, &mut mbi, mbi_size) == 0 { break; }
-            let region_end = (mbi.BaseAddress as usize).saturating_add(mbi.RegionSize);
-            if region_end <= address { break; }
-            address = region_end;
-
-            if mbi.State != MEM_COMMIT { continue; }
-            let protection = mbi.Protect;
-            if protection & PAGE_NOACCESS != 0 || protection & PAGE_GUARD != 0 { continue; }
-            if protection == 0x10 || protection == 0x20 { continue; }
-            if mbi.RegionSize > 128 * 1024 * 1024 { continue; }
-
-            let mut buffer = vec![0u8; mbi.RegionSize];
-            let mut bytes_read: usize = 0;
-            let ok = ReadProcessMemory(
-                process,
-                mbi.BaseAddress as *const c_void,
-                buffer.as_mut_ptr() as *mut c_void,
-                mbi.RegionSize,
-                &mut bytes_read,
-            );
-            if ok == 0 || bytes_read == 0 { continue; }
-
-            let data = &buffer[..bytes_read];
-            if let Some((id, nonce)) = scan_auth_credentials(data) {
-                let steam_id = scan_steam_id(data).unwrap_or_default();
-                CloseHandle(process);
-                return Ok((id, nonce, steam_id));
-            }
-        }
-        CloseHandle(process);
-    }
-    Err("Credentials not found in memory. Make sure you are in the orbiter (not loading screen) and Warframe has been running for a few minutes.".into())
-}
-
-#[cfg(target_os = "linux")]
-pub fn scan_warframe_credentials_process() -> Result<(String, String, String), String> {
-    let pid = find_warframe_pid_pub().ok_or("Warframe is not running")?;
-    let process = LinuxProcess::open(pid)?;
-    let regions = linux_process_regions(pid)?;
-
-    scan_linux_credential_regions(&process, regions).ok_or_else(|| {
-        "Credentials not found in memory. Make sure you are in the orbiter (not loading screen) \
-         and Warframe has been running for a few minutes."
-            .into()
-    })
-}
-
-/// Walk readable data mappings looking for the login response the game keeps in
-/// memory. Split from the command above so it can be exercised against the test
-/// process, where the mappings and the expected bytes are both known.
-#[cfg(target_os = "linux")]
-fn scan_linux_credential_regions(
-    process: &LinuxProcess,
-    regions: impl IntoIterator<Item = LinuxRegion>,
-) -> Option<(String, String, String)> {
-    // Matches the Windows scanner's per-region ceiling: anything larger is a
-    // texture or heap arena, not the small JSON blob we are after, and reading
-    // it would cost hundreds of megabytes of copies per scan.
-    const MAX_REGION: usize = 128 * 1024 * 1024;
-
-    for region in regions {
-        if region.executable || region.len > MAX_REGION {
-            continue;
-        }
-        let mut buffer = vec![0; region.len];
-        let read = match process.read(region.start, &mut buffer) {
-            Ok(read) if read > 0 => read,
-            Ok(_) | Err(_) => continue,
-        };
-        let data = &buffer[..read];
-        if let Some((id, nonce)) = scan_auth_credentials(data) {
-            return Some((id, nonce, scan_steam_id(data).unwrap_or_default()));
-        }
-    }
-    None
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-pub fn scan_warframe_credentials_process() -> Result<(String, String, String), String> {
-    Err("Only supported on Windows and Linux".into())
-}
-
-// ==============================================================================
-// Shared Linux region walk
-// ==============================================================================
-//
-// The diagnostic tools below each want the same thing: every readable mapping,
-// in bounded pieces, with the address the bytes came from. On Windows each of
-// them open-codes its own `VirtualQueryEx` loop; on Linux they share this one
-// so the read caps, the deadline, and the procfs error text stay in one place.
-//
-// `visit` returning false stops the walk early — used by the callers that cap
-// their output.
-
-/// Hand every mapping `accept` selects to `visit` in chunks, lowest address
-/// first. Callers differ in what they want — inventory data, code, or both —
-/// so the filter is theirs to supply rather than a flag this has to interpret.
-#[cfg(target_os = "linux")]
-fn walk_linux_regions(
-    pid: u32,
-    accept: impl Fn(&LinuxRegion) -> bool,
-    deadline: std::time::Instant,
-    mut visit: impl FnMut(usize, &[u8]) -> bool,
-) -> Result<(), String> {
-    // Matches the Windows tools: large mappings are read in 64 MiB pieces so a
-    // multi-gigabyte arena cannot blow up the heap.
-    const CHUNK: usize = 64 * 1024 * 1024;
-    const MIN_USEFUL: usize = 8;
-
-    let process = LinuxProcess::open(pid)?;
-    let regions = linux_process_regions(pid)?;
-
-    let mut buffer = Vec::new();
-    for region in regions {
-        if !accept(&region) {
-            continue;
-        }
-        let mut offset = 0;
-        while offset < region.len {
-            if std::time::Instant::now() >= deadline {
-                return Ok(());
-            }
-            let size = CHUNK.min(region.len - offset);
-            let address = region.start + offset;
-            offset += size;
-
-            buffer.resize(size, 0);
-            let read = match process.read(address, &mut buffer[..size]) {
-                Ok(read) if read >= MIN_USEFUL => read,
-                Ok(_) | Err(_) => continue,
-            };
-            if !visit(address, &buffer[..read]) {
-                return Ok(());
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Read a single byte from the game process, used for the riven validity flag.
-/// `None` means the process or the address is not readable.
-#[cfg(target_os = "windows")]
-pub fn read_process_byte(pid: u32, address: usize) -> Option<u8> {
-    use std::ffi::c_void;
-    use windows_sys::Win32::{
-        Foundation::CloseHandle,
-        System::{
-            Diagnostics::Debug::ReadProcessMemory,
-            Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
-        },
-    };
-
-    unsafe {
-        let process = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, 0, pid);
-        if process == 0 {
-            return None;
-        }
-        let mut byte: u8 = 0;
-        let mut read = 0usize;
-        let ok = ReadProcessMemory(
-            process,
-            address as *const c_void,
-            &mut byte as *mut u8 as *mut c_void,
-            1,
-            &mut read,
-        );
-        CloseHandle(process);
-        (ok != 0 && read == 1).then_some(byte)
-    }
-}
-
-#[cfg(target_os = "linux")]
-pub fn read_process_byte(pid: u32, address: usize) -> Option<u8> {
-    let process = LinuxProcess::open(pid).ok()?;
-    let mut byte = [0u8; 1];
-    match process.read(address, &mut byte) {
-        Ok(1) => Some(byte[0]),
-        _ => None,
-    }
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-pub fn read_process_byte(_pid: u32, _address: usize) -> Option<u8> { None }
-
-#[cfg(target_os = "linux")]
-fn is_warframe_command(command: &str) -> bool {
-    let command = command.to_ascii_lowercase();
-    command.contains("warframe.x64.exe")
-        && !command.contains("launcher.exe")
-        && !command.contains("warframe-companion")
-}
 
 // ─── Raw memory format probe ──────────────────────────────────────────────────
 //
@@ -728,225 +375,21 @@ pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
     results
 }
 
-#[cfg(target_os = "linux")]
-pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
-    // Same needles and context window as the Windows probe so saved output from
-    // either platform reads the same way.
-    const NEEDLES: &[&[u8]] = &[
-        b"\"MiscItems\":[{",
-        b"\"ItemCount\":",
-        b"MiscItems",
-        b"AlloyPlate",
-        b"Circuits\"",
-        b"/Lotus/Types/Items/MiscItems/",
-    ];
-    const HITS_PER_NEEDLE: usize = 3;
-
-    let Some(pid) = find_warframe_pid_pub() else {
-        return vec!["Warframe is not running".to_string()];
-    };
-
-    let mut results: Vec<String> = Vec::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let walk = walk_linux_regions(pid, |region| !region.executable, deadline, |address, data| {
-        for needle in NEEDLES {
-            let mut search = 0;
-            for _ in 0..HITS_PER_NEEDLE {
-                if results.len() >= max_hits {
-                    return false;
-                }
-                let Some(relative) = data[search..]
-                    .windows(needle.len())
-                    .position(|window| window == *needle)
-                else {
-                    break;
-                };
-                let position = search + relative;
-                let context_start = position.saturating_sub(80);
-                let context_end = data.len().min(position + 200);
-                let snippet: String = data[context_start..context_end]
-                    .iter()
-                    .map(|&byte| if (0x20..0x7f).contains(&byte) { byte as char } else { '·' })
-                    .collect();
-                results.push(format!(
-                    "0x{:012x}  needle=\"{}\"  ctx: {}",
-                    address + context_start,
-                    String::from_utf8_lossy(needle),
-                    snippet
-                ));
-                search = position + needle.len();
-            }
-        }
-        true
-    });
-
-    if let Err(error) = walk {
-        return vec![error];
-    }
-    if results.is_empty() {
-        results.push("No matches found".to_string());
-    }
-    results
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-pub fn dump_inventory_regions(_max_hits: usize) -> Vec<String> {
-    vec!["Only supported on Windows and Linux".to_string()]
-}
-
-/// Collect context around the request strings the game builds its API calls
-/// from. The Windows equivalent is inlined in the command in `lib.rs`; on Linux
-/// it lives here so it can share the region walk with the other probes.
-#[cfg(target_os = "linux")]
-pub fn scan_api_url_strings() -> Result<Vec<String>, String> {
-    const NEEDLES: &[&[u8]] = &[
-        b"/API/PHP/",
-        b"inventory.php",
-        b"login.php",
-        b"warframe.com/A",
-        b"Nonce",
-        b"accountId",
-    ];
-    const MAX_RESULTS: usize = 40;
-
-    let pid = find_warframe_pid_pub().ok_or("Warframe not running")?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let mut found: Vec<String> = Vec::new();
-
-    walk_linux_regions(pid, |region| !region.executable, deadline, |_, data| {
-        for needle in NEEDLES {
-            let mut search = 0;
-            while let Some(relative) = data[search..]
-                .windows(needle.len())
-                .position(|window| window == *needle)
-            {
-                let position = search + relative;
-                search = position + needle.len();
-
-                let start = position.saturating_sub(30);
-                let end = (position + 100).min(data.len());
-                let context: String = data[start..end]
-                    .iter()
-                    .map(|&byte| if (0x20..0x7f).contains(&byte) { byte as char } else { ' ' })
-                    .collect();
-                let trimmed = context.split_whitespace().collect::<Vec<_>>().join(" ");
-                // Near-identical strings appear in thousands of copies, so the
-                // first 30 characters act as the deduplication key.
-                let key = &trimmed[..trimmed.len().min(30)];
-                if !found.iter().any(|seen| seen.contains(key)) {
-                    found.push(format!("[{}] {}", String::from_utf8_lossy(needle), trimmed));
-                }
-                if found.len() >= MAX_RESULTS {
-                    return false;
-                }
-            }
-        }
-        true
-    })?;
-
-    Ok(found)
-}
-
-// ─── One-shot inventory blob capture ─────────────────────────────────────────
-//
-// Scans all committed readable regions for the first chunk that contains the
-// inventory root marker ("MiscItems":[).  Saves the full printable-text portion
-// of that region to `output_path` so it can be inspected offline.
-//
-// Non-printable bytes are replaced with '.' so the file is text-editor friendly.
-// Saves up to 8 MB centred on the MiscItems key (4 MB before, 4 MB after).
-
-#[cfg(target_os = "windows")]
-pub fn capture_inventory_blob(output_path: &std::path::Path) -> Result<String, String> {
-    use std::ffi::c_void;
-    use std::mem;
-    use windows_sys::Win32::{
-        Foundation::{CloseHandle, FALSE},
-        System::{
-            Diagnostics::Debug::ReadProcessMemory,
-            Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS},
-            Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
-        },
-    };
-
-    let pid = find_warframe_pid_pub().ok_or_else(|| "Warframe is not running".to_string())?;
-
-    let process = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid) };
-    if process == 0 { return Err("Could not open Warframe process".to_string()); }
-
-    const MISC_KEY: &[u8]      = b"\"MiscItems\":[";
-    const MIN_BLOB_BYTES: usize = 200_000;    // skip tiny chunks — real inventory is MB-scale
-    const MAX_REGION_READ: usize = 128 * 1024 * 1024;
-    const HALF_SAVE: usize      = 4 * 1024 * 1024;   // 4 MB either side of MiscItems
-
-    let mut addr: usize = 0;
-    let mut saved: Option<(usize, String)> = None; // (region size, message)
-
-    'outer: loop {
-        let mut mbi = unsafe { mem::zeroed::<MEMORY_BASIC_INFORMATION>() };
-        if unsafe { VirtualQueryEx(process, addr as *const c_void, &mut mbi, mem::size_of::<MEMORY_BASIC_INFORMATION>()) } == 0 { break; }
-
-        let region_addr = mbi.BaseAddress as usize;
-        let region_size = mbi.RegionSize;
-        let next_addr   = region_addr.saturating_add(region_size);
-
-        if mbi.State == MEM_COMMIT
-            && mbi.Protect & PAGE_GUARD    == 0
-            && mbi.Protect & PAGE_NOACCESS == 0
-            && region_size >= MIN_BLOB_BYTES
-            && region_size <= MAX_REGION_READ
-        {
-            let mut data = vec![0u8; region_size];
-            let mut n = 0usize;
-            if unsafe { ReadProcessMemory(process, region_addr as *const c_void, data.as_mut_ptr() as *mut c_void, region_size, &mut n) } != 0 && n >= MIN_BLOB_BYTES {
-                let data = &data[..n];
-                if let Some(misc_pos) = data.windows(MISC_KEY.len()).position(|w| w == MISC_KEY) {
-                    let start = misc_pos.saturating_sub(HALF_SAVE);
-                    let end   = (misc_pos + HALF_SAVE).min(data.len());
-                    let text: Vec<u8> = data[start..end].iter()
-                        .map(|&b| if b >= 0x20 && b <= 0x7e || b == b'\n' || b == b'\t' { b } else { b'.' })
-                        .collect();
-                    if let Err(e) = std::fs::write(output_path, &text) {
-                        unsafe { CloseHandle(process); }
-                        return Err(format!("Write failed: {e}"));
-                    }
-                    saved = Some((text.len(), format!(
-                        "Saved {}KB blob (region 0x{:x}, size {}KB, MiscItems at +{}KB) to {}",
-                        text.len() / 1024, region_addr, n / 1024, misc_pos / 1024,
-                        output_path.display()
-                    )));
-                    break 'outer;
-                }
-            }
-        }
-
-        if next_addr <= addr { break; }
-        addr = next_addr;
-    }
-
-    unsafe { CloseHandle(process); }
-
-    saved.map(|(_, msg)| msg)
-         .ok_or_else(|| "No inventory blob found — make sure Warframe is running and inventory is loaded (open Arsenal or Inventory screen)".to_string())
-}
-
 #[cfg(not(target_os = "windows"))]
-pub fn capture_inventory_blob(_output_path: &std::path::Path) -> Result<String, String> {
-    Err("Only supported on Windows".into())
+pub fn dump_inventory_regions(_max_hits: usize) -> Vec<String> {
+    vec!["Only supported on Windows".to_string()]
 }
 
-/// Scan all Warframe process memory and save every relevant blob found into `blob_dir`.
-/// "Relevant" = region ≥ 100 KB that contains at least one of: MiscItems, Suits,
 // ─── Full-account blob parser ─────────────────────────────────────────────────
 
 /// Find the end of the FULL_ACCOUNT blob by locating `"DeathSquadable":` and
 /// the `}` that immediately follows its boolean value (true or false).
 fn find_blob_end(raw: &[u8]) -> Option<usize> {
     const KEY: &[u8] = b"\"DeathSquadable\":";
-    let key_pos = raw.windows(KEY.len()).position(|w| w == KEY)?;
+    let key_pos = memmem::find(raw, KEY)?;
     let after   = key_pos + KEY.len();
     // Skip the boolean value and find the closing brace
-    let brace = raw[after..].iter().position(|&b| b == b'}')?;
+    let brace = memchr::memchr(b'}', &raw[after..])?;
     Some(after + brace + 1)
 }
 
@@ -975,46 +418,16 @@ fn enclosing_object_start(buf: &[u8], marker_off: usize) -> Option<usize> {
     None
 }
 
-/// Where a stitched buffer's blob begins: `(marker_at, seed_at)`.
-///
-/// `marker_at` is the marker occurrence the seed is anchored to; `seed_at` is
-/// the brace enclosing it, or the marker itself when no occurrence has a
-/// brace that reads as an object head. See `enclosing_object_start` for why
-/// marker and brace are rarely the same offset.
-///
-/// With no primary marker anywhere the fallbacks keep both offsets in bounds,
-/// down to the buffer's last byte when nothing matches at all. Such a seed is
-/// junk and fails to parse, which is what the walk already does with a bad
-/// start.
-fn blob_seed_offsets(combined: &[u8]) -> (usize, usize) {
-    // The heap can hold a stale copy of the blob ahead of the live one: its
-    // marker survives but its opening brace was overwritten, so brace-matching
-    // backward from it lands on a stray `{` in binary garbage. A live seed is
-    // a JSON object head, so only accept a brace followed by a quote, and keep
-    // trying later marker occurrences until one qualifies.
-    let mut first_marker = None;
-    let mut search_from = 0;
-    while let Some(found) = combined[search_from..]
-        .windows(START_MARKER.len())
-        .position(|w| w == START_MARKER)
-    {
-        let marker_at = search_from + found;
-        first_marker.get_or_insert(marker_at);
-        if let Some(open) = enclosing_object_start(combined, marker_at) {
-            if combined.get(open + 1) == Some(&b'"') {
-                return (marker_at, open);
-            }
-        }
-        search_from = marker_at + 1;
-    }
-    // Without a plausible brace anywhere, seed at the first marker: the
-    // parser can rebuild the object head from a marker-anchored seed.
-    let marker_at = first_marker
-        .or_else(|| ALT_STARTS.iter().find_map(|a|
-            combined.windows(a.len()).position(|w| w == *a)))
-        .unwrap_or(combined.len().saturating_sub(1));
-    (marker_at, first_marker.unwrap_or_else(||
-        enclosing_object_start(combined, marker_at).unwrap_or(marker_at)))
+/// Locate seed offsets for the FULL_ACCOUNT blob within `buf`.
+/// Returns `(marker_off, json_open)`:
+///   - `marker_off`: byte position of the first known start marker
+///   - `json_open`:  byte position of the outermost `{` enclosing the marker
+fn blob_seed_offsets(buf: &[u8]) -> (usize, usize) {
+    let marker_off = memmem::find(buf, START_MARKER)
+        .or_else(|| ALT_STARTS.iter().find_map(|a| memmem::find(buf, a)))
+        .unwrap_or(buf.len().saturating_sub(1));
+    let json_open = enclosing_object_start(buf, marker_off).unwrap_or(marker_off);
+    (marker_off, json_open)
 }
 
 /// Parse a FULL_ACCOUNT blob from raw memory bytes into structured inventory data.
@@ -1081,16 +494,30 @@ pub fn compute_riven_mod_name(buffs: &[BlobRivenStat]) -> String {
 /// final region — potentially tens of megabytes of noise. This trims to just
 /// the valid JSON object so both the parser and the debug dump files see clean data.
 pub fn extract_blob_json(raw: &[u8]) -> Option<Vec<u8>> {
+    extract_blob_json_ref(raw).map(Cow::into_owned)
+}
+
+/// Borrowing counterpart of [`extract_blob_json`]. The common case (buffer still
+/// starts with the original `{`) needs no copy at all; only the fallback path,
+/// where the opening brace was overwritten in memory and has to be reinstated,
+/// allocates.
+pub fn extract_blob_json_ref(raw: &[u8]) -> Option<Cow<'_, [u8]>> {
     let end_pos = find_blob_end(raw)?;
+    extract_blob_json_at(raw, end_pos)
+}
+
+/// Same as [`extract_blob_json_ref`] but takes an already-known `end_pos`, so
+/// callers that located the blob end for their own purposes (e.g. the
+/// minimum-size check in [`parse_full_account_blob`]) don't pay for a second scan.
+fn extract_blob_json_at(raw: &[u8], end_pos: usize) -> Option<Cow<'_, [u8]>> {
     if raw.first() == Some(&b'{') {
-        Some(raw[..end_pos].to_vec())
+        Some(Cow::Borrowed(&raw[..end_pos]))
     } else {
-        const START: &[u8] = b"\"SubscribedToEmails\"";
-        let start_pos = raw.windows(START.len()).position(|w| w == START)?;
+        let start_pos = memmem::find(raw, START_MARKER)?;
         let mut v = Vec::with_capacity(end_pos - start_pos + 1);
         v.push(b'{');
         v.extend_from_slice(&raw[start_pos..end_pos]);
-        Some(v)
+        Some(Cow::Owned(v))
     }
 }
 
@@ -1107,7 +534,7 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
         return None;
     }
 
-    let json_bytes = extract_blob_json(raw)?;
+    let json_bytes = extract_blob_json_at(raw, end_pos)?;
 
     let json: serde_json::Value = serde_json::from_slice(&json_bytes)
         .map_err(|e| {
@@ -1206,7 +633,12 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
                 });
                 continue;
             }
-            let mc = mods.entry(it.to_string()).or_default();
+            // Duplicate ItemTypes dominate this map, so check get_mut before
+            // paying for entry()'s unconditional to_string() allocation.
+            let mc = match mods.get_mut(it) {
+                Some(mc) => mc,
+                None => mods.entry(it.to_string()).or_default(),
+            };
             *mc.by_rank.entry(0).or_insert(0) += count;
             mc.total += count;
         }
@@ -1267,7 +699,10 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
                 }
             }
             let rank = blob_extract_mod_rank(e["UpgradeFingerprint"].as_str());
-            let mc = mods.entry(it.to_string()).or_default();
+            let mc = match mods.get_mut(it) {
+                Some(mc) => mc,
+                None => mods.entry(it.to_string()).or_default(),
+            };
             *mc.by_rank.entry(rank).or_insert(0) += 1;
             mc.total += 1;
         }
@@ -1279,7 +714,10 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
         for e in arr {
             let Some(it) = e["ItemType"].as_str() else { continue };
             if !it.starts_with("/Lotus/") { continue; }
-            *flavour_items.entry(it.to_string()).or_insert(0) += 1;
+            match flavour_items.get_mut(it) {
+                Some(v) => *v += 1,
+                None => { flavour_items.insert(it.to_string(), 1); }
+            }
         }
     }
 
@@ -1290,7 +728,10 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
         for e in arr {
             let Some(it) = e["ItemType"].as_str() else { continue };
             if !it.starts_with("/Lotus/") { continue; }
-            *weapon_skins.entry(it.to_string()).or_insert(0) += 1;
+            match weapon_skins.get_mut(it) {
+                Some(v) => *v += 1,
+                None => { weapon_skins.insert(it.to_string(), 1); }
+            }
         }
     }
 
@@ -1352,10 +793,47 @@ fn blob_extract_mod_rank(fingerprint: Option<&str>) -> u8 {
 static LAST_BLOB_REGION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+// Digest of the last blob whose bytes were about to be parsed. Inventory
+// changes maybe once per mission, so most 10s scan cycles find byte-identical
+// JSON — hashing a few MB is far cheaper than rebuilding BlobInventory's
+// HashMaps/Vecs from scratch every cycle.
+static LAST_BLOB_DIGEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Clear the fast-path region cache. Call when Warframe's PID changes so the
 /// next scan doesn't probe a stale address from the previous process instance.
 pub fn reset_last_blob_region() {
     LAST_BLOB_REGION.store(0, std::sync::atomic::Ordering::Relaxed);
+    LAST_BLOB_DIGEST.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Discard the digest baseline so the next candidate is parsed no matter what
+/// its bytes are. Call after a parse failure: skipping a re-parse is only safe
+/// while the baseline names bytes that are known to parse, and `blob_unchanged`
+/// records its argument before the parse outcome is known.
+fn forget_blob_digest() {
+    LAST_BLOB_DIGEST.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Checks `json` against the digest recorded by the previous call, then
+/// records `json`'s digest as the new baseline — check-and-update in one
+/// step, so a caller should invoke this exactly once per candidate blob,
+/// right before deciding whether to parse it.
+///
+/// A caller that then fails to parse `json` must call `forget_blob_digest`:
+/// the skip paths treat a match as "already parsed this successfully", and
+/// unparseable bytes that persist across cycles would otherwise be mistaken
+/// for a result and suppress the rest of the walk indefinitely.
+///
+/// Returns true when `json` is byte-identical to what the previous call saw.
+fn blob_unchanged(json: &[u8]) -> bool {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    json.hash(&mut hasher);
+    // OR in a set bit so a hashed digest can never equal the 0 sentinel that
+    // reset_last_blob_region stores — that sentinel must always compare as
+    // "changed" to force a re-parse after a PID change.
+    let digest = hasher.finish() | 1;
+    LAST_BLOB_DIGEST.swap(digest, std::sync::atomic::Ordering::Relaxed) == digest
 }
 
 /// Scans Warframe process memory for the FULL_ACCOUNT inventory blob and sends it
@@ -1466,6 +944,11 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
                             nb.as_mut_ptr() as *mut c_void, cap, &mut nn) } == 0 { continue; }
                         stitched.extend_from_slice(&nb[..nn]);
                     }
+                    if blob_unchanged(&stitched) {
+                        eprintln!("[blob] fast-path hit at 0x{:012x}: unchanged since last scan — skipping parse", cached_addr);
+                        unsafe { CloseHandle(process); }
+                        return 0;
+                    }
                     if let Some(inv) = parse_full_account_blob(&stitched) {
                         eprintln!("[blob] fast-path hit at 0x{:012x}: {} unique, {} stackable",
                             cached_addr, inv.unique_items.len(), inv.stackable_items.len());
@@ -1473,6 +956,7 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
                         unsafe { CloseHandle(process); }
                         return 0; // fast path never saves to disk
                     }
+                    forget_blob_digest();
                 }
             }
         }
@@ -1584,6 +1068,12 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
                 .windows(END_MARKER.len())
                 .any(|w| w == END_MARKER);
             if has_end && find_blob_end(&scan.data).is_some() {
+                if !save && blob_unchanged(&scan.data) {
+                    eprintln!("[blob] scan#{} unchanged since last scan — skipping parse", scan.id);
+                    LAST_BLOB_REGION.store(scan.start_region_addr as u64, std::sync::atomic::Ordering::Relaxed);
+                    found_result = true;
+                    return false;
+                }
                 match parse_full_account_blob(&scan.data) {
                     Some(inv) => {
                         eprintln!("[blob] scan#{} SUCCESS at 0x{:012x}: {} unique, {} stackable, {} mods",
@@ -1602,6 +1092,7 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
                     }
                     None => {
                         eprintln!("[blob] scan#{} end marker found but JSON parse failed — dropped", scan.id);
+                        forget_blob_digest();
                     }
                 }
                 false // remove completed (or failed) scan
@@ -1678,7 +1169,12 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
             );
             let seed = combined[json_open..].to_vec();
 
-            if find_blob_end(&seed).is_some() {
+            let seed_ends = find_blob_end(&seed).is_some();
+            if seed_ends && !save && blob_unchanged(&seed) {
+                eprintln!("[blob] scan#{} immediate hit: unchanged since last scan — skipping parse", id);
+                LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
+                found_result = true;
+            } else if seed_ends {
                 match parse_full_account_blob(&seed) {
                     Some(inv) => {
                         eprintln!("[blob] scan#{} immediate SUCCESS at 0x{:012x}: {} unique, {} stackable",
@@ -1695,6 +1191,7 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
                     }
                     None => {
                         eprintln!("[blob] scan#{} immediate end found but parse failed — dropping", id);
+                        forget_blob_digest();
                     }
                 }
             } else {
@@ -1719,317 +1216,7 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
     saved
 }
 
-#[cfg(target_os = "linux")]
-fn scan_linux_inventory_regions(
-    process: &LinuxProcess,
-    regions: impl IntoIterator<Item = LinuxRegion>,
-    mut on_blob: impl FnMut(usize, &[u8], BlobInventory) -> bool,
-) {
-    const MIN_REGION: usize = 64_000;
-    const MAX_READ: usize = 64 * 1024 * 1024;
-    const MAX_SCAN: usize = 20 * 1024 * 1024;
-    const START_MARKER: &[u8] = b"\"SubscribedToEmails\"";
-    const END_MARKER: &[u8] = b"\"DeathSquadable\":";
-    const MISSION_DELTA: &[u8] = b"\"InventoryChanges\":";
-    const PREFIX_MARKERS: &[&[u8]] = &[
-        b"/Lotus/",
-        b"\"MiscItems\":[",
-        b"\"Suits\":[",
-        b"\"LongGuns\":[",
-        b"\"Melee\":[",
-        b"\"Pistols\":[",
-    ];
-    const PREFIX_BYTES: usize = 8 * 1024 * 1024;
-
-    // Warframe's address space is several gigabytes, and the naive
-    // `windows().any()` form of these searches walks every byte position once
-    // per marker — eight separate passes per region, which dominated the scan
-    // at roughly 60 MiB/s. One Aho-Corasick automaton answers all three
-    // questions in a single SIMD-accelerated pass instead.
-    let markers = AhoCorasick::new(
-        std::iter::once(START_MARKER)
-            .chain(std::iter::once(MISSION_DELTA))
-            .chain(PREFIX_MARKERS.iter().copied()),
-    )
-    .expect("marker set is a valid literal alternation");
-    const START_PATTERN: usize = 0;
-    const MISSION_PATTERN: usize = 1;
-    let end_marker = AhoCorasick::new([END_MARKER]).expect("end marker is a valid literal");
-
-    struct ActiveScan {
-        data: Vec<u8>,
-        start_address: usize,
-        search_from: usize,
-    }
-
-    struct PrefixChunk {
-        start: usize,
-        end: usize,
-        data: Vec<u8>,
-    }
-
-    let mut scans: Vec<ActiveScan> = Vec::new();
-    let mut prefix = std::collections::VecDeque::<PrefixChunk>::new();
-    for region in regions {
-        if region.executable || region.len < MIN_REGION {
-            continue;
-        }
-
-        let mut buffer = vec![0; region.len.min(MAX_READ)];
-        let read = match process.read(region.start, &mut buffer) {
-            Ok(read) if read >= 8 => read,
-            Ok(_) | Err(_) => continue,
-        };
-        let chunk = &buffer[..read];
-
-        let mut index = 0;
-        while index < scans.len() {
-            let search_from = scans[index].search_from;
-            scans[index].search_from = scans[index].data.len().saturating_sub(END_MARKER.len() - 1);
-            let remaining = MAX_SCAN.saturating_sub(scans[index].data.len());
-            let exceeds_limit = chunk.len() > remaining;
-            scans[index]
-                .data
-                .extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-
-            let complete = end_marker.is_match(&scans[index].data[search_from..])
-                && find_blob_end(&scans[index].data).is_some();
-            if !complete {
-                if exceeds_limit {
-                    scans.swap_remove(index);
-                    continue;
-                }
-                index += 1;
-                continue;
-            }
-
-            let scan = scans.swap_remove(index);
-            if let Some(inventory) = parse_full_account_blob(&scan.data) {
-                if !on_blob(scan.start_address, &scan.data, inventory) {
-                    return;
-                }
-            }
-        }
-
-        let mut is_mission = false;
-        let mut start_offset = None;
-        let mut has_prefix = false;
-        for found in markers.find_iter(chunk) {
-            match found.pattern().as_usize() {
-                MISSION_PATTERN => is_mission = true,
-                START_PATTERN => start_offset = start_offset.or(Some(found.start())),
-                _ => has_prefix = true,
-            }
-        }
-        if start_offset.is_none() && !is_mission && has_prefix {
-            while prefix.iter().map(|item| item.data.len()).sum::<usize>() + read > PREFIX_BYTES
-                && !prefix.is_empty()
-            {
-                prefix.pop_front();
-            }
-            prefix.push_back(PrefixChunk {
-                start: region.start,
-                end: region.start + read,
-                data: chunk.to_vec(),
-            });
-        }
-        if is_mission {
-            continue;
-        }
-        let Some(_) = start_offset else {
-            continue;
-        };
-
-        let mut combined = Vec::new();
-        let mut combined_start = region.start;
-        let mut expected_end = region.start;
-        let mut chain = Vec::new();
-        for (index, item) in prefix.iter().enumerate().rev() {
-            if item.end <= expected_end && item.end + 4096 >= expected_end {
-                chain.push(index);
-                expected_end = item.start;
-            } else if item.end < expected_end.saturating_sub(4096) {
-                break;
-            }
-        }
-        chain.reverse();
-        for index in chain {
-            let item = &prefix[index];
-            if combined.is_empty() {
-                combined_start = item.start;
-            }
-            combined.extend_from_slice(&item.data);
-        }
-        combined.extend_from_slice(chunk);
-
-        let (_, json_open) = blob_seed_offsets(&combined);
-        let start_address = combined_start + json_open;
-        let seed = combined[json_open..].to_vec();
-
-        if find_blob_end(&seed).is_some() {
-            if let Some(inventory) = parse_full_account_blob(&seed) {
-                if !on_blob(start_address, &seed, inventory) {
-                    return;
-                }
-            }
-        } else {
-            scans.push(ActiveScan {
-                data: seed,
-                start_address,
-                search_from: 0,
-            });
-        }
-    }
-}
-
-/// Re-read the blob straight from the address the last successful scan found it
-/// at, stitching forward through following mappings until the JSON closes.
-///
-/// The full walk reads several gigabytes to reach a blob that, in practice,
-/// sits near the very top of the address space — the last few percent of the
-/// mappings. Because the monitor rescans every 10 seconds and the game rarely
-/// moves the allocation between them, probing the remembered address first
-/// turns the common case into a few megabytes of reads.
-///
-/// Returns `None` whenever anything looks different from last time, which puts
-/// the caller back on the full walk rather than reporting a stale inventory.
-#[cfg(target_os = "linux")]
-fn scan_linux_cached_blob(
-    process: &LinuxProcess,
-    regions: &[LinuxRegion],
-) -> Option<(usize, Vec<u8>, BlobInventory)> {
-    const MAX_SCAN: usize = 20 * 1024 * 1024;
-    const START_MARKER: &[u8] = b"\"SubscribedToEmails\"";
-    const MISSION_DELTA: &[u8] = b"\"InventoryChanges\":";
-
-    let cached = LAST_BLOB_REGION.load(std::sync::atomic::Ordering::Relaxed) as usize;
-    if cached == 0 {
-        return None;
-    }
-    let index = regions
-        .iter()
-        .position(|region| cached >= region.start && cached < region.start + region.len)?;
-
-    // The cached address is the blob's opening brace, so the seed starts there
-    // and runs to the end of its mapping.
-    let region = &regions[index];
-    let mut data = vec![0; region.start + region.len - cached];
-    let read = process.read(cached, &mut data).ok()?;
-    data.truncate(read);
-    // The walk seeds either from the blob's opening brace or, when the brace
-    // sits in an earlier mapping it could not stitch, from the start marker
-    // itself. Accept both shapes and reject anything else as a stale address.
-    if !data.starts_with(b"{\"") && !data.starts_with(START_MARKER) {
-        return None;
-    }
-    // A mission reward delta shares most of the blob's field names but describes
-    // a single mission, so treating one as the inventory would wipe the cache.
-    if AhoCorasick::new([MISSION_DELTA])
-        .expect("mission marker is a valid literal")
-        .is_match(&data[..])
-    {
-        return None;
-    }
-
-    // Continue through the following mappings exactly as the full walk does:
-    // the blob regularly spans several of them, and gaps between mappings do
-    // not interrupt the JSON.
-    let mut next = index + 1;
-    while find_blob_end(&data).is_none() {
-        if data.len() >= MAX_SCAN {
-            return None;
-        }
-        let region = regions.get(next)?;
-        next += 1;
-        if region.executable {
-            continue;
-        }
-        let mut buffer = vec![0; region.len.min(MAX_SCAN - data.len())];
-        let read = process.read(region.start, &mut buffer).ok()?;
-        data.extend_from_slice(&buffer[..read]);
-    }
-
-    parse_full_account_blob(&data).map(|inventory| (cached, data, inventory))
-}
-
-#[cfg(target_os = "linux")]
-pub fn capture_all_blobs(
-    blob_dir: &std::path::Path,
-    ts: &str,
-    blob_tx: std::sync::mpsc::Sender<BlobInventory>,
-    save: bool,
-) -> usize {
-    const MAX_BLOBS: usize = 25;
-
-    let Some(pid) = find_warframe_pid_pub() else {
-        eprintln!("[blob-capture] Warframe is not running");
-        return 0;
-    };
-    let process = match LinuxProcess::open(pid) {
-        Ok(process) => process,
-        Err(error) => {
-            eprintln!("[blob-capture] {error}");
-            return 0;
-        }
-    };
-    let regions = match linux_process_regions(pid) {
-        Ok(regions) => regions,
-        Err(error) => {
-            eprintln!("[blob-capture] {error}");
-            return 0;
-        }
-    };
-
-    // Saving blobs is a debugging path that wants every copy in memory, so it
-    // always takes the full walk.
-    if !save {
-        if let Some((address, _, inventory)) = scan_linux_cached_blob(&process, &regions) {
-            eprintln!("[blob] Linux cached-region hit at 0x{address:012x}");
-            blob_tx.send(inventory).ok();
-            return 0;
-        }
-    }
-
-    let mut found = 0;
-    let mut saved = 0;
-    scan_linux_inventory_regions(&process, regions, |address, raw, inventory| {
-        found += 1;
-        eprintln!(
-            "[blob] Linux scan SUCCESS at 0x{address:012x}: {} unique, {} stackable, {} mods",
-            inventory.unique_items.len(),
-            inventory.stackable_items.len(),
-            inventory.mods.len()
-        );
-        if save {
-            let path = blob_dir.join(format!(
-                "Actual_inventory_FULL_ACCOUNT_{}_{:02}.txt",
-                ts,
-                saved + 1
-            ));
-            let json = extract_blob_json(raw)
-                .expect("parsing succeeded, so the blob bounds are known");
-            match std::fs::write(&path, &json) {
-                Ok(()) => saved += 1,
-                Err(error) => {
-                    eprintln!("[blob-capture] Failed to write {}: {error}", path.display())
-                }
-            }
-        }
-        // Remember where this blob started so the next cycle can skip the walk.
-        LAST_BLOB_REGION.store(address as u64, std::sync::atomic::Ordering::Relaxed);
-        blob_tx.send(inventory).ok();
-        save && found < MAX_BLOBS
-    });
-
-    if found == 0 {
-        eprintln!(
-            "[blob-capture] WARNING: no FULL_ACCOUNT blob found (open Arsenal or Inventory and try again)"
-        );
-    }
-    saved
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(not(target_os = "windows"))]
 pub fn capture_all_blobs(_blob_dir: &std::path::Path, _ts: &str, _blob_tx: std::sync::mpsc::Sender<BlobInventory>, _save: bool) -> usize { 0 }
 
 // ─── Continuous raw memory string dump ───────────────────────────────────────
@@ -2133,49 +1320,9 @@ pub fn raw_scan_pass(out: &mut impl std::io::Write) -> Result<usize, String> {
     Ok(count)
 }
 
-#[cfg(target_os = "linux")]
-pub fn raw_scan_pass(out: &mut impl std::io::Write) -> Result<usize, String> {
-    const MIN_LEN: usize = 8;
-    const TIMEOUT: u64 = 600; // 10 minutes — full coverage over a full scan
-
-    let pid = find_warframe_pid_pub().ok_or("Warframe not running")?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TIMEOUT);
-    let mut count = 0usize;
-
-    // Executable mappings are included: the game's constant string tables live
-    // in read-execute sections, and they are half the point of a raw dump.
-    walk_linux_regions(pid, |_| true, deadline, |address, data| {
-        let mut run_start = None;
-        for (index, &byte) in data.iter().enumerate() {
-            if (0x20..0x7f).contains(&byte) {
-                run_start.get_or_insert(index);
-                continue;
-            }
-            if let Some(start) = run_start.take() {
-                if index - start >= MIN_LEN {
-                    let text = std::str::from_utf8(&data[start..index]).unwrap_or("?");
-                    let _ = writeln!(out, "0x{:012x}  {}", address + start, text);
-                    count += 1;
-                }
-            }
-        }
-        // A run that reaches the end of the chunk is still worth reporting.
-        if let Some(start) = run_start {
-            if data.len() - start >= MIN_LEN {
-                let text = std::str::from_utf8(&data[start..]).unwrap_or("?");
-                let _ = writeln!(out, "0x{:012x}  {}", address + start, text);
-                count += 1;
-            }
-        }
-        true
-    })?;
-
-    Ok(count)
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(not(target_os = "windows"))]
 pub fn raw_scan_pass(_out: &mut impl std::io::Write) -> Result<usize, String> {
-    Err("Only supported on Windows and Linux".into())
+    Err("Only supported on Windows".into())
 }
 
 // ─── Riven validity flag scanner ──────────────────────────────────────────────
@@ -2268,121 +1415,8 @@ pub fn find_riven_validity_va(pid: u32) -> Option<usize> {
     result
 }
 
-/// Linux counterpart: Proton maps the same PE image, so the same instruction
-/// pattern sits in the game's executable mappings. Those are exactly the
-/// mappings the inventory scan skips, so this is the one caller that asks the
-/// walk for executable memory.
-/// Address span of the game's own module, from the mappings procfs attributes
-/// to `Warframe.x64.exe`.
-///
-/// Wine does not leave the executable's code file-backed — only the PE headers
-/// and one data section keep the pathname, while `.text` becomes a large
-/// anonymous executable mapping wedged between them. So the module is
-/// identified by the span its named mappings bracket, not by file backing.
-#[cfg(target_os = "linux")]
-fn linux_game_image_span(pid: u32) -> Option<std::ops::Range<usize>> {
-    let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).ok()?;
-    let mut span: Option<std::ops::Range<usize>> = None;
-    for line in maps.lines() {
-        if !line.to_ascii_lowercase().ends_with("warframe.x64.exe") {
-            continue;
-        }
-        let mut fields = line.split_whitespace();
-        let (start, end) = fields.next()?.split_once('-')?;
-        let (start, end) = (
-            usize::from_str_radix(start, 16).ok()?,
-            usize::from_str_radix(end, 16).ok()?,
-        );
-        span = Some(match span {
-            Some(current) => current.start.min(start)..current.end.max(end),
-            None => start..end,
-        });
-    }
-    span
-}
-
-/// Locate the byte the game sets while a riven reroll's A/B selection screen is
-/// up. Non-zero = selection pending, which is the same event the EE.log
-/// `omegarerollselection.swf` line reports.
-///
-/// This is not the Windows Pattern D-2 scan. That pattern matches exactly one
-/// site under Proton, and the byte it resolves to reads 1 in the orbiter, in
-/// the mod segment and on the reroll screen alike, so it cannot drive the
-/// watcher. The signature below was found by diffing the game's writable
-/// statics across those states against the live game, and the surviving byte
-/// was confirmed to be 0 everywhere except while the A/B screen is up.
-///
-/// It matches the store the game publishes the state with:
-///
-/// ```text
-/// 44 87 35 <disp32>    xchg dword ptr [rip+disp], r14d
-/// 41 83 fe 01          cmp  r14d, 1
-/// ```
-///
-/// Only the displacement varies, and it appeared exactly once in the whole
-/// process, so the first match is taken.
-///
-/// ponytail: a byte signature tracks one game build; if riven detection stops
-/// working after an update, re-run `examples/riven_flag_hunt.rs` to find the
-/// flag again rather than guessing at the pattern.
-#[cfg(target_os = "linux")]
-pub fn find_riven_validity_va(pid: u32) -> Option<usize> {
-    const STORE: [u8; 3] = [0x44, 0x87, 0x35];
-    const COMPARE: [u8; 4] = [0x41, 0x83, 0xfe, 0x01];
-    // Bytes from the start of the store up to the end of its displacement,
-    // which is where the RIP-relative address is measured from.
-    const STORE_LEN: usize = 7;
-
-    let span = linux_game_image_span(pid)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    let mut result = None;
-
-    // The game's code is one mapping well under the walk's chunk size, so a
-    // signature cannot be split across two chunks here.
-    let walk = walk_linux_regions(
-        pid,
-        |region| region.executable && span.contains(&region.start),
-        deadline,
-        |address, data| {
-            for index in 0..data.len().saturating_sub(STORE_LEN + COMPARE.len()) {
-                if data[index..index + STORE.len()] != STORE {
-                    continue;
-                }
-                if data[index + STORE_LEN..index + STORE_LEN + COMPARE.len()] != COMPARE {
-                    continue;
-                }
-                let displacement = i32::from_le_bytes(
-                    data[index + STORE.len()..index + STORE_LEN]
-                        .try_into()
-                        .expect("displacement is four bytes"),
-                ) as i64;
-                let flag = (address + index + STORE_LEN) as i64 + displacement;
-                if flag > 0x10000 && flag < 0x7fff_ffff_ffff {
-                    result = Some(flag as usize);
-                    return false;
-                }
-            }
-            true
-        },
-    );
-    walk.ok()?;
-    result
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(not(target_os = "windows"))]
 pub fn find_riven_validity_va(_pid: u32) -> Option<usize> { None }
-
-#[cfg(target_os = "linux")]
-fn find_warframe_pid() -> Option<u32> {
-    std::fs::read_dir("/proc")
-        .ok()?
-        .filter_map(Result::ok)
-        .find_map(|entry| {
-            let pid = entry.file_name().to_str()?.parse().ok()?;
-            let command = std::fs::read(entry.path().join("cmdline")).ok()?;
-            is_warframe_command(&String::from_utf8_lossy(&command)).then_some(pid)
-        })
-}
 
 #[cfg(target_os = "windows")]
 fn find_warframe_pid() -> Option<u32> {
@@ -2422,7 +1456,8 @@ fn find_warframe_pid() -> Option<u32> {
 
 #[cfg(test)]
 mod seed_tests {
-    use super::{enclosing_object_start, blob_seed_offsets, extract_blob_json};
+    use super::{enclosing_object_start, blob_seed_offsets, extract_blob_json, extract_blob_json_ref};
+    use std::borrow::Cow;
 
     #[test]
     fn enclosing_finds_outer_brace() {
@@ -2452,7 +1487,8 @@ mod seed_tests {
         let buf = b"{\"SubscribedToEmails\":1,\"RegularCredits\":100}";
         let (marker_off, json_open) = blob_seed_offsets(buf);
         assert_eq!(json_open, 0);
-        assert!(marker_off > 0);
+        // Both markers are present; the primary one must win over the alt-start.
+        assert_eq!(marker_off, 1);
     }
 
     #[test]
@@ -2472,37 +1508,6 @@ mod seed_tests {
         assert_eq!(json_open, marker_off);
     }
 
-    /// A freed copy of the blob can sit ahead of the live one with its marker
-    /// intact but its opening brace overwritten. Brace-matching backward from
-    /// that copy lands on a stray `{` in binary garbage ("key must be a string
-    /// at line 1 column 2"), so the stale occurrence has to be skipped in
-    /// favour of the live one.
-    #[test]
-    fn a_stale_headless_copy_is_skipped_for_the_live_blob() {
-        let mut combined = b"\x00{J>\x01\x02 garbage ".to_vec();
-        combined.extend_from_slice(br#""SubscribedToEmails":0,"RegularCredits":1,"#);
-        combined.extend_from_slice(b"\x03\x04 more garbage ");
-        let live_at = combined.len();
-        combined.extend_from_slice(br#"{"SubscribedToEmails":0,"RegularCredits":42}"#);
-
-        let (marker_at, seed_at) = blob_seed_offsets(&combined);
-        assert_eq!(seed_at, live_at, "seed is the live copy's opening brace");
-        assert!(marker_at > live_at, "the marker used is the live copy's");
-    }
-
-    /// With only the headless copy in the buffer, seeding at the marker lets
-    /// the parser rebuild the object head instead of parsing garbage.
-    #[test]
-    fn a_lone_headless_copy_seeds_at_its_marker() {
-        let mut combined = b"\x00{J>\x01\x02 garbage ".to_vec();
-        let marker = combined.len();
-        combined.extend_from_slice(br#""SubscribedToEmails":0,"RegularCredits":42,"#);
-
-        let (marker_at, seed_at) = blob_seed_offsets(&combined);
-        assert_eq!(marker_at, marker);
-        assert_eq!(seed_at, marker, "seed skips the garbage brace");
-    }
-
     #[test]
     fn blob_json_stops_at_the_closing_brace_of_the_object() {
         // A stitched scan buffer: the blob, then the rest of the memory region
@@ -2515,243 +1520,104 @@ mod seed_tests {
         assert_eq!(json.len(), blob_len);
         assert!(serde_json::from_slice::<serde_json::Value>(&json).is_ok());
     }
+
+    #[test]
+    fn blob_json_reinstates_the_opening_brace_when_it_was_overwritten() {
+        let mut raw = br#"x"SubscribedToEmails":0,"DeathSquadable":false}"#.to_vec();
+        let blob_len = raw.len();
+        raw.extend(std::iter::repeat(0xABu8).take(1024));
+
+        let json = extract_blob_json(&raw).expect("end marker present");
+        assert_eq!(json.len(), blob_len);
+        assert_eq!(json[0], b'{');
+        assert!(serde_json::from_slice::<serde_json::Value>(&json).is_ok());
+    }
+
+    #[test]
+    fn blob_json_ref_borrows_in_the_common_case_and_owns_in_the_fallback() {
+        let intact = br#"{"SubscribedToEmails":0,"DeathSquadable":false}"#;
+        assert!(matches!(extract_blob_json_ref(intact), Some(Cow::Borrowed(_))));
+
+        let overwritten = br#"x"SubscribedToEmails":0,"DeathSquadable":false}"#;
+        assert!(matches!(extract_blob_json_ref(overwritten), Some(Cow::Owned(_))));
+    }
 }
 
-#[cfg(all(test, target_os = "linux"))]
-mod linux_tests {
-    use super::*;
+#[cfg(test)]
+mod blob_digest_tests {
+    use super::{blob_unchanged, forget_blob_digest, reset_last_blob_region};
 
+    // LAST_BLOB_DIGEST is a process-global static shared with every other
+    // test in this binary, so each case resets it first and runs its
+    // assertions in one #[test] rather than relying on test isolation.
     #[test]
-    fn linux_reader_reads_its_own_mapping() {
-        let marker = b"frameforge-linux-reader";
-        let process = LinuxProcess::open(std::process::id()).expect("current process is readable");
-        let mut actual = vec![0; marker.len()];
-        let read = process
-            .read(marker.as_ptr() as usize, &mut actual)
-            .expect("marker address is mapped");
-        assert_eq!(read, marker.len());
-        assert_eq!(actual, marker);
-    }
+    fn digest_tracks_changes_and_resets() {
+        reset_last_blob_region();
 
-    #[test]
-    fn linux_cached_blob_is_reread_and_rejected_when_stale() {
-        // Blobs under 50 KB are rejected as coincidental fragments, so the
-        // fixture pads the object out to a realistic size.
-        let mut data = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"#.to_vec();
-        data.resize(64_000, b' ');
-        data.extend_from_slice(br#""DeathSquadable":false}"#);
-        data.resize(128_000, 0);
-        let regions = vec![LinuxRegion {
-            start: data.as_ptr() as usize,
-            len: data.len(),
-            executable: false,
-        }];
-        let process = LinuxProcess::open(std::process::id()).expect("current process is readable");
+        let blob = b"{\"SubscribedToEmails\":1,\"RegularCredits\":100}".to_vec();
+        assert!(!blob_unchanged(&blob), "first call always reports changed");
+        assert!(blob_unchanged(&blob), "identical bytes report unchanged");
 
-        LAST_BLOB_REGION.store(data.as_ptr() as u64, std::sync::atomic::Ordering::Relaxed);
-        let hit = scan_linux_cached_blob(&process, &regions);
-        assert_eq!(hit.expect("cached blob is re-read").2.credits, 42);
-
-        // An address that no longer starts a blob must fall back to the walk
-        // rather than reporting whatever happens to live there now.
-        LAST_BLOB_REGION.store(data.as_ptr() as u64 + 8, std::sync::atomic::Ordering::Relaxed);
-        assert!(scan_linux_cached_blob(&process, &regions).is_none());
+        let mut mutated = blob.clone();
+        mutated[0] = b'[';
+        assert!(!blob_unchanged(&mutated), "a changed byte must report changed");
+        assert!(blob_unchanged(&mutated), "the new bytes become the baseline");
 
         reset_last_blob_region();
+        assert!(!blob_unchanged(&mutated), "reset forces the next call to report changed");
+    }
+
+    // Unparseable bytes that persist across scan cycles must not start
+    // reporting as unchanged — the skip paths read that as "already parsed
+    // this", which would wedge the walk on a region that never parsed.
+    #[test]
+    fn forgetting_after_a_failed_parse_forces_a_retry() {
+        reset_last_blob_region();
+
+        let garbage = b"{\"MiscItems\":[ truncated".to_vec();
+        assert!(!blob_unchanged(&garbage), "first sighting reports changed");
+        forget_blob_digest();
+        assert!(!blob_unchanged(&garbage), "same bytes report changed again after a failed parse");
+    }
+}
+
+#[cfg(test)]
+mod credential_scan_tests {
+    use super::{scan_auth_credentials, scan_steam_id};
+
+    #[test]
+    fn auth_credentials_finds_json_form() {
+        let buf = br#"{"id":"594144e63ade7f2f2091c48e","Nonce":123456789}"#;
+        let (account_id, nonce) = scan_auth_credentials(buf).expect("should find credentials");
+        assert_eq!(account_id, "594144e63ade7f2f2091c48e");
+        assert_eq!(nonce, "123456789");
     }
 
     #[test]
-    fn linux_credential_scan_skips_executable_and_reads_data_regions() {
-        let login = br#"{"id":"594144e63ade7f2f2091c48e","Nonce":123456789,"steamId=76561198000000000"}"#;
-        let code = login.to_vec();
-        let data = login.to_vec();
-        let regions = vec![
-            LinuxRegion {
-                start: code.as_ptr() as usize,
-                len: code.len(),
-                executable: true,
-            },
-            LinuxRegion {
-                start: data.as_ptr() as usize,
-                len: data.len(),
-                executable: false,
-            },
-        ];
-        let process = LinuxProcess::open(std::process::id()).expect("current process is readable");
-
-        let found = scan_linux_credential_regions(&process, regions);
-
-        assert_eq!(
-            found,
-            Some((
-                "594144e63ade7f2f2091c48e".to_string(),
-                "123456789".to_string(),
-                "76561198000000000".to_string(),
-            ))
-        );
+    fn auth_credentials_finds_url_encoded_form() {
+        let buf = b"accountId=594144e63ade7f2f2091c48e&nonce=123456789&ct=STM";
+        let (account_id, nonce) = scan_auth_credentials(buf).expect("should find credentials");
+        assert_eq!(account_id, "594144e63ade7f2f2091c48e");
+        assert_eq!(nonce, "123456789");
     }
 
     #[test]
-    fn linux_inventory_scan_stitches_and_parses_regions() {
-        let first_json = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"#;
-        let second_json = br#""DeathSquadable":false}"#;
-        let mut first = first_json.to_vec();
-        first.resize(64_000, b' ');
-        let mut second = second_json.to_vec();
-        second.resize(64_000, 0);
-        let regions = vec![
-            LinuxRegion {
-                start: first.as_ptr() as usize,
-                len: first.len(),
-                executable: false,
-            },
-            LinuxRegion {
-                start: second.as_ptr() as usize,
-                len: second.len(),
-                executable: false,
-            },
-        ];
-        let process = LinuxProcess::open(std::process::id()).expect("current process is readable");
-        let mut inventory = None;
-
-        scan_linux_inventory_regions(&process, regions, |_, _, parsed| {
-            inventory = Some(parsed);
-            false
-        });
-
-        assert_eq!(inventory.expect("inventory blob is found").credits, 42);
-    }
-
-    /// The blob is rarely the first thing in the stitched buffer. When a mapping
-    /// immediately ahead of it carries a Lotus path it joins the prefix chain,
-    /// and seeding at the earliest `{"` in the chain — rather than at the brace
-    /// enclosing the blob — produced a document that died on its first value
-    /// ("expected value at line 1 column 9") and lost the inventory entirely.
-    #[test]
-    fn linux_inventory_scan_seeds_at_the_blob_not_at_earlier_json() {
-        // Qualifies for the prefix buffer: Lotus path, no start marker, no
-        // mission delta — and opens a JSON object of its own.
-        let mut prefix = br#"{"Mods":garbage/Lotus/Weapons/Tenno/Rifle "#.to_vec();
-        prefix.resize(64_000, b' ');
-        let mut blob =
-            br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[{"ItemType":"/Lotus/Types/Items/x"}],"#
-                .to_vec();
-        blob.resize(64_000, b' ');
-        blob.extend_from_slice(br#""DeathSquadable":false}"#);
-        blob.resize(128_000, 0);
-
-        // One arena so the two mappings are genuinely contiguous — adjacency is
-        // what makes the walk chain them.
-        let mut arena = prefix.clone();
-        arena.extend_from_slice(&blob);
-        let base = arena.as_ptr() as usize;
-        let regions = vec![
-            LinuxRegion { start: base, len: prefix.len(), executable: false },
-            LinuxRegion { start: base + prefix.len(), len: blob.len(), executable: false },
-        ];
-        let process = LinuxProcess::open(std::process::id()).expect("current process is readable");
-
-        let mut inventory = None;
-        scan_linux_inventory_regions(&process, regions, |_, _, parsed| {
-            inventory = Some(parsed);
-            false
-        });
-
-        assert_eq!(inventory.expect("inventory blob is found").credits, 42);
+    fn auth_credentials_none_on_no_match() {
+        let buf = b"nothing interesting in here at all";
+        assert_eq!(scan_auth_credentials(buf), None);
     }
 
     #[test]
-    fn linux_inventory_scan_finishes_before_rejecting_large_mapping() {
-        let first_json = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"#;
-        let second_json = br#""DeathSquadable":false}"#;
-        let mut first = first_json.to_vec();
-        first.resize(64_000, b' ');
-        let mut second = vec![0; 64 * 1024 * 1024];
-        second[..second_json.len()].copy_from_slice(second_json);
-        let regions = vec![
-            LinuxRegion {
-                start: first.as_ptr() as usize,
-                len: first.len(),
-                executable: false,
-            },
-            LinuxRegion {
-                start: second.as_ptr() as usize,
-                len: second.len(),
-                executable: false,
-            },
-        ];
-        let process = LinuxProcess::open(std::process::id()).expect("current process is readable");
-        let mut inventory = None;
-
-        scan_linux_inventory_regions(&process, regions, |_, _, parsed| {
-            inventory = Some(parsed);
-            false
-        });
-
-        assert_eq!(inventory.expect("inventory blob is found").credits, 42);
+    fn steam_id_finds_value_past_false_starts() {
+        // Leading 's' bytes are false starts for the old byte-at-a-time scanner.
+        let buf = b"ssssssssteamId=steamId=76561198012345678";
+        let sid = scan_steam_id(buf).expect("should find steam id");
+        assert_eq!(sid, "76561198012345678");
     }
 
     #[test]
-    fn linux_inventory_scan_recovers_fields_before_start_marker() {
-        let prefix =
-            br#"{"RegularCredits":42,"MiscItems":[{"ItemType":"/Lotus/Test","ItemCount":1}],"#;
-        let suffix = br#""SubscribedToEmails":true,"DeathSquadable":false}"#;
-        let mut mapping = vec![b' '; 128_000];
-        mapping[..prefix.len()].copy_from_slice(prefix);
-        mapping[64_000..64_000 + suffix.len()].copy_from_slice(suffix);
-        let regions = vec![
-            LinuxRegion {
-                start: mapping.as_ptr() as usize,
-                len: 64_000,
-                executable: false,
-            },
-            LinuxRegion {
-                start: mapping.as_ptr() as usize + 64_000,
-                len: 64_000,
-                executable: false,
-            },
-        ];
-        let process = LinuxProcess::open(std::process::id()).expect("current process is readable");
-        let mut inventory = None;
-
-        scan_linux_inventory_regions(&process, regions, |_, _, parsed| {
-            inventory = Some(parsed);
-            false
-        });
-
-        let inventory = inventory.expect("inventory blob is found");
-        assert_eq!(inventory.credits, 42);
-        assert_eq!(inventory.stackable_items.len(), 1);
-    }
-
-    #[test]
-    fn parses_only_readable_linux_mappings() {
-        let maps = "1000-2000 r--p 0 00:00 0\n2000-2800 --xp 0 00:00 0\n3000-5000 rw-p 0 00:00 0\n";
-        assert_eq!(
-            parse_linux_maps(maps),
-            vec![
-                LinuxRegion {
-                    start: 0x1000,
-                    len: 0x1000,
-                    executable: false,
-                },
-                LinuxRegion {
-                    start: 0x3000,
-                    len: 0x2000,
-                    executable: false,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn recognizes_warframe_but_not_launcher_processes() {
-        assert!(is_warframe_command(
-            "Z:\\Warframe\\Warframe.x64.exe -cluster:public"
-        ));
-        assert!(!is_warframe_command(
-            "Z:\\Warframe\\Tools\\Launcher.exe"
-        ));
-        assert!(!is_warframe_command("warframe-companion"));
+    fn steam_id_none_on_no_match() {
+        let buf = b"steamId=short";
+        assert_eq!(scan_steam_id(buf), None);
     }
 }

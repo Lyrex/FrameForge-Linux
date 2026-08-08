@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ItemMarketPopup from "./ItemMarketPopup";
-import { usePlatformCapabilities } from "./platform";
 import "./WfmTrading.css";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -124,10 +123,7 @@ async function invokeWfm<T>(command: string, args?: Record<string, unknown>): Pr
 
 // ── Login panel ───────────────────────────────────────────────────────────────
 
-function LoginPanel({ onLogin, onSaveFailed }: { onLogin: (u: string) => void; onSaveFailed: (reason: string) => void }) {
-  // A machine with neither the Windows Credential Manager nor a Secret Service
-  // provider hides the option rather than offering a save that can only fail.
-  const { persistentCredentials } = usePlatformCapabilities();
+function LoginPanel({ onLogin }: { onLogin: (u: string) => void }) {
   const [email, setEmail]       = useState("");
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
@@ -139,15 +135,9 @@ function LoginPanel({ onLogin, onSaveFailed }: { onLogin: (u: string) => void; o
     setLoading(true); setError("");
     try {
       const username = await invoke<string>("wfm_login", { email, password });
-      if (remember && persistentCredentials) {
+      if (remember) {
         const tokenJson = await invoke<string | null>("wfm_get_jwt").catch(() => null);
-        // The user asked for this by ticking the box, so a keyring that refuses
-        // or a prompt they dismissed has to be said out loud. It goes to the
-        // caller because an error shown here would vanish with the panel.
-        if (tokenJson) {
-          await invoke("wfm_save_credentials", { email, token: tokenJson })
-            .catch(e => onSaveFailed(String(e)));
-        }
+        if (tokenJson) invoke("wfm_save_credentials", { email, token: tokenJson }).catch(() => {});
       }
       onLogin(username);
     } catch (e) { setError(String(e)); setLoading(false); }
@@ -170,12 +160,10 @@ function LoginPanel({ onLogin, onSaveFailed }: { onLogin: (u: string) => void; o
             onKeyDown={e => e.key === "Enter" && submit()} />
         </div>
         {error && <div className="wfm-error">{error}</div>}
-        {persistentCredentials && (
-          <label className="wfm-remember-row">
-            <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
-            Remember credentials
-          </label>
-        )}
+        <label className="wfm-remember-row">
+          <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
+          Remember credentials
+        </label>
         <button className="wfm-btn-primary" onClick={submit} disabled={loading || !email || !password}>
           {loading ? "Logging in…" : "Log in"}
         </button>
@@ -935,9 +923,6 @@ export default function WfmTrading({ wfmLookup: _wfmLookup, wfmItems, imageMap, 
   const [tab, setTab]           = useState<"listings" | "messages">("listings");
   const [username, setUsername]         = useState<string | null>(null);
   const [checking, setChecking]         = useState(true);
-  // Survives the login panel it came from, so a keyring refusal is still on
-  // screen once the trading view replaces the form.
-  const [saveWarning, setSaveWarning]   = useState("");
   const [unread, setUnread]             = useState(0);
   const [wfmStatus, setWfmStatus]       = useState<"online" | "ingame" | "invisible" | "offline">("offline");
   const [statusBusy, setStatusBusy]     = useState(false);
@@ -1068,20 +1053,11 @@ export default function WfmTrading({ wfmLookup: _wfmLookup, wfmItems, imageMap, 
   }
 
   if (!username) {
-    return <LoginPanel
-      onLogin={u => { setUsername(u); onLoginChange(u); }}
-      onSaveFailed={setSaveWarning}
-    />;
+    return <LoginPanel onLogin={u => { setUsername(u); onLoginChange(u); }} />;
   }
 
   return (
     <div className="wfm-trading">
-      {saveWarning && (
-        <div className="wfm-save-warning">
-          Logged in, but the session could not be saved: {saveWarning}
-          <button onClick={() => setSaveWarning("")}>Dismiss</button>
-        </div>
-      )}
       <div className="wfm-header">
         <div className="wfm-tabs">
           <button className={tab === "listings" ? "active" : ""} onClick={() => setTab("listings")}>Listings</button>
