@@ -279,6 +279,27 @@
   padding: 4px 0;
 }
 
+/* ── Session not saved ── */
+.wfm-save-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--red);
+  padding: 6px 10px;
+  border: 1px solid var(--red);
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+.wfm-save-warning button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+
 /* ── Section label ── */
 .wfm-section-label {
   font-size: 10px;

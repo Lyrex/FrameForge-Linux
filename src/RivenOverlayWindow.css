@@ -89,6 +89,13 @@ body { background: transparent; overflow: hidden; }
 .rov-close-btn:hover { color: #f85149; background: rgba(248,81,73,.12); }
 
 /* ── Scanning / empty ── */
+.rov-grab-note {
+  font-size: 11px;
+  color: rgba(139,148,158,.7);
+  text-align: center;
+  padding: 2px 0 4px;
+}
+
 .rov-scanning {
   font-size: 12px;
   color: rgba(139,148,158,.8);

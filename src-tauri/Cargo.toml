@@ -1,6 +1,6 @@
 [package]
 name = "warframe-companion"
-version = "3.0.0"
+version = "3.0.0-linux.1"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -22,13 +22,13 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
-aho-corasick = "1"
 ureq = { version = "2", features = ["json"] }
 tungstenite = { version = "0.26", features = ["native-tls"] }
 native-tls = "0.2"
 whirlpool = "0.10"
 lzma-rs = "0.3"
 memchr = "2"
+libc = "0.2"
 
 [profile.dev]
 opt-level = 1
@@ -60,3 +60,13 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+raw-window-handle = "0.6"
+# async-io rather than tokio: the blocking API is called from inside
+# spawn_blocking, and async-io drives its own executor instead of needing a
+# tokio reactor in scope. crypto-rust keeps libsecret and OpenSSL out of the
+# AppImage, which has already cost us one bundled-library bug.
+secret-service = { version = "5.1.0", default-features = false, features = ["rt-async-io-crypto-rust"] }
+tesseract = "0.15.2"
+xcb = "1.7"

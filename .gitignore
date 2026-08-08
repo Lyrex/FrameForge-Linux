@@ -22,6 +22,10 @@ build-and-release.bat
 # Tauri build output
 src-tauri/target/
 
+# Tesseract model fetched by scripts/fetch-tessdata.sh at bundle time —
+# 23 MB of upstream binary, pinned by checksum rather than committed
+src-tauri/tessdata/
+
 # Editor directories and files
 .vscode/
 .idea

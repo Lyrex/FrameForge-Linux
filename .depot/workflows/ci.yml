@@ -1,0 +1,132 @@
+# Depot CI Migration
+# Source: .github/workflows/ci.yml
+#
+# Changes made:
+# - Rewrote .github/ path references to .depot/
+# - Changed GitHub runs-on labels to their Depot equivalents
+
+# Clippy is left out on purpose. The inherited upstream code has never been
+# linted, and a wall of pre-existing warnings would train everyone to ignore the
+# badge. Add it once there is a clean baseline to hold it to.
+
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: depot-ubuntu-latest # was: ubuntu-latest. Mapped standard GitHub runner to Depot equivalent.
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      scripts: ${{ steps.filter.outputs.scripts }}
+      version: ${{ steps.filter.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # tag=v4.0.2
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'src-tauri/**'
+              - '.depot/workflows/ci.yml'
+              - '.depot/actions/linux-build-deps/**'
+              - 'scripts/fetch-tessdata.sh'
+            frontend:
+              - 'src/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'tsconfig*.json'
+              - 'vite.config.*'
+              - 'index.html'
+              - '.depot/workflows/ci.yml'
+            scripts:
+              - 'scripts/**'
+              - '.depot/workflows/ci.yml'
+            version:
+              - 'package.json'
+              - 'src-tauri/Cargo.toml'
+              - 'src-tauri/tauri.conf.json'
+              - 'scripts/check-version.sh'
+              - '.depot/workflows/ci.yml'
+  rust:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true'
+    name: Rust build and tests
+    runs-on: depot-ubuntu-latest # was: ubuntu-latest. Mapped standard GitHub runner to Depot equivalent.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      - uses: ./.depot/actions/linux-build-deps
+      - name: Install rust stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # branch=master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # tag=v2.9.1
+        with:
+          workspaces: src-tauri
+      # The script pins the model by checksum, so hashing the script identifies
+      # the model, and the 23 MB download happens once per model change.
+      - name: Cache the Tesseract model
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # tag=v6.1.0
+        with:
+          path: src-tauri/tessdata
+          key: tessdata-${{ hashFiles('scripts/fetch-tessdata.sh') }}
+      # `frontendDist` is `../dist`, gitignored and so absent on a fresh
+      # checkout, and `generate_context!` panics on a path that does not exist.
+      # It tests existence and nothing more, so an empty directory compiles. The
+      # frontend job builds the real assets; nothing here serves them.
+      - name: Stand in for the frontend build
+        run: mkdir -p dist
+      - name: cargo build --locked
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked
+      - name: cargo test --locked
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      # https://github.com/rust-lang/cargo/issues/6669
+      - name: cargo test --doc
+        run: cargo test --doc --manifest-path src-tauri/Cargo.toml --locked
+  frontend:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.frontend == 'true'
+    name: Frontend typecheck and build
+    runs-on: depot-ubuntu-latest # was: ubuntu-latest. Mapped standard GitHub runner to Depot equivalent.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # tag=v6.0.9
+        with:
+          version: 11
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # tag=v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      # esbuild is the only dependency that asks to run an install script, and
+      # its platform binary comes through optionalDependencies, so skipping
+      # loses nothing. Approving it instead would mean tracking
+      # pnpm-workspace.yaml: pnpm 11 reads build approvals from nowhere else,
+      # and that is one more file in the delta.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm build
+  scripts:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.scripts == 'true'
+    name: Shellcheck
+    runs-on: depot-ubuntu-latest # was: ubuntu-latest. Mapped standard GitHub runner to Depot equivalent.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      - run: shellcheck scripts/*.sh
+  version:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.version == 'true'
+    name: Version consistency
+    runs-on: depot-ubuntu-latest # was: ubuntu-latest. Mapped standard GitHub runner to Depot equivalent.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+      - run: bash scripts/check-version.sh

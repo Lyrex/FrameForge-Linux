@@ -1,0 +1,602 @@
+# Every reward name a Void relic can drop, one per line.
+# Generated from WFCD warframe-items Relics.json (2026-07-27):
+#   jq -r '.[] | select(.uniqueName | contains("/Game/Projections/"))
+#          | .rewards[].item.name' Relics.json | sort -u
+# Committed rather than fetched so the OCR corpus test stays offline and
+# reproducible; refresh it when the game adds prime parts.
+1200X Kuva
+2X Forma Blueprint
+Acceltra Prime Barrel
+Acceltra Prime Blueprint
+Acceltra Prime Receiver
+Acceltra Prime Stock
+Afentis Prime Barrel
+Afentis Prime Blade
+Afentis Prime Blueprint
+Afentis Prime Handle
+Afuris Prime Barrel
+Afuris Prime Blueprint
+Afuris Prime Link
+Afuris Prime Receiver
+Akarius Prime Barrel
+Akarius Prime Blueprint
+Akarius Prime Link
+Akarius Prime Receiver
+Akbolto Prime Barrel
+Akbolto Prime Blueprint
+Akbolto Prime Link
+Akbolto Prime Receiver
+Akbronco Prime Blueprint
+Akbronco Prime Link
+Akjagara Prime Barrel
+Akjagara Prime Blueprint
+Akjagara Prime Link
+Akjagara Prime Receiver
+Aklex Prime Blueprint
+Aklex Prime Link
+Akmagnus Prime Blueprint
+Akmagnus Prime Link
+Aksomati Prime Barrel
+Aksomati Prime Blueprint
+Aksomati Prime Link
+Aksomati Prime Receiver
+Akstiletto Prime Barrel
+Akstiletto Prime Blueprint
+Akstiletto Prime Link
+Akstiletto Prime Receiver
+Akvasto Prime Blueprint
+Akvasto Prime Link
+Alternox Prime Barrel
+Alternox Prime Blueprint
+Alternox Prime Receiver
+Alternox Prime Stock
+Ankyros Prime Blade
+Ankyros Prime Blueprint
+Ankyros Prime Gauntlet
+Ash Prime Blueprint
+Ash Prime Chassis Blueprint
+Ash Prime Neuroptics Blueprint
+Ash Prime Systems Blueprint
+Astilla Prime Barrel
+Astilla Prime Blueprint
+Astilla Prime Receiver
+Astilla Prime Stock
+Athodai Prime Barrel
+Athodai Prime Blueprint
+Athodai Prime Receiver
+Atlas Prime Blueprint
+Atlas Prime Chassis Blueprint
+Atlas Prime Neuroptics Blueprint
+Atlas Prime Systems Blueprint
+Ayatan Amber Star
+Ballistica Prime Blueprint
+Ballistica Prime Lower Limb
+Ballistica Prime Receiver
+Ballistica Prime String
+Ballistica Prime Upper Limb
+Banshee Prime Blueprint
+Banshee Prime Chassis Blueprint
+Banshee Prime Neuroptics Blueprint
+Banshee Prime Systems Blueprint
+Baruuk Prime Blueprint
+Baruuk Prime Chassis Blueprint
+Baruuk Prime Neuroptics Blueprint
+Baruuk Prime Systems Blueprint
+Baza Prime Barrel
+Baza Prime Blueprint
+Baza Prime Receiver
+Baza Prime Stock
+Boar Prime Barrel
+Boar Prime Blueprint
+Boar Prime Receiver
+Boar Prime Stock
+Boltor Prime Barrel
+Boltor Prime Blueprint
+Boltor Prime Receiver
+Boltor Prime Stock
+Bo Prime Blueprint
+Bo Prime Handle
+Bo Prime Ornament
+Braton Prime Barrel
+Braton Prime Blueprint
+Braton Prime Receiver
+Braton Prime Stock
+Bronco Prime Barrel
+Bronco Prime Blueprint
+Bronco Prime Receiver
+Burston Prime Barrel
+Burston Prime Blueprint
+Burston Prime Receiver
+Burston Prime Stock
+Caliban Prime Blueprint
+Caliban Prime Chassis Blueprint
+Caliban Prime Neuroptics Blueprint
+Caliban Prime Systems Blueprint
+Carrier Prime Blueprint
+Carrier Prime Carapace
+Carrier Prime Cerebrum
+Carrier Prime Systems
+Cedo Prime Barrel
+Cedo Prime Blueprint
+Cedo Prime Receiver
+Cedo Prime Stock
+Cernos Prime Blueprint
+Cernos Prime Grip
+Cernos Prime Lower Limb
+Cernos Prime String
+Cernos Prime Upper Limb
+Chroma Prime Blueprint
+Chroma Prime Chassis Blueprint
+Chroma Prime Neuroptics Blueprint
+Chroma Prime Systems Blueprint
+Cobra & Crane Prime Blade
+Cobra & Crane Prime Blueprint
+Cobra & Crane Prime Guard
+Cobra & Crane Prime Hilt
+Corinth Prime Barrel
+Corinth Prime Blueprint
+Corinth Prime Receiver
+Corinth Prime Stock
+Corvas Prime Barrel
+Corvas Prime Blueprint
+Corvas Prime Receiver
+Corvas Prime Stock
+Daikyu Prime Blueprint
+Daikyu Prime Grip
+Daikyu Prime Lower Limb
+Daikyu Prime String
+Daikyu Prime Upper Limb
+Dakra Prime Blade
+Dakra Prime Blueprint
+Dakra Prime Handle
+Destreza Prime Blade
+Destreza Prime Blueprint
+Destreza Prime Handle
+Dethcube Prime Blueprint
+Dethcube Prime Carapace
+Dethcube Prime Cerebrum
+Dethcube Prime Systems
+Dual Kamas Prime Blade
+Dual Kamas Prime Blueprint
+Dual Kamas Prime Handle
+Dual Keres Prime Blade
+Dual Keres Prime Blueprint
+Dual Keres Prime Handle
+Dual Zoren Prime Blade
+Dual Zoren Prime Blueprint
+Dual Zoren Prime Handle
+Ember Prime Blueprint
+Ember Prime Chassis Blueprint
+Ember Prime Neuroptics Blueprint
+Ember Prime Systems Blueprint
+Epitaph Prime Barrel
+Epitaph Prime Blueprint
+Epitaph Prime Receiver
+Equinox Prime Blueprint
+Equinox Prime Chassis Blueprint
+Equinox Prime Neuroptics Blueprint
+Equinox Prime Systems Blueprint
+Euphona Prime Barrel
+Euphona Prime Blueprint
+Euphona Prime Receiver
+Exilus Weapon Adapter Blueprint
+Fang Prime Blade
+Fang Prime Blueprint
+Fang Prime Handle
+Fass
+Forma Blueprint
+Fragor Prime Blueprint
+Fragor Prime Handle
+Fragor Prime Head
+Frost Prime Blueprint
+Frost Prime Chassis Blueprint
+Frost Prime Neuroptics Blueprint
+Frost Prime Systems Blueprint
+Fulmin Prime Barrel
+Fulmin Prime Blueprint
+Fulmin Prime Receiver
+Fulmin Prime Stock
+Galatine Prime Blade
+Galatine Prime Blueprint
+Galatine Prime Handle
+Gara Prime Blueprint
+Gara Prime Chassis Blueprint
+Gara Prime Neuroptics Blueprint
+Gara Prime Systems Blueprint
+Garuda Prime Blueprint
+Garuda Prime Chassis Blueprint
+Garuda Prime Neuroptics Blueprint
+Garuda Prime Systems Blueprint
+Gauss Prime Blueprint
+Gauss Prime Chassis Blueprint
+Gauss Prime Neuroptics Blueprint
+Gauss Prime Systems Blueprint
+Glaive Prime Blade
+Glaive Prime Blueprint
+Glaive Prime Disc
+Gram Prime Blade
+Gram Prime Blueprint
+Gram Prime Handle
+Grendel Prime Blueprint
+Grendel Prime Chassis Blueprint
+Grendel Prime Neuroptics Blueprint
+Grendel Prime Systems Blueprint
+Guandao Prime Blade
+Guandao Prime Blueprint
+Guandao Prime Handle
+Gunsen Prime Blade
+Gunsen Prime Blueprint
+Gunsen Prime Handle
+Gyre Prime Blueprint
+Gyre Prime Chassis Blueprint
+Gyre Prime Neuroptics Blueprint
+Gyre Prime Systems Blueprint
+Harrow Prime Blueprint
+Harrow Prime Chassis Blueprint
+Harrow Prime Neuroptics Blueprint
+Harrow Prime Systems Blueprint
+Helios Prime Blueprint
+Helios Prime Carapace
+Helios Prime Cerebrum
+Helios Prime Systems
+Hikou Prime Blueprint
+Hikou Prime Pouch
+Hikou Prime Stars
+Hildryn Prime Blueprint
+Hildryn Prime Chassis Blueprint
+Hildryn Prime Neuroptics Blueprint
+Hildryn Prime Systems Blueprint
+Hydroid Prime Blueprint
+Hydroid Prime Chassis Blueprint
+Hydroid Prime Neuroptics Blueprint
+Hydroid Prime Systems Blueprint
+Hystrix Prime Barrel
+Hystrix Prime Blueprint
+Hystrix Prime Receiver
+Inaros Prime Blueprint
+Inaros Prime Chassis Blueprint
+Inaros Prime Neuroptics Blueprint
+Inaros Prime Systems Blueprint
+Ivara Prime Blueprint
+Ivara Prime Chassis Blueprint
+Ivara Prime Neuroptics Blueprint
+Ivara Prime Systems Blueprint
+Jahu
+Karyst Prime Blade
+Karyst Prime Blueprint
+Karyst Prime Handle
+Kavasa Prime Band
+Kavasa Prime Buckle
+Kavasa Prime Kubrow Collar Blueprint
+Kestrel Prime Blade
+Kestrel Prime Blueprint
+Kestrel Prime Grip
+Khora Prime Blueprint
+Khora Prime Chassis Blueprint
+Khora Prime Neuroptics Blueprint
+Khora Prime Systems Blueprint
+Khra
+Knell Prime Barrel
+Knell Prime Blueprint
+Knell Prime Receiver
+Kogake Prime Blueprint
+Kogake Prime Boot
+Kogake Prime Gauntlet
+Kompressa Prime Barrel
+Kompressa Prime Blueprint
+Kompressa Prime Receiver
+Kronen Prime Blade
+Kronen Prime Blueprint
+Kronen Prime Handle
+Larkspur Prime Barrel
+Larkspur Prime Blueprint
+Larkspur Prime Receiver
+Larkspur Prime Stock
+Latron Prime Barrel
+Latron Prime Blueprint
+Latron Prime Receiver
+Latron Prime Stock
+Lavos Prime Blueprint
+Lavos Prime Chassis Blueprint
+Lavos Prime Neuroptics Blueprint
+Lavos Prime Systems Blueprint
+Lex Prime Barrel
+Lex Prime Blueprint
+Lex Prime Receiver
+Limbo Prime Blueprint
+Limbo Prime Chassis Blueprint
+Limbo Prime Neuroptics Blueprint
+Limbo Prime Systems Blueprint
+Lohk
+Loki Prime Blueprint
+Loki Prime Chassis Blueprint
+Loki Prime Neuroptics Blueprint
+Loki Prime Systems Blueprint
+Magnus Prime Barrel
+Magnus Prime Blueprint
+Magnus Prime Receiver
+Mag Prime Blueprint
+Mag Prime Chassis Blueprint
+Mag Prime Neuroptics Blueprint
+Mag Prime Systems Blueprint
+Masseter Prime Blade
+Masseter Prime Blueprint
+Masseter Prime Handle
+Mesa Prime Blueprint
+Mesa Prime Chassis Blueprint
+Mesa Prime Neuroptics Blueprint
+Mesa Prime Systems Blueprint
+Mirage Prime Blueprint
+Mirage Prime Chassis Blueprint
+Mirage Prime Neuroptics Blueprint
+Mirage Prime Systems Blueprint
+Nagantaka Prime Barrel
+Nagantaka Prime Blueprint
+Nagantaka Prime Receiver
+Nagantaka Prime Stock
+Nami Skyla Prime Blade
+Nami Skyla Prime Blueprint
+Nami Skyla Prime Handle
+Nautilus Prime Blueprint
+Nautilus Prime Carapace
+Nautilus Prime Cerebrum
+Nautilus Prime Systems
+Nekros Prime Blueprint
+Nekros Prime Chassis Blueprint
+Nekros Prime Neuroptics Blueprint
+Nekros Prime Systems Blueprint
+Netra
+Nezha Prime Blueprint
+Nezha Prime Chassis Blueprint
+Nezha Prime Neuroptics Blueprint
+Nezha Prime Systems Blueprint
+Nidus Prime Blueprint
+Nidus Prime Chassis Blueprint
+Nidus Prime Neuroptics Blueprint
+Nidus Prime Systems Blueprint
+Nikana Prime Blade
+Nikana Prime Blueprint
+Nikana Prime Hilt
+Ninkondi Prime Blueprint
+Ninkondi Prime Chain
+Ninkondi Prime Handle
+Nova Prime Blueprint
+Nova Prime Chassis Blueprint
+Nova Prime Neuroptics Blueprint
+Nova Prime Systems Blueprint
+Nyx Prime Blueprint
+Nyx Prime Chassis Blueprint
+Nyx Prime Neuroptics Blueprint
+Nyx Prime Systems Blueprint
+Oberon Prime Blueprint
+Oberon Prime Chassis Blueprint
+Oberon Prime Neuroptics Blueprint
+Oberon Prime Systems Blueprint
+Octavia Prime Blueprint
+Octavia Prime Chassis Blueprint
+Octavia Prime Neuroptics Blueprint
+Octavia Prime Systems Blueprint
+Odonata Prime Blueprint
+Odonata Prime Harness Blueprint
+Odonata Prime Systems Blueprint
+Odonata Prime Wings Blueprint
+Okina Prime Blade
+Okina Prime Blueprint
+Okina Prime Handle
+Orthos Prime Blade
+Orthos Prime Blueprint
+Orthos Prime Handle
+Pandero Prime Barrel
+Pandero Prime Blueprint
+Pandero Prime Receiver
+Pangolin Prime Blade
+Pangolin Prime Blueprint
+Pangolin Prime Handle
+Panthera Prime Barrel
+Panthera Prime Blueprint
+Panthera Prime Receiver
+Panthera Prime Stock
+Paris Prime Blueprint
+Paris Prime Grip
+Paris Prime Lower Limb
+Paris Prime String
+Paris Prime Upper Limb
+Perigale Prime Barrel
+Perigale Prime Blueprint
+Perigale Prime Receiver
+Perigale Prime Stock
+Phantasma Prime Barrel
+Phantasma Prime Blueprint
+Phantasma Prime Receiver
+Phantasma Prime Stock
+Protea Prime Blueprint
+Protea Prime Chassis Blueprint
+Protea Prime Neuroptics Blueprint
+Protea Prime Systems Blueprint
+Pyrana Prime Barrel
+Pyrana Prime Blueprint
+Pyrana Prime Receiver
+Quassus Prime Blade
+Quassus Prime Blueprint
+Quassus Prime Handle
+Reaper Prime Blade
+Reaper Prime Blueprint
+Reaper Prime Handle
+Redeemer Prime Blade
+Redeemer Prime Blueprint
+Redeemer Prime Handle
+Revenant Prime Blueprint
+Revenant Prime Chassis Blueprint
+Revenant Prime Neuroptics Blueprint
+Revenant Prime Systems Blueprint
+Rhino Prime Blueprint
+Rhino Prime Chassis Blueprint
+Rhino Prime Neuroptics Blueprint
+Rhino Prime Systems Blueprint
+Ris
+Riven Sliver
+Rubico Prime Barrel
+Rubico Prime Blueprint
+Rubico Prime Receiver
+Rubico Prime Stock
+Sarofang Prime Blade
+Sarofang Prime Blueprint
+Sarofang Prime Handle
+Saryn Prime Blueprint
+Saryn Prime Chassis Blueprint
+Saryn Prime Neuroptics Blueprint
+Saryn Prime Systems Blueprint
+Scindo Prime Blade
+Scindo Prime Blueprint
+Scindo Prime Handle
+Scourge Prime Barrel
+Scourge Prime Blade
+Scourge Prime Blueprint
+Scourge Prime Handle
+Sevagoth Prime Blueprint
+Sevagoth Prime Chassis Blueprint
+Sevagoth Prime Neuroptics Blueprint
+Sevagoth Prime Systems Blueprint
+Shade Prime Blueprint
+Shade Prime Carapace
+Shade Prime Cerebrum
+Shade Prime Systems
+Sicarus Prime Barrel
+Sicarus Prime Blueprint
+Sicarus Prime Receiver
+Silva & Aegis Prime Blade
+Silva & Aegis Prime Blueprint
+Silva & Aegis Prime Guard
+Silva & Aegis Prime Hilt
+Soma Prime Barrel
+Soma Prime Blueprint
+Soma Prime Receiver
+Soma Prime Stock
+Spira Prime Blade
+Spira Prime Blueprint
+Spira Prime Pouch
+Stradavar Prime Barrel
+Stradavar Prime Blueprint
+Stradavar Prime Receiver
+Stradavar Prime Stock
+Strun Prime Barrel
+Strun Prime Blueprint
+Strun Prime Receiver
+Strun Prime Stock
+Styanax Prime Blueprint
+Styanax Prime Chassis Blueprint
+Styanax Prime Neuroptics Blueprint
+Styanax Prime Systems Blueprint
+Sybaris Prime Barrel
+Sybaris Prime Blueprint
+Sybaris Prime Receiver
+Sybaris Prime Stock
+Tatsu Prime Blade
+Tatsu Prime Blueprint
+Tatsu Prime Handle
+Tekko Prime Blade
+Tekko Prime Blueprint
+Tekko Prime Gauntlet
+Tenora Prime Barrel
+Tenora Prime Blueprint
+Tenora Prime Receiver
+Tenora Prime Stock
+Tiberon Prime Barrel
+Tiberon Prime Blueprint
+Tiberon Prime Receiver
+Tiberon Prime Stock
+Tigris Prime Barrel
+Tigris Prime Blueprint
+Tigris Prime Receiver
+Tigris Prime Stock
+Tipedo Prime Blueprint
+Tipedo Prime Handle
+Tipedo Prime Ornament
+Titania Prime Blueprint
+Titania Prime Chassis Blueprint
+Titania Prime Neuroptics Blueprint
+Titania Prime Systems Blueprint
+Trinity Prime Blueprint
+Trinity Prime Chassis Blueprint
+Trinity Prime Neuroptics Blueprint
+Trinity Prime Systems Blueprint
+Trumna Prime Barrel
+Trumna Prime Blueprint
+Trumna Prime Receiver
+Trumna Prime Stock
+Vadarya Prime Barrel
+Vadarya Prime Blueprint
+Vadarya Prime Receiver
+Vadarya Prime Stock
+Valkyr Prime Blueprint
+Valkyr Prime Chassis Blueprint
+Valkyr Prime Neuroptics Blueprint
+Valkyr Prime Systems Blueprint
+Vasto Prime Barrel
+Vasto Prime Blueprint
+Vasto Prime Receiver
+Vauban Prime Blueprint
+Vauban Prime Chassis Blueprint
+Vauban Prime Neuroptics Blueprint
+Vauban Prime Systems Blueprint
+Vectis Prime Barrel
+Vectis Prime Blueprint
+Vectis Prime Receiver
+Vectis Prime Stock
+Velox Prime Barrel
+Velox Prime Blueprint
+Velox Prime Receiver
+Venato Prime Blade
+Venato Prime Blueprint
+Venato Prime Handle
+Venka Prime Blades
+Venka Prime Blueprint
+Venka Prime Gauntlet
+Volnus Prime Blueprint
+Volnus Prime Handle
+Volnus Prime Head
+Volt Prime Blueprint
+Volt Prime Chassis Blueprint
+Volt Prime Neuroptics Blueprint
+Volt Prime Systems Blueprint
+Vome
+Voruna Prime Blueprint
+Voruna Prime Chassis Blueprint
+Voruna Prime Neuroptics Blueprint
+Voruna Prime Systems Blueprint
+Wisp Prime Blueprint
+Wisp Prime Chassis Blueprint
+Wisp Prime Neuroptics Blueprint
+Wisp Prime Systems Blueprint
+Wukong Prime Blueprint
+Wukong Prime Chassis Blueprint
+Wukong Prime Neuroptics Blueprint
+Wukong Prime Systems Blueprint
+Wyrm Prime Blueprint
+Wyrm Prime Carapace
+Wyrm Prime Cerebrum
+Wyrm Prime Systems
+Xaku Prime Blueprint
+Xaku Prime Chassis Blueprint
+Xaku Prime Neuroptics Blueprint
+Xaku Prime Systems Blueprint
+Xata
+Yareli Prime Blueprint
+Yareli Prime Chassis Blueprint
+Yareli Prime Neuroptics Blueprint
+Yareli Prime Systems Blueprint
+Zakti Prime Barrel
+Zakti Prime Blueprint
+Zakti Prime Receiver
+Zephyr Prime Blueprint
+Zephyr Prime Chassis Blueprint
+Zephyr Prime Neuroptics Blueprint
+Zephyr Prime Systems Blueprint
+Zhuge Prime Barrel
+Zhuge Prime Blueprint
+Zhuge Prime Grip
+Zhuge Prime Receiver
+Zhuge Prime String
+Zylok Prime Barrel
+Zylok Prime Blueprint
+Zylok Prime Receiver

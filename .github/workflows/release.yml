@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      # `<upstream-version>-linux.<n>`, e.g. v2.9.0-linux.3. Semver prerelease,
+      # not build metadata: `+linux.<n>` compares equal for every n (semver
+      # ignores build metadata), so an updater could never tell linux.2 from
+      # linux.3, and the `+` shows up URL-encoded in release asset links.
+      # Prerelease does sort before the bare upstream version, but this repo
+      # never publishes a bare-version artifact, so nothing compares against
+      # one.
+      - 'v*-linux.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
+
+      # First, so a tree whose version disagrees with the tag costs a second
+      # rather than a ~10 minute build and an upload.
+      - name: Check the tag matches the configured version
+        run: bash scripts/check-version.sh "${GITHUB_REF#refs/tags/v}"
+
+      - uses: ./.github/actions/linux-build-deps
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # tag=v6.0.9
+        with:
+          version: 11
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # tag=v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install rust stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # branch=master
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # tag=v2.9.1
+        with:
+          workspaces: src-tauri
+
+      - name: Cache the Tesseract model
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # tag=v6.1.0
+        with:
+          path: src-tauri/tessdata
+          key: tessdata-${{ hashFiles('scripts/fetch-tessdata.sh') }}
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      # NO_STRIP=true is needed only for the AppImage: linuxdeploy bundles an
+      # old `strip` that cannot read the `.relr.dyn` sections modern
+      # distributions emit, and it aborts the bundle rather than skipping the
+      # library.
+      - name: Build bundles
+        run: NO_STRIP=true pnpm tauri build --bundles deb,rpm,appimage
+
+      # linuxdeploy leaves the AppImage's root .desktop and .DirIcon as
+      # symlinks that launcher-integration tools cannot read, so the repack
+      # materializes them.
+      - name: Materialize the AppImage root metadata
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends squashfs-tools zsync
+          bash scripts/fix-appimage.sh src-tauri/target/release/bundle/appimage/*.AppImage
+
+      # The AppImage embeds gh-releases-zsync update information (see
+      # fix-appimage.sh), which updaters resolve against this index. The URL
+      # inside the index is just the filename: the updater fetches it relative
+      # to wherever it found the .zsync, i.e. the same release.
+      - name: Make the AppImage zsync index
+        run: |
+          cd src-tauri/target/release/bundle/appimage
+          appimage=$(basename ./*.AppImage)
+          zsyncmake -u "$appimage" "$appimage"
+
+      # Release notes are written by hand rather than generated from commits.
+      # Every release has to state the upstream release it is based on, what was
+      # verified and on which distro, session type and compositor, and that
+      # Windows is unsupported here. None of that is derivable from the tree,
+      # which is also why the release is drafted rather than published.
+      - name: Draft the release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # tag=v3.0.2
+        with:
+          draft: true
+          name: ${{ github.ref_name }}
+          files: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/rpm/*.rpm
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/appimage/*.AppImage.zsync

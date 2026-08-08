@@ -1,0 +1,41 @@
+---
+# Everything here is monthly and grouped into one pull request per ecosystem.
+# The fork rebases onto upstream release tags, so every commit landing on `main`
+# is a commit to replay on the next sync. Lockfiles are the worst of those,
+# since they conflict more readily than anything else in the tree. Security
+# advisories are not affected by the interval; those open as they are published.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      gha-bump:
+        applies-to: version-updates
+        update-types:
+          - "patch"
+          - "minor"
+
+  # Dependabot has no `pnpm` ecosystem — `npm` covers all three lockfile
+  # formats, and reads `pnpm-lock.yaml` here.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      npm:
+        patterns:
+          - "*"
+
+  # There is no manifest at the repository root; the crate lives in `src-tauri`.
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      cargo:
+        patterns:
+          - "*"

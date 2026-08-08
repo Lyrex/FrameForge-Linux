@@ -1,0 +1,27 @@
+---
+name: Linux build dependencies
+description: Install the system packages needed to build FrameForge on Linux.
+
+runs:
+  using: composite
+  steps:
+    # `libtesseract-dev`, `libleptonica-dev` and `libxcb1-dev` are the fork's own
+    # additions, for the OCR and X11 capture paths. `libappindicator3-dev` is
+    # absent on purpose, since nothing here uses a tray icon.
+    #
+    # These are headers, not the runtime dependencies the packages declare —
+    # derive those with `ldd` on the built binary.
+    - shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends -y \
+          libwebkit2gtk-4.1-dev \
+          librsvg2-dev \
+          patchelf \
+          libxdo-dev \
+          libssl-dev \
+          build-essential \
+          curl wget file \
+          libtesseract-dev \
+          libleptonica-dev \
+          libxcb1-dev
