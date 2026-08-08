@@ -125,6 +125,38 @@ pub fn init_watched_log_path(settings_path: &Path) {
     let _ = WATCHED_LOG_PATH.set(resolved);
 }
 
+/// True for the line Warframe writes once it has ingested an inventory refresh:
+///
+/// ```text
+/// 1234.567 Sys [Info]: OnInventoryResults completed in 339ms
+/// ```
+///
+/// The earlier `OnInventoryResults, body size=1335235` line is written on
+/// receipt, tens to hundreds of milliseconds before the client finishes
+/// applying the response, so gating a memory read on it risks reading a
+/// half-written buffer. This matches the completion line only.
+pub fn is_inventory_sync_line(line: &str) -> bool {
+    line.contains("OnInventoryResults completed in")
+}
+
+// A mismatch here degrades to plain interval polling, which is hard to tell
+// from working correctly, so the marker is pinned against verbatim lines.
+#[cfg(test)]
+mod inventory_sync_tests {
+    use super::is_inventory_sync_line;
+
+    #[test]
+    fn matches_the_completion_line_only() {
+        assert!(is_inventory_sync_line(
+            "19761.848 Sys [Info]: OnInventoryResults completed in 339ms"
+        ));
+        assert!(!is_inventory_sync_line(
+            "19761.509 Sys [Info]: OnInventoryResults, body size=1335235"
+        ));
+        assert!(!is_inventory_sync_line("19760.121 Sys [Info]: SyncInventoryFromDB"));
+    }
+}
+
 pub fn watched_log_path() -> Option<PathBuf> {
     WATCHED_LOG_PATH
         .get()
