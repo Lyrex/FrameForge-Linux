@@ -982,6 +982,9 @@ fn wfm_auction_wait() {
 
 // ─── Warframe.market trading ──────────────────────────────────────────────────
 
+// TODO: not instrumented — this only builds the request; the `.call()` happens
+// at each call site, so a span here would time struct construction, not the
+// HTTP round-trip. Timing WFM calls needs a shared `call` helper first.
 fn wfm_request(method: &str, path: &str, auth_header: &str) -> ureq::Request {
     let url = format!("https://api.warframe.market{}", path);
     let req = match method {
@@ -1041,6 +1044,7 @@ fn base64_decode_url(s: &str) -> Option<Vec<u8>> {
 /// Fetch the CSRF token from warframe.market by loading the authenticated page.
 /// The meta tag `<meta name="csrf-token" content="...">` in the response HTML contains it.
 /// Falls back to the csrf_token embedded in the JWT payload if the page fetch fails.
+#[tracing::instrument(level = "debug", skip_all)]
 fn fetch_csrf_from_site(jwt: &str) -> Option<String> {
     if jwt.is_empty() { return None; }
     let resp = ureq::get("https://warframe.market/")
@@ -1321,6 +1325,7 @@ fn wfm_receive_jwt(app: tauri::AppHandle, state: State<AppState>, jwt: String) -
 /// Receive tokens captured by the WebView injection script.
 /// Calls /v2/me to get the username, stores session, closes login window.
 #[tauri::command]
+#[tracing::instrument(level = "info", skip_all)]
 fn wfm_receive_tokens(
     app: tauri::AppHandle, state: State<AppState>,
     access_token: String, refresh_token: String,
@@ -4117,6 +4122,7 @@ fn trimmed_median_from_stats(arr: &[serde_json::Value]) -> Option<u32> {
     Some(median.round() as u32)
 }
 
+#[tracing::instrument(level = "debug", skip_all, fields(slug = %slug))]
 fn wfm_price_for_slug(slug: &str) -> Result<Option<u32>, String> {
     wfm_wait();
     let url = format!("https://api.warframe.market/v1/items/{}/statistics", slug);
@@ -8293,6 +8299,7 @@ const PRICING_BASE: &str = "https://raw.githubusercontent.com/WyrmStudios/FrameF
 /// Returns (by_name, by_slug):
 ///   by_name: item display name (lowercase) → median sell price  (for get_item_price)
 ///   by_slug: authoritative WFM slug         → median sell price  (for wfm_price_cache)
+#[tracing::instrument(level = "debug", skip_all)]
 fn fetch_relics_run_data() -> (HashMap<String, u32>, HashMap<String, u32>) {
     // items.json gives the authoritative name → WFM slug mapping for every tradeable item.
     let name_to_slug: HashMap<String, String> = ureq::get(&format!("{}/items.json", PRICING_BASE))
