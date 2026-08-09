@@ -4930,7 +4930,7 @@ dependencies = [
 
 [[package]]
 name = "warframe-companion"
-version = "3.0.0-linux.1"
+version = "3.0.0-linux.2"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
