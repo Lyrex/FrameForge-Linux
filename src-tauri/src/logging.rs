@@ -43,6 +43,9 @@ pub fn init(app: &tauri::AppHandle) {
         .compact()
         .with_ansi(false)
         .with_target(true)
+        // Span-close events carry time.busy/time.idle, which is where the
+        // scanner and OCR timings surface.
+        .with_span_events(fmt::format::FmtSpan::CLOSE)
         .with_writer(writer)
         .with_filter(filter("warn,warframe_companion_lib=debug"));
 

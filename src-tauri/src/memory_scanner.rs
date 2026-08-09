@@ -413,6 +413,7 @@ fn read_linux_process_memory(
 }
 
 #[cfg(target_os = "windows")]
+#[tracing::instrument(level = "info", skip_all)]
 pub fn scan_warframe_credentials_process() -> Result<(String, String, String), String> {
     use std::ffi::c_void;
     use std::mem;
@@ -471,6 +472,7 @@ pub fn scan_warframe_credentials_process() -> Result<(String, String, String), S
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument(level = "info", skip_all)]
 pub fn scan_warframe_credentials_process() -> Result<(String, String, String), String> {
     let pid = find_warframe_pid_pub().ok_or("Warframe is not running")?;
     let process = LinuxProcess::open(pid)?;
@@ -658,6 +660,7 @@ fn is_warframe_command(command: &str) -> bool {
 // the actual JSON format for inventory items without any parsing assumptions.
 
 #[cfg(target_os = "windows")]
+#[tracing::instrument(level = "info", skip_all, fields(max_hits = max_hits))]
 pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
     use std::ffi::c_void;
     use std::mem;
@@ -778,6 +781,7 @@ pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument(level = "info", skip_all, fields(max_hits = max_hits))]
 pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
     // Same needles and context window as the Windows probe so saved output from
     // either platform reads the same way.
@@ -1048,6 +1052,7 @@ fn extract_blob_json_at(raw: &[u8], end_pos: usize) -> Option<Cow<'_, [u8]>> {
 
 /// `raw` must span from the JSON opening `{` (or from `"SubscribedToEmails"`) through
 /// `"DeathSquadable":`. Returns `None` if neither start can be located or JSON is malformed.
+#[tracing::instrument(level = "debug", skip_all)]
 pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
     let end_pos = find_blob_end(raw)?;
 
@@ -1452,6 +1457,7 @@ const ANCHORS: &[&[u8]] = &[
 /// Returns `None` whenever anything looks different from last time, which puts
 /// the caller back on the full walk rather than reporting a stale inventory.
 #[cfg(target_os = "windows")]
+#[tracing::instrument(level = "debug", skip_all)]
 fn scan_windows_cached_blob(process: windows_sys::Win32::Foundation::HANDLE) -> Option<CachedBlobScan> {
     use std::ffi::c_void;
     use std::mem;
@@ -1535,6 +1541,7 @@ fn scan_windows_cached_blob(process: windows_sys::Win32::Foundation::HANDLE) -> 
 /// When `save=true` also writes the raw text to `blob_dir` for debugging.
 /// Returns the number of files written (always 0 when `save=false`).
 #[cfg(target_os = "windows")]
+#[tracing::instrument(level = "debug", skip_all, fields(save = save))]
 pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::sync::mpsc::Sender<BlobInventory>, save: bool) -> usize {
     use std::ffi::c_void;
     use std::mem;
@@ -1870,6 +1877,7 @@ const MAX_SCAN: usize = 20 * 1024 * 1024;
 /// That path reaches no `on_blob` call, so a caller counting blobs by the
 /// callback would otherwise conclude the walk found nothing at all.
 #[cfg(target_os = "linux")]
+#[tracing::instrument(level = "debug", skip_all)]
 fn scan_linux_inventory_regions(
     process: &LinuxProcess,
     regions: impl IntoIterator<Item = LinuxRegion>,
@@ -2135,6 +2143,7 @@ fn scan_linux_inventory_regions(
 /// routing the stitch loop through it would let a single read overrun a
 /// near-exhausted budget by tens of megabytes on this scan's hot path.
 #[cfg(target_os = "linux")]
+#[tracing::instrument(level = "debug", skip_all)]
 fn scan_linux_cached_blob(
     process: &LinuxProcess,
     regions: &[LinuxRegion],
@@ -2242,6 +2251,7 @@ fn scan_linux_cached_blob(
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument(level = "debug", skip_all, fields(save = save))]
 pub fn capture_all_blobs(
     blob_dir: &std::path::Path,
     ts: &str,
@@ -2373,6 +2383,7 @@ fn probe_outcome(
 /// moved. `None` means it was not scanned this tick, which is not the same as
 /// a miss.
 #[cfg(target_os = "linux")]
+#[tracing::instrument(level = "debug", skip_all, fields(force = force))]
 pub fn probe_tick(
     pid: u32,
     blob_tx: std::sync::mpsc::Sender<BlobInventory>,
@@ -2389,6 +2400,7 @@ pub fn probe_tick(
 }
 
 #[cfg(target_os = "windows")]
+#[tracing::instrument(level = "debug", skip_all, fields(force = force))]
 pub fn probe_tick(
     pid: u32,
     blob_tx: std::sync::mpsc::Sender<BlobInventory>,
@@ -2760,6 +2772,7 @@ fn windows_newest_sync_timestamp(process: windows_sys::Win32::Foundation::HANDLE
 // The caller is responsible for not holding the file lock across sleeps.
 
 #[cfg(target_os = "windows")]
+#[tracing::instrument(level = "info", skip_all)]
 pub fn raw_scan_pass(out: &mut impl std::io::Write) -> Result<usize, String> {
     use std::ffi::c_void;
     use std::mem;
@@ -2849,6 +2862,7 @@ pub fn raw_scan_pass(out: &mut impl std::io::Write) -> Result<usize, String> {
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument(level = "info", skip_all)]
 pub fn raw_scan_pass(out: &mut impl std::io::Write) -> Result<usize, String> {
     const MIN_LEN: usize = 8;
     const TIMEOUT: u64 = 600; // 10 minutes — full coverage over a full scan
