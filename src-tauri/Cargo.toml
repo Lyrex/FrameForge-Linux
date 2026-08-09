@@ -22,12 +22,13 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
-aho-corasick = "1"
 ureq = { version = "2", features = ["json"] }
 tungstenite = { version = "0.26", features = ["native-tls"] }
 native-tls = "0.2"
 whirlpool = "0.10"
 lzma-rs = "0.3"
+memchr = "2"
+libc = "0.2"
 
 [profile.dev]
 opt-level = 1

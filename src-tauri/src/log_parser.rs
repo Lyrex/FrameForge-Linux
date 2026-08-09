@@ -125,6 +125,42 @@ pub fn init_watched_log_path(settings_path: &Path) {
     let _ = WATCHED_LOG_PATH.set(resolved);
 }
 
+/// True for the line Warframe writes once it has ingested an inventory refresh:
+///
+/// ```text
+/// 1234.567 Sys [Info]: OnInventoryResults completed in 339ms
+/// ```
+///
+/// The earlier `OnInventoryResults, body size=1335235` line is written on
+/// receipt, tens to hundreds of milliseconds before the client finishes
+/// applying the response, so gating a memory read on it risks reading a
+/// half-written buffer. This matches the completion line only.
+pub fn is_inventory_sync_line(line: &str) -> bool {
+    line.contains(INVENTORY_SYNC_MARKER)
+}
+
+/// The wording both marker readers match: this tail, and `memory_scanner`
+/// scanning the same line in the game's in-memory log buffers.
+pub const INVENTORY_SYNC_MARKER: &str = "OnInventoryResults completed in";
+
+// A mismatch here degrades to plain interval polling, which is hard to tell
+// from working correctly, so the marker is pinned against verbatim lines.
+#[cfg(test)]
+mod inventory_sync_tests {
+    use super::is_inventory_sync_line;
+
+    #[test]
+    fn matches_the_completion_line_only() {
+        assert!(is_inventory_sync_line(
+            "19761.848 Sys [Info]: OnInventoryResults completed in 339ms"
+        ));
+        assert!(!is_inventory_sync_line(
+            "19761.509 Sys [Info]: OnInventoryResults, body size=1335235"
+        ));
+        assert!(!is_inventory_sync_line("19760.121 Sys [Info]: SyncInventoryFromDB"));
+    }
+}
+
 pub fn watched_log_path() -> Option<PathBuf> {
     WATCHED_LOG_PATH
         .get()
@@ -404,9 +440,24 @@ fn ee_log_candidates(data_dir: &Path, home: &Path, win_users: &[String]) -> Vec<
 fn resolve_candidate(candidates: &[Candidate]) -> Option<PathBuf> {
     candidates
         .iter()
-        // An existing EE.log is the strongest signal: that is the prefix
+        // An existing EE.log is the strongest signal: that is a prefix
         // Warframe actually ran from.
-        .find(|candidate| candidate.log.exists())
+        .filter(|candidate| candidate.log.exists())
+        // More than one install can have run at some point, and the enumeration
+        // order is by install layout, which says nothing about which client the
+        // player uses now. Warframe rewrites its log on every launch, so the
+        // newest one belongs to the session in progress; an abandoned prefix
+        // keeps whatever timestamp it was left with. Reverse rather than `max`
+        // so an exact tie keeps enumeration order.
+        .min_by_key(|candidate| {
+            std::cmp::Reverse(
+                candidate
+                    .log
+                    .metadata()
+                    .and_then(|data| data.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            )
+        })
         .or_else(|| {
             // No log yet, which is the normal state before the game's first
             // run. An existing prefix still says which install will hold it.
@@ -544,6 +595,14 @@ mod linux_tests {
             .expect("scratch dir is writable");
         fs::write(&log, "").expect("scratch dir is writable");
         log
+    }
+
+    /// Backdate a planted log. Both files are written moments apart otherwise,
+    /// and which install ran most recently is what resolution has to decide.
+    fn age(log: &Path, seconds: u64) {
+        let file = fs::File::options().write(true).open(log).expect("planted log is writable");
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(seconds);
+        file.set_modified(when).expect("scratch filesystem records mtimes");
     }
 
     /// Create an empty EE.log in `library`, as a stock Proton install would.
@@ -861,19 +920,41 @@ mod linux_tests {
         assert_eq!(linux_log_path_in(&data_dir, &home, &users), planted);
     }
 
+    /// Warframe rewrites its log on every launch, so with two installs that
+    /// have both run, the newest log belongs to the current session.
     #[test]
     fn prefers_a_steam_install_over_a_leftover_lutris_prefix() {
         let scratch = scratch_dir("lutris-vs-steam");
         let data_dir = scratch.join("local-share");
         let home = scratch.join("home");
 
-        let steam = plant_ee_log(&data_dir.join("Steam"));
-        plant(log_within_drive_c(
+        let lutris = plant(log_within_drive_c(
             &home.join("Games/warframe/drive_c"),
             PROTON_WIN_USER,
         ));
+        let steam = plant_ee_log(&data_dir.join("Steam"));
+        age(&lutris, 3600);
 
         assert_eq!(linux_log_path_in(&data_dir, &home, &stock_users()), steam);
+    }
+
+    /// The reported case: both prefixes have run, Steam is enumerated first,
+    /// but the player now launches through Lutris. Picking by enumeration order
+    /// keeps reading the stale log.
+    #[test]
+    fn prefers_a_live_lutris_prefix_over_a_stale_steam_install() {
+        let scratch = scratch_dir("lutris-live");
+        let data_dir = scratch.join("local-share");
+        let home = scratch.join("home");
+
+        let steam = plant_ee_log(&data_dir.join("Steam"));
+        let lutris = plant(log_within_drive_c(
+            &home.join("Games/warframe/drive_c"),
+            PROTON_WIN_USER,
+        ));
+        age(&steam, 3600);
+
+        assert_eq!(linux_log_path_in(&data_dir, &home, &stock_users()), lutris);
     }
 
     #[test]
