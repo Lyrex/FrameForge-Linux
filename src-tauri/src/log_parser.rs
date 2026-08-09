@@ -2,6 +2,7 @@ use regex::Regex;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use tracing::{info, warn};
 
 #[derive(Debug, Clone)]
 pub struct ParsedReward {
@@ -119,8 +120,8 @@ static WATCHED_LOG_PATH: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceL
 pub fn init_watched_log_path(settings_path: &Path) {
     let resolved = resolve_log_path(settings_path);
     match &resolved {
-        Some(path) => eprintln!("EE.log resolved to {}", path.display()),
-        None => eprintln!("warning: no EE.log path could be resolved"),
+        Some(path) => info!(path = %path.display(), "EE.log resolved"),
+        None => warn!("no EE.log path could be resolved"),
     }
     let _ = WATCHED_LOG_PATH.set(resolved);
 }
@@ -194,9 +195,10 @@ fn log_path_override(settings_path: &Path) -> Option<String> {
     let settings: serde_json::Value = match serde_json::from_str(&json) {
         Ok(value) => value,
         Err(e) => {
-            eprintln!(
-                "warning: {} is not valid JSON ({e}); ignoring any eeLogPath override",
-                settings_path.display()
+            warn!(
+                path = %settings_path.display(),
+                error = %e,
+                "settings file is not valid JSON; ignoring any eeLogPath override"
             );
             return None;
         }

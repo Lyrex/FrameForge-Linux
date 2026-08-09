@@ -26,6 +26,7 @@
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tauri::WebviewWindow;
+use tracing::{error, warn};
 use xcb::{x, Xid, XidNew};
 
 use crate::ocr::x11_connect;
@@ -184,7 +185,7 @@ fn apply_hints(xid: u32, window_type: &'static str) -> Result<(), String> {
 pub(crate) fn place(window: &WebviewWindow, x: i32, y: i32, width: u32, height: u32) {
     let Some(xid) = xid(window) else { return };
     if let Err(e) = configure(xid, x, y, width, height) {
-        eprintln!("[overlay] {}: {e}", window.label());
+        warn!(window = window.label(), error = %e, "overlay placement failed");
     }
 }
 
@@ -243,7 +244,7 @@ pub(crate) enum AfterHinting {
 /// down for hinting and never put back, so that path says so.
 pub(crate) fn hint_before_map(window: &WebviewWindow, after: AfterHinting) {
     let Some(xid) = xid(window) else {
-        eprintln!("[overlay] {} has no X11 window id, hints skipped", window.label());
+        warn!(window = window.label(), "no X11 window id, hints skipped");
         return;
     };
 
@@ -254,7 +255,7 @@ pub(crate) fn hint_before_map(window: &WebviewWindow, after: AfterHinting) {
     let window = window.clone();
     std::thread::spawn(move || {
         if let Err(e) = apply_hints(xid, window_type_atom()) {
-            eprintln!("[overlay] {}: {e}", window.label());
+            warn!(window = window.label(), error = %e, "applying overlay hints failed");
             return;
         }
         if matches!(after, AfterHinting::LeaveHidden) {
@@ -269,10 +270,7 @@ pub(crate) fn hint_before_map(window: &WebviewWindow, after: AfterHinting) {
             let _ = restored.show();
         });
         if let Err(e) = put_back {
-            eprintln!(
-                "[overlay] {} was hidden for hinting and cannot be shown again: {e}",
-                window.label()
-            );
+            error!(window = window.label(), error = %e, "window hidden for hinting was not shown again");
         }
     });
 }

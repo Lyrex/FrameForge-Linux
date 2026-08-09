@@ -2,6 +2,11 @@
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
+use tracing::debug;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+use tracing::{info, warn};
+#[cfg(target_os = "linux")]
+use tracing::error;
 #[cfg(target_os = "linux")]
 use std::fs::File;
 #[cfg(target_os = "linux")]
@@ -408,6 +413,7 @@ fn read_linux_process_memory(
 }
 
 #[cfg(target_os = "windows")]
+#[tracing::instrument(level = "info", skip_all)]
 pub fn scan_warframe_credentials_process() -> Result<(String, String, String), String> {
     use std::ffi::c_void;
     use std::mem;
@@ -466,6 +472,7 @@ pub fn scan_warframe_credentials_process() -> Result<(String, String, String), S
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument(level = "info", skip_all)]
 pub fn scan_warframe_credentials_process() -> Result<(String, String, String), String> {
     let pid = find_warframe_pid_pub().ok_or("Warframe is not running")?;
     let process = LinuxProcess::open(pid)?;
@@ -653,6 +660,7 @@ fn is_warframe_command(command: &str) -> bool {
 // the actual JSON format for inventory items without any parsing assumptions.
 
 #[cfg(target_os = "windows")]
+#[tracing::instrument(level = "info", skip_all, fields(max_hits = max_hits))]
 pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
     use std::ffi::c_void;
     use std::mem;
@@ -773,6 +781,7 @@ pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument(level = "info", skip_all, fields(max_hits = max_hits))]
 pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
     // Same needles and context window as the Windows probe so saved output from
     // either platform reads the same way.
@@ -1043,6 +1052,7 @@ fn extract_blob_json_at(raw: &[u8], end_pos: usize) -> Option<Cow<'_, [u8]>> {
 
 /// `raw` must span from the JSON opening `{` (or from `"SubscribedToEmails"`) through
 /// `"DeathSquadable":`. Returns `None` if neither start can be located or JSON is malformed.
+#[tracing::instrument(level = "debug", skip_all)]
 pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
     let end_pos = find_blob_end(raw)?;
 
@@ -1050,7 +1060,7 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
     // small false-positive fragment that matched the end marker by coincidence.
     const MIN_PARSE_BYTES: usize = 50_000;
     if end_pos < MIN_PARSE_BYTES {
-        eprintln!("[blob-parse] too small ({} B < {} B) — skipping", end_pos, MIN_PARSE_BYTES);
+        debug!(target: "frameforge::blob_parse", end_pos, min = MIN_PARSE_BYTES, "too small — skipping");
         return None;
     }
 
@@ -1060,7 +1070,7 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
         .map_err(|e| {
             let head: String = json_bytes[..json_bytes.len().min(48)]
                 .iter().map(|&b| if b >= 0x20 && b < 0x7f { b as char } else { '.' }).collect();
-            eprintln!("[blob-parse] JSON error: {} | head: {:?}", e, head);
+            debug!(target: "frameforge::blob_parse", error = %e, head = ?head, "JSON error");
         })
         .ok()?;
 
@@ -1447,6 +1457,7 @@ const ANCHORS: &[&[u8]] = &[
 /// Returns `None` whenever anything looks different from last time, which puts
 /// the caller back on the full walk rather than reporting a stale inventory.
 #[cfg(target_os = "windows")]
+#[tracing::instrument(level = "debug", skip_all)]
 fn scan_windows_cached_blob(process: windows_sys::Win32::Foundation::HANDLE) -> Option<CachedBlobScan> {
     use std::ffi::c_void;
     use std::mem;
@@ -1514,7 +1525,7 @@ fn scan_windows_cached_blob(process: windows_sys::Win32::Foundation::HANDLE) -> 
 
     if blob_unchanged(&stitched) {
         if steady_state_notice_due() {
-            eprintln!("[blob] fast-path hit at 0x{cached_addr:012x}: unchanged since last scan; quiet until it changes");
+            debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path hit: unchanged since last scan; quiet until it changes");
         }
         return Some(CachedBlobScan::Unchanged);
     }
@@ -1530,6 +1541,7 @@ fn scan_windows_cached_blob(process: windows_sys::Win32::Foundation::HANDLE) -> 
 /// When `save=true` also writes the raw text to `blob_dir` for debugging.
 /// Returns the number of files written (always 0 when `save=false`).
 #[cfg(target_os = "windows")]
+#[tracing::instrument(level = "debug", skip_all, fields(save = save))]
 pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::sync::mpsc::Sender<BlobInventory>, save: bool) -> usize {
     use std::ffi::c_void;
     use std::mem;
@@ -1655,22 +1667,28 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
             scan.search_from = scan.data.len().saturating_sub(END_MARKER.len() - 1);
             scan.data.extend_from_slice(chunk);
             if scan.data.len() > MAX_SCAN {
-                eprintln!("[blob] scan#{} exceeded {} MB without end — dropped", scan.id, MAX_SCAN / 1024 / 1024);
+                warn!(scan_id = scan.id, max_mb = MAX_SCAN / 1024 / 1024, "scan exceeded size limit without end — dropped");
                 return false; // drop oversized scan
             }
             // Only search the newly-added window, not the full buffer.
             let has_end = memmem::find(&scan.data[search_from..], END_MARKER).is_some();
             if has_end && find_blob_end(&scan.data).is_some() {
                 if !save && blob_unchanged(&scan.data) {
-                    eprintln!("[blob] scan#{} unchanged since last scan — skipping parse", scan.id);
+                    debug!(scan_id = scan.id, "unchanged since last scan — skipping parse");
                     LAST_BLOB_REGION.store(scan.start_region_addr as u64, std::sync::atomic::Ordering::Relaxed);
                     found_result = true;
                     return false;
                 }
                 match parse_full_account_blob(&scan.data) {
                     Some(inv) => {
-                        eprintln!("[blob] scan#{} SUCCESS at 0x{:012x}: {} unique, {} stackable, {} mods",
-                            scan.id, region_addr, inv.unique_items.len(), inv.stackable_items.len(), inv.mods.len());
+                        info!(
+                            scan_id = scan.id,
+                            addr = format_args!("0x{region_addr:012x}"),
+                            unique = inv.unique_items.len(),
+                            stackable = inv.stackable_items.len(),
+                            mods = inv.mods.len(),
+                            "scan SUCCESS"
+                        );
                         // Cache the START region (not this region) so the fast path works next cycle.
                         LAST_BLOB_REGION.store(scan.start_region_addr as u64, std::sync::atomic::Ordering::Relaxed);
                         if save {
@@ -1684,7 +1702,7 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
                         found_result = true;
                     }
                     None => {
-                        eprintln!("[blob] scan#{} end marker found but JSON parse failed — dropped", scan.id);
+                        warn!(scan_id = scan.id, "end marker found but JSON parse failed — dropped");
                         forget_blob_digest();
                     }
                 }
@@ -1756,22 +1774,32 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
             next_scan_id += 1;
             starts_found += 1;
             let pre_bytes = combined.len() - n;
-            eprintln!(
-                "[blob] scan#{} started at 0x{:012x}+{} (json_open={} seed=0x{:012x} pre={}B)",
-                id, region_addr, start_off, json_open, seed_addr, pre_bytes
+            debug!(
+                scan_id = id,
+                addr = format_args!("0x{region_addr:012x}"),
+                start_off,
+                json_open,
+                seed = format_args!("0x{seed_addr:012x}"),
+                pre_bytes,
+                "scan started"
             );
             let seed = combined[json_open..].to_vec();
 
             let seed_ends = find_blob_end(&seed).is_some();
             if seed_ends && !save && blob_unchanged(&seed) {
-                eprintln!("[blob] scan#{} immediate hit: unchanged since last scan — skipping parse", id);
+                debug!(scan_id = id, "immediate hit: unchanged since last scan — skipping parse");
                 LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                 found_result = true;
             } else if seed_ends {
                 match parse_full_account_blob(&seed) {
                     Some(inv) => {
-                        eprintln!("[blob] scan#{} immediate SUCCESS at 0x{:012x}: {} unique, {} stackable",
-                            id, region_addr, inv.unique_items.len(), inv.stackable_items.len());
+                        info!(
+                            scan_id = id,
+                            addr = format_args!("0x{region_addr:012x}"),
+                            unique = inv.unique_items.len(),
+                            stackable = inv.stackable_items.len(),
+                            "scan immediate SUCCESS"
+                        );
                         LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                         if save {
                             let name = format!("Actual_inventory_FULL_ACCOUNT_{}_{:02}.txt", ts, saved + 1);
@@ -1783,7 +1811,7 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
                         found_result = true;
                     }
                     None => {
-                        eprintln!("[blob] scan#{} immediate end found but parse failed — dropping", id);
+                        warn!(scan_id = id, "immediate end found but parse failed — dropping");
                         forget_blob_digest();
                     }
                 }
@@ -1793,17 +1821,20 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
         }
     }
 
-    eprintln!(
-        "[blob-capture] done: read={} skipped={} starts={} saved={} bytes={}MB | \
-         vquery={:.0}ms read={:.0}ms search={:.0}ms",
-        regions_read, regions_skipped, starts_found, saved, bytes_read / 1_000_000,
-        t_vquery.as_secs_f64() * 1000.0,
-        t_read.as_secs_f64()   * 1000.0,
-        t_search.as_secs_f64() * 1000.0,
+    debug!(
+        target: "frameforge::blob_capture",
+        regions_read,
+        regions_skipped,
+        starts_found,
+        saved,
+        bytes_mb = bytes_read / 1_000_000,
+        vquery_ms = t_vquery.as_secs_f64() * 1000.0,
+        read_ms = t_read.as_secs_f64() * 1000.0,
+        search_ms = t_search.as_secs_f64() * 1000.0,
+        "capture done"
     );
     if starts_found == 0 {
-        eprintln!("[blob-capture] WARNING: no start-marker found — FULL_ACCOUNT not in memory \
-            (game in mission, on login screen, or Arsenal not open?)");
+        warn!(target: "frameforge::blob_capture", "no start-marker found — FULL_ACCOUNT not in memory (game in mission, on login screen, or Arsenal not open?)");
     }
     unsafe { CloseHandle(process); }
     saved
@@ -1846,6 +1877,7 @@ const MAX_SCAN: usize = 20 * 1024 * 1024;
 /// That path reaches no `on_blob` call, so a caller counting blobs by the
 /// callback would otherwise conclude the walk found nothing at all.
 #[cfg(target_os = "linux")]
+#[tracing::instrument(level = "debug", skip_all)]
 fn scan_linux_inventory_regions(
     process: &LinuxProcess,
     regions: impl IntoIterator<Item = LinuxRegion>,
@@ -1944,7 +1976,7 @@ fn scan_linux_inventory_regions(
 
             let scan = scans.swap_remove(index);
             if !save && blob_unchanged(&scan.data) {
-                eprintln!("[blob] scan unchanged since last scan — skipping parse");
+                debug!("scan unchanged since last scan — skipping parse");
                 LAST_BLOB_REGION.store(scan.start_address as u64, std::sync::atomic::Ordering::Relaxed);
                 outcome = Some(true);
                 found_something.set(true);
@@ -2023,7 +2055,7 @@ fn scan_linux_inventory_regions(
 
         if find_blob_end(&seed).is_some() {
             if !save && blob_unchanged(&seed) {
-                eprintln!("[blob] immediate seed unchanged since last scan — skipping parse");
+                debug!("immediate seed unchanged since last scan — skipping parse");
                 LAST_BLOB_REGION.store(start_address as u64, std::sync::atomic::Ordering::Relaxed);
                 outcome = Some(true);
                 found_something.set(true);
@@ -2078,11 +2110,14 @@ fn scan_linux_inventory_regions(
         let _ = walk_regions(process, file_regions, |_| true, deadline, &mut visit);
     }
 
-    eprintln!(
-        "[blob-scan] done: regions={} bytes={}MB read={:.0}ms search={:.0}ms total={:.0}ms",
-        regions_visited, bytes_read / 1_000_000,
-        t_read.as_secs_f64() * 1000.0, t_search.as_secs_f64() * 1000.0,
-        t_total.elapsed().as_secs_f64() * 1000.0,
+    debug!(
+        target: "frameforge::blob_capture",
+        regions = regions_visited,
+        bytes_mb = bytes_read / 1_000_000,
+        read_ms = t_read.as_secs_f64() * 1000.0,
+        search_ms = t_search.as_secs_f64() * 1000.0,
+        total_ms = t_total.elapsed().as_secs_f64() * 1000.0,
+        "scan done"
     );
     outcome.unwrap_or(false)
 }
@@ -2108,6 +2143,7 @@ fn scan_linux_inventory_regions(
 /// routing the stitch loop through it would let a single read overrun a
 /// near-exhausted budget by tens of megabytes on this scan's hot path.
 #[cfg(target_os = "linux")]
+#[tracing::instrument(level = "debug", skip_all)]
 fn scan_linux_cached_blob(
     process: &LinuxProcess,
     regions: &[LinuxRegion],
@@ -2183,9 +2219,11 @@ fn scan_linux_cached_blob(
     // this exact blob — skip the rebuild of BlobInventory's HashMaps/Vecs.
     if blob_unchanged(&data) {
         if steady_state_notice_due() {
-            eprintln!(
-                "[blob] cached-region hit: unchanged since last scan; quiet until it changes (bytes={}KB stitch={:.1}ms total={:.1}ms)",
-                bytes_read / 1000, stitch_time.as_secs_f64() * 1000.0, t_total.elapsed().as_secs_f64() * 1000.0,
+            debug!(
+                bytes_kb = bytes_read / 1000,
+                stitch_ms = stitch_time.as_secs_f64() * 1000.0,
+                total_ms = t_total.elapsed().as_secs_f64() * 1000.0,
+                "cached-region hit: unchanged since last scan; quiet until it changes"
             );
         }
         return Some(CachedBlobScan::Unchanged);
@@ -2196,10 +2234,12 @@ fn scan_linux_cached_blob(
     let parse_time = t_parse.elapsed();
     match parsed {
         Some(inventory) => {
-            eprintln!(
-                "[blob] cached-region stats: bytes={}KB stitch={:.1}ms parse={:.1}ms total={:.1}ms",
-                bytes_read / 1000, stitch_time.as_secs_f64() * 1000.0,
-                parse_time.as_secs_f64() * 1000.0, t_total.elapsed().as_secs_f64() * 1000.0,
+            debug!(
+                bytes_kb = bytes_read / 1000,
+                stitch_ms = stitch_time.as_secs_f64() * 1000.0,
+                parse_ms = parse_time.as_secs_f64() * 1000.0,
+                total_ms = t_total.elapsed().as_secs_f64() * 1000.0,
+                "cached-region stats"
             );
             Some(CachedBlobScan::Fresh(cached, inventory))
         }
@@ -2211,6 +2251,7 @@ fn scan_linux_cached_blob(
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument(level = "debug", skip_all, fields(save = save))]
 pub fn capture_all_blobs(
     blob_dir: &std::path::Path,
     ts: &str,
@@ -2220,20 +2261,20 @@ pub fn capture_all_blobs(
     const MAX_BLOBS: usize = 25;
 
     let Some(pid) = find_warframe_pid_pub() else {
-        eprintln!("[blob-capture] Warframe is not running");
+        warn!(target: "frameforge::blob_capture", "Warframe is not running");
         return 0;
     };
     let process = match LinuxProcess::open(pid) {
         Ok(process) => process,
         Err(error) => {
-            eprintln!("[blob-capture] {error}");
+            error!(target: "frameforge::blob_capture", %error, "failed to open Warframe process");
             return 0;
         }
     };
     let regions = match linux_process_regions(pid) {
         Ok(regions) => regions,
         Err(error) => {
-            eprintln!("[blob-capture] {error}");
+            error!(target: "frameforge::blob_capture", %error, "failed to enumerate Warframe process regions");
             return 0;
         }
     };
@@ -2247,11 +2288,12 @@ pub fn capture_all_blobs(
     let mut saved = 0;
     let unchanged = scan_linux_inventory_regions(&process, regions, save, |address, raw, inventory| {
         found += 1;
-        eprintln!(
-            "[blob] Linux scan SUCCESS at 0x{address:012x}: {} unique, {} stackable, {} mods",
-            inventory.unique_items.len(),
-            inventory.stackable_items.len(),
-            inventory.mods.len()
+        info!(
+            addr = format_args!("0x{address:012x}"),
+            unique = inventory.unique_items.len(),
+            stackable = inventory.stackable_items.len(),
+            mods = inventory.mods.len(),
+            "Linux scan SUCCESS"
         );
         if save {
             let path = blob_dir.join(format!(
@@ -2264,7 +2306,7 @@ pub fn capture_all_blobs(
             match std::fs::write(&path, &json) {
                 Ok(()) => saved += 1,
                 Err(error) => {
-                    eprintln!("[blob-capture] Failed to write {}: {error}", path.display())
+                    error!(target: "frameforge::blob_capture", path = %path.display(), %error, "failed to write blob")
                 }
             }
         }
@@ -2275,9 +2317,7 @@ pub fn capture_all_blobs(
     });
 
     if found == 0 && !unchanged {
-        eprintln!(
-            "[blob-capture] WARNING: no FULL_ACCOUNT blob found (open Arsenal or Inventory and try again)"
-        );
+        warn!(target: "frameforge::blob_capture", "no FULL_ACCOUNT blob found (open Arsenal or Inventory and try again)");
     }
     saved
 }
@@ -2311,8 +2351,12 @@ fn probe_outcome(
 ) -> ScanOutcome {
     match scan {
         Some(CachedBlobScan::Fresh(address, inventory)) => {
-            eprintln!("[blob] probe hit at 0x{address:012x}: {} unique, {} stackable",
-                inventory.unique_items.len(), inventory.stackable_items.len());
+            debug!(
+                addr = format_args!("0x{address:012x}"),
+                unique = inventory.unique_items.len(),
+                stackable = inventory.stackable_items.len(),
+                "probe hit"
+            );
             blob_tx.send(inventory).ok();
             ScanOutcome::Updated
         }
@@ -2339,6 +2383,7 @@ fn probe_outcome(
 /// moved. `None` means it was not scanned this tick, which is not the same as
 /// a miss.
 #[cfg(target_os = "linux")]
+#[tracing::instrument(level = "debug", skip_all, fields(force = force))]
 pub fn probe_tick(
     pid: u32,
     blob_tx: std::sync::mpsc::Sender<BlobInventory>,
@@ -2355,6 +2400,7 @@ pub fn probe_tick(
 }
 
 #[cfg(target_os = "windows")]
+#[tracing::instrument(level = "debug", skip_all, fields(force = force))]
 pub fn probe_tick(
     pid: u32,
     blob_tx: std::sync::mpsc::Sender<BlobInventory>,
@@ -2551,7 +2597,7 @@ fn sync_marker_is_new(newest: Option<f64>) -> bool {
     if is_new {
         // Four in a 40-minute session, and the walk policy keys off them, so
         // they are logged rather than left to be inferred from the walks.
-        eprintln!("[log] inventory sync marker at t={newest:.3}s");
+        info!(t = format_args!("{newest:.3}s"), "inventory sync marker");
     }
     is_new
 }
@@ -2603,7 +2649,7 @@ fn linux_newest_sync_timestamp(process: &LinuxProcess, regions: &[LinuxRegion]) 
             continue;
         }
         if found == 0 {
-            eprintln!("[log] sync-marker buffer at 0x{:012x} ({} KB)", region.start, read / 1000);
+            debug!(addr = format_args!("0x{:012x}", region.start), kb = read / 1000, "sync-marker buffer");
             LAST_LOG_REGION.store(region.start as u64, std::sync::atomic::Ordering::Relaxed);
         }
         if let Some(stamp) = newest_sync_timestamp(chunk) {
@@ -2615,7 +2661,7 @@ fn linux_newest_sync_timestamp(process: &LinuxProcess, regions: &[LinuxRegion]) 
         }
     }
     if found == 0 {
-        eprintln!("[log] no in-memory log buffer found; sync markers come from the EE.log tail only");
+        info!("no in-memory log buffer found; sync markers come from the EE.log tail only");
         LOG_SEARCH_BACKOFF.store(LOG_SEARCH_BACKOFF_PROBES, std::sync::atomic::Ordering::Relaxed);
     }
     newest
@@ -2695,7 +2741,7 @@ fn windows_newest_sync_timestamp(process: windows_sys::Win32::Foundation::HANDLE
             continue;
         }
         if found == 0 {
-            eprintln!("[log] sync-marker buffer at 0x{base:012x} ({} KB)", read / 1000);
+            debug!(addr = format_args!("0x{base:012x}"), kb = read / 1000, "sync-marker buffer");
             LAST_LOG_REGION.store(base as u64, std::sync::atomic::Ordering::Relaxed);
         }
         if let Some(stamp) = newest_sync_timestamp(chunk) {
@@ -2707,7 +2753,7 @@ fn windows_newest_sync_timestamp(process: windows_sys::Win32::Foundation::HANDLE
         }
     }
     if found == 0 {
-        eprintln!("[log] no in-memory log buffer found; sync markers come from the EE.log tail only");
+        info!("no in-memory log buffer found; sync markers come from the EE.log tail only");
         LOG_SEARCH_BACKOFF.store(LOG_SEARCH_BACKOFF_PROBES, std::sync::atomic::Ordering::Relaxed);
     }
     newest
@@ -2726,6 +2772,7 @@ fn windows_newest_sync_timestamp(process: windows_sys::Win32::Foundation::HANDLE
 // The caller is responsible for not holding the file lock across sleeps.
 
 #[cfg(target_os = "windows")]
+#[tracing::instrument(level = "info", skip_all)]
 pub fn raw_scan_pass(out: &mut impl std::io::Write) -> Result<usize, String> {
     use std::ffi::c_void;
     use std::mem;
@@ -2815,6 +2862,7 @@ pub fn raw_scan_pass(out: &mut impl std::io::Write) -> Result<usize, String> {
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument(level = "info", skip_all)]
 pub fn raw_scan_pass(out: &mut impl std::io::Write) -> Result<usize, String> {
     const MIN_LEN: usize = 8;
     const TIMEOUT: u64 = 600; // 10 minutes — full coverage over a full scan
