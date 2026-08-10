@@ -288,7 +288,7 @@ function ModularWindowPage() {
           setSectionOrder(order);
         }
       } catch {}
-      // Unblock saving even if the file failed to parse — the backend
+      // Unblock saving even if the file failed to parse, since the backend
       // refuses to overwrite a settings.json that is not a valid JSON object.
       popoutSettingsLoadedRef.current = true;
     }).catch(() => {});
@@ -328,7 +328,7 @@ function ModularWindowPage() {
     invoke("save_settings", { json: JSON.stringify(patch) }).catch((e) => {
       console.error("save_settings failed:", e);
     });
-  }, []);
+  }, []); // eslint-disable-line
 
   useEffect(() => {
     const win = getCurrentWindow();
@@ -1006,7 +1006,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         if (typeof s.wfmAutoInvisible    === "boolean") setWfmAutoInvisible(s.wfmAutoInvisible);
         if (typeof s.wfmAutoInvisibleMins === "number") setWfmAutoInvisibleMins(s.wfmAutoInvisibleMins);
       } catch {}
-      // Unblock saving even if the file failed to parse — the backend
+      // Unblock saving even if the file failed to parse, since the backend
       // refuses to overwrite a settings.json that is not a valid JSON object.
       settingsLoadedRef.current = true;
     }).catch(() => {});

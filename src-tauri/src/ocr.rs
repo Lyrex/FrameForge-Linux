@@ -139,7 +139,7 @@ fn capture_printwindow() -> Option<(Vec<u8>, u32, u32, u32)> {
 /// Capture the Warframe window using PrintWindow and return raw BGRA pixels + dimensions.
 /// Single capture can be reused for multiple OCR regions via `ocr_pixels_rect`.
 #[cfg(target_os = "windows")]
-#[tracing::instrument(level = "debug", skip_all)]
+#[tracing::instrument(level = "info", skip_all)]
 pub fn capture_warframe_pixels() -> Result<(Vec<u8>, u32, u32), String> {
     use std::mem;
     use windows_sys::Win32::{
@@ -662,7 +662,7 @@ pub fn to_bmp(pixels_bgra: &[u8], width: u32, height: u32) -> Vec<u8> {
 /// Run Windows.Media.Ocr on a BMP. Returns (full_text, line_positions).
 /// line_positions: Vec<(line_text, x_frac)> — X centre per line from word bounding rects.
 #[cfg(target_os = "windows")]
-#[tracing::instrument(level = "debug", skip_all)]
+#[tracing::instrument(level = "info", skip_all)]
 pub fn run_windows_ocr(bmp: Vec<u8>, img_w: u32, img_h: u32) -> Result<(String, Vec<(String, f32, f32)>), String> {
     // Ensure COM is initialized for this thread. Tokio spawn_blocking threads
     // start without a COM apartment; WinRT calls fail or return empty silently.

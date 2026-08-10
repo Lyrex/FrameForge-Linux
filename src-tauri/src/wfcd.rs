@@ -88,7 +88,7 @@ fn fetch_wiki_reward_names() -> HashSet<String> {
     let url_mod = "https://wiki.warframe.com/api.php?\
                    action=parse&page=Module:Void&prop=wikitext&format=json";
     if let Some(body) = ureq::get(url_mod)
-        .set("User-Agent", "WarframeCompanion/0.1")
+        .set("User-Agent", "FrameForge/3.1.0")
         .call().ok()
         .and_then(|r| r.into_string().ok())
     {
@@ -122,7 +122,7 @@ fn fetch_wiki_reward_names() -> HashSet<String> {
     let url_br = "https://wiki.warframe.com/api.php?\
                   action=parse&page=Void_Relic/ByRelic&prop=text&format=json";
     if let Some(html) = ureq::get(url_br)
-        .set("User-Agent", "WarframeCompanion/0.1")
+        .set("User-Agent", "FrameForge/3.1.0")
         .call().ok()
         .and_then(|r| r.into_string().ok())
         .and_then(|b| {
@@ -184,7 +184,7 @@ fn strip_tags(s: &str) -> &str {
 fn fetch_export_index() -> Result<Vec<String>, String> {
     let index_url = "https://origin.warframe.com/PublicExport/index_en.txt.lzma";
     let resp = ureq::get(index_url)
-        .set("User-Agent", "WarframeCompanion/0.1")
+        .set("User-Agent", "FrameForge/3.1.0")
         .call()
         .map_err(|e| format!("index fetch: {}", e))?;
 
@@ -224,7 +224,7 @@ fn fetch_export_recipes() -> Result<HashMap<String, ExportRecipe>, String> {
     let url = urls[0]; // primary
 
     let json: serde_json::Value = ureq::get(url)
-        .set("User-Agent", "FrameForge/0.1")
+        .set("User-Agent", "FrameForge/3.1.0")
         .call()
         .map_err(|e| format!("ExportRecipes fetch: {}", e))?
         .into_json()
@@ -272,7 +272,7 @@ fn fetch_syndicate_store_catalog(items: &[WfcdItem]) -> HashMap<String, Vec<Synd
         "https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data/syndicates.json";
 
     let json: serde_json::Value = match ureq::get(URL)
-        .set("User-Agent", "FrameForge/1.0")
+        .set("User-Agent", "FrameForge/3.1.0")
         .call()
         .ok()
         .and_then(|r| r.into_json().ok())
@@ -555,7 +555,7 @@ fn fetch_relics_rewards(image_by_name: &HashMap<String, String>) -> HashMap<Stri
         "https://raw.githubusercontent.com/WFCD/warframe-items/master/data/json/Relics.json";
 
     let json: serde_json::Value = match ureq::get(URL)
-        .set("User-Agent", "FrameForge/1.0")
+        .set("User-Agent", "FrameForge/3.1.0")
         .call().ok().and_then(|r| r.into_json().ok())
     {
         Some(v) => v,
@@ -628,7 +628,7 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
     let all_json: serde_json::Value = ureq::get(
         "https://raw.githubusercontent.com/WFCD/warframe-items/master/data/json/All.json"
     )
-    .set("User-Agent", "WarframeCompanion/0.1")
+    .set("User-Agent", "FrameForge/3.1.0")
     .call()
     .map_err(|e| format!("All.json fetch: {}", e))?
     .into_json()

@@ -201,7 +201,6 @@ pub fn scan_auth_credentials(data: &[u8]) -> Option<(String, String)> {
         if !id_bytes.iter().all(|&b| b.is_ascii_hexdigit()) { continue; }
         let account_id = std::str::from_utf8(id_bytes).unwrap_or("").to_string();
 
-        // Look for Nonce within 2048 bytes
         let nonce_search_end = (id_start + 2048).min(data.len());
         if let Some(rel) = memmem::find(&data[id_start..nonce_search_end], nonce_key) {
             let ns = id_start + rel + nonce_key.len();
@@ -222,7 +221,6 @@ pub fn scan_auth_credentials(data: &[u8]) -> Option<(String, String)> {
         let id_end = data[id_start..].iter().position(|&b| !b.is_ascii_hexdigit()).map(|p| id_start + p).unwrap_or(data.len());
         if id_end - id_start != 24 { continue; }
         let account_id = std::str::from_utf8(&data[id_start..id_end]).unwrap_or("").to_string();
-        // Nonce can appear anywhere within 512 bytes after the accountId
         let nonce_search_end = (id_end + 512).min(data.len());
         if let Some(rel) = memmem::find(&data[id_end..nonce_search_end], nk) {
             let ns = id_end + rel + nk.len();

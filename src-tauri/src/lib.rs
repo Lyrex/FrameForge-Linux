@@ -1,9 +1,9 @@
 ﻿use std::collections::HashMap;
+use tracing::{debug, error, info, warn};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tracing::{debug, error, info, warn};
 
 /// Write `data` to `path` atomically: write to a `.tmp` sibling, then rename over the target.
 /// Prevents zero-byte corruption if the process or OS crashes mid-write.
@@ -996,7 +996,7 @@ fn wfm_request(method: &str, path: &str, auth_header: &str) -> ureq::Request {
        .set("Accept", "application/json")
        .set("language", "en")
        .set("platform", "pc")
-       .set("User-Agent", "FrameForge/2.1.0")
+       .set("User-Agent", "FrameForge/3.1.0")
 }
 
 #[tracing::instrument(level = "debug", skip_all, fields(method = %method, path = %path))]
@@ -1349,7 +1349,7 @@ fn wfm_receive_tokens(
     let json: serde_json::Value = ureq::get("https://api.warframe.market/v2/me")
         .set("Authorization", &format!("Bearer {}", access_token))
         .set("language", "en").set("platform", "pc")
-        .set("User-Agent", "FrameForge/2.1.0")
+        .set("User-Agent", "FrameForge/3.1.0")
         .call().map_err(|e| format!("Profile: {}", e))?
         .into_json().map_err(|e| format!("Parse: {}", e))?;
     let username = json["data"]["ingameName"].as_str().unwrap_or("Tenno").to_string();
@@ -1392,7 +1392,7 @@ fn wfm_refresh_token(state: State<AppState>) -> Result<(), String> {
     wfm_wait();
     let json: serde_json::Value = ureq::post("https://api.warframe.market/auth/refresh")
         .set("Content-Type", "application/json")
-        .set("User-Agent", "FrameForge/2.1.0")
+        .set("User-Agent", "FrameForge/3.1.0")
         .send_string(&body.to_string())
         .map_err(|e| format!("Refresh: {}", e))?
         .into_json().map_err(|e| format!("Parse: {}", e))?;
@@ -1421,7 +1421,7 @@ fn wfm_set_jwt(state: State<AppState>, jwt: String) -> Result<(String, String), 
     let json: serde_json::Value = ureq::get("https://api.warframe.market/v2/me")
         .set("Authorization", &format!("Bearer {}", access_token))
         .set("language", "en").set("platform", "pc")
-        .set("User-Agent", "FrameForge/2.1.0")
+        .set("User-Agent", "FrameForge/3.1.0")
         .call().map_err(|e| format!("401: {}", e))?
         .into_json().map_err(|e| format!("Parse: {}", e))?;
     let username = json["data"]["ingameName"].as_str().unwrap_or("Tenno").to_string();
@@ -1448,7 +1448,7 @@ fn wfm_login(state: State<AppState>, email: String, password: String) -> Result<
     let resp = ureq::post("https://api.warframe.market/v1/auth/signin")
         .set("Content-Type", "application/json")
         .set("Authorization", "JWT")
-        .set("User-Agent", "FrameForge/2.1.0")
+        .set("User-Agent", "FrameForge/3.1.0")
         .send_string(&body.to_string())
         .map_err(|e| format!("Login failed: {}", e))?;
 
@@ -1487,7 +1487,7 @@ fn wfm_get_item_orders(state: State<AppState>, url_name: String, mod_rank: Optio
         .as_ref().map(|s| s.auth_header());
     wfm_wait();
     let mut req = ureq::get(&format!("https://api.warframe.market/v2/orders/item/{}", url_name))
-        .set("language", "en").set("platform", "pc").set("User-Agent", "FrameForge/2.1.0");
+        .set("language", "en").set("platform", "pc").set("User-Agent", "FrameForge/3.1.0");
     if let Some(ref h) = auth { req = req.set("Authorization", h); }
     let json: serde_json::Value = req.call().map_err(|e| format!("orders: {}", e))?
         .into_json().map_err(|e| format!("parse: {}", e))?;
@@ -1526,7 +1526,7 @@ fn wfm_get_item_statistics(state: State<AppState>, url_name: String) -> Result<s
         .as_ref().map(|s| s.auth_header());
     wfm_wait();
     let mut req = ureq::get(&format!("https://api.warframe.market/v1/items/{}/statistics", url_name))
-        .set("language", "en").set("platform", "pc").set("User-Agent", "FrameForge/2.1.0");
+        .set("language", "en").set("platform", "pc").set("User-Agent", "FrameForge/3.1.0");
     if let Some(ref h) = auth { req = req.set("Authorization", h); }
     let json: serde_json::Value = req.call().map_err(|e| format!("stats: {}", e))?
         .into_json().map_err(|e| format!("parse: {}", e))?;
@@ -1556,7 +1556,7 @@ struct WfmTopDiskCache {
 fn fetch_wfm_prime_sets() -> Vec<(String, String)> {
     wfm_wait();
     let resp = ureq::get("https://api.warframe.market/v2/items")
-        .set("User-Agent", "FrameForge/2.1.0")
+        .set("User-Agent", "FrameForge/3.1.0")
         .timeout(std::time::Duration::from_secs(15))
         .call();
     let json: serde_json::Value = match resp {
@@ -2039,7 +2039,7 @@ fn wfm_fetch_status(state: State<AppState>) -> Result<String, String> {
     let json: serde_json::Value = ureq::get("https://api.warframe.market/v2/me")
         .set("Authorization", &format!("Bearer {}", token))
         .set("language", "en").set("platform", "pc")
-        .set("User-Agent", "FrameForge/2.1.0")
+        .set("User-Agent", "FrameForge/3.1.0")
         .call().map_err(|e| format!("Status fetch: {}", e))?
         .into_json().map_err(|e| format!("Parse: {}", e))?;
     Ok(json["data"]["status"].as_str().unwrap_or("offline").to_string())
@@ -2288,9 +2288,17 @@ fn parse_stat_groups(s: &str) -> Vec<Vec<String>> {
     all
 }
 
+/// Whether `text` (already lowercased) carries the riven screen's "FITS IN"
+/// panel label. The label is small enough on a 4K frame that an engine can close
+/// the word gap and report "FITSIN", so both sides are compared with spaces
+/// removed.
+fn says_fits_in(text: &str) -> bool {
+    text.replace(' ', "").contains("fitsin")
+}
+
 /// Weapon-name candidates from the "FITS IN" panel's OCR, top to bottom.
 ///
-/// The panel is mostly icon and border debris — single glyphs, punctuation —
+/// The panel is mostly icon and border debris (single glyphs, punctuation)
 /// with the weapon name and the panel's own buttons as the only real words, so a
 /// candidate is a line of at least four letters that is not one of those
 /// buttons. The name sits below the "FITS IN" label and above "SHOW RANKED",
@@ -2307,14 +2315,6 @@ fn panel_weapon_candidates(panel: &str) -> Vec<String> {
                 && !l.contains("cancel")
         })
         .collect()
-}
-
-/// Whether `text` (already lowercased) carries the riven screen's "FITS IN"
-/// panel label. The label is small enough on a 4K frame that Tesseract closes
-/// the word gap and reports "FITSIN", so both sides are compared with spaces
-/// removed — matching the spaced form alone rejected every screen tested.
-fn says_fits_in(text: &str) -> bool {
-    text.replace(' ', "").contains("fitsin")
 }
 
 /// Rejoin a riven card's OCR text into one line per stat.
@@ -2511,7 +2511,7 @@ fn load_riven_csv_from_url() -> Result<HashMap<String, RivenEntry>, String> {
             RIVEN_SHEET_ID, gid
         );
         match ureq::get(&url)
-            .set("User-Agent", "FrameForge/2.1.0")
+            .set("User-Agent", "FrameForge/3.1.0")
             .call().map_err(|e| e.to_string())
             .and_then(|r| r.into_string().map_err(|e| e.to_string()))
         {
@@ -2704,17 +2704,6 @@ async fn ocr_riven_screen() -> Result<serde_json::Value, String> {
                 .unwrap_or_default();
             let card_text = ocr::ocr_pixels_rect(&pixels, w, h, 0.20, 0.65, 0.28, 0.82)
                 .unwrap_or_default();
-            // "FITS IN" is a two-word label in the far right panel. Over a whole
-            // 4K frame it is small enough to be missed, so it gets the same
-            // dedicated crop that riven_screen_visible reads it from.
-            //
-            // The crop runs to 95% of frame height because the weapon name sits
-            // under the panel's weapon icon at about 86% — below both this crop's
-            // old 80% bound and the full-frame pass's 82%, which is why the name
-            // was unreadable from anywhere. It is worth reaching for: the panel
-            // names the actual weapon ("Kuva Nukor") while the mod name above the
-            // card gives only the base weapon ("Nukor Crita-hexapha"), and the two
-            // carry different riven dispositions.
             let panel_text = ocr::ocr_pixels_rect_raw(&pixels, w, h, 0.73, 1.0, 0.30, 0.95)
                 .unwrap_or_default();
             let _ = append_to_file(&riven_log2, &format!(
@@ -2841,13 +2830,12 @@ async fn ocr_riven_screen() -> Result<serde_json::Value, String> {
     // The "FITS IN" panel is the only place the game states the weapon outright,
     // and it states the real one: a Kuva Nukor riven is titled "Nukor Crita-
     // hexapha" above the card, which resolves to the ordinary Nukor and its
-    // different disposition. Take any panel line the database recognises — the
-    // surrounding panel chrome ("SHOW RANKED", icon debris) matches nothing.
+    // different disposition.
     //
-    // The grading sheet is a curated list, not a weapon index — it carries
-    // "kuva bramma" but not "kuva nukor" — so a panel name it does not know is
+    // The grading sheet is a curated list, not a weapon index. It carries
+    // "kuva bramma" but not "kuva nukor", so a panel name it does not know is
     // still the right answer. Reporting it unmatched costs the roll analysis
-    // (`analyze_riven` returns nothing for an unknown weapon, which the UI
+    // (analyze_riven returns nothing for an unknown weapon, which the UI
     // already handles) and buys not silently grading a Kuva Nukor as the base
     // Nukor it is titled after, on a different disposition.
     let panel_candidates = panel_weapon_candidates(&panel_for_weapon);
@@ -3622,7 +3610,7 @@ fn wfm_get_riven_attributes() -> Result<Vec<String>, String> {
     let json: serde_json::Value = ureq::get("https://api.warframe.market/v1/auctions/search")
         .query("type", "riven")
         .set("language", "en").set("platform", "pc")
-        .set("User-Agent", "FrameForge/2.1.0")
+        .set("User-Agent", "FrameForge/3.1.0")
         .call().map_err(|e| format!("Search: {}", e))?
         .into_json().map_err(|e| format!("Parse: {}", e))?;
     let mut seen = std::collections::HashSet::new();
@@ -5136,16 +5124,14 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
             let game_running = cached_game_running;
             if game_running {
                 // ── Blob capture: cheap probe, rate-limited walk ──────────────
-                // The marker is read at this cadence; re-reading the blob is
-                // gated separately, on BLOB_PROBE_FALLBACK below.
+                // The probe runs at PROBE_INTERVAL; re-reading the blob itself is
+                // gated additionally by BLOB_PROBE_FALLBACK or the sync marker.
                 const PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
                 let walk_in_flight = blob_scan_active.load(Ordering::SeqCst);
                 let probe_due = last_probe_time
                     .map_or(true, |t: std::time::Instant| t.elapsed() >= PROBE_INTERVAL);
 
-                // Probes run inline, so one must never start behind a walk that
-                // is already reading the same process.
                 let mut should_capture = false;
                 if probe_due && !walk_in_flight {
                     last_probe_time = Some(std::time::Instant::now());
@@ -5160,33 +5146,16 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     if outcome.is_some() {
                         last_blob_probe = Some(std::time::Instant::now());
                     }
-                    // Two sources for the same marker. The tail sees it only
-                    // after Warframe flushes, which lags the event by tens of
-                    // seconds; reading the log text out of the process sees it
-                    // as soon as the game formats the line, and falls back to
-                    // the tail when the buffers cannot be located.
-                    //
-                    // The memory probe reports each marker exactly once, so it
-                    // has to be folded into the held flag rather than read
-                    // beside it. Otherwise a marker arriving on a tick that
-                    // cannot act on it is lost.
                     if sync_marker {
                         blob_sync_pending.store(true, Ordering::SeqCst);
                     }
-                    let sync_seen = blob_sync_pending.load(Ordering::SeqCst);
+                    let sync_seen  = blob_sync_pending.load(Ordering::SeqCst);
                     let blob_known = memory_scanner::has_cached_blob();
                     let since_walk = last_walk_time
                         .map_or(std::time::Duration::MAX, |t: std::time::Instant| t.elapsed());
-                    // A tick that did not re-read the blob has no fresh evidence
-                    // to escalate on, and the marker that would justify a walk
-                    // is exactly what makes the probe run in the first place.
                     should_capture = outcome
                         .as_ref()
-                        .is_some_and(|outcome| walk_is_due(outcome, sync_seen, blob_known, since_walk));
-                    // Hold the marker unless it was acted on, or the probe
-                    // already delivered the inventory it was announcing. A
-                    // marker dropped while the rate limit says "not yet" is
-                    // never revisited.
+                        .is_some_and(|o| walk_is_due(o, sync_seen, blob_known, since_walk));
                     if should_capture || outcome == Some(memory_scanner::ScanOutcome::Updated) {
                         blob_sync_pending.store(false, Ordering::SeqCst);
                     }
@@ -5195,14 +5164,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                             Some(t) => format!("{:.1}s", t.elapsed().as_secs_f64()),
                             None => "never".into(),
                         };
-                        info!(
-                            target: "frameforge::monitor",
-                            ?outcome,
-                            sync_marker = sync_seen,
-                            blob_known,
-                            since_last_walk = %since,
-                            "escalating to full walk"
-                        );
+                        info!(outcome = ?outcome, sync_seen, blob_known, since_last_walk = %since, "escalating to full walk");
                     }
                 }
 
@@ -5220,7 +5182,6 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     });
                     debug!(save, "blob capture starting");
                     std::thread::spawn(move || {
-                        // Ensure the flag is cleared even if capture_all_blobs panics.
                         struct ClearOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
                         impl Drop for ClearOnDrop {
                             fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); }
@@ -7504,7 +7465,7 @@ async fn fetch_worldstate(state: State<'_, AppState>) -> Result<serde_json::Valu
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
         let raw = ureq::get("https://api.warframe.com/cdn/worldState.php")
-            .set("User-Agent", "FrameForge/2.1.0")
+            .set("User-Agent", "FrameForge/3.1.0")
             .call()
             .map_err(|e| format!("worldstate fetch failed: {}", e))?
             .into_json::<serde_json::Value>()
@@ -7516,7 +7477,7 @@ async fn fetch_worldstate(state: State<'_, AppState>) -> Result<serde_json::Valu
         let news: Vec<serde_json::Value> = ureq::get(
             "https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?appid=230410&count=10&maxlength=500&format=json"
         )
-            .set("User-Agent", "FrameForge/2.1.0")
+            .set("User-Agent", "FrameForge/3.1.0")
             .timeout(std::time::Duration::from_secs(10))
             .call()
             .ok()
@@ -9191,7 +9152,7 @@ mod settings_merge_tests {
 
     /// A truncated settings.json (crash or app kill mid-write, e.g. during an
     /// update) used to parse as "no settings", and the next merge rewrote the
-    /// file from an empty map — wiping tracked and favorites. A file that
+    /// file from an empty map, wiping tracked and favorites. A file that
     /// exists but does not parse must be left exactly as it is.
     #[test]
     fn a_corrupt_settings_file_is_never_replaced() {
@@ -9262,73 +9223,6 @@ mod settings_merge_tests {
                 assert!(map.contains_key(&format!("k{t}_{i}")), "lost k{t}_{i}");
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod walk_policy_tests {
-    use super::{walk_is_due, WALK_COLD_INTERVAL, WALK_MAX_INTERVAL, WALK_MIN_INTERVAL};
-    use crate::memory_scanner::ScanOutcome;
-    use std::time::Duration;
-
-    /// At the login screen no blob has ever been found, and re-checking that
-    /// every WALK_MIN_INTERVAL reads gigabytes and costs the player frames for
-    /// seconds at a time.
-    #[test]
-    fn a_client_with_no_blob_yet_waits_for_the_backstop() {
-        let just_walked = WALK_MIN_INTERVAL + Duration::from_secs(1);
-        assert!(!walk_is_due(&ScanOutcome::CacheMiss, false, false, just_walked));
-        assert!(walk_is_due(&ScanOutcome::CacheMiss, false, false, WALK_COLD_INTERVAL));
-    }
-
-    /// A settled inventory answers "unchanged" every couple of seconds for as
-    /// long as the player stays docked, so walking gigabytes each minute to
-    /// check it again is wasted work.
-    #[test]
-    fn a_settled_inventory_does_not_walk_on_the_minute() {
-        assert!(!walk_is_due(&ScanOutcome::Unchanged, false, true, Duration::from_secs(60)));
-        assert!(!walk_is_due(&ScanOutcome::Unchanged, false, true, Duration::from_secs(300)));
-        assert!(walk_is_due(&ScanOutcome::Unchanged, false, true, WALK_MAX_INTERVAL));
-    }
-
-    /// The client announced a fetch and our copy did not move. Usually a sync
-    /// with no delta, but it is also what a stale address holding the old bytes
-    /// looks like, which the probe cannot distinguish.
-    #[test]
-    fn an_unchanged_probe_with_a_marker_still_walks() {
-        assert!(walk_is_due(&ScanOutcome::Unchanged, true, true, WALK_MIN_INTERVAL));
-        assert!(!walk_is_due(&ScanOutcome::Unchanged, true, true, Duration::from_secs(3)));
-    }
-
-    /// The probe already delivered the new inventory, so a walk would read
-    /// gigabytes to produce what the monitor already has.
-    #[test]
-    fn a_fresh_parse_never_escalates() {
-        assert!(!walk_is_due(&ScanOutcome::Updated, true, true, Duration::MAX));
-    }
-
-    /// Once a blob is known, a miss plausibly means the game reallocated it
-    /// because the inventory changed, which is worth checking at the old
-    /// cadence.
-    #[test]
-    fn a_miss_on_a_known_blob_keeps_the_old_cadence() {
-        assert!(walk_is_due(&ScanOutcome::CacheMiss, false, true, WALK_MIN_INTERVAL));
-        assert!(!walk_is_due(&ScanOutcome::CacheMiss, false, true, Duration::from_secs(4)));
-    }
-
-    /// The marker resolves the ambiguity, including at the login screen where
-    /// the first sync arrives.
-    #[test]
-    fn a_sync_marker_escalates_immediately() {
-        assert!(walk_is_due(&ScanOutcome::CacheMiss, true, false, Duration::ZERO));
-        assert!(walk_is_due(&ScanOutcome::CacheMiss, true, true, Duration::ZERO));
-    }
-
-    /// The first tick after the game appears has no previous walk to rate-limit
-    /// against, so the app still gets one immediately at startup.
-    #[test]
-    fn the_first_walk_is_never_delayed() {
-        assert!(walk_is_due(&ScanOutcome::CacheMiss, false, false, Duration::MAX));
     }
 }
 
@@ -9471,16 +9365,16 @@ X N,
         );
     }
 
-    /// Verbatim panel OCR from the three example screens. The weapon name has to
-    /// survive whether or not the grading sheet lists it — "kuva nukor" is not in
+    /// Verbatim panel OCR from three reroll screens. The weapon name has to
+    /// survive whether or not the grading sheet lists it: "kuva nukor" is not in
     /// the sheet, and reporting the base Nukor in its place would grade the roll
     /// against a different weapon's disposition.
     #[test]
     fn the_panel_yields_the_weapon_name_over_its_own_chrome() {
-        let nukor = "o\n=\n\\\n[\"\no\nIN\nﬁ ‘A l“')\n—\nKuva Nukor\n";
+        let nukor = "o\n=\n\\\n[\"\no\nIN\n\u{fb01} 'A l\u{2019}\u{2019})\n\u{2014}\nKuva Nukor\n";
         assert_eq!(panel_weapon_candidates(nukor).last().unwrap(), "kuva nukor");
 
-        let bramma = "-\nD\n)\nA\n~\n3\n¥\nFITSIN\ne\nKuva Bramma\nSHOW RANKED\n";
+        let bramma = "-\nD\n)\nA\n~\n3\n\u{00a5}\nFITSIN\ne\nKuva Bramma\nSHOW RANKED\n";
         assert_eq!(panel_weapon_candidates(bramma).last().unwrap(), "kuva bramma");
 
         // The single-card screen adds a CLOSE button below SHOW RANKED.
@@ -9488,10 +9382,10 @@ X N,
         assert_eq!(panel_weapon_candidates(single).last().unwrap(), "kuva bramma");
 
         // A panel that read as nothing but debris must not name a weapon.
-        assert!(panel_weapon_candidates("\\“ \\\n>~ ‘\n").is_empty());
+        assert!(panel_weapon_candidates("\u{201c} \\\\\n>~ \u{2018}\n").is_empty());
     }
 
-    /// Tesseract closes the gap in the panel label on every screen tested.
+    /// The label is small enough that an engine can close the word gap.
     #[test]
     fn the_fits_in_marker_is_matched_without_its_space() {
         assert!(says_fits_in("fitsin"));
@@ -9570,5 +9464,67 @@ MR 11
             wfm_secret_load(TEST_SERVICE).expect("loading after a delete succeeds"),
             None,
         );
+    }
+}
+
+#[cfg(test)]
+mod walk_policy_tests {
+    use super::{walk_is_due, WALK_COLD_INTERVAL, WALK_MAX_INTERVAL, WALK_MIN_INTERVAL};
+    use crate::memory_scanner::ScanOutcome;
+    use std::time::Duration;
+
+    /// At the login screen no blob has ever been found, and re-checking that
+    /// every WALK_MIN_INTERVAL reads gigabytes and costs the player frames for
+    /// seconds at a time.
+    #[test]
+    fn a_client_with_no_blob_yet_waits_for_the_backstop() {
+        let just_walked = WALK_MIN_INTERVAL + Duration::from_secs(1);
+        assert!(!walk_is_due(&ScanOutcome::CacheMiss, false, false, just_walked));
+        assert!(walk_is_due(&ScanOutcome::CacheMiss, false, false, WALK_COLD_INTERVAL));
+    }
+
+    /// A settled inventory answers "unchanged" every couple of seconds for as
+    /// long as the player stays docked.
+    #[test]
+    fn a_settled_inventory_does_not_walk_on_the_minute() {
+        assert!(!walk_is_due(&ScanOutcome::Unchanged, false, true, Duration::from_secs(60)));
+        assert!(!walk_is_due(&ScanOutcome::Unchanged, false, true, Duration::from_secs(300)));
+        assert!(walk_is_due(&ScanOutcome::Unchanged, false, true, WALK_MAX_INTERVAL));
+    }
+
+    /// The client announced a fetch and our copy did not move. Usually a sync
+    /// with no delta, but it is also what a stale address holding the old bytes
+    /// looks like.
+    #[test]
+    fn an_unchanged_probe_with_a_marker_still_walks() {
+        assert!(walk_is_due(&ScanOutcome::Unchanged, true, true, WALK_MIN_INTERVAL));
+        assert!(!walk_is_due(&ScanOutcome::Unchanged, true, true, Duration::from_secs(3)));
+    }
+
+    /// The probe already delivered the new inventory.
+    #[test]
+    fn a_fresh_parse_never_escalates() {
+        assert!(!walk_is_due(&ScanOutcome::Updated, true, true, Duration::MAX));
+    }
+
+    /// Once a blob is known, a miss plausibly means the game reallocated it.
+    #[test]
+    fn a_miss_on_a_known_blob_keeps_the_old_cadence() {
+        assert!(walk_is_due(&ScanOutcome::CacheMiss, false, true, WALK_MIN_INTERVAL));
+        assert!(!walk_is_due(&ScanOutcome::CacheMiss, false, true, Duration::from_secs(4)));
+    }
+
+    /// The marker resolves the ambiguity, including at the login screen.
+    #[test]
+    fn a_sync_marker_escalates_immediately() {
+        assert!(walk_is_due(&ScanOutcome::CacheMiss, true, false, Duration::ZERO));
+        assert!(walk_is_due(&ScanOutcome::CacheMiss, true, true, Duration::ZERO));
+    }
+
+    /// The first tick after the game appears has no previous walk to rate-limit
+    /// against, so the app still gets one immediately at startup.
+    #[test]
+    fn the_first_walk_is_never_delayed() {
+        assert!(walk_is_due(&ScanOutcome::CacheMiss, false, false, Duration::MAX));
     }
 }
