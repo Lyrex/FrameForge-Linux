@@ -1,4 +1,4 @@
-# FrameForge — Warframe Companion `v3.0.0`
+# FrameForge — Warframe Companion `v3.1.0`
 
 A desktop companion for Warframe — live inventory, market prices, trading, timers, relic overlay, and riven analysis. Read-only, no game modification.
 

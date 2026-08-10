@@ -1,5 +1,6 @@
 ﻿use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ModCount {
@@ -74,7 +75,6 @@ pub struct PendingRecipe {
     pub completion_ms: i64,
 }
 
-/// One Archon Shard socketed into a Warframe.
 /// One Archon Shard socketed into a Warframe.
 /// `upgrade_type` is the effect path (e.g. `.../ArchonCrystalUpgradeWarframeEnergyMax`).
 /// `color` is the raw string value from the JSON (e.g. `"ACC_CRIMSON"`, `"ACC_AZURE_TAUFORGED"`).
@@ -160,37 +160,6 @@ pub fn xp_to_rank(xp: i64, path: &str) -> u32 {
     ((xp as f64 / base).sqrt().floor() as u32).min(30)
 }
 
-/// Diagnostic: find "CompletionDate" in any format and return a snippet of context.
-#[allow(dead_code)]
-pub fn scan_completion_date_context(data: &[u8]) -> Vec<String> {
-    let key = b"\"CompletionDate\"";
-    let mut results = Vec::new();
-    let mut start = 0usize;
-    loop {
-        let next = match data[start..].iter().position(|&b| b == b'"') {
-            Some(p) => start + p,
-            None => break,
-        };
-        if next + key.len() > data.len() { break; }
-        if data[next..next + key.len()] != *key {
-            start = next + 1; continue;
-        }
-        // Capture 120 bytes of context starting 40 bytes before the key
-        let ctx_start = next.saturating_sub(40);
-        let ctx_end   = (next + 120).min(data.len());
-        let ctx = &data[ctx_start..ctx_end];
-        // Only include printable ASCII so the log is readable
-        let s: String = ctx.iter()
-            .map(|&b| if b >= 0x20 && b < 0x7f { b as char } else { '·' })
-            .collect();
-        results.push(s);
-        start = next + key.len();
-        if results.len() >= 3 { break; } // cap at 3 samples
-    }
-    results
-}
-
-
 // ─── Auth credentials scan ───────────────────────────────────────────────────
 //
 // When Warframe is running and logged in, the game stores the session credentials
@@ -210,26 +179,17 @@ pub fn scan_auth_credentials(data: &[u8]) -> Option<(String, String)> {
     // Search for "id":"<24hexchars>" near "Nonce":<digits>
     let id_key = b"\"id\":\"";
     let nonce_key = b"\"Nonce\":";
-    let mut search = 0usize;
-    while search + id_key.len() < data.len() {
-        let next = match data[search..].iter().position(|&b| b == b'"') {
-            Some(p) => search + p, None => break,
-        };
-        if next + id_key.len() > data.len() { break; }
-        if data[next..next + id_key.len()] != *id_key { search = next + 1; continue; }
-
-        let id_start = next + id_key.len();
-        // accountId is exactly 24 lowercase hex chars
+    for pos in memchr::memmem::find_iter(data, id_key) {
+        let id_start = pos + id_key.len();
         let id_slice = &data[id_start..id_start.saturating_add(26).min(data.len())];
         let close = id_slice.iter().position(|&b| b == b'"').unwrap_or(0);
-        if close != 24 { search = next + 1; continue; }
+        if close != 24 { continue; }
         let id_bytes = &id_slice[..24];
-        if !id_bytes.iter().all(|&b| b.is_ascii_hexdigit()) { search = next + 1; continue; }
+        if !id_bytes.iter().all(|&b| b.is_ascii_hexdigit()) { continue; }
         let account_id = std::str::from_utf8(id_bytes).unwrap_or("").to_string();
 
-        // Look for Nonce within 2048 bytes
         let nonce_search_end = (id_start + 2048).min(data.len());
-        if let Some(rel) = data[id_start..nonce_search_end].windows(nonce_key.len()).position(|w| w == *nonce_key) {
+        if let Some(rel) = memchr::memmem::find(&data[id_start..nonce_search_end], nonce_key) {
             let ns = id_start + rel + nonce_key.len();
             let ne = digits_end(data, ns);
             if ne > ns && ne - ns >= 5 {
@@ -238,26 +198,18 @@ pub fn scan_auth_credentials(data: &[u8]) -> Option<(String, String)> {
                 }
             }
         }
-        search = next + 1;
     }
 
     // URL-encoded: accountId=<24hexchars>&nonce=<10digits>&ct=STM
     let ak = b"accountId=";
     let nk = b"nonce=";
-    let mut search = 0usize;
-    while search + ak.len() < data.len() {
-        let next = match data[search..].iter().position(|&b| b == b'a') {
-            Some(p) => search + p, None => break,
-        };
-        if next + ak.len() > data.len() { break; }
-        if data[next..next + ak.len()] != *ak { search = next + 1; continue; }
-        let id_start = next + ak.len();
+    for pos in memchr::memmem::find_iter(data, ak) {
+        let id_start = pos + ak.len();
         let id_end = data[id_start..].iter().position(|&b| !b.is_ascii_hexdigit()).map(|p| id_start + p).unwrap_or(data.len());
-        if id_end - id_start != 24 { search = next + 1; continue; }
+        if id_end - id_start != 24 { continue; }
         let account_id = std::str::from_utf8(&data[id_start..id_end]).unwrap_or("").to_string();
-        // Nonce can appear anywhere within 512 bytes after the accountId
         let nonce_search_end = (id_end + 512).min(data.len());
-        if let Some(rel) = data[id_end..nonce_search_end].windows(nk.len()).position(|w| w == *nk) {
+        if let Some(rel) = memchr::memmem::find(&data[id_end..nonce_search_end], nk) {
             let ns = id_end + rel + nk.len();
             let ne = digits_end(data, ns);
             if ne > ns && ne - ns >= 5 {
@@ -266,7 +218,6 @@ pub fn scan_auth_credentials(data: &[u8]) -> Option<(String, String)> {
                 }
             }
         }
-        search = next + 1;
     }
     None
 }
@@ -274,21 +225,14 @@ pub fn scan_auth_credentials(data: &[u8]) -> Option<(String, String)> {
 /// Also extract steamId from memory (found near accountId/nonce in URL params).
 pub fn scan_steam_id(data: &[u8]) -> Option<String> {
     let key = b"steamId=";
-    let mut search = 0usize;
-    loop {
-        let next = match data[search..].iter().position(|&b| b == b's') {
-            Some(p) => search + p, None => break,
-        };
-        if next + key.len() > data.len() { break; }
-        if data[next..next + key.len()] != *key { search = next + 1; continue; }
-        let id_start = next + key.len();
+    for pos in memchr::memmem::find_iter(data, key) {
+        let id_start = pos + key.len();
         let id_end = data[id_start..].iter().position(|&b| !b.is_ascii_digit()).map(|p| id_start + p).unwrap_or(data.len());
         if id_end - id_start >= 15 && id_end - id_start <= 20 {
             if let Ok(sid) = std::str::from_utf8(&data[id_start..id_end]) {
                 return Some(sid.to_string());
             }
         }
-        search = next + 1;
     }
     None
 }
@@ -308,6 +252,7 @@ pub fn find_warframe_pid_pub() -> Option<u32> { None }
 // the actual JSON format for inventory items without any parsing assumptions.
 
 #[cfg(target_os = "windows")]
+#[tracing::instrument(level = "info", skip_all, fields(max_hits = max_hits))]
 pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
     use std::ffi::c_void;
     use std::mem;
@@ -432,94 +377,6 @@ pub fn dump_inventory_regions(_max_hits: usize) -> Vec<String> {
     vec!["Only supported on Windows".to_string()]
 }
 
-// ─── One-shot inventory blob capture ─────────────────────────────────────────
-//
-// Scans all committed readable regions for the first chunk that contains the
-// inventory root marker ("MiscItems":[).  Saves the full printable-text portion
-// of that region to `output_path` so it can be inspected offline.
-//
-// Non-printable bytes are replaced with '.' so the file is text-editor friendly.
-// Saves up to 8 MB centred on the MiscItems key (4 MB before, 4 MB after).
-
-#[cfg(target_os = "windows")]
-pub fn capture_inventory_blob(output_path: &std::path::Path) -> Result<String, String> {
-    use std::ffi::c_void;
-    use std::mem;
-    use windows_sys::Win32::{
-        Foundation::{CloseHandle, FALSE},
-        System::{
-            Diagnostics::Debug::ReadProcessMemory,
-            Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS},
-            Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
-        },
-    };
-
-    let pid = find_warframe_pid_pub().ok_or_else(|| "Warframe is not running".to_string())?;
-
-    let process = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid) };
-    if process == 0 { return Err("Could not open Warframe process".to_string()); }
-
-    const MISC_KEY: &[u8]      = b"\"MiscItems\":[";
-    const MIN_BLOB_BYTES: usize = 200_000;    // skip tiny chunks — real inventory is MB-scale
-    const MAX_REGION_READ: usize = 128 * 1024 * 1024;
-    const HALF_SAVE: usize      = 4 * 1024 * 1024;   // 4 MB either side of MiscItems
-
-    let mut addr: usize = 0;
-    let mut saved: Option<(usize, String)> = None; // (region size, message)
-
-    'outer: loop {
-        let mut mbi = unsafe { mem::zeroed::<MEMORY_BASIC_INFORMATION>() };
-        if unsafe { VirtualQueryEx(process, addr as *const c_void, &mut mbi, mem::size_of::<MEMORY_BASIC_INFORMATION>()) } == 0 { break; }
-
-        let region_addr = mbi.BaseAddress as usize;
-        let region_size = mbi.RegionSize;
-        let next_addr   = region_addr.saturating_add(region_size);
-
-        if mbi.State == MEM_COMMIT
-            && mbi.Protect & PAGE_GUARD    == 0
-            && mbi.Protect & PAGE_NOACCESS == 0
-            && region_size >= MIN_BLOB_BYTES
-            && region_size <= MAX_REGION_READ
-        {
-            let mut data = vec![0u8; region_size];
-            let mut n = 0usize;
-            if unsafe { ReadProcessMemory(process, region_addr as *const c_void, data.as_mut_ptr() as *mut c_void, region_size, &mut n) } != 0 && n >= MIN_BLOB_BYTES {
-                let data = &data[..n];
-                if let Some(misc_pos) = data.windows(MISC_KEY.len()).position(|w| w == MISC_KEY) {
-                    let start = misc_pos.saturating_sub(HALF_SAVE);
-                    let end   = (misc_pos + HALF_SAVE).min(data.len());
-                    let text: Vec<u8> = data[start..end].iter()
-                        .map(|&b| if b >= 0x20 && b <= 0x7e || b == b'\n' || b == b'\t' { b } else { b'.' })
-                        .collect();
-                    if let Err(e) = std::fs::write(output_path, &text) {
-                        unsafe { CloseHandle(process); }
-                        return Err(format!("Write failed: {e}"));
-                    }
-                    saved = Some((text.len(), format!(
-                        "Saved {}KB blob (region 0x{:x}, size {}KB, MiscItems at +{}KB) to {}",
-                        text.len() / 1024, region_addr, n / 1024, misc_pos / 1024,
-                        output_path.display()
-                    )));
-                    break 'outer;
-                }
-            }
-        }
-
-        if next_addr <= addr { break; }
-        addr = next_addr;
-    }
-
-    unsafe { CloseHandle(process); }
-
-    saved.map(|(_, msg)| msg)
-         .ok_or_else(|| "No inventory blob found — make sure Warframe is running and inventory is loaded (open Arsenal or Inventory screen)".to_string())
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn capture_inventory_blob(_output_path: &std::path::Path) -> Result<String, String> {
-    Err("Only supported on Windows".into())
-}
-
 /// Scan all Warframe process memory and save every relevant blob found into `blob_dir`.
 /// "Relevant" = region ≥ 100 KB that contains at least one of: MiscItems, Suits,
 // ─── Full-account blob parser ─────────────────────────────────────────────────
@@ -528,9 +385,8 @@ pub fn capture_inventory_blob(_output_path: &std::path::Path) -> Result<String, 
 /// the `}` that immediately follows its boolean value (true or false).
 fn find_blob_end(raw: &[u8]) -> Option<usize> {
     const KEY: &[u8] = b"\"DeathSquadable\":";
-    let key_pos = raw.windows(KEY.len()).position(|w| w == KEY)?;
+    let key_pos = memchr::memmem::find(raw, KEY)?;
     let after   = key_pos + KEY.len();
-    // Skip the boolean value and find the closing brace
     let brace = raw[after..].iter().position(|&b| b == b'}')?;
     Some(after + brace + 1)
 }
@@ -562,13 +418,35 @@ fn enclosing_object_start(buf: &[u8], marker_off: usize) -> Option<usize> {
 
 /// Locate seed offsets for the FULL_ACCOUNT blob within `buf`.
 /// Returns `(marker_off, json_open)`:
-///   - `marker_off`: byte position of the first known start marker
+///   - `marker_off`: byte position of the chosen start marker
 ///   - `json_open`:  byte position of the outermost `{` enclosing the marker
+///
+/// When multiple copies of the start marker exist in `buf` (a freed/stale copy
+/// followed by the live one), the copy whose enclosing `{` is immediately followed
+/// by a `"` (i.e. a proper JSON object opening `{"`) is preferred.  A stale copy
+/// has its `{` overwritten with garbage, so its brace check fails and it is skipped
+/// in favour of the live copy.
 fn blob_seed_offsets(buf: &[u8]) -> (usize, usize) {
-    let marker_off = buf.windows(START_MARKER.len())
-        .position(|w| w == START_MARKER)
-        .or_else(|| ALT_STARTS.iter().find_map(|a|
-            buf.windows(a.len()).position(|w| w == *a)))
+    // Scan all START_MARKER occurrences and pick the first that has a clean {"  brace.
+    let mut fallback: Option<(usize, usize)> = None;
+    for marker_off in memchr::memmem::find_iter(buf, START_MARKER) {
+        match enclosing_object_start(buf, marker_off) {
+            Some(pos) if buf[pos..].starts_with(b"{\"") => {
+                return (marker_off, pos);
+            }
+            _ => {
+                if fallback.is_none() {
+                    fallback = Some((marker_off, marker_off));
+                }
+            }
+        }
+    }
+    if let Some(fb) = fallback {
+        return fb;
+    }
+    // No START_MARKER — try ALT_STARTS
+    let marker_off = ALT_STARTS.iter()
+        .find_map(|a| memchr::memmem::find(buf, a))
         .unwrap_or(buf.len().saturating_sub(1));
     let json_open = enclosing_object_start(buf, marker_off).unwrap_or(marker_off);
     (marker_off, json_open)
@@ -638,21 +516,27 @@ pub fn compute_riven_mod_name(buffs: &[BlobRivenStat]) -> String {
 /// final region — potentially tens of megabytes of noise. This trims to just
 /// the valid JSON object so both the parser and the debug dump files see clean data.
 pub fn extract_blob_json(raw: &[u8]) -> Option<Vec<u8>> {
+    Some(extract_blob_json_ref(raw)?.into_owned())
+}
+
+/// Zero-copy variant: borrows when the blob starts with `{`, allocates only when the
+/// opening brace was overwritten and must be reinstated.
+pub fn extract_blob_json_ref(raw: &[u8]) -> Option<std::borrow::Cow<'_, [u8]>> {
     let end_pos = find_blob_end(raw)?;
     if raw.first() == Some(&b'{') {
-        Some(raw[..end_pos].to_vec())
+        Some(std::borrow::Cow::Borrowed(&raw[..end_pos]))
     } else {
-        const START: &[u8] = b"\"SubscribedToEmails\"";
-        let start_pos = raw.windows(START.len()).position(|w| w == START)?;
+        let start_pos = memchr::memmem::find(raw, START_MARKER)?;
         let mut v = Vec::with_capacity(end_pos - start_pos + 1);
         v.push(b'{');
         v.extend_from_slice(&raw[start_pos..end_pos]);
-        Some(v)
+        Some(std::borrow::Cow::Owned(v))
     }
 }
 
 /// `raw` must span from the JSON opening `{` (or from `"SubscribedToEmails"`) through
 /// `"DeathSquadable":`. Returns `None` if neither start can be located or JSON is malformed.
+#[tracing::instrument(level = "debug", skip_all)]
 pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
     let end_pos = find_blob_end(raw)?;
 
@@ -660,7 +544,7 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
     // small false-positive fragment that matched the end marker by coincidence.
     const MIN_PARSE_BYTES: usize = 50_000;
     if end_pos < MIN_PARSE_BYTES {
-        eprintln!("[blob-parse] too small ({} B < {} B) — skipping", end_pos, MIN_PARSE_BYTES);
+        debug!(target: "frameforge::blob_parse", end_pos, min = MIN_PARSE_BYTES, "too small — skipping");
         return None;
     }
 
@@ -670,7 +554,7 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
         .map_err(|e| {
             let head: String = json_bytes[..json_bytes.len().min(48)]
                 .iter().map(|&b| if b >= 0x20 && b < 0x7f { b as char } else { '.' }).collect();
-            eprintln!("[blob-parse] JSON error: {} | head: {:?}", e, head);
+            debug!(target: "frameforge::blob_parse", error = %e, head = ?head, "JSON error");
         })
         .ok()?;
 
@@ -909,10 +793,164 @@ fn blob_extract_mod_rank(fingerprint: Option<&str>) -> u8 {
 static LAST_BLOB_REGION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// Clear the fast-path region cache. Call when Warframe's PID changes so the
-/// next scan doesn't probe a stale address from the previous process instance.
+static LAST_BLOB_DIGEST: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Set once the probe has reported that nothing changed, cleared as soon as
+/// anything does. Probes run every couple of seconds and nearly all of them
+/// find byte-identical JSON, so logging each one drowns out the rest of the
+/// log. Only the transition into that state is logged.
+static STEADY_STATE_LOGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn steady_state_notice_due() -> bool {
+    !STEADY_STATE_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether a previous scan left an address for the probe to re-read. Without
+/// one the probe can only ever miss, so the caller must walk instead.
+pub fn has_cached_blob() -> bool {
+    LAST_BLOB_REGION.load(std::sync::atomic::Ordering::Relaxed) != 0
+}
+
+/// Clear the region cache, blob digest, and steady-state flag. Call when
+/// Warframe's PID changes so the next scan doesn't probe a stale address.
 pub fn reset_last_blob_region() {
     LAST_BLOB_REGION.store(0, std::sync::atomic::Ordering::Relaxed);
+    LAST_BLOB_DIGEST.store(0, std::sync::atomic::Ordering::Relaxed);
+    STEADY_STATE_LOGGED.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Returns `true` if the blob content (trimmed to DeathSquadable) is byte-for-byte
+/// identical to the previous call.  Always returns `false` on the first call after
+/// startup or after `forget_blob_digest`.
+pub fn blob_unchanged(raw: &[u8]) -> bool {
+    use std::hash::{Hash, Hasher};
+    let end = find_blob_end(raw).unwrap_or(raw.len());
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    raw[..end].hash(&mut h);
+    let digest = h.finish() | 1; // ensure non-zero so the 0 sentinel always reads as changed
+    let prev = LAST_BLOB_DIGEST.swap(digest, std::sync::atomic::Ordering::Relaxed);
+    let unchanged = prev == digest;
+    if !unchanged {
+        STEADY_STATE_LOGGED.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    unchanged
+}
+
+/// Forget the last blob digest so the next `blob_unchanged` call reports changed.
+/// Call after a failed parse so a persistently-bad blob is retried every cycle.
+fn forget_blob_digest() {
+    LAST_BLOB_DIGEST.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+// ─── Shared constants used by both scan_windows_cached_blob and capture_all_blobs ─
+
+#[cfg(target_os = "windows")]
+const MAX_READ: usize = 64 * 1024 * 1024;
+#[cfg(target_os = "windows")]
+const MAX_SCAN: usize = 20 * 1024 * 1024;
+#[cfg(target_os = "windows")]
+const MISSION_DELTA: &[u8] = b"\"InventoryChanges\":";
+#[cfg(target_os = "windows")]
+const LOTUS_KEY: &[u8] = b"/Lotus/";
+#[cfg(target_os = "windows")]
+const ANCHORS: &[&[u8]] = &[
+    b"\"SubscribedToEmails\"",
+    b"\"MiscItems\":[",
+    b"\"Suits\":[",
+    b"\"LongGuns\":[",
+    b"\"Melee\":[",
+    b"\"Pistols\":[",
+];
+
+#[cfg(target_os = "windows")]
+enum CachedBlobScan {
+    Fresh(usize, BlobInventory),
+    Unchanged,
+}
+
+/// Re-read the blob straight from the address the last successful scan found
+/// it at, stitching forward through following regions until the JSON closes.
+///
+/// Returns `None` whenever anything looks different from last time, which puts
+/// the caller back on the full walk rather than reporting a stale inventory.
+#[cfg(target_os = "windows")]
+fn scan_windows_cached_blob(process: windows_sys::Win32::Foundation::HANDLE) -> Option<CachedBlobScan> {
+    use std::ffi::c_void;
+    use std::mem;
+    use windows_sys::Win32::System::{
+        Diagnostics::Debug::ReadProcessMemory,
+        Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS},
+    };
+
+    let cached_addr = LAST_BLOB_REGION.load(std::sync::atomic::Ordering::Relaxed) as usize;
+    if cached_addr == 0 {
+        return None;
+    }
+
+    let mut mbi = unsafe { mem::zeroed::<MEMORY_BASIC_INFORMATION>() };
+    let ok = unsafe { VirtualQueryEx(process, cached_addr as *const c_void, &mut mbi,
+        mem::size_of::<MEMORY_BASIC_INFORMATION>()) } != 0;
+    if !ok || mbi.State != MEM_COMMIT
+        || mbi.Protect & PAGE_GUARD != 0
+        || mbi.Protect & PAGE_NOACCESS != 0
+    {
+        return None;
+    }
+
+    let read_cap = mbi.RegionSize.min(MAX_READ);
+    let mut buf = vec![0u8; read_cap];
+    let mut n = 0usize;
+    let read_ok = unsafe { ReadProcessMemory(process, cached_addr as *const c_void,
+        buf.as_mut_ptr() as *mut c_void, read_cap, &mut n) } != 0 && n >= 8;
+    if !read_ok {
+        return None;
+    }
+
+    buf.truncate(n);
+    let chunk = &buf[..];
+    let is_mission = memchr::memmem::find(chunk, MISSION_DELTA).is_some();
+    let has_anchor = ANCHORS.iter().any(|a| memchr::memmem::find(chunk, a).is_some());
+    let has_lotus  = memchr::memmem::find(chunk, LOTUS_KEY).is_some();
+    if is_mission || !(has_anchor || has_lotus) || !chunk.starts_with(b"{\"") {
+        return None;
+    }
+
+    let mut stitched = buf;
+    let mut walk = cached_addr + n;
+    while stitched.len() < MAX_SCAN && find_blob_end(&stitched).is_none() {
+        let mut nmbi = unsafe { mem::zeroed::<MEMORY_BASIC_INFORMATION>() };
+        if unsafe { VirtualQueryEx(process, walk as *const c_void, &mut nmbi,
+            mem::size_of::<MEMORY_BASIC_INFORMATION>()) } == 0 { break; }
+        let nr = nmbi.BaseAddress as usize;
+        let ns = nmbi.RegionSize;
+        walk = nr + ns;
+        if nmbi.State != MEM_COMMIT
+            || nmbi.Protect & PAGE_GUARD != 0
+            || nmbi.Protect & PAGE_NOACCESS != 0
+            || ns == 0 { continue; }
+        let cap = ns.min(MAX_READ);
+        let mut nb = vec![0u8; cap];
+        let mut nn = 0usize;
+        if unsafe { ReadProcessMemory(process, nr as *const c_void,
+            nb.as_mut_ptr() as *mut c_void, cap, &mut nn) } == 0 { continue; }
+        stitched.extend_from_slice(&nb[..nn]);
+    }
+
+    if blob_unchanged(&stitched) {
+        if steady_state_notice_due() {
+            debug!(addr = format_args!("0x{cached_addr:012x}"), "probe hit: blob unchanged, quiet until it changes");
+        }
+        return Some(CachedBlobScan::Unchanged);
+    }
+    match parse_full_account_blob(&stitched) {
+        Some(inventory) => Some(CachedBlobScan::Fresh(cached_addr, inventory)),
+        None => {
+            forget_blob_digest();
+            None
+        }
+    }
 }
 
 /// Scans Warframe process memory for the FULL_ACCOUNT inventory blob and sends it
@@ -939,6 +977,7 @@ pub fn reset_last_blob_region() {
 /// When `save=true` also writes the raw text to `blob_dir` for debugging.
 /// Returns the number of files written (always 0 when `save=false`).
 #[cfg(target_os = "windows")]
+#[tracing::instrument(level = "debug", skip_all, fields(save = save))]
 pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::sync::mpsc::Sender<BlobInventory>, save: bool) -> usize {
     use std::ffi::c_void;
     use std::mem;
@@ -956,8 +995,6 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
     if process == 0 { return 0; }
 
     const MIN_REGION:    usize = 64_000;   // skip regions smaller than 64 KB
-    const MAX_READ:      usize = 64  * 1024 * 1024;
-    const MAX_SCAN:      usize = 20  * 1024 * 1024;
     const MAX_BLOBS:     usize = 25;
 
     // Executable pages never contain heap data — safe to skip.
@@ -967,76 +1004,9 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
     const PAGE_EXECUTE_WC:   u32 = 0x80;
     const EXEC_MASK: u32 = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_RW | PAGE_EXECUTE_WC;
 
-    const MISSION_DELTA: &[u8] = b"\"InventoryChanges\":";
-    const LOTUS_KEY:     &[u8] = b"/Lotus/";
-    const ANCHORS: &[&[u8]] = &[
-        b"\"SubscribedToEmails\"",
-        b"\"MiscItems\":[",
-        b"\"Suits\":[",
-        b"\"LongGuns\":[",
-        b"\"Melee\":[",
-        b"\"Pistols\":[",
-    ];
-
-    // ── Fast path: try the cached region from last successful scan ─────────────
-    // If the blob is still at the same address, we skip the entire memory walk.
-    let cached_addr = LAST_BLOB_REGION.load(std::sync::atomic::Ordering::Relaxed) as usize;
-    if cached_addr != 0 && !save {
-        let mut mbi = unsafe { mem::zeroed::<MEMORY_BASIC_INFORMATION>() };
-        let ok = unsafe { VirtualQueryEx(process, cached_addr as *const c_void, &mut mbi,
-            mem::size_of::<MEMORY_BASIC_INFORMATION>()) } != 0;
-        if ok && mbi.State == MEM_COMMIT
-            && mbi.Protect & PAGE_GUARD == 0
-            && mbi.Protect & PAGE_NOACCESS == 0
-        {
-            let read_cap = mbi.RegionSize.min(MAX_READ);
-            let mut buf = vec![0u8; read_cap];
-            let mut n = 0usize;
-            let read_ok = unsafe { ReadProcessMemory(process, cached_addr as *const c_void,
-                buf.as_mut_ptr() as *mut c_void, read_cap, &mut n) } != 0 && n >= 8;
-            if read_ok {
-                let chunk = &buf[..n];
-                let is_mission = chunk.windows(MISSION_DELTA.len()).any(|w| w == MISSION_DELTA);
-                let has_anchor = ANCHORS.iter().any(|a| chunk.windows(a.len()).any(|w| w == *a));
-                let has_lotus  = chunk.windows(LOTUS_KEY.len()).any(|w| w == LOTUS_KEY);
-                // cached_addr is the exact byte of the blob's outer {, so seed from byte 0.
-                // Accept regions that are blob data even when SubscribedToEmails is in a
-                // later region (field order varies by account).
-                if !is_mission && (has_anchor || has_lotus) && chunk.starts_with(b"{\"") {
-                    let mut stitched = chunk.to_vec();
-                    let mut walk = cached_addr + n;
-                    while stitched.len() < MAX_SCAN && find_blob_end(&stitched).is_none() {
-                        let mut nmbi = unsafe { mem::zeroed::<MEMORY_BASIC_INFORMATION>() };
-                        if unsafe { VirtualQueryEx(process, walk as *const c_void, &mut nmbi,
-                            mem::size_of::<MEMORY_BASIC_INFORMATION>()) } == 0 { break; }
-                        let nr = nmbi.BaseAddress as usize;
-                        let ns = nmbi.RegionSize;
-                        walk = nr + ns;
-                        if nmbi.State != MEM_COMMIT
-                            || nmbi.Protect & PAGE_GUARD != 0
-                            || nmbi.Protect & PAGE_NOACCESS != 0
-                            || ns == 0 { continue; }
-                        let cap = ns.min(MAX_READ);
-                        let mut nb = vec![0u8; cap];
-                        let mut nn = 0usize;
-                        if unsafe { ReadProcessMemory(process, nr as *const c_void,
-                            nb.as_mut_ptr() as *mut c_void, cap, &mut nn) } == 0 { continue; }
-                        stitched.extend_from_slice(&nb[..nn]);
-                    }
-                    if let Some(inv) = parse_full_account_blob(&stitched) {
-                        eprintln!("[blob] fast-path hit at 0x{:012x}: {} unique, {} stackable",
-                            cached_addr, inv.unique_items.len(), inv.stackable_items.len());
-                        blob_tx.send(inv).ok();
-                        unsafe { CloseHandle(process); }
-                        return 0; // fast path never saves to disk
-                    }
-                }
-            }
-        }
-        // Cache miss — fall through to full walk and update the cache when found
-        eprintln!("[blob] fast-path miss at 0x{:012x} — doing full walk", cached_addr);
-    }
-
+    // No fast path here on purpose: the monitor already ran that scan in
+    // `probe_tick` and escalated to this walk on the result, so repeating it
+    // would answer the same and skip the walk it asked for.
     struct ActiveScan {
         data: Vec<u8>,
         id: usize,
@@ -1133,19 +1103,28 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
             scan.search_from = scan.data.len().saturating_sub(END_MARKER.len() - 1);
             scan.data.extend_from_slice(chunk);
             if scan.data.len() > MAX_SCAN {
-                eprintln!("[blob] scan#{} exceeded {} MB without end — dropped", scan.id, MAX_SCAN / 1024 / 1024);
+                warn!(scan_id = scan.id, max_mb = MAX_SCAN / 1024 / 1024, "scan exceeded size limit without end — dropped");
                 return false; // drop oversized scan
             }
             // Only search the newly-added window, not the full buffer.
-            let has_end = scan.data[search_from..]
-                .windows(END_MARKER.len())
-                .any(|w| w == END_MARKER);
+            let has_end = memchr::memmem::find(&scan.data[search_from..], END_MARKER).is_some();
             if has_end && find_blob_end(&scan.data).is_some() {
+                if !save && blob_unchanged(&scan.data) {
+                    debug!(scan_id = scan.id, "walk: blob unchanged, skipping parse");
+                    LAST_BLOB_REGION.store(scan.start_region_addr as u64, std::sync::atomic::Ordering::Relaxed);
+                    found_result = true;
+                    return false;
+                }
                 match parse_full_account_blob(&scan.data) {
                     Some(inv) => {
-                        eprintln!("[blob] scan#{} SUCCESS at 0x{:012x}: {} unique, {} stackable, {} mods",
-                            scan.id, region_addr, inv.unique_items.len(), inv.stackable_items.len(), inv.mods.len());
-                        // Cache the START region (not this region) so the fast path works next cycle.
+                        info!(
+                            scan_id = scan.id,
+                            addr = format_args!("0x{region_addr:012x}"),
+                            unique = inv.unique_items.len(),
+                            stackable = inv.stackable_items.len(),
+                            mods = inv.mods.len(),
+                            "scan SUCCESS"
+                        );
                         LAST_BLOB_REGION.store(scan.start_region_addr as u64, std::sync::atomic::Ordering::Relaxed);
                         if save {
                             let name = format!("Actual_inventory_FULL_ACCOUNT_{}_{:02}.txt", ts, saved + 1);
@@ -1158,7 +1137,8 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
                         found_result = true;
                     }
                     None => {
-                        eprintln!("[blob] scan#{} end marker found but JSON parse failed — dropped", scan.id);
+                        warn!(scan_id = scan.id, "end marker found but JSON parse failed — dropped");
+                        forget_blob_digest();
                     }
                 }
                 false // remove completed (or failed) scan
@@ -1172,11 +1152,11 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
         if found_result { continue; }
 
         let t2 = std::time::Instant::now();
-        let has_start     = chunk.windows(START_MARKER.len()).any(|w| w == START_MARKER);
-        let has_alt_start = ALT_STARTS.iter().any(|a| chunk.windows(a.len()).any(|w| w == *a));
-        let is_mission    = chunk.windows(MISSION_DELTA.len()).any(|w| w == MISSION_DELTA);
-        let has_anchor    = ANCHORS.iter().any(|a| chunk.windows(a.len()).any(|w| w == *a));
-        let has_lotus     = chunk.windows(LOTUS_KEY.len()).any(|w| w == LOTUS_KEY);
+        let has_start     = memchr::memmem::find(chunk, START_MARKER).is_some();
+        let has_alt_start = ALT_STARTS.iter().any(|a| memchr::memmem::find(chunk, a).is_some());
+        let is_mission    = memchr::memmem::find(chunk, MISSION_DELTA).is_some();
+        let has_anchor    = ANCHORS.iter().any(|a| memchr::memmem::find(chunk, a).is_some());
+        let has_lotus     = memchr::memmem::find(chunk, LOTUS_KEY).is_some();
         let qualifies     = (has_start || has_alt_start) && !is_mission && (has_anchor || has_lotus);
         t_search += t2.elapsed();
 
@@ -1229,17 +1209,32 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
             next_scan_id += 1;
             starts_found += 1;
             let pre_bytes = combined.len() - n;
-            eprintln!(
-                "[blob] scan#{} started at 0x{:012x}+{} (json_open={} seed=0x{:012x} pre={}B)",
-                id, region_addr, start_off, json_open, seed_addr, pre_bytes
+            debug!(
+                scan_id = id,
+                addr = format_args!("0x{region_addr:012x}"),
+                start_off,
+                json_open,
+                seed = format_args!("0x{seed_addr:012x}"),
+                pre_bytes,
+                "scan started"
             );
             let seed = combined[json_open..].to_vec();
 
-            if find_blob_end(&seed).is_some() {
+            let seed_ends = find_blob_end(&seed).is_some();
+            if seed_ends && !save && blob_unchanged(&seed) {
+                debug!(scan_id = id, "walk: immediate blob unchanged, skipping parse");
+                LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
+                found_result = true;
+            } else if seed_ends {
                 match parse_full_account_blob(&seed) {
                     Some(inv) => {
-                        eprintln!("[blob] scan#{} immediate SUCCESS at 0x{:012x}: {} unique, {} stackable",
-                            id, region_addr, inv.unique_items.len(), inv.stackable_items.len());
+                        info!(
+                            scan_id = id,
+                            addr = format_args!("0x{region_addr:012x}"),
+                            unique = inv.unique_items.len(),
+                            stackable = inv.stackable_items.len(),
+                            "scan immediate SUCCESS"
+                        );
                         LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                         if save {
                             let name = format!("Actual_inventory_FULL_ACCOUNT_{}_{:02}.txt", ts, saved + 1);
@@ -1251,7 +1246,8 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
                         found_result = true;
                     }
                     None => {
-                        eprintln!("[blob] scan#{} immediate end found but parse failed — dropping", id);
+                        warn!(scan_id = id, "immediate end found but parse failed — dropping");
+                        forget_blob_digest();
                     }
                 }
             } else {
@@ -1260,17 +1256,20 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
         }
     }
 
-    eprintln!(
-        "[blob-capture] done: read={} skipped={} starts={} saved={} bytes={}MB | \
-         vquery={:.0}ms read={:.0}ms search={:.0}ms",
-        regions_read, regions_skipped, starts_found, saved, bytes_read / 1_000_000,
-        t_vquery.as_secs_f64() * 1000.0,
-        t_read.as_secs_f64()   * 1000.0,
-        t_search.as_secs_f64() * 1000.0,
+    debug!(
+        target: "frameforge::blob_capture",
+        regions_read,
+        regions_skipped,
+        starts_found,
+        saved,
+        bytes_mb = bytes_read / 1_000_000,
+        vquery_ms = t_vquery.as_secs_f64() * 1000.0,
+        read_ms = t_read.as_secs_f64() * 1000.0,
+        search_ms = t_search.as_secs_f64() * 1000.0,
+        "capture done"
     );
     if starts_found == 0 {
-        eprintln!("[blob-capture] WARNING: no start-marker found — FULL_ACCOUNT not in memory \
-            (game in mission, on login screen, or Arsenal not open?)");
+        warn!(target: "frameforge::blob_capture", "no start-marker found — FULL_ACCOUNT not in memory (game in mission, on login screen, or Arsenal not open?)");
     }
     unsafe { CloseHandle(process); }
     saved
@@ -1278,6 +1277,288 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
 
 #[cfg(not(target_os = "windows"))]
 pub fn capture_all_blobs(_blob_dir: &std::path::Path, _ts: &str, _blob_tx: std::sync::mpsc::Sender<BlobInventory>, _save: bool) -> usize { 0 }
+
+// ─── Cheap probe ──────────────────────────────────────────────────────────────
+
+/// What a probe of the cached blob address concluded.
+///
+/// `Unchanged` and `Updated` are definitive answers obtained for a few
+/// megabytes of reads. `CacheMiss` is not: the game may have reallocated the
+/// blob because the inventory changed, or the address may be stale for some
+/// unrelated reason, and telling those apart costs a full region walk.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ScanOutcome {
+    Unchanged,
+    Updated,
+    CacheMiss,
+}
+
+#[cfg(target_os = "windows")]
+fn probe_outcome(
+    scan: Option<CachedBlobScan>,
+    blob_tx: &std::sync::mpsc::Sender<BlobInventory>,
+) -> ScanOutcome {
+    match scan {
+        Some(CachedBlobScan::Fresh(address, inventory)) => {
+            info!(addr = format_args!("0x{address:012x}"),
+                unique = inventory.unique_items.len(),
+                stackable = inventory.stackable_items.len(),
+                "probe hit");
+            blob_tx.send(inventory).ok();
+            ScanOutcome::Updated
+        }
+        Some(CachedBlobScan::Unchanged) => ScanOutcome::Unchanged,
+        None => ScanOutcome::CacheMiss,
+    }
+}
+
+/// One monitor tick: re-read the blob from its remembered address, and check
+/// whether the game has logged an inventory sync since the last tick.
+///
+/// Never falls back to a full region walk. `capture_all_blobs` does that.
+/// Splitting the two lets the caller poll cheaply and decide when a miss
+/// is worth the full walk cost.
+///
+/// Returns `(Option<ScanOutcome>, sync_marker_seen)`. A `None` outcome means
+/// the blob was not re-read this tick (no sync marker and `force` was false).
+#[cfg(target_os = "windows")]
+pub fn probe_tick(
+    pid: u32,
+    blob_tx: std::sync::mpsc::Sender<BlobInventory>,
+    force: bool,
+) -> (Option<ScanOutcome>, bool) {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, FALSE},
+        System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
+    };
+
+    let process = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid) };
+    if process == 0 {
+        return (None, false);
+    }
+    let sync = sync_marker_is_new(windows_newest_sync_timestamp(process));
+    let outcome = (force || sync)
+        .then(|| probe_outcome(scan_windows_cached_blob(process), &blob_tx));
+    unsafe { CloseHandle(process) };
+    (outcome, sync)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn probe_tick(
+    _pid: u32,
+    _blob_tx: std::sync::mpsc::Sender<BlobInventory>,
+    _force: bool,
+) -> (Option<ScanOutcome>, bool) {
+    (None, false)
+}
+
+// ─── Inventory-sync marker, read from memory rather than from EE.log ──────────
+//
+// Warframe composes its log lines in process memory long before they reach
+// EE.log: the game buffers writes and flushes in bursts, and sampling the live
+// client showed the newest in-memory line running 23 s ahead of the newest line
+// on disk. Tailing the file therefore reports an inventory sync at an unknown,
+// variable delay, and that delay lands on every capture gated behind it.
+//
+// The formatted lines are findable by content, so no pointer chain and no
+// per-build offsets are involved:
+//
+//   19761.848 Sys [Info]: OnInventoryResults completed in 339ms
+//
+// Only the log text holds ` Sys [Info]: ` preceded by a seconds-since-launch
+// timestamp, and once the buffer is found its address caches like
+// LAST_BLOB_REGION.
+
+/// Shared with the EE.log tail in `start_log_watcher` rather than re-spelled:
+/// a mismatch between the two readers degrades to plain interval polling,
+/// which is hard to tell from working correctly.
+pub const INVENTORY_SYNC_MARKER: &str = "OnInventoryResults completed in";
+
+const SYNC_MARKER: &[u8] = INVENTORY_SYNC_MARKER.as_bytes();
+
+/// Present on every log line, so it identifies the buffer regardless of what
+/// the game happens to have logged recently.
+const LOG_LINE_MARKER: &[u8] = b" Sys [Info]: ";
+
+/// The candidate buffers are a few MB against several GB of readable mappings,
+/// so anything larger is some other allocation that happens to quote a log line.
+const MAX_LOG_REGION: usize = 16 * 1024 * 1024;
+
+static LAST_LOG_REGION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Probes still to skip before the cold search may run again.
+static LOG_SEARCH_BACKOFF: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Whether the cold search is allowed to run on this probe.
+fn cold_log_search_due() -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    LOG_SEARCH_BACKOFF
+        .fetch_update(Relaxed, Relaxed, |left| Some(left.saturating_sub(1)))
+        .is_ok_and(|left| left == 0)
+}
+
+const LOG_SEARCH_BACKOFF_PROBES: u64 = 30;
+
+static LAST_SYNC_TIMESTAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Forget the log buffer's address and the marker baseline. Call alongside
+/// `reset_last_blob_region` when the PID changes.
+pub fn reset_log_region() {
+    LAST_LOG_REGION.store(0, std::sync::atomic::Ordering::Relaxed);
+    LAST_SYNC_TIMESTAMP.store(0, std::sync::atomic::Ordering::Relaxed);
+    LOG_SEARCH_BACKOFF.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Seconds-since-launch stamp opening the line that `offset` falls inside.
+fn line_timestamp(chunk: &[u8], offset: usize) -> Option<f64> {
+    let start = chunk[..offset]
+        .iter()
+        .rposition(|&byte| byte == b'\n' || byte == b'\r')
+        .map_or(0, |index| index + 1);
+    let line = &chunk[start..offset];
+    let end = line.iter().position(|&byte| byte == b' ').unwrap_or(line.len());
+    let stamp = std::str::from_utf8(&line[..end]).ok()?;
+    let (seconds, millis) = stamp.split_once('.')?;
+    if seconds.is_empty()
+        || !seconds.bytes().all(|byte| byte.is_ascii_digit())
+        || millis.len() != 3
+        || !millis.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    stamp.parse().ok()
+}
+
+/// True when `chunk` holds formatted log lines rather than, say, the `.rdata`
+/// copy of the format string.
+fn looks_like_log_buffer(chunk: &[u8]) -> bool {
+    let mut from = 0;
+    for _ in 0..8 {
+        let Some(hit) = memchr::memmem::find(&chunk[from..], LOG_LINE_MARKER) else { return false };
+        let offset = from + hit;
+        if line_timestamp(chunk, offset).is_some() {
+            return true;
+        }
+        from = offset + LOG_LINE_MARKER.len();
+    }
+    false
+}
+
+/// Newest game timestamp among the sync markers in `chunk`.
+///
+/// Every match is examined rather than just the last, because the heap ring
+/// wraps: the newest line is not necessarily the one at the highest address.
+fn newest_sync_timestamp(chunk: &[u8]) -> Option<f64> {
+    let mut newest: Option<f64> = None;
+    let mut from = 0;
+    while let Some(hit) = memchr::memmem::find(&chunk[from..], SYNC_MARKER) {
+        let offset = from + hit;
+        if let Some(stamp) = line_timestamp(chunk, offset) {
+            newest = Some(newest.map_or(stamp, |best: f64| best.max(stamp)));
+        }
+        from = offset + SYNC_MARKER.len();
+    }
+    newest
+}
+
+/// Fold a freshly-observed marker timestamp into the baseline, reporting
+/// whether it names a sync that has not been reported yet.
+fn sync_marker_is_new(newest: Option<f64>) -> bool {
+    let Some(newest) = newest else { return false };
+    let previous = f64::from_bits(
+        LAST_SYNC_TIMESTAMP.swap(newest.to_bits(), std::sync::atomic::Ordering::Relaxed)
+    );
+    let is_new = newest != previous;
+    if is_new {
+        info!(timestamp = newest, "inventory sync marker seen in memory");
+    }
+    is_new
+}
+
+/// Newest sync-marker timestamp currently in the game's log buffers.
+#[cfg(target_os = "windows")]
+fn windows_newest_sync_timestamp(process: windows_sys::Win32::Foundation::HANDLE) -> Option<f64> {
+    use std::ffi::c_void;
+    use std::mem;
+    use windows_sys::Win32::System::{
+        Diagnostics::Debug::ReadProcessMemory,
+        Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS},
+    };
+
+    const EXEC_MASK: u32 = 0x10 | 0x20 | 0x40 | 0x80;
+
+    let mut buffer = Vec::new();
+    let read_region = |address: usize, size: usize, buffer: &mut Vec<u8>| -> Option<usize> {
+        buffer.resize(size.min(MAX_LOG_REGION), 0);
+        let mut read = 0usize;
+        let ok = unsafe { ReadProcessMemory(process, address as *const c_void,
+            buffer.as_mut_ptr() as *mut c_void, buffer.len(), &mut read) } != 0;
+        (ok && read > LOG_LINE_MARKER.len()).then_some(read)
+    };
+    let query = |address: usize| -> Option<MEMORY_BASIC_INFORMATION> {
+        let mut mbi = unsafe { mem::zeroed::<MEMORY_BASIC_INFORMATION>() };
+        let ok = unsafe { VirtualQueryEx(process, address as *const c_void, &mut mbi,
+            mem::size_of::<MEMORY_BASIC_INFORMATION>()) } != 0;
+        ok.then_some(mbi)
+    };
+    let readable = |mbi: &MEMORY_BASIC_INFORMATION| {
+        mbi.State == MEM_COMMIT
+            && mbi.Protect & PAGE_GUARD == 0
+            && mbi.Protect & PAGE_NOACCESS == 0
+            && mbi.Protect & EXEC_MASK == 0
+            && mbi.RegionSize > 0
+    };
+
+    let cached = LAST_LOG_REGION.load(std::sync::atomic::Ordering::Relaxed) as usize;
+    if cached != 0 {
+        if let Some(mbi) = query(cached).filter(readable).filter(|mbi| mbi.BaseAddress as usize == cached) {
+            if let Some(read) = read_region(cached, mbi.RegionSize, &mut buffer) {
+                if looks_like_log_buffer(&buffer[..read]) {
+                    return newest_sync_timestamp(&buffer[..read]);
+                }
+            }
+        }
+        LAST_LOG_REGION.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    if !cold_log_search_due() {
+        return None;
+    }
+
+    let mut newest: Option<f64> = None;
+    let mut found = 0;
+    let mut address = 0usize;
+    while let Some(mbi) = query(address) {
+        let base = mbi.BaseAddress as usize;
+        let size = mbi.RegionSize;
+        let Some(next) = base.checked_add(size).filter(|next| *next > address) else { break };
+        address = next;
+        if !readable(&mbi) || size > MAX_LOG_REGION {
+            continue;
+        }
+        let Some(read) = read_region(base, size, &mut buffer) else { continue };
+        let chunk = &buffer[..read];
+        if !looks_like_log_buffer(chunk) {
+            continue;
+        }
+        if found == 0 {
+            info!(addr = format_args!("0x{base:012x}"), kb = read / 1024, "sync-marker log buffer found");
+            LAST_LOG_REGION.store(base as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(stamp) = newest_sync_timestamp(chunk) {
+            newest = Some(newest.map_or(stamp, |best: f64| best.max(stamp)));
+        }
+        found += 1;
+        if found == 2 {
+            break;
+        }
+    }
+    if found == 0 {
+        debug!("no in-memory log buffer found; sync markers come from EE.log tail only");
+        LOG_SEARCH_BACKOFF.store(LOG_SEARCH_BACKOFF_PROBES, std::sync::atomic::Ordering::Relaxed);
+    }
+    newest
+}
 
 // ─── Continuous raw memory string dump ───────────────────────────────────────
 //
@@ -1516,7 +1797,7 @@ fn find_warframe_pid() -> Option<u32> {
 
 #[cfg(test)]
 mod seed_tests {
-    use super::{enclosing_object_start, blob_seed_offsets, extract_blob_json};
+    use super::{enclosing_object_start, blob_seed_offsets, extract_blob_json, extract_blob_json_ref};
 
     #[test]
     fn enclosing_finds_outer_brace() {
@@ -1546,7 +1827,8 @@ mod seed_tests {
         let buf = b"{\"SubscribedToEmails\":1,\"RegularCredits\":100}";
         let (marker_off, json_open) = blob_seed_offsets(buf);
         assert_eq!(json_open, 0);
-        assert!(marker_off > 0);
+        // Both markers are present; the primary one must win over the alt-start.
+        assert_eq!(marker_off, 1);
     }
 
     #[test]
@@ -1577,5 +1859,257 @@ mod seed_tests {
         let json = extract_blob_json(&raw).expect("end marker present");
         assert_eq!(json.len(), blob_len);
         assert!(serde_json::from_slice::<serde_json::Value>(&json).is_ok());
+    }
+
+    /// A freed copy of the blob can sit ahead of the live one with its marker
+    /// intact but its opening brace overwritten. Brace-matching backward from
+    /// that copy lands on a stray `{` in binary garbage ("key must be a string
+    /// at line 1 column 2"), so the stale occurrence has to be skipped in
+    /// favour of the live one.
+    #[test]
+    fn a_stale_headless_copy_is_skipped_for_the_live_blob() {
+        let mut combined = b"\x00{J>\x01\x02 garbage ".to_vec();
+        combined.extend_from_slice(br#""SubscribedToEmails":0,"RegularCredits":1,"#);
+        combined.extend_from_slice(b"\x03\x04 more garbage ");
+        let live_at = combined.len();
+        combined.extend_from_slice(br#"{"SubscribedToEmails":0,"RegularCredits":42}"#);
+
+        let (marker_at, seed_at) = blob_seed_offsets(&combined);
+        assert_eq!(seed_at, live_at, "seed is the live copy's opening brace");
+        assert!(marker_at > live_at, "the marker used is the live copy's");
+    }
+
+    /// With only the headless copy in the buffer, seeding at the marker lets
+    /// the parser rebuild the object head instead of parsing garbage.
+    #[test]
+    fn a_lone_headless_copy_seeds_at_its_marker() {
+        let mut combined = b"\x00{J>\x01\x02 garbage ".to_vec();
+        let marker = combined.len();
+        combined.extend_from_slice(br#""SubscribedToEmails":0,"RegularCredits":42,"#);
+
+        let (marker_at, seed_at) = blob_seed_offsets(&combined);
+        assert_eq!(marker_at, marker);
+        assert_eq!(seed_at, marker, "seed skips the garbage brace");
+    }
+
+    #[test]
+    fn blob_json_reinstates_the_opening_brace_when_it_was_overwritten() {
+        let mut raw = br#"x"SubscribedToEmails":0,"DeathSquadable":false}"#.to_vec();
+        let blob_len = raw.len();
+        raw.extend(std::iter::repeat(0xABu8).take(1024));
+
+        let json = extract_blob_json(&raw).expect("end marker present");
+        assert_eq!(json.len(), blob_len);
+        assert_eq!(json[0], b'{');
+        assert!(serde_json::from_slice::<serde_json::Value>(&json).is_ok());
+    }
+
+    #[test]
+    fn blob_json_ref_borrows_in_the_common_case_and_owns_in_the_fallback() {
+        use std::borrow::Cow;
+        let intact = br#"{"SubscribedToEmails":0,"DeathSquadable":false}"#;
+        assert!(matches!(extract_blob_json_ref(intact), Some(Cow::Borrowed(_))));
+
+        let overwritten = br#"x"SubscribedToEmails":0,"DeathSquadable":false}"#;
+        assert!(matches!(extract_blob_json_ref(overwritten), Some(Cow::Owned(_))));
+    }
+}
+
+#[cfg(test)]
+mod blob_digest_tests {
+    use super::{blob_unchanged, forget_blob_digest, reset_last_blob_region, steady_state_notice_due};
+
+    // LAST_BLOB_DIGEST is a process-global static shared with every other test
+    // in this binary. Resetting first is not enough on its own: these cases run
+    // in parallel, so one can land its own digest write between another's reset
+    // and its assertions. Taking this lock keeps them off each other.
+    static DIGEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn digest_tracks_changes_and_resets() {
+        let _guard = DIGEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_last_blob_region();
+
+        let blob = b"{\"SubscribedToEmails\":1,\"RegularCredits\":100}".to_vec();
+        assert!(!blob_unchanged(&blob), "first call always reports changed");
+        assert!(blob_unchanged(&blob), "identical bytes report unchanged");
+
+        let mut mutated = blob.clone();
+        mutated[0] = b'[';
+        assert!(!blob_unchanged(&mutated), "a changed byte must report changed");
+        assert!(blob_unchanged(&mutated), "the new bytes become the baseline");
+
+        reset_last_blob_region();
+        assert!(!blob_unchanged(&mutated), "reset forces the next call to report changed");
+    }
+
+    // The scan stitches whole regions, so the blob arrives with a tail of
+    // unrelated heap that a running client rewrites between cycles. Digesting
+    // that tail is indistinguishable from the inventory itself changing, which
+    // reparses a settled inventory on every cycle.
+    #[test]
+    fn a_rewritten_tail_after_the_blob_is_not_a_change() {
+        let _guard = DIGEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_last_blob_region();
+
+        let blob = br#"{"SubscribedToEmails":1,"DeathSquadable":false}"#;
+        let mut first = blob.to_vec();
+        first.extend_from_slice(b"\x00\x11garbage from a neighbouring allocation");
+        let mut second = blob.to_vec();
+        second.extend_from_slice(b"\xff\xfe an entirely different neighbour, and longer");
+
+        assert!(!blob_unchanged(&first), "first sighting reports changed");
+        assert!(blob_unchanged(&second), "same blob, different tail, is unchanged");
+    }
+
+    // Unparseable bytes that persist across scan cycles must not start
+    // reporting as unchanged — the skip paths read that as "already parsed
+    // this", which would wedge the walk on a region that never parsed.
+    #[test]
+    fn forgetting_after_a_failed_parse_forces_a_retry() {
+        let _guard = DIGEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_last_blob_region();
+
+        let garbage = b"{\"MiscItems\":[ truncated".to_vec();
+        assert!(!blob_unchanged(&garbage), "first sighting reports changed");
+        forget_blob_digest();
+        assert!(!blob_unchanged(&garbage), "same bytes report changed again after a failed parse");
+    }
+
+    /// Nearly every probe finds identical bytes, so the notice cannot be a
+    /// per-probe line, otherwise it drowns out everything else in the log.
+    #[test]
+    fn the_steady_state_notice_fires_once_per_settle() {
+        let _guard = DIGEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_last_blob_region();
+
+        let blob = b"{\"SubscribedToEmails\":1,\"RegularCredits\":100}".to_vec();
+        assert!(!blob_unchanged(&blob), "first sighting reports changed");
+        assert!(blob_unchanged(&blob), "second sighting is the steady state");
+        assert!(steady_state_notice_due(), "entering the steady state logs once");
+        assert!(!steady_state_notice_due(), "staying in it does not log again");
+
+        let mut mutated = blob.clone();
+        mutated[0] = b'[';
+        assert!(!blob_unchanged(&mutated), "the bytes changed");
+        assert!(blob_unchanged(&mutated), "and settled again");
+        assert!(steady_state_notice_due(), "the next settle logs again");
+
+        reset_last_blob_region();
+        assert!(steady_state_notice_due(), "a new game process starts the cycle over");
+    }
+}
+
+#[cfg(test)]
+mod sync_marker_tests {
+    use super::{
+        cold_log_search_due, looks_like_log_buffer, newest_sync_timestamp, reset_log_region,
+        sync_marker_is_new, LOG_SEARCH_BACKOFF, LOG_SEARCH_BACKOFF_PROBES,
+    };
+
+    static LOG_STATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn a_failed_cold_search_sits_out_the_next_probes() {
+        let _guard = LOG_STATE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_log_region();
+        assert!(cold_log_search_due(), "the first search runs");
+
+        LOG_SEARCH_BACKOFF.store(LOG_SEARCH_BACKOFF_PROBES, std::sync::atomic::Ordering::Relaxed);
+        for probe in 0..LOG_SEARCH_BACKOFF_PROBES {
+            assert!(!cold_log_search_due(), "probe {probe} searched during the backoff");
+        }
+        assert!(cold_log_search_due(), "the search resumes once the backoff expires");
+
+        LOG_SEARCH_BACKOFF.store(LOG_SEARCH_BACKOFF_PROBES, std::sync::atomic::Ordering::Relaxed);
+        reset_log_region();
+        assert!(cold_log_search_due());
+    }
+
+    #[test]
+    fn marker_is_read_from_both_buffer_shapes() {
+        let ring = b"19760.121 Sys [Info]: SyncInventoryFromDB\n\
+                     19761.848 Sys [Info]: OnInventoryResults completed in 339ms\n";
+        assert_eq!(newest_sync_timestamp(ring), Some(19761.848));
+
+        let pending = b"19760.121 Sys [Info]: SyncInventoryFromDB\r\n\
+                        19761.848 Sys [Info]: OnInventoryResults completed in 339ms\r\n";
+        assert_eq!(newest_sync_timestamp(pending), Some(19761.848));
+    }
+
+    #[test]
+    fn newest_marker_wins_regardless_of_position() {
+        let wrapped = b"19999.500 Sys [Info]: OnInventoryResults completed in 41ms\n\
+                        11000.000 Sys [Info]: OnInventoryResults completed in 88ms\n";
+        assert_eq!(newest_sync_timestamp(wrapped), Some(19999.500));
+    }
+
+    #[test]
+    fn format_string_without_a_timestamp_is_not_a_marker() {
+        assert_eq!(newest_sync_timestamp(b"OnInventoryResults completed in %dms\0"), None);
+        assert!(!looks_like_log_buffer(b"Sys [Info]: %s\0 Sys [Info]: %s\0"));
+        assert!(looks_like_log_buffer(b"19761.848 Sys [Info]: Revive completed on KubrowPetAvatar14482\n"));
+    }
+
+    #[test]
+    fn baseline_reports_only_unseen_syncs() {
+        let _guard = LOG_STATE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_log_region();
+        assert!(sync_marker_is_new(Some(100.000)), "the first marker seen is not yet reported");
+        assert!(!sync_marker_is_new(Some(100.000)), "the same sync must not report twice");
+        assert!(sync_marker_is_new(Some(140.250)), "a later sync reports");
+        assert!(sync_marker_is_new(Some(12.500)), "a restarted client reports again");
+        assert!(!sync_marker_is_new(None), "no marker in the buffer reports nothing");
+        reset_log_region();
+    }
+
+    #[test]
+    fn login_sync_after_a_restart_is_reported() {
+        let _guard = LOG_STATE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_log_region();
+        assert!(sync_marker_is_new(Some(9821.400)), "a marker from the previous client");
+        reset_log_region();
+        assert!(sync_marker_is_new(Some(13.036)), "the new client's login sync must report");
+    }
+}
+
+#[cfg(test)]
+mod credential_scan_tests {
+    use super::{scan_auth_credentials, scan_steam_id};
+
+    #[test]
+    fn auth_credentials_finds_json_form() {
+        let buf = br#"{"id":"594144e63ade7f2f2091c48e","Nonce":123456789}"#;
+        let (account_id, nonce) = scan_auth_credentials(buf).expect("should find credentials");
+        assert_eq!(account_id, "594144e63ade7f2f2091c48e");
+        assert_eq!(nonce, "123456789");
+    }
+
+    #[test]
+    fn auth_credentials_finds_url_encoded_form() {
+        let buf = b"accountId=594144e63ade7f2f2091c48e&nonce=123456789&ct=STM";
+        let (account_id, nonce) = scan_auth_credentials(buf).expect("should find credentials");
+        assert_eq!(account_id, "594144e63ade7f2f2091c48e");
+        assert_eq!(nonce, "123456789");
+    }
+
+    #[test]
+    fn auth_credentials_none_on_no_match() {
+        let buf = b"nothing interesting in here at all";
+        assert_eq!(scan_auth_credentials(buf), None);
+    }
+
+    #[test]
+    fn steam_id_finds_value_past_false_starts() {
+        // Leading 's' bytes are false starts for the old byte-at-a-time scanner.
+        let buf = b"ssssssssteamId=steamId=76561198012345678";
+        let sid = scan_steam_id(buf).expect("should find steam id");
+        assert_eq!(sid, "76561198012345678");
+    }
+
+    #[test]
+    fn steam_id_none_on_no_match() {
+        let buf = b"steamId=short";
+        assert_eq!(scan_steam_id(buf), None);
     }
 }

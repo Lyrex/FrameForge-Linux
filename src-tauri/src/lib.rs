@@ -1,4 +1,5 @@
 ﻿use std::collections::HashMap;
+use tracing::{debug, error, info, warn};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -6,10 +7,12 @@ use std::sync::{Arc, Mutex};
 
 /// Write `data` to `path` atomically: write to a `.tmp` sibling, then rename over the target.
 /// Prevents zero-byte corruption if the process or OS crashes mid-write.
-fn atomic_write(path: &PathBuf, data: &[u8]) -> std::io::Result<()> {
+fn atomic_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, data)?;
-    std::fs::rename(&tmp, path)
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 fn truncate_chars(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
@@ -18,6 +21,7 @@ use tauri::{Emitter, Manager, State};
 
 mod console_login; // [console-login feature] remove this line to drop the feature
 mod db;
+mod logging;
 mod memory_scanner;
 mod ocr;
 mod wfcd;
@@ -64,6 +68,11 @@ pub struct AppState {
     /// Controls the raw memory string-dump background thread.
     pub raw_scan_active: Arc<AtomicBool>,
     pub raw_scan_path: PathBuf,
+    /// Set by the EE.log tail when Warframe reports finishing an inventory
+    /// refresh; cleared by the monitor loop when it acts on it. A bool rather
+    /// than a count because the game flushes its log in bursts, so several
+    /// markers can land at once and all of them call for the same single walk.
+    pub blob_sync_pending: Arc<AtomicBool>,
     /// When true, save a timestamped inventory blob to blobs/ on each full scan pass.
     pub blob_log_enabled: Arc<AtomicBool>,
     pub blob_log_dir: PathBuf,
@@ -1019,7 +1028,22 @@ fn wfm_request(method: &str, path: &str, auth_header: &str) -> ureq::Request {
        .set("Accept", "application/json")
        .set("language", "en")
        .set("platform", "pc")
-       .set("User-Agent", "FrameForge/2.1.0")
+       .set("User-Agent", "FrameForge/3.1.0")
+}
+
+#[tracing::instrument(level = "debug", skip_all, fields(method = %method, path = %path))]
+fn wfm_call(method: &str, path: &str, auth_header: &str) -> Result<ureq::Response, ureq::Error> {
+    wfm_request(method, path, auth_header).call()
+}
+
+#[tracing::instrument(level = "debug", skip_all, fields(method = %method, path = %path))]
+fn wfm_send_json(
+    method: &str,
+    path: &str,
+    auth_header: &str,
+    body: impl serde::Serialize,
+) -> Result<ureq::Response, ureq::Error> {
+    wfm_request(method, path, auth_header).send_json(body)
 }
 
 /// Like wfm_request but authenticates via Cookie (JWT=...) instead of Authorization header.
@@ -1064,6 +1088,7 @@ fn base64_decode_url(s: &str) -> Option<Vec<u8>> {
 /// Fetch the CSRF token from warframe.market by loading the authenticated page.
 /// The meta tag `<meta name="csrf-token" content="...">` in the response HTML contains it.
 /// Falls back to the csrf_token embedded in the JWT payload if the page fetch fails.
+#[tracing::instrument(level = "debug", skip_all)]
 fn fetch_csrf_from_site(jwt: &str) -> Option<String> {
     if jwt.is_empty() { return None; }
     let resp = ureq::get("https://warframe.market/")
@@ -1072,11 +1097,11 @@ fn fetch_csrf_from_site(jwt: &str) -> Option<String> {
         .set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
         .call();
     let html = match resp {
-        Ok(r) => { eprintln!("[csrf] site fetch status=200"); r.into_string().ok()? }
+        Ok(r) => { debug!("site fetch status=200"); r.into_string().ok()? }
         Err(e) => {
-            eprintln!("[csrf] site fetch error: {} — trying JWT payload fallback", e);
+            warn!(error = %e, "site fetch failed, trying JWT payload fallback");
             if let Some(t) = jwt_payload_field(jwt, "csrf_token") {
-                eprintln!("[csrf] JWT payload csrf_token len={}", t.len());
+                debug!(len = t.len(), "JWT payload csrf_token");
                 return Some(t);
             }
             return None;
@@ -1089,16 +1114,16 @@ fn fetch_csrf_from_site(jwt: &str) -> Option<String> {
         if let Some(end_rel) = html[start..].find('"') {
             let token = html[start..start + end_rel].to_string();
             if !token.is_empty() {
-                eprintln!("[csrf] found meta token len={}", token.len());
+                debug!(len = token.len(), "found meta token");
                 return Some(token);
             }
         }
     }
-    eprintln!("[csrf] meta tag not found in HTML (len={}) — trying JWT payload fallback", html.len());
+    warn!(len = html.len(), "meta tag not found in HTML, trying JWT payload fallback");
     // Log a snippet to see what we got (first 200 chars)
-    eprintln!("[csrf] HTML snippet: {}", truncate_chars(&html, 200));
+    debug!(snippet = %truncate_chars(&html, 200), "HTML snippet");
     if let Some(t) = jwt_payload_field(jwt, "csrf_token") {
-        eprintln!("[csrf] JWT payload csrf_token len={}", t.len());
+        debug!(len = t.len(), "JWT payload csrf_token");
         Some(t)
     } else {
         None
@@ -1355,7 +1380,7 @@ fn wfm_receive_tokens(
     let json: serde_json::Value = ureq::get("https://api.warframe.market/v2/me")
         .set("Authorization", &format!("Bearer {}", access_token))
         .set("language", "en").set("platform", "pc")
-        .set("User-Agent", "FrameForge/2.1.0")
+        .set("User-Agent", "FrameForge/3.1.0")
         .call().map_err(|e| format!("Profile: {}", e))?
         .into_json().map_err(|e| format!("Parse: {}", e))?;
     let username = json["data"]["ingameName"].as_str().unwrap_or("Tenno").to_string();
@@ -1369,7 +1394,7 @@ fn wfm_receive_tokens(
     } else {
         fetch_csrf_from_site(&v1_jwt_val).unwrap_or_default()
     };
-    eprintln!("[csrf] captured csrf_token len={}", csrf.len());
+    info!(len = csrf.len(), "csrf_token captured");
     *state.wfm_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(WfmSession {
         access_token, refresh_token, client_id, device_id, username: username.clone(), status,
         v1_jwt: v1_jwt_val,
@@ -1398,7 +1423,7 @@ fn wfm_refresh_token(state: State<AppState>) -> Result<(), String> {
     wfm_wait();
     let json: serde_json::Value = ureq::post("https://api.warframe.market/auth/refresh")
         .set("Content-Type", "application/json")
-        .set("User-Agent", "FrameForge/2.1.0")
+        .set("User-Agent", "FrameForge/3.1.0")
         .send_string(&body.to_string())
         .map_err(|e| format!("Refresh: {}", e))?
         .into_json().map_err(|e| format!("Parse: {}", e))?;
@@ -1427,16 +1452,16 @@ fn wfm_set_jwt(state: State<AppState>, jwt: String) -> Result<(String, String), 
     let json: serde_json::Value = ureq::get("https://api.warframe.market/v2/me")
         .set("Authorization", &format!("Bearer {}", access_token))
         .set("language", "en").set("platform", "pc")
-        .set("User-Agent", "FrameForge/2.1.0")
+        .set("User-Agent", "FrameForge/3.1.0")
         .call().map_err(|e| format!("401: {}", e))?
         .into_json().map_err(|e| format!("Parse: {}", e))?;
     let username = json["data"]["ingameName"].as_str().unwrap_or("Tenno").to_string();
     let status   = json["data"]["status"].as_str().unwrap_or("offline").to_string();
     // If no saved CSRF token, fetch it from the site now
     if csrf_token.is_empty() && !v1_jwt.is_empty() {
-        eprintln!("[csrf] set_jwt: no saved token, fetching from site...");
+        debug!("set_jwt: no saved token, fetching from site");
         csrf_token = fetch_csrf_from_site(&v1_jwt).unwrap_or_default();
-        eprintln!("[csrf] set_jwt: csrf_token len={}", csrf_token.len());
+        debug!(len = csrf_token.len(), "set_jwt: csrf_token fetched");
     }
     *state.wfm_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(WfmSession {
         access_token, refresh_token, client_id, device_id, username: username.clone(), status: status.clone(), v1_jwt, csrf_token,
@@ -1454,7 +1479,7 @@ fn wfm_login(state: State<AppState>, email: String, password: String) -> Result<
     let resp = ureq::post("https://api.warframe.market/v1/auth/signin")
         .set("Content-Type", "application/json")
         .set("Authorization", "JWT")
-        .set("User-Agent", "FrameForge/2.1.0")
+        .set("User-Agent", "FrameForge/3.1.0")
         .send_string(&body.to_string())
         .map_err(|e| format!("Login failed: {}", e))?;
 
@@ -1493,7 +1518,7 @@ fn wfm_get_item_orders(state: State<AppState>, url_name: String, mod_rank: Optio
         .as_ref().map(|s| s.auth_header());
     wfm_wait();
     let mut req = ureq::get(&format!("https://api.warframe.market/v2/orders/item/{}", url_name))
-        .set("language", "en").set("platform", "pc").set("User-Agent", "FrameForge/2.1.0");
+        .set("language", "en").set("platform", "pc").set("User-Agent", "FrameForge/3.1.0");
     if let Some(ref h) = auth { req = req.set("Authorization", h); }
     let json: serde_json::Value = req.call().map_err(|e| format!("orders: {}", e))?
         .into_json().map_err(|e| format!("parse: {}", e))?;
@@ -1532,7 +1557,7 @@ fn wfm_get_item_statistics(state: State<AppState>, url_name: String) -> Result<s
         .as_ref().map(|s| s.auth_header());
     wfm_wait();
     let mut req = ureq::get(&format!("https://api.warframe.market/v1/items/{}/statistics", url_name))
-        .set("language", "en").set("platform", "pc").set("User-Agent", "FrameForge/2.1.0");
+        .set("language", "en").set("platform", "pc").set("User-Agent", "FrameForge/3.1.0");
     if let Some(ref h) = auth { req = req.set("Authorization", h); }
     let json: serde_json::Value = req.call().map_err(|e| format!("stats: {}", e))?
         .into_json().map_err(|e| format!("parse: {}", e))?;
@@ -1562,7 +1587,7 @@ struct WfmTopDiskCache {
 fn fetch_wfm_prime_sets() -> Vec<(String, String)> {
     wfm_wait();
     let resp = ureq::get("https://api.warframe.market/v2/items")
-        .set("User-Agent", "FrameForge/2.1.0")
+        .set("User-Agent", "FrameForge/3.1.0")
         .timeout(std::time::Duration::from_secs(15))
         .call();
     let json: serde_json::Value = match resp {
@@ -1858,7 +1883,7 @@ fn wfm_fetch_status(state: State<AppState>) -> Result<String, String> {
     let json: serde_json::Value = ureq::get("https://api.warframe.market/v2/me")
         .set("Authorization", &format!("Bearer {}", token))
         .set("language", "en").set("platform", "pc")
-        .set("User-Agent", "FrameForge/2.1.0")
+        .set("User-Agent", "FrameForge/3.1.0")
         .call().map_err(|e| format!("Status fetch: {}", e))?
         .into_json().map_err(|e| format!("Parse: {}", e))?;
     Ok(json["data"]["status"].as_str().unwrap_or("offline").to_string())
@@ -1893,8 +1918,8 @@ fn session_v1_auth(state: &State<AppState>) -> Result<String, String> {
 fn wfm_get_orders(state: State<AppState>) -> Result<serde_json::Value, String> {
     let auth = session_auth(&state)?;
     wfm_wait();
-    let json: serde_json::Value = wfm_request("GET", "/v2/orders/my", &auth)
-        .call().map_err(|e| format!("Get orders: {}", e))?
+    let json: serde_json::Value = wfm_call("GET", "/v2/orders/my", &auth)
+        .map_err(|e| format!("Get orders: {}", e))?
         .into_json().map_err(|e| format!("Parse: {}", e))?;
     Ok(json["data"].clone())
 }
@@ -2107,6 +2132,35 @@ fn parse_stat_groups(s: &str) -> Vec<Vec<String>> {
     all
 }
 
+/// Whether `text` (already lowercased) carries the riven screen's "FITS IN"
+/// panel label. The label is small enough on a 4K frame that an engine can close
+/// the word gap and report "FITSIN", so both sides are compared with spaces
+/// removed.
+fn says_fits_in(text: &str) -> bool {
+    text.replace(' ', "").contains("fitsin")
+}
+
+/// Weapon-name candidates from the "FITS IN" panel's OCR, top to bottom.
+///
+/// The panel is mostly icon and border debris (single glyphs, punctuation)
+/// with the weapon name and the panel's own buttons as the only real words, so a
+/// candidate is a line of at least four letters that is not one of those
+/// buttons. The name sits below the "FITS IN" label and above "SHOW RANKED",
+/// which is why callers take the last candidate rather than the first.
+fn panel_weapon_candidates(panel: &str) -> Vec<String> {
+    panel
+        .lines()
+        .map(|l| l.trim().to_lowercase())
+        .filter(|l| {
+            l.chars().filter(|c| c.is_alphabetic()).count() >= 4
+                && !says_fits_in(l)
+                && !l.contains("show ranked")
+                && !l.contains("close")
+                && !l.contains("cancel")
+        })
+        .collect()
+}
+
 /// Rejoin a riven card's OCR text into one line per stat.
 ///
 /// A stat starts with `+<digit>`, `-<digit>` or `x<digit>`; the digit matters
@@ -2301,12 +2355,12 @@ fn load_riven_csv_from_url() -> Result<HashMap<String, RivenEntry>, String> {
             RIVEN_SHEET_ID, gid
         );
         match ureq::get(&url)
-            .set("User-Agent", "FrameForge/2.1.0")
+            .set("User-Agent", "FrameForge/3.1.0")
             .call().map_err(|e| e.to_string())
             .and_then(|r| r.into_string().map_err(|e| e.to_string()))
         {
             Ok(csv) => { combined.extend(parse_riven_csv(&csv)); }
-            Err(e) => { eprintln!("[riven] Failed to load gid={}: {}", gid, e); }
+            Err(e) => { warn!(gid, error = %e, "failed to load riven sheet tab"); }
         }
     }
     if combined.is_empty() {
@@ -2473,6 +2527,7 @@ async fn ocr_riven_screen() -> Result<serde_json::Value, String> {
 
     let mut text = String::new();
     let mut full_text_for_fallback = String::new();
+    let mut panel_for_weapon = String::new();
     let mut confirmed = false;
 
     for attempt in 0..MAX_ATTEMPTS {
@@ -2493,17 +2548,19 @@ async fn ocr_riven_screen() -> Result<serde_json::Value, String> {
                 .unwrap_or_default();
             let card_text = ocr::ocr_pixels_rect(&pixels, w, h, 0.20, 0.65, 0.28, 0.82)
                 .unwrap_or_default();
+            let panel_text = ocr::ocr_pixels_rect_raw(&pixels, w, h, 0.73, 1.0, 0.30, 0.95)
+                .unwrap_or_default();
             let _ = append_to_file(&riven_log2, &format!(
-                "[STEP 2] OCR attempt {} — {}\n├─ Full text:\n{}\n└─ Card text:\n{}\n\n",
-                attempt + 1, ts, full_text, card_text
+                "[STEP 2] OCR attempt {} — {}\n├─ Full text:\n{}\n├─ Panel text:\n{}\n└─ Card text:\n{}\n\n",
+                attempt + 1, ts, full_text, panel_text, card_text
             ));
-            Ok::<_, String>((full_text, card_text))
+            Ok::<_, String>((full_text, panel_text, card_text))
         }).await.map_err(|e| format!("Task: {}", e))??;
 
-        let (full_text, card_text) = attempt_result;
+        let (full_text, panel_text, card_text) = attempt_result;
         let lower = full_text.to_lowercase();
         let has_header  = lower.contains("inventory") || lower.contains("mods");
-        let has_fits_in = lower.contains("fits in");
+        let has_fits_in = says_fits_in(&lower) || says_fits_in(&panel_text.to_lowercase());
 
         let _ = append_to_file(&riven_log, &format!(
             "[STEP 2] attempt {} — header={} fits_in={}\n",
@@ -2521,6 +2578,7 @@ async fn ocr_riven_screen() -> Result<serde_json::Value, String> {
         if (has_header && has_fits_in) || (has_header && comparison_likely) {
             text = card_text;
             full_text_for_fallback = full_text;
+            panel_for_weapon = panel_text;
             confirmed = true;
             if comparison_likely && !has_fits_in {
                 let _ = append_to_file(&riven_log, &format!(
@@ -2531,6 +2589,7 @@ async fn ocr_riven_screen() -> Result<serde_json::Value, String> {
         }
         text = card_text;
         full_text_for_fallback = full_text;
+        panel_for_weapon = panel_text;
     }
 
     if !confirmed {
@@ -2612,13 +2671,28 @@ async fn ocr_riven_screen() -> Result<serde_json::Value, String> {
         None
     };
 
-    let weapon = lines.iter().enumerate()
-        .find(|(_, l)| l.to_lowercase().contains("fits in"))
-        .and_then(|(i, _)| lines.get(i + 1))
-        .and_then(|l| {
-            let lc = l.trim().to_lowercase();
-            find_in_db(&lc).or(Some(lc))
-        })
+    // The "FITS IN" panel is the only place the game states the weapon outright,
+    // and it states the real one: a Kuva Nukor riven is titled "Nukor Crita-
+    // hexapha" above the card, which resolves to the ordinary Nukor and its
+    // different disposition.
+    //
+    // The grading sheet is a curated list, not a weapon index. It carries
+    // "kuva bramma" but not "kuva nukor", so a panel name it does not know is
+    // still the right answer. Reporting it unmatched costs the roll analysis
+    // (analyze_riven returns nothing for an unknown weapon, which the UI
+    // already handles) and buys not silently grading a Kuva Nukor as the base
+    // Nukor it is titled after, on a different disposition.
+    let panel_candidates = panel_weapon_candidates(&panel_for_weapon);
+    let weapon = panel_candidates.iter()
+        .find_map(|l| find_in_db(l))
+        .or_else(|| panel_candidates.last().cloned())
+        .or_else(|| lines.iter().enumerate()
+            .find(|(_, l)| says_fits_in(&l.to_lowercase()))
+            .and_then(|(i, _)| lines.get(i + 1))
+            .and_then(|l| {
+                let lc = l.trim().to_lowercase();
+                find_in_db(&lc).or(Some(lc))
+            }))
         // Fallback: first non-stat, non-UI line is the mod name "WeaponName RivenId".
         // Only accept if it matches a weapon in the DB — avoids returning currency values
         // like "D '5,598" (Endo count) that pass the basic filter.
@@ -2852,6 +2926,11 @@ fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
         .map(|d| d.join("Warframe").join("EE.log"))
         .ok_or("Cannot find LocalAppData")?;
 
+    // Second source for the inventory-sync marker (slower of the two — the tail
+    // only sees a line once Warframe flushes it). With no EE.log the monitor
+    // still escalates on its own interval, so a missing tail costs latency only.
+    let blob_sync_pending = app.state::<AppState>().blob_sync_pending.clone();
+
     std::thread::spawn(move || {
         use std::io::{Read, Seek, SeekFrom};
         let mut file_pos: u64 = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
@@ -2891,6 +2970,9 @@ fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
             if f.read_to_string(&mut buf).is_err() { continue; }
             file_pos = len;
             if buf.is_empty() { continue; }
+            if buf.contains(memory_scanner::INVENTORY_SYNC_MARKER) {
+                blob_sync_pending.store(true, Ordering::SeqCst);
+            }
             let lower = buf.to_lowercase();
 
             // ── Riven reroll / unveil ─────────────────────────────────────────
@@ -3349,8 +3431,8 @@ fn analyze_riven(weapon: String, positives: Vec<String>, negatives: Vec<String>)
 fn wfm_debug_dump(state: State<AppState>, path: String) -> Result<String, String> {
     let auth = session_auth(&state)?;
     wfm_wait();
-    let json: serde_json::Value = wfm_request("GET", &path, &auth)
-        .call().map_err(|e| format!("Dump: {}", e))?
+    let json: serde_json::Value = wfm_call("GET", &path, &auth)
+        .map_err(|e| format!("Dump: {}", e))?
         .into_json().map_err(|e| format!("Parse: {}", e))?;
     serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
 }
@@ -3364,7 +3446,7 @@ fn wfm_get_riven_attributes() -> Result<Vec<String>, String> {
     let json: serde_json::Value = ureq::get("https://api.warframe.market/v1/auctions/search")
         .query("type", "riven")
         .set("language", "en").set("platform", "pc")
-        .set("User-Agent", "FrameForge/2.1.0")
+        .set("User-Agent", "FrameForge/3.1.0")
         .call().map_err(|e| format!("Search: {}", e))?
         .into_json().map_err(|e| format!("Parse: {}", e))?;
     let mut seen = std::collections::HashSet::new();
@@ -3392,8 +3474,8 @@ fn wfm_get_item_info(state: State<AppState>, url_name: String) -> Result<serde_j
     let auth = state.wfm_session.lock().unwrap_or_else(|e| e.into_inner())
         .as_ref().map(|s| s.auth_header()).unwrap_or_default();
     wfm_wait();
-    let mut data = wfm_request("GET", &format!("/v2/items/{}", url_name), &auth)
-        .call().map_err(|e| format!("Item info: {}", e))?
+    let mut data = wfm_call("GET", &format!("/v2/items/{}", url_name), &auth)
+        .map_err(|e| format!("Item info: {}", e))?
         .into_json::<serde_json::Value>().map_err(|e| format!("Parse: {}", e))
         .map(|j| j["data"].clone())?;
 
@@ -3424,8 +3506,8 @@ fn wfm_create_order(state: State<AppState>, item_id: String, order_type: String,
         body["rank"] = serde_json::json!(rank);
     }
     wfm_wait();
-    wfm_request("POST", "/v2/order", &auth)
-        .send_string(&body.to_string()).map_err(|e| format!("Create order: {}", e))?
+    wfm_send_json("POST", "/v2/order", &auth, &body)
+        .map_err(|e| format!("Create order: {}", e))?
         .into_json::<serde_json::Value>().map_err(|e| format!("Parse: {}", e))
         .map(|j| j["data"].clone())
 }
@@ -3436,8 +3518,8 @@ fn wfm_update_order(state: State<AppState>, order_id: String, platinum: u32, qua
     let auth = session_auth(&state)?;
     let body = serde_json::json!({ "platinum": platinum, "quantity": quantity, "visible": visible });
     wfm_wait();
-    wfm_request("PATCH", &format!("/v2/order/{}", order_id), &auth)
-        .send_string(&body.to_string()).map_err(|e| format!("Update order: {}", e))?
+    wfm_send_json("PATCH", &format!("/v2/order/{}", order_id), &auth, &body)
+        .map_err(|e| format!("Update order: {}", e))?
         .into_json::<serde_json::Value>().map_err(|e| format!("Parse: {}", e))
         .map(|j| j["data"].clone())
 }
@@ -3447,8 +3529,8 @@ fn wfm_update_order(state: State<AppState>, order_id: String, platinum: u32, qua
 fn wfm_delete_order(state: State<AppState>, order_id: String) -> Result<(), String> {
     let auth = session_auth(&state)?;
     wfm_wait();
-    wfm_request("DELETE", &format!("/v2/order/{}", order_id), &auth)
-        .call().map_err(|e| format!("Delete order: {}", e))?;
+    wfm_call("DELETE", &format!("/v2/order/{}", order_id), &auth)
+        .map_err(|e| format!("Delete order: {}", e))?;
     Ok(())
 }
 
@@ -3496,8 +3578,7 @@ fn wfm_create_riven_auction(
     // WFM v1 requires buyout_price to be present in the payload (null = no buyout).
     payload["buyout_price"] = serde_json::json!(buyout_price);
     wfm_auction_wait();
-    let resp = wfm_request("POST", "/v1/auctions/create", &auth)
-        .send_json(payload)
+    let resp = wfm_send_json("POST", "/v1/auctions/create", &auth, payload)
         .map_err(|e| match e {
             ureq::Error::Status(code, r) => {
                 let body = r.into_string().unwrap_or_default();
@@ -3532,10 +3613,9 @@ async fn wfm_get_my_riven_auctions(state: tauri::State<'_, AppState>) -> Result<
     tauri::async_runtime::spawn_blocking(move || {
         // Phase 1: profile endpoint with Bearer auth — returns visible auctions.
         wfm_auction_wait();
-        let profile_resp: serde_json::Value = wfm_request(
+        let profile_resp: serde_json::Value = wfm_call(
             "GET", &format!("/v1/profile/{}/auctions", username), &v1_auth,
         )
-        .call()
         .map_err(|e| format!("Fetch auctions: {}", e))?
         .into_json()
         .map_err(|e| format!("Parse auctions: {}", e))?;
@@ -3552,9 +3632,9 @@ async fn wfm_get_my_riven_auctions(state: tauri::State<'_, AppState>) -> Result<
         for id in &stored_ids {
             if seen_ids.contains(id) { continue; }
             wfm_auction_wait();
-            let entry: serde_json::Value = match wfm_request(
+            let entry: serde_json::Value = match wfm_call(
                 "GET", &format!("/v1/auctions/entry/{}", id), &v1_auth,
-            ).call() {
+            ) {
                 Ok(r) => match r.into_json() {
                     Ok(j) => j,
                     Err(_) => continue,
@@ -3599,8 +3679,7 @@ fn wfm_switch_riven_type(
 
     // Step 1: fetch full auction detail so we have all fields (attributes, polarity, etc.).
     wfm_auction_wait();
-    let entry: serde_json::Value = wfm_request("GET", &format!("/v1/auctions/entry/{}", auction_id), &auth)
-        .call()
+    let entry: serde_json::Value = wfm_call("GET", &format!("/v1/auctions/entry/{}", auction_id), &auth)
         .map_err(|e| match e {
             ureq::Error::Status(code, r) => format!("Fetch auction: HTTP {}: {}", code, r.into_string().unwrap_or_default()),
             other => format!("Fetch auction: {}", other),
@@ -3626,8 +3705,7 @@ fn wfm_switch_riven_type(
 
     // Step 2: close the old auction.
     wfm_auction_wait();
-    wfm_request("PUT", &format!("/v1/auctions/entry/{}/close", auction_id), &auth)
-        .call()
+    wfm_call("PUT", &format!("/v1/auctions/entry/{}/close", auction_id), &auth)
         .map_err(|e| match e {
             ureq::Error::Status(code, r) => format!("Delete auction: HTTP {}: {}", code, r.into_string().unwrap_or_default()),
             other => format!("Delete auction: {}", other),
@@ -3647,8 +3725,7 @@ fn wfm_switch_riven_type(
     payload["buyout_price"] = serde_json::json!(buyout_price);
 
     wfm_auction_wait();
-    let resp = wfm_request("POST", "/v1/auctions/create", &auth)
-        .send_json(payload)
+    let resp = wfm_send_json("POST", "/v1/auctions/create", &auth, payload)
         .map_err(|e| match e {
             ureq::Error::Status(code, r) => format!("Create riven auction: HTTP {}: {}", code, r.into_string().unwrap_or_default()),
             other => format!("Create riven auction: {}", other),
@@ -3672,8 +3749,7 @@ fn wfm_switch_riven_type(
 fn wfm_delete_auction(state: State<AppState>, auction_id: String) -> Result<(), String> {
     let auth = session_v1_auth(&state)?;
     wfm_auction_wait();
-    wfm_request("PUT", &format!("/v1/auctions/entry/{}/close", auction_id), &auth)
-        .call()
+    wfm_call("PUT", &format!("/v1/auctions/entry/{}/close", auction_id), &auth)
         .map_err(|e| match e {
             ureq::Error::Status(code, r) => {
                 let body = r.into_string().unwrap_or_default();
@@ -3694,8 +3770,7 @@ fn wfm_update_auction(state: State<AppState>, auction_id: String, starting_price
     let mut body = serde_json::json!({ "starting_price": starting_price, "visible": visible });
     body["buyout_price"] = buyout_price.map_or(serde_json::Value::Null, |v| serde_json::json!(v));
     wfm_auction_wait();
-    wfm_request("PUT", &format!("/v1/auctions/entry/{}", auction_id), &auth)
-        .send_json(body)
+    wfm_send_json("PUT", &format!("/v1/auctions/entry/{}", auction_id), &auth, body)
         .map_err(|e| match e {
             ureq::Error::Status(code, r) => {
                 let body = r.into_string().unwrap_or_default();
@@ -3711,8 +3786,7 @@ fn wfm_update_auction(state: State<AppState>, auction_id: String, starting_price
 fn wfm_set_auction_visible(state: State<AppState>, auction_id: String, visible: bool) -> Result<(), String> {
     let auth = session_v1_auth(&state)?;
     wfm_auction_wait();
-    wfm_request("PUT", &format!("/v1/auctions/entry/{}", auction_id), &auth)
-        .send_json(serde_json::json!({ "visible": visible }))
+    wfm_send_json("PUT", &format!("/v1/auctions/entry/{}", auction_id), &auth, serde_json::json!({ "visible": visible }))
         .map_err(|e| match e {
             ureq::Error::Status(code, r) => {
                 let body = r.into_string().unwrap_or_default();
@@ -3876,6 +3950,7 @@ fn trimmed_median_from_stats(arr: &[serde_json::Value]) -> Option<u32> {
     Some(median.round() as u32)
 }
 
+#[tracing::instrument(level = "debug", skip_all, fields(slug = %slug))]
 fn wfm_price_for_slug(slug: &str) -> Result<Option<u32>, String> {
     wfm_wait();
     let url = format!("https://api.warframe.market/v1/items/{}/statistics", slug);
@@ -4210,20 +4285,41 @@ fn load_settings(state: State<AppState>) -> String {
     std::fs::read_to_string(&state.settings_path).unwrap_or_default()
 }
 
+// settings.json is written from several threads (the save_settings command,
+// window-event handlers on every move/resize). Every writer must go through
+// merge_settings; an unserialized or non-atomic write used to tear the file
+// and wipe all settings on the next merge.
+static SETTINGS_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn read_settings_map(path: &std::path::Path) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let raw = std::fs::read_to_string(path).unwrap_or_default();
+    if raw.trim().is_empty() {
+        return Ok(serde_json::Map::new());
+    }
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(serde_json::Value::Object(m)) => Ok(m),
+        _ => Err(format!("{} exists but is not a valid JSON object; refusing to overwrite it", path.display())),
+    }
+}
+
+fn merge_settings(path: &std::path::Path, apply: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>)) -> Result<(), String> {
+    // Poison recovery is safe: the lock guards the file, not the map, and a
+    // panicking closure bails before the write, leaving the file untouched.
+    let _guard = SETTINGS_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut map = read_settings_map(path)?;
+    apply(&mut map);
+    atomic_write(path, serde_json::Value::Object(map).to_string().as_bytes()).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn save_settings(app: tauri::AppHandle, state: State<AppState>, json: String) -> Result<(), String> {
     // Merge over existing file so geometry fields written by save_window_state are never erased
     let new_vals: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-    let mut existing: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(&state.settings_path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| if let serde_json::Value::Object(m) = v { Some(m) } else { None })
-        .unwrap_or_default();
-    if let serde_json::Value::Object(new_map) = new_vals {
-        for (k, v) in new_map { existing.insert(k, v); }
-    }
-    std::fs::write(&state.settings_path, serde_json::Value::Object(existing).to_string())
-        .map_err(|e| e.to_string())?;
+    merge_settings(&state.settings_path, |existing| {
+        if let serde_json::Value::Object(new_map) = new_vals {
+            for (k, v) in new_map { existing.insert(k, v); }
+        }
+    })?;
     app.emit("settings-updated", ()).ok();
     Ok(())
 }
@@ -4262,14 +4358,6 @@ async fn dump_memory_probe(state: State<'_, AppState>) -> Result<String, String>
     let output = lines.join("\n");
     std::fs::write(&log_path, &output).map_err(|e| e.to_string())?;
     Ok(output)
-}
-
-/// Toggle the continuous raw memory string-dump.
-/// One-shot manual capture of the full inventory JSON blob.
-#[tauri::command]
-fn capture_inventory_blob(state: State<'_, AppState>) -> Result<String, String> {
-    let path = state.raw_scan_path.with_file_name("inventory_blob.txt");
-    memory_scanner::capture_inventory_blob(&path)
 }
 
 /// Enable or disable automatic per-pass inventory blob logging to blobs/.
@@ -4318,7 +4406,7 @@ async fn toggle_raw_scan(state: State<'_, AppState>) -> Result<String, String> {
                         Err(e) => { let _ = writeln!(f, "--- pass {} error: {} ---", pass, e); }
                     }
                 }
-                Err(e) => { eprintln!("[raw_scan] open failed: {}", e); }
+                Err(e) => { warn!(error = %e, "raw_scan open failed"); }
             }
 
             // Sleep between passes so the user has time to navigate menus
@@ -4368,6 +4456,44 @@ pub struct CraftingJob {
 pub struct BlobStatusPayload {
     pub stage:   String,  // "scanning" | "done" | "error"
     pub detail:  String,  // human-readable detail
+}
+
+/// Floor on walk frequency, inherited from the fixed cadence this policy
+/// replaced: whatever the probe reports, walking is never worth doing faster.
+const WALK_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+/// A client with no blob found yet is usually at the login screen. The marker
+/// ends that wait as soon as the inventory arrives, so this interval only
+/// applies when no marker reaches us at all.
+const WALK_COLD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+/// Covers the state a probe cannot detect: the game reallocates the blob but
+/// the old address still holds a parseable copy of the old bytes, so every
+/// probe answers "unchanged". That is rare and a walk costs the player frames,
+/// hence the long interval.
+const WALK_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_secs(900);
+/// Nothing changes the inventory without a sync, and a sync is always logged,
+/// so this only covers syncs that both marker sources missed.
+const BLOB_PROBE_FALLBACK: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether a full region walk is worth its cost this tick.
+///
+/// None of this depends on the marker for correctness. Every case has an
+/// interval that fires without one, so a missing EE.log or an unlocatable log
+/// buffer costs only latency.
+fn walk_is_due(
+    outcome: &memory_scanner::ScanOutcome,
+    sync_seen: bool,
+    has_cached_blob: bool,
+    since_walk: std::time::Duration,
+) -> bool {
+    use memory_scanner::ScanOutcome;
+    match outcome {
+        ScanOutcome::Updated => false,
+        ScanOutcome::CacheMiss if sync_seen => true,
+        ScanOutcome::CacheMiss if has_cached_blob => since_walk >= WALK_MIN_INTERVAL,
+        ScanOutcome::Unchanged if sync_seen => since_walk >= WALK_MIN_INTERVAL,
+        ScanOutcome::CacheMiss => since_walk >= WALK_COLD_INTERVAL,
+        ScanOutcome::Unchanged => since_walk >= WALK_MAX_INTERVAL,
+    }
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -4479,6 +4605,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     let shared_crafting      = state.current_crafting.clone();
     let blob_log_enabled     = state.blob_log_enabled.clone();
     let blob_log_dir         = state.blob_log_dir.clone();
+    let blob_sync_pending    = state.blob_sync_pending.clone();
     let reward_app = app.clone();  // clone before app is moved into the inventory thread
 
     // Channel for the blob capture thread to deliver a parsed BlobInventory to the monitor loop.
@@ -4487,7 +4614,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     std::thread::spawn(move || {
         let conn = match rusqlite::Connection::open(&db_path) {
             Ok(c) => c,
-            Err(e) => { eprintln!("Monitor DB open failed: {}", e); return; }
+            Err(e) => { error!(error = %e, "monitor DB open failed"); return; }
         };
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL;");
 
@@ -4598,7 +4725,9 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
             .filter(|(_, v)| !v.archon_shards.is_empty())
             .map(|(k, v)| (k.clone(), v.archon_shards.clone()))
             .collect();
-        let mut last_blob_time: Option<std::time::Instant> = None;
+        let mut last_walk_time: Option<std::time::Instant> = None;
+        let mut last_probe_time: Option<std::time::Instant> = None;
+        let mut last_blob_probe: Option<std::time::Instant> = None;
         // Guard against overlapping captures: a full memory walk can take >10 s on large
         // game processes, so without this flag we'd stack up concurrent scan threads.
         let blob_scan_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -4784,7 +4913,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     blob.unique_items.len(), blob.stackable_items.len(),
                     blob.mods.len(), blob.flavour_items.len()
                 );
-                eprintln!("[monitor] blob applied: {}", detail);
+                info!(detail = %detail, "blob applied");
                 let _ = app.emit("blob-status", BlobStatusPayload {
                     stage: "done".into(),
                     detail,
@@ -4803,9 +4932,6 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 }
             }
 
-            // Periodic blob capture every 10s while game is running.
-            // blob_scan_active prevents overlapping captures — a full memory walk on a
-            // large game process can exceed 10 s, so without the guard we'd stack threads.
             // Re-enumerate processes at most every 5 s (CreateToolhelp32Snapshot overhead).
             let needs_pid_check = last_pid_check
                 .map_or(true, |t: std::time::Instant| t.elapsed().as_secs() >= 5);
@@ -4814,8 +4940,9 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 cached_game_running = current_pid.is_some();
                 if current_pid != last_pid {
                     if current_pid.is_some() {
-                        eprintln!("[monitor] Warframe PID changed ({:?} → {:?}), clearing blob region cache", last_pid, current_pid);
+                        info!(?last_pid, ?current_pid, "Warframe PID changed, clearing blob region cache");
                         memory_scanner::reset_last_blob_region();
+                        memory_scanner::reset_log_region();
                     }
                     last_pid = current_pid;
                 }
@@ -4823,12 +4950,54 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
             }
             let game_running = cached_game_running;
             if game_running {
-                let should_capture = last_blob_time
-                    .map_or(true, |t: std::time::Instant| t.elapsed() >= std::time::Duration::from_secs(10));
-                let already_running = blob_scan_active.load(Ordering::SeqCst);
-                if should_capture && !already_running {
+                // ── Blob capture: cheap probe, rate-limited walk ──────────────
+                // The probe runs at PROBE_INTERVAL; re-reading the blob itself is
+                // gated additionally by BLOB_PROBE_FALLBACK or the sync marker.
+                const PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+                let walk_in_flight = blob_scan_active.load(Ordering::SeqCst);
+                let probe_due = last_probe_time
+                    .map_or(true, |t: std::time::Instant| t.elapsed() >= PROBE_INTERVAL);
+
+                let mut should_capture = false;
+                if probe_due && !walk_in_flight {
+                    last_probe_time = Some(std::time::Instant::now());
+                    let stitch_due = last_blob_probe
+                        .map_or(true, |t: std::time::Instant| t.elapsed() >= BLOB_PROBE_FALLBACK)
+                        || blob_sync_pending.load(Ordering::SeqCst)
+                        || !memory_scanner::has_cached_blob();
+                    let (outcome, sync_marker) = match last_pid {
+                        Some(pid) => memory_scanner::probe_tick(pid, blob_tx.clone(), stitch_due),
+                        None => (None, false),
+                    };
+                    if outcome.is_some() {
+                        last_blob_probe = Some(std::time::Instant::now());
+                    }
+                    if sync_marker {
+                        blob_sync_pending.store(true, Ordering::SeqCst);
+                    }
+                    let sync_seen  = blob_sync_pending.load(Ordering::SeqCst);
+                    let blob_known = memory_scanner::has_cached_blob();
+                    let since_walk = last_walk_time
+                        .map_or(std::time::Duration::MAX, |t: std::time::Instant| t.elapsed());
+                    should_capture = outcome
+                        .as_ref()
+                        .is_some_and(|o| walk_is_due(o, sync_seen, blob_known, since_walk));
+                    if should_capture || outcome == Some(memory_scanner::ScanOutcome::Updated) {
+                        blob_sync_pending.store(false, Ordering::SeqCst);
+                    }
+                    if should_capture {
+                        let since = match last_walk_time {
+                            Some(t) => format!("{:.1}s", t.elapsed().as_secs_f64()),
+                            None => "never".into(),
+                        };
+                        info!(outcome = ?outcome, sync_seen, blob_known, since_last_walk = %since, "escalating to full walk");
+                    }
+                }
+
+                if should_capture {
                     blob_scan_active.store(true, Ordering::SeqCst);
-                    last_blob_time = Some(std::time::Instant::now());
+                    last_walk_time = Some(std::time::Instant::now());
                     let ts     = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
                     let dir    = blob_log_dir.clone();
                     let tx     = blob_tx.clone();
@@ -4838,16 +5007,15 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         stage:  "scanning".into(),
                         detail: "Reading Warframe memory\u{2026}".into(),
                     });
-                    eprintln!("[monitor] blob capture starting (save={})", save);
+                    debug!(save, "blob capture starting");
                     std::thread::spawn(move || {
-                        // Ensure the flag is cleared even if capture_all_blobs panics.
                         struct ClearOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
                         impl Drop for ClearOnDrop {
                             fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); }
                         }
                         let _guard = ClearOnDrop(active);
                         let count = memory_scanner::capture_all_blobs(&dir, &ts, tx, save);
-                        eprintln!("[monitor] blob capture finished (files_saved={} save_flag={} ts={})", count, save, ts);
+                        debug!(files_saved = count, save_flag = save, ts = %ts, "blob capture finished");
                     });
                 }
                 prev_game_running = true;
@@ -5519,7 +5687,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         ts0, trigger_line, prefilter_log, filtered_cat.len()
                     ));
                     if let Err(e) = write_err {
-                        eprintln!("[FrameForge] session log write failed: {e}");
+                        warn!(error = %e, "session log write failed");
                     }
                     // Create one diagnostics folder for this entire run.
                     let run_diag_dir = diag_dir().join(
@@ -7137,7 +7305,7 @@ async fn fetch_worldstate(state: State<'_, AppState>) -> Result<serde_json::Valu
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
         let raw = ureq::get("https://api.warframe.com/cdn/worldState.php")
-            .set("User-Agent", "FrameForge/2.1.0")
+            .set("User-Agent", "FrameForge/3.1.0")
             .call()
             .map_err(|e| format!("worldstate fetch failed: {}", e))?
             .into_json::<serde_json::Value>()
@@ -7149,7 +7317,7 @@ async fn fetch_worldstate(state: State<'_, AppState>) -> Result<serde_json::Valu
         let news: Vec<serde_json::Value> = ureq::get(
             "https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?appid=230410&count=10&maxlength=500&format=json"
         )
-            .set("User-Agent", "FrameForge/2.1.0")
+            .set("User-Agent", "FrameForge/3.1.0")
             .timeout(std::time::Duration::from_secs(10))
             .call()
             .ok()
@@ -7364,7 +7532,7 @@ fn show_overlay_window(
     // off-screen. If it's still on about:blank, navigate to the overlay URL now.
     if let Ok(url) = win.url() {
         if url.as_str() == "about:blank" || url.as_str().starts_with("about:") {
-            eprintln!("[overlay] WebView2 deferred load detected (url={}) — navigating to overlay URL", url);
+            debug!(%url, "WebView2 deferred load detected, navigating to overlay URL");
             let overlay_url = if cfg!(debug_assertions) {
                 "http://localhost:1420/index.html?overlay"
             } else {
@@ -7410,18 +7578,18 @@ fn show_test_overlay_window(app: tauri::AppHandle) -> Result<(), String> {
     // Log current URL and force navigation in case WebView2 deferred loading while off-screen
     match win.url() {
         Ok(url) => {
-            eprintln!("[OVERLAY-TEST] current url: {url}");
+            debug!(%url, "current url");
             // Only re-navigate if we're on blank (WebView2 never loaded the app URL)
             if url.as_str() == "about:blank" || url.as_str().starts_with("about:") {
-                eprintln!("[OVERLAY-TEST] was on about:blank — navigating to app URL");
+                debug!("was on about:blank, navigating to app URL");
                 if let Ok(nav_url) = tauri::Url::parse("http://localhost:1420/index.html?overlaytest") {
                     let _ = win.navigate(nav_url);
                 }
             }
         }
-        Err(e) => eprintln!("[OVERLAY-TEST] url() error: {e}"),
+        Err(e) => warn!(error = %e, "url() error"),
     }
-    eprintln!("[OVERLAY-TEST] show_test_overlay_window: moved to logical(400,300), alwaysOnTop=true");
+    debug!("show_test_overlay_window: moved to logical(400,300), alwaysOnTop=true");
     Ok(())
 }
 
@@ -7435,7 +7603,7 @@ fn hide_test_overlay_window(app: tauri::AppHandle) -> Result<(), String> {
     let _ = win.set_position(tauri::Position::Physical(
         tauri::PhysicalPosition { x: 0, y: -3000 }
     ));
-    eprintln!("[OVERLAY-TEST] hide_test_overlay_window: moved offscreen");
+    debug!("hide_test_overlay_window: moved offscreen");
     Ok(())
 }
 
@@ -7559,7 +7727,7 @@ async fn prewarm_image_cache(state: tauri::State<'_, AppState>) -> Result<(), St
             .collect();
 
         if names.is_empty() { return; }
-        eprintln!("[img_cache] Prewarming {} images in background", names.len());
+        debug!(count = names.len(), "prewarming images in background");
 
         for chunk in names.chunks(8) {
             let handles: Vec<_> = chunk.iter().map(|name| {
@@ -7577,7 +7745,7 @@ async fn prewarm_image_cache(state: tauri::State<'_, AppState>) -> Result<(), St
             }).collect();
             for h in handles { let _ = h.join(); }
         }
-        eprintln!("[img_cache] Prewarm complete");
+        debug!("prewarm complete");
     }); // intentionally not awaited — fire and forget
 
     Ok(())
@@ -7848,6 +8016,7 @@ const PRICING_BASE: &str = "https://raw.githubusercontent.com/WyrmStudios/FrameF
 /// Returns (by_name, by_slug):
 ///   by_name: item display name (lowercase) → median sell price  (for get_item_price)
 ///   by_slug: authoritative WFM slug         → median sell price  (for wfm_price_cache)
+#[tracing::instrument(level = "debug", skip_all)]
 fn fetch_relics_run_data() -> (HashMap<String, u32>, HashMap<String, u32>) {
     // items.json gives the authoritative name → WFM slug mapping for every tradeable item.
     let name_to_slug: HashMap<String, String> = ureq::get(&format!("{}/items.json", PRICING_BASE))
@@ -8181,43 +8350,33 @@ fn save_window_state(window: &tauri::WebviewWindow, settings_path: &std::path::P
     let pos  = window.outer_position().ok();
     let size = window.outer_size().ok();
 
-    let mut map: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(settings_path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| if let serde_json::Value::Object(m) = v { Some(m) } else { None })
-        .unwrap_or_default();
-
-    map.insert(format!("{}Maximized", prefix), maximized.into());
-    // Only overwrite position/size when not maximised/minimised.
-    // Also guard against the Windows minimized sentinel (-32000,-32000) and dummy size (160×28)
-    // which can slip through when is_minimized() is unreliable at CloseRequested time.
-    if !maximized && !minimized {
-        if let Some(p) = pos {
-            if p.x > -10_000 && p.y > -10_000 {
-                map.insert(format!("{}X", prefix), p.x.into());
-                map.insert(format!("{}Y", prefix), p.y.into());
+    let result = merge_settings(settings_path, |map| {
+        map.insert(format!("{}Maximized", prefix), maximized.into());
+        // Only overwrite position/size when not maximised/minimised.
+        // Also guard against the Windows minimized sentinel (-32000,-32000) and dummy size (160×28)
+        // which can slip through when is_minimized() is unreliable at CloseRequested time.
+        if !maximized && !minimized {
+            if let Some(p) = pos {
+                if p.x > -10_000 && p.y > -10_000 {
+                    map.insert(format!("{}X", prefix), p.x.into());
+                    map.insert(format!("{}Y", prefix), p.y.into());
+                }
+            }
+            if let Some(s) = size {
+                if s.width >= 100 && s.height >= 50 {
+                    map.insert(format!("{}Width",  prefix), (s.width  as i64).into());
+                    map.insert(format!("{}Height", prefix), (s.height as i64).into());
+                }
             }
         }
-        if let Some(s) = size {
-            if s.width >= 100 && s.height >= 50 {
-                map.insert(format!("{}Width",  prefix), (s.width  as i64).into());
-                map.insert(format!("{}Height", prefix), (s.height as i64).into());
-            }
-        }
+    });
+    if let Err(e) = result {
+        warn!(error = %e, "not saving window state");
     }
-
-    let _ = std::fs::write(settings_path, serde_json::Value::Object(map).to_string());
 }
 
 fn restore_window_state(app: &tauri::AppHandle, window: &tauri::WebviewWindow, settings_path: &std::path::Path, prefix: &str, min_w: u32, min_h: u32) {
-    let json = match std::fs::read_to_string(settings_path) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let map = match serde_json::from_str::<serde_json::Value>(&json) {
-        Ok(serde_json::Value::Object(m)) => m,
-        _ => return,
-    };
+    let Ok(map) = read_settings_map(settings_path) else { return };
 
     let maximized = map.get(&format!("{}Maximized", prefix)).and_then(|v| v.as_bool()).unwrap_or(false);
     if maximized {
@@ -8405,6 +8564,7 @@ pub fn run() {
             monitor_active: Arc::new(AtomicBool::new(false)),
             raw_scan_active: Arc::new(AtomicBool::new(false)),
             raw_scan_path,
+            blob_sync_pending: Arc::new(AtomicBool::new(false)),
             blob_log_enabled: Arc::new(AtomicBool::new(false)),
             blob_log_dir,
             api_log_enabled: Arc::new(AtomicBool::new(false)),
@@ -8428,6 +8588,8 @@ pub fn run() {
         })
         .setup(|app| {
             use tauri::Manager;
+
+            logging::init(app.handle());
 
             // Spin up a tiny local HTTP server that serves cached item images from disk.
             // This is more reliable than convertFileSrc (which needs assetProtocol scope).
@@ -8535,7 +8697,6 @@ pub fn run() {
             log_api_changes,
             dump_memory_probe,
             toggle_raw_scan,
-            capture_inventory_blob,
             set_blob_log,
             set_api_log,
             get_app_version,
@@ -8670,6 +8831,96 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod settings_merge_tests {
+    use super::{merge_settings, read_settings_map};
+    use std::path::PathBuf;
+
+    /// Each test gets its own file so they can run in parallel.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join("frameforge-settings-tests");
+        std::fs::create_dir_all(&dir).expect("temp dir is always writable");
+        let path = dir.join(format!("{name}.json"));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    /// A truncated settings.json (crash or app kill mid-write, e.g. during an
+    /// update) used to parse as "no settings", and the next merge rewrote the
+    /// file from an empty map, wiping tracked and favorites. A file that
+    /// exists but does not parse must be left exactly as it is.
+    #[test]
+    fn a_corrupt_settings_file_is_never_replaced() {
+        let path = scratch("corrupt");
+        let truncated = r#"{"tracked":["/Lotus/Weapons/Boar"],"favorites":["/Lo"#;
+        std::fs::write(&path, truncated).expect("scratch file is writable");
+
+        let result = merge_settings(&path, |map| {
+            map.insert("windowX".into(), 10.into());
+        });
+
+        assert!(result.is_err(), "merging over an unparseable file must refuse, not wipe");
+        let after = std::fs::read_to_string(&path).expect("file still exists");
+        assert_eq!(after, truncated, "the corrupt file must be preserved for recovery");
+    }
+
+    /// A missing or empty file is an ordinary first launch, not corruption.
+    #[test]
+    fn a_missing_or_empty_file_is_a_fresh_start() {
+        let path = scratch("fresh");
+        assert!(read_settings_map(&path).expect("missing file is fine").is_empty());
+        std::fs::write(&path, "").expect("scratch file is writable");
+        assert!(read_settings_map(&path).expect("empty file is fine").is_empty());
+        merge_settings(&path, |map| {
+            map.insert("tracked".into(), serde_json::json!(["a"]));
+        })
+        .expect("merging into a fresh file succeeds");
+    }
+
+    #[test]
+    fn merging_preserves_unrelated_keys() {
+        let path = scratch("preserve");
+        std::fs::write(&path, r#"{"tracked":["a"],"favorites":["b"]}"#).expect("scratch file is writable");
+        merge_settings(&path, |map| {
+            map.insert("windowX".into(), 42.into());
+        })
+        .expect("merge succeeds");
+        let map = read_settings_map(&path).expect("file parses");
+        assert_eq!(map["tracked"], serde_json::json!(["a"]));
+        assert_eq!(map["favorites"], serde_json::json!(["b"]));
+        assert_eq!(map["windowX"], serde_json::json!(42));
+    }
+
+    /// save_window_state fires on every window move while save_settings runs on
+    /// the command thread. Unserialized, one writer read the file mid-truncate
+    /// of the other and resurrected a stale or empty map.
+    #[test]
+    fn concurrent_merges_do_not_lose_keys() {
+        let path = scratch("concurrent");
+        std::fs::write(&path, r#"{"tracked":["a"]}"#).expect("scratch file is writable");
+        std::thread::scope(|s| {
+            for t in 0..8 {
+                let path = &path;
+                s.spawn(move || {
+                    for i in 0..25 {
+                        merge_settings(path, |map| {
+                            map.insert(format!("k{t}_{i}"), i.into());
+                        })
+                        .expect("merge never fails on a valid file");
+                    }
+                });
+            }
+        });
+        let map = read_settings_map(&path).expect("file parses after the storm");
+        assert_eq!(map["tracked"], serde_json::json!(["a"]));
+        for t in 0..8 {
+            for i in 0..25 {
+                assert!(map.contains_key(&format!("k{t}_{i}")), "lost k{t}_{i}");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -8811,6 +9062,35 @@ X N,
         );
     }
 
+    /// Verbatim panel OCR from three reroll screens. The weapon name has to
+    /// survive whether or not the grading sheet lists it: "kuva nukor" is not in
+    /// the sheet, and reporting the base Nukor in its place would grade the roll
+    /// against a different weapon's disposition.
+    #[test]
+    fn the_panel_yields_the_weapon_name_over_its_own_chrome() {
+        let nukor = "o\n=\n\\\n[\"\no\nIN\n\u{fb01} 'A l\u{2019}\u{2019})\n\u{2014}\nKuva Nukor\n";
+        assert_eq!(panel_weapon_candidates(nukor).last().unwrap(), "kuva nukor");
+
+        let bramma = "-\nD\n)\nA\n~\n3\n\u{00a5}\nFITSIN\ne\nKuva Bramma\nSHOW RANKED\n";
+        assert_eq!(panel_weapon_candidates(bramma).last().unwrap(), "kuva bramma");
+
+        // The single-card screen adds a CLOSE button below SHOW RANKED.
+        let single = "\\\nE_ 3\n-\n-~\nFITSIN\n@\nKuva Bramma\nSHOW RANKED\nCLOSE\n";
+        assert_eq!(panel_weapon_candidates(single).last().unwrap(), "kuva bramma");
+
+        // A panel that read as nothing but debris must not name a weapon.
+        assert!(panel_weapon_candidates("\u{201c} \\\\\n>~ \u{2018}\n").is_empty());
+    }
+
+    /// The label is small enough that an engine can close the word gap.
+    #[test]
+    fn the_fits_in_marker_is_matched_without_its_space() {
+        assert!(says_fits_in("fitsin"));
+        assert!(says_fits_in("fits in"));
+        assert!(says_fits_in("e\nfitsin\nkuva bramma"));
+        assert!(!says_fits_in("inventory/mods"));
+    }
+
     /// Titles must not glue onto a stat, and a negative stat is a real curse
     /// rather than junk. The second title is the one that matters: it follows the
     /// card above with no blank line, and is what the "kuva" noise rule holds back.
@@ -8835,5 +9115,67 @@ MR 11
                 "-25.4% Ammo Maximum",
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod walk_policy_tests {
+    use super::{walk_is_due, WALK_COLD_INTERVAL, WALK_MAX_INTERVAL, WALK_MIN_INTERVAL};
+    use crate::memory_scanner::ScanOutcome;
+    use std::time::Duration;
+
+    /// At the login screen no blob has ever been found, and re-checking that
+    /// every WALK_MIN_INTERVAL reads gigabytes and costs the player frames for
+    /// seconds at a time.
+    #[test]
+    fn a_client_with_no_blob_yet_waits_for_the_backstop() {
+        let just_walked = WALK_MIN_INTERVAL + Duration::from_secs(1);
+        assert!(!walk_is_due(&ScanOutcome::CacheMiss, false, false, just_walked));
+        assert!(walk_is_due(&ScanOutcome::CacheMiss, false, false, WALK_COLD_INTERVAL));
+    }
+
+    /// A settled inventory answers "unchanged" every couple of seconds for as
+    /// long as the player stays docked.
+    #[test]
+    fn a_settled_inventory_does_not_walk_on_the_minute() {
+        assert!(!walk_is_due(&ScanOutcome::Unchanged, false, true, Duration::from_secs(60)));
+        assert!(!walk_is_due(&ScanOutcome::Unchanged, false, true, Duration::from_secs(300)));
+        assert!(walk_is_due(&ScanOutcome::Unchanged, false, true, WALK_MAX_INTERVAL));
+    }
+
+    /// The client announced a fetch and our copy did not move. Usually a sync
+    /// with no delta, but it is also what a stale address holding the old bytes
+    /// looks like.
+    #[test]
+    fn an_unchanged_probe_with_a_marker_still_walks() {
+        assert!(walk_is_due(&ScanOutcome::Unchanged, true, true, WALK_MIN_INTERVAL));
+        assert!(!walk_is_due(&ScanOutcome::Unchanged, true, true, Duration::from_secs(3)));
+    }
+
+    /// The probe already delivered the new inventory.
+    #[test]
+    fn a_fresh_parse_never_escalates() {
+        assert!(!walk_is_due(&ScanOutcome::Updated, true, true, Duration::MAX));
+    }
+
+    /// Once a blob is known, a miss plausibly means the game reallocated it.
+    #[test]
+    fn a_miss_on_a_known_blob_keeps_the_old_cadence() {
+        assert!(walk_is_due(&ScanOutcome::CacheMiss, false, true, WALK_MIN_INTERVAL));
+        assert!(!walk_is_due(&ScanOutcome::CacheMiss, false, true, Duration::from_secs(4)));
+    }
+
+    /// The marker resolves the ambiguity, including at the login screen.
+    #[test]
+    fn a_sync_marker_escalates_immediately() {
+        assert!(walk_is_due(&ScanOutcome::CacheMiss, true, false, Duration::ZERO));
+        assert!(walk_is_due(&ScanOutcome::CacheMiss, true, true, Duration::ZERO));
+    }
+
+    /// The first tick after the game appears has no previous walk to rate-limit
+    /// against, so the app still gets one immediately at startup.
+    #[test]
+    fn the_first_walk_is_never_delayed() {
+        assert!(walk_is_due(&ScanOutcome::CacheMiss, false, false, Duration::MAX));
     }
 }
