@@ -58,7 +58,10 @@ import MarketHelper, { MARKET_FILTERS_DEFAULT } from "./MarketHelper";
 import RelicHelper, { RELIC_FILTERS_DEFAULT } from "./RelicHelper";
 import RivenAnalyzer from "./RivenAnalyzer";
 import RivenOverlayWindow from "./RivenOverlayWindow";
-import TimerHelper, { FissureWatch } from "./TimerHelper";
+import TimerHelper, { FissureWatch, fmtMs } from "./TimerHelper";
+import { useWorldState } from "./worldstate";
+import { notify, ensurePermission } from "./notify";
+import { collectNewMatches, type SeenFissures } from "./fissureAlerts";
 import Statistics from "./Statistics";
 import Syndicates from "./Syndicates";
 import Overlay from "./Overlay";
@@ -709,6 +712,7 @@ export default function App() {
   const [memoryProbing, setMemoryProbing] = useState(false);
   const [rawScanning, setRawScanning] = useState(false);
   const [diagCapturing, setDiagCapturing] = useState(false);
+  const [notifyTestResult, setNotifyTestResult] = useState("");
   const [diagPath, setDiagPath] = useState<string | null>(null);
   const [autoDiagEnabled, setAutoDiagEnabled] = useState(false);
   const [diagFolderSize, setDiagFolderSize] = useState<number>(0);
@@ -806,6 +810,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [timerFavorites, setTimerFavorites] = useState<string[]>([]);
   const [fissureWatches, setFissureWatches] = useState<FissureWatch[]>([]);
+  const [fissureNotifications, setFissureNotifications] = useState(true);
   const [modularWidth, setModularWidth] = useState(240);
   const [modularSectionOrder, setModularSectionOrder] = useState<string[]>(["tracking", "favorites", "timers", "fissures"]);
   const [modularPopout, setModularPopout] = useState(false);
@@ -822,11 +827,11 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const settingsLoadedRef = useRef(false);
   const settingsRef = useRef({
     overlayEnabled: true, overlayPriority: "completion", textScale: 1, colorblindMode: false, clockFormat: "auto" as "auto" | "12h" | "24h", companionApiEnabled: false, memoryScannerEnabled: false, blobLogEnabled: false, apiLogEnabled: false, autoDiagEnabled: false,
-    tracked: [] as string[], favorites: [] as string[], timerFavorites: [] as string[], fissureWatches: [] as FissureWatch[], modularWidth: 240,
+    tracked: [] as string[], favorites: [] as string[], timerFavorites: [] as string[], fissureWatches: [] as FissureWatch[], fissureNotifications: true, modularWidth: 240,
     modularSectionOrder: ["tracking", "favorites", "timers"] as string[], modularPopout: false,
     wfmInvisibleOnStart: false, wfmInvisibleOnClose: false, wfmAutoInvisible: false, wfmAutoInvisibleMins: 30,
   });
-  settingsRef.current = { overlayEnabled, overlayPriority, textScale, colorblindMode, clockFormat, companionApiEnabled, memoryScannerEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins };
+  settingsRef.current = { overlayEnabled, overlayPriority, textScale, colorblindMode, clockFormat, companionApiEnabled, memoryScannerEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins };
 
   const saveAllSettings = useCallback(() => {
     // Until the on-disk settings have been applied, settingsRef still holds
@@ -981,7 +986,11 @@ if (typeof s.autoDiagEnabled === "boolean") {
         if (Array.isArray(s.tracked)) setTracked(s.tracked);
         if (Array.isArray(s.favorites)) setFavorites(s.favorites);
         if (Array.isArray(s.timerFavorites)) setTimerFavorites(s.timerFavorites);
-        if (Array.isArray(s.fissureWatches)) setFissureWatches(s.fissureWatches);
+        if (Array.isArray(s.fissureWatches)) {
+          setFissureWatches(s.fissureWatches);
+          restoredWatchIdsRef.current = new Set((s.fissureWatches as FissureWatch[]).map(w => w.id));
+        }
+        if (typeof s.fissureNotifications === "boolean") setFissureNotifications(s.fissureNotifications);
         if (typeof s.modularWidth === "number") setModularWidth(s.modularWidth);
         if (Array.isArray(s.modularSectionOrder)) {
           const order: string[] = s.modularSectionOrder;
@@ -1452,7 +1461,51 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
   useEffect(() => {
     if (settingsLoadedRef.current) saveAllSettings();
-  }, [tracked, favorites, timerFavorites, fissureWatches, modularWidth, memoryScannerEnabled, companionApiEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, modularSectionOrder, modularPopout]); // eslint-disable-line
+  }, [tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, memoryScannerEnabled, companionApiEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, modularSectionOrder, modularPopout]); // eslint-disable-line
+
+  // ── Watched fissure notifications ──────────────────────────────────────────
+  //
+  // Lives here rather than in TimerHelper because TimerHelper only mounts while
+  // its tab is open, and the whole point is to hear about a fissure while
+  // looking at something else. The pop-out window deliberately does not run
+  // this — two windows would otherwise notify twice for the same fissure.
+
+  const { worldState } = useWorldState();
+
+  const seenFissuresRef = useRef<SeenFissures>(new Map());
+  // Watches restored from settings, as opposed to added during this run.
+  const restoredWatchIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!worldState) return;
+
+    const { fresh, live } = collectNewMatches(worldState, fissureWatches, seenFissuresRef.current, restoredWatchIdsRef.current);
+    // Tracked even while notifications are off, so switching them back on does
+    // not announce everything that rotated in during the quiet period.
+    seenFissuresRef.current = live;
+    if (!fissureNotifications || fresh.length === 0) return;
+
+    const suffix = (variant: string, sep: string) =>
+      variant === "hard" ? `${sep}Steel Path` : variant === "storm" ? `${sep}Void Storm` : "";
+
+    if (fresh.length === 1) {
+      const { f, variant } = fresh[0];
+      // fmtMs renders a dash once the clock runs out, which would read as
+      // "Tessera (Void) — — left" for a fissure that expired mid-poll.
+      const remaining = new Date(f.expiry).getTime() - Date.now();
+      void notify(
+        `${f.tier} ${f.missionType}${suffix(variant, " · ")}`,
+        remaining > 0 ? `${f.node} — ${fmtMs(remaining)} left` : f.node,
+      );
+    } else {
+      // A rotation can bring up a dozen matches at once, and a toast each is
+      // enough to make anyone turn the feature off.
+      const shown = fresh.slice(0, 5).map(({ f, variant }) =>
+        `${f.tier} ${f.missionType}${suffix(variant, " ")} — ${f.node}`);
+      if (fresh.length > shown.length) shown.push(`+${fresh.length - shown.length} more`);
+      void notify(`${fresh.length} new fissures`, shown.join("\n"));
+    }
+  }, [worldState, fissureWatches, fissureNotifications]);
 
   // ── Modular pop-out window ─────────────────────────────────────────────────
   useEffect(() => {
@@ -2484,6 +2537,26 @@ if (typeof s.autoDiagEnabled === "boolean") {
                     <div className="settings-section-title">Diagnostics</div>
                     <div className="debug-table">
 
+                      {/* Test Notification */}
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">Test Notification</span>
+                        <span className="settings-row-desc">
+                          Send a desktop notification now, to check the OS delivers them at all.
+                          {notifyTestResult && <span style={{ display: "block", marginTop: 2, color: notifyTestResult.startsWith("Sent") ? "var(--green)" : "var(--red)", fontSize: 11 }}>{notifyTestResult}</span>}
+                        </span>
+                      </div>
+                      <div />{/* Go To Folder placeholder */}
+                      <button className="btn-secondary" onClick={async () => {
+                        setNotifyTestResult("");
+                        if (!(await ensurePermission())) {
+                          setNotifyTestResult("Permission denied — notifications are blocked for FrameForge in your system settings.");
+                          return;
+                        }
+                        await notify("FrameForge", "Test notification — watched fissure alerts will look like this.");
+                        setNotifyTestResult("Sent. If nothing appeared, the OS notification daemon is dropping it.");
+                      }}>Send</button>
+                      <div />{/* Clear placeholder */}
+
                       {/* Overlay Log */}
                       <div className="settings-row-info">
                         <span className="settings-row-label">Overlay Log</span>
@@ -2880,6 +2953,8 @@ if (typeof s.autoDiagEnabled === "boolean") {
               fissureWatches={fissureWatches}
               onAddWatch={w => setFissureWatches(prev => [...prev, w])}
               onRemoveWatch={id => setFissureWatches(prev => prev.filter(w => w.id !== id))}
+              fissureNotifications={fissureNotifications}
+              onFissureNotificationsChange={setFissureNotifications}
               inventory={inventory}
             />
           </ErrorBoundary>

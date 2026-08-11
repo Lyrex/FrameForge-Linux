@@ -119,6 +119,13 @@ pub struct AppState {
     /// relics.run daily bulk price cache: item display name (lowercase) → median sell price.
     pub relics_run_prices: Mutex<HashMap<String, u32>>,
     pub relics_run_prices_cache_path: PathBuf,
+    /// Raw worldstate + Steam news from the last upstream fetch, with the time it
+    /// was taken. Every window polls worldstate on its own timer, so without this
+    /// two open windows mean two fetch pairs a minute against DE and Steam.
+    /// Only the network payload is cached — parsing still runs per call, so
+    /// activation/expiry filtering stays anchored to the current time. Held
+    /// behind `Arc` so serving a hit shares the ~1MB tree instead of cloning it.
+    pub worldstate_cache: Mutex<Option<(std::time::Instant, Arc<serde_json::Value>, Arc<serde_json::Value>)>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -7299,13 +7306,36 @@ async fn fetch_worldstate(state: State<'_, AppState>) -> Result<serde_json::Valu
         let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
         items.iter().map(|i| (i.unique_name.clone(), i.name.clone())).collect()
     };
-    tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+    // Slightly under the 60s frontend poll, so a window's own next tick always
+    // refetches while a second window polling on a different offset is served
+    // from here. Two racing callers can both miss and fetch once each; the
+    // window is small enough that a lock held across the network call is the
+    // worse trade.
+    const WORLDSTATE_TTL: std::time::Duration = std::time::Duration::from_secs(55);
+    let started_at = std::time::Instant::now();
+    let cached = {
+        let cache = state.worldstate_cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.as_ref()
+            .filter(|(fetched_at, _, _)| fetched_at.elapsed() < WORLDSTATE_TTL)
+            .map(|(_, raw, news)| (Arc::clone(raw), Arc::clone(news)))
+    };
+
+    type CachedPayload = (Arc<serde_json::Value>, Arc<serde_json::Value>);
+    let (result, fetched) = tokio::task::spawn_blocking(move || -> Result<(serde_json::Value, Option<CachedPayload>), String> {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
+        if let Some((raw, news)) = cached {
+            let mut result = parse_worldstate_value(&raw, now_ms, &catalog);
+            if let Some(obj) = result.as_object_mut() {
+                obj.insert("news".to_string(), news.as_ref().clone());
+            }
+            return Ok((result, None));
+        }
         let raw = ureq::get("https://api.warframe.com/cdn/worldState.php")
             .set("User-Agent", "FrameForge/3.1.0")
+            .timeout(std::time::Duration::from_secs(20))
             .call()
             .map_err(|e| format!("worldstate fetch failed: {}", e))?
             .into_json::<serde_json::Value>()
@@ -7340,13 +7370,25 @@ async fn fetch_worldstate(state: State<'_, AppState>) -> Result<serde_json::Valu
                 })
             })
             .collect();
+        let news_value = serde_json::json!(news);
         if let Some(obj) = result.as_object_mut() {
-            obj.insert("news".to_string(), serde_json::json!(news));
+            obj.insert("news".to_string(), news_value.clone());
         }
-        Ok(result)
+        Ok((result, Some((Arc::new(raw), Arc::new(news_value)))))
     })
     .await
-    .map_err(|e| format!("task error: {}", e))?
+    .map_err(|e| format!("task error: {}", e))??;
+
+    if let Some((raw, news)) = fetched {
+        let mut cache = state.worldstate_cache.lock().unwrap_or_else(|e| e.into_inner());
+        // Two callers that both missed can finish out of order, so a response
+        // that started before what is already stored must not replace it.
+        let stored_is_newer = cache.as_ref().is_some_and(|(fetched_at, _, _)| *fetched_at > started_at);
+        if !stored_is_newer {
+            *cache = Some((std::time::Instant::now(), raw, news));
+        }
+    }
+    Ok(result)
 }
 
 /// Read the riven overlay session log.
@@ -8535,6 +8577,7 @@ pub fn run() {
     tauri::Builder::default()
         .register_uri_scheme_protocol("ffauth", |ctx, req| console_login::handle_ffauth(ctx.app_handle(), &req)) // [console-login feature]
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState {
             db_path,
             items_cache_path,
@@ -8585,6 +8628,7 @@ pub fn run() {
             pending_relic_rewards: Mutex::new(None),
             relics_run_prices: Mutex::new(initial_relics_run_prices),
             relics_run_prices_cache_path,
+            worldstate_cache: Mutex::new(None),
         })
         .setup(|app| {
             use tauri::Manager;

@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "./TimerHelper.css";
 import type { InventoryItem } from "./App";
+import { useWorldState } from "./worldstate";
+import { ensurePermission } from "./notify";
+import { matchesWatch, type FissureWatch } from "./fissureAlerts";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -31,41 +33,11 @@ interface WsBounty   { expiry: string; jobCount: number; }
 interface WsEvent    { expiry: string; label: string; }
 interface WsNews     { message: string; link: string; date: string | number; stream: boolean; primeAccess: boolean; update: boolean; }
 
-export interface FissureWatch {
-  id: string;
-  tier: string;        // "Any" | "Omnia" | "Lith" | "Meso" | "Neo" | "Axi" | "Requiem"
-  missionType: string; // "Any" | "Rescue" | "Capture" | ...
-  variant: "any" | "normal" | "hard" | "storm";
-}
-
-// actualVariant is passed explicitly from the caller who knows which array the fissure came from
-export function matchesWatch(
-  watch: FissureWatch,
-  fissure: WsFissure | WsStorm,
-  actualVariant: "normal" | "hard" | "storm",
-): boolean {
-  // Variant — checked first; quickest way to exit
-  if (watch.variant !== "any" && watch.variant !== actualVariant) return false;
-
-  // Tier — bidirectional Omnia:
-  // • Watch "Omnia" matches any non-Requiem tier
-  // • Fissure tier "Omnia" matches any watch except "Requiem"
-  const fTier = fissure.tier;
-  if (watch.tier !== "Any") {
-    if (watch.tier === "Omnia") {
-      if (fTier === "Requiem") return false;
-    } else if (fTier === "Omnia") {
-      if (watch.tier === "Requiem") return false;
-    } else if (watch.tier !== fTier) {
-      return false;
-    }
-  }
-
-  // Mission type
-  if (watch.missionType !== "Any" && fissure.missionType !== watch.missionType) return false;
-
-  return true;
-}
+// Fissure watches and their matching rules live in fissureAlerts, which stays
+// free of React so the rules can be exercised on their own. Re-exported here
+// so the rest of the app keeps importing them from where it always has.
+export type { FissureWatch };
+export { matchesWatch };
 
 export interface WorldState {
   cetus?:          WsCetus;
@@ -209,18 +181,20 @@ interface Props {
   fissureWatches: FissureWatch[];
   onAddWatch: (w: FissureWatch) => void;
   onRemoveWatch: (id: string) => void;
+  fissureNotifications: boolean;
+  onFissureNotificationsChange: (enabled: boolean) => void;
   inventory: Record<string, InventoryItem>;
 }
 
 type FissureTab = "normal" | "hard" | "storm";
 
-export default function TimerHelper({ favorites, onFavoriteToggle, fissureWatches, onAddWatch, onRemoveWatch, inventory }: Props) {
-  const [ws, setWs] = useState<WorldState | null>(null);
+export default function TimerHelper({ favorites, onFavoriteToggle, fissureWatches, onAddWatch, onRemoveWatch, fissureNotifications, onFissureNotificationsChange, inventory }: Props) {
+  const { worldState: ws, error, refresh: fetchWS } = useWorldState();
   const [now, setNow] = useState(Date.now());
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const loading = !ws && !error;
   const [fissureTab, setFissureTab] = useState<FissureTab>("normal");
   const [showWatchForm, setShowWatchForm] = useState(false);
+  const [permissionDenied, setPermissionDenied] = useState(false);
   const [openInventory, setOpenInventory] = useState<Set<string>>(new Set());
   const toggleInventory = (id: string) => setOpenInventory(prev => {
     const next = new Set(prev);
@@ -237,14 +211,15 @@ export default function TimerHelper({ favorites, onFavoriteToggle, fissureWatche
     setWMission(m => MISSION_TYPES_BY_VARIANT[v].includes(m) ? m : "Any");
   }, []);
 
-  const fetchWS = useCallback(() => {
-    invoke<WorldState>("fetch_worldstate")
-      .then(data => { setWs(data); setLoading(false); setError(""); })
-      .catch(e => { setError(String(e)); setLoading(false); });
-  }, []);
-
-  useEffect(() => { fetchWS(); const iv = setInterval(fetchWS, 60000); return () => clearInterval(iv); }, [fetchWS]);
   useEffect(() => { const iv = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(iv); }, []);
+
+  // Watches loaded from settings never went through the add-watch button, so
+  // without this nothing would ever ask the OS and every alert would silently
+  // no-op. Opening the tab is the closest thing to a gesture we get for them.
+  useEffect(() => {
+    if (!fissureNotifications || fissureWatches.length === 0) return;
+    ensurePermission().then(granted => setPermissionDenied(!granted));
+  }, []); // eslint-disable-line
 
   const isFav = (id: string) => favorites.includes(id);
   const cd = (expiry: string) => fmtMs(new Date(expiry).getTime() - now);
@@ -633,10 +608,27 @@ export default function TimerHelper({ favorites, onFavoriteToggle, fissureWatche
                       ))}
                     </div>
                   </div>
-                  <button className="watch-add-btn" onClick={() => {
+                  <button className="watch-add-btn" onClick={async () => {
                     onAddWatch({ id: `${Date.now()}`, tier: wTier, missionType: wMission, variant: wVariant });
                     setWTier("Any"); setWMission("Any"); setVariant("any");
+                    // Prompt here rather than from the poll loop, so the OS dialog
+                    // arrives while the user is thinking about fissure alerts.
+                    if (fissureNotifications && !(await ensurePermission())) setPermissionDenied(true);
                   }}>+ Add Watch</button>
+                  <label className="watch-notify">
+                    <input type="checkbox" checked={fissureNotifications} onChange={async e => {
+                      if (!e.target.checked) { onFissureNotificationsChange(false); return; }
+                      // Turn the setting back off when the OS refuses, rather than
+                      // leaving a ticked box promising alerts that cannot arrive.
+                      const granted = await ensurePermission();
+                      onFissureNotificationsChange(granted);
+                      if (!granted) setPermissionDenied(true);
+                    }} />
+                    Notify me when a watched fissure appears
+                  </label>
+                  {permissionDenied && (
+                    <div className="watch-notify-denied">Notifications are blocked for FrameForge in your system settings.</div>
+                  )}
                 </div>
               </div>
             )}
