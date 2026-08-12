@@ -4722,9 +4722,9 @@ fn test_relic_pick_overlay(era: String, app: tauri::AppHandle) -> String {
 #[tauri::command]
 fn debug_ee_log_tail() -> String {
     use std::io::{Read, Seek, SeekFrom};
-    let log_path = match dirs::data_local_dir() {
-        Some(d) => d.join("Warframe").join("EE.log"),
-        None => return "Cannot find LocalAppData".to_string(),
+    let log_path = match log_parser::watched_log_path() {
+        Some(p) => p,
+        None => return "Cannot find EE.log path".to_string(),
     };
     let mut f = match std::fs::File::open(&log_path) {
         Ok(f) => f,
