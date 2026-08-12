@@ -1,4 +1,4 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
 use std::io::Write;
 use std::path::PathBuf;
