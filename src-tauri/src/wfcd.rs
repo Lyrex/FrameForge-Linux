@@ -573,8 +573,10 @@ fn fetch_relics_rewards(image_by_name: &HashMap<String, String>) -> HashMap<Stri
     let mut result: HashMap<String, Vec<RelicReward>> = HashMap::new();
 
     for relic in relics {
-        let relic_unique = match relic.get("uniqueName").and_then(|v| v.as_str()) {
-            Some(u) if u.contains("/Game/Projections/") => u.to_string(),
+        // Key by display name ("Lith A1 Intact") so build_relic_pick_payload can join
+        // by name from wfcd_items. Accept any uniqueName path format (Lotus or /Game/).
+        let relic_name = match relic.get("name").and_then(|v| v.as_str()) {
+            Some(n) if !n.is_empty() => n.to_string(),
             _ => continue,
         };
 
@@ -588,8 +590,6 @@ fn fetch_relics_rewards(image_by_name: &HashMap<String, String>) -> HashMap<Stri
             let item = r.get("item")?;
             let name = item.get("name").and_then(|v| v.as_str())?.to_string();
             if name.is_empty() { return None; }
-            // item.uniqueName in Relics.json is the relic's own Bronze path, not the
-            // reward item path — leave it empty; prefilter uses name matching instead.
             let unique_name = String::new();
             let rarity_raw = r.get("rarity").and_then(|v| v.as_str()).unwrap_or("Common");
             let rarity = match rarity_raw.to_lowercase().as_str() {
@@ -607,7 +607,7 @@ fn fetch_relics_rewards(image_by_name: &HashMap<String, String>) -> HashMap<Stri
 
         reward_list.sort_by_key(|r| match r.rarity.as_str() { "Silver" => 1u8, "Gold" => 2, _ => 0 });
         if !reward_list.is_empty() {
-            result.insert(relic_unique, reward_list);
+            result.insert(relic_name, reward_list);
         }
     }
 

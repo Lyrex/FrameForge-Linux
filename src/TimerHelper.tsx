@@ -298,30 +298,8 @@ export default function TimerHelper({ favorites, onFavoriteToggle, fissureWatche
         {ws?.vallis   && <TimerTile id="vallis-cycle"  label="Orb Vallis"    state={ws.vallis.isWarm ? "Warm" : "Cold"}   stateClass={ws.vallis.isWarm ? "st-warm" : "st-cold"} expiry={ws.vallis.expiry}  until={`until ${ws.vallis.isWarm ? "Cold" : "Warm"}`} />}
         {ws?.cambion  && <TimerTile id="cambion-cycle" label="Cambion Drift" state="Active"                               stateClass="st-fass"                                 expiry={ws.cambion.expiry} until="next cycle" />}
         {ws?.zariman  && <TimerTile id="zariman-cycle" label="Zariman"       state="Active"                               stateClass="st-neutral"                              expiry={ws.zariman.expiry} until="reset" />}
+        {(() => { const dv = duviriNow(now); const next = DUVIRI_MOODS[(dv.index + 1) % DUVIRI_MOODS.length]; return <TimerTile id="duviri-cycle" label="Duviri Spiral" state={dv.mood} stateClass={DUVIRI_MOOD_CLASS[dv.mood]} expiry={dv.expiry} until={`until ${next}`} />; })()}
       </div>
-      {/* Duviri Spiral — deterministic 12h cycle, no worldstate needed */}
-      {(() => {
-        const dv   = duviriNow(now);
-        const open = openInventory.has("duviri-spiral");
-        return (
-          <div className={`exp-tile${open ? " open" : ""}`} onClick={() => toggleInventory("duviri-spiral")}>
-            <ExpHeader id="duviri-spiral" name="Duviri Spiral" state={dv.mood} sc={DUVIRI_MOOD_CLASS[dv.mood]} countdown={cd(dv.expiry)} open={open} />
-            {open && (
-              <div className="duviri-spiral">
-                {DUVIRI_MOODS.map((mood, i) => {
-                  const chipIdx = (dv.index + i) % DUVIRI_MOODS.length;
-                  const chipMood = DUVIRI_MOODS[chipIdx];
-                  return (
-                    <span key={mood} className={`duviri-mood-chip ${DUVIRI_MOOD_CLASS[chipMood]}${chipIdx === dv.index ? " active" : ""}`}>
-                      {chipMood}
-                    </span>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        );
-      })()}
 
       {/* ── Bounties ──────────────────────────────────────────────────────── */}
       {ws?.bounties && Object.keys(ws.bounties).length > 0 && (

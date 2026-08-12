@@ -866,24 +866,3 @@
   color: var(--text);
   border-color: rgba(139,148,158,.5);
 }
-
-/* ── Duviri mood spiral ── */
-.duviri-spiral {
-  display: flex;
-  gap: 4px;
-  padding: 6px 10px 8px;
-  flex-wrap: wrap;
-}
-.duviri-mood-chip {
-  font-size: 10px;
-  font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 10px;
-  border: 1px solid transparent;
-  opacity: .45;
-  white-space: nowrap;
-}
-.duviri-mood-chip.active {
-  opacity: 1;
-  border-color: currentColor;
-}

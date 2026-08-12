@@ -1,4 +1,4 @@
-# FrameForge — Warframe Companion `v3.1.0`
+# FrameForge — Warframe Companion `v3.2.0`
 
 A desktop companion for Warframe — live inventory, market prices, trading, timers, relic overlay, and riven analysis. Read-only, no game modification.
 
@@ -51,7 +51,7 @@ Live dashboard from DE's worldstate API:
 - Bounty reset timers per open world
 - Daily/Weekly resets, Sortie, Archon Hunt, The Circuit, Deep Archimedea
 - Baro Ki'Teer, Prime Resurgence, Nightwave, Darvo deal, community events
-- Alerts, Invasions, Void Fissures with configurable fissure watches
+- Alerts, Invasions, Void Fissures with configurable fissure watches and **OS desktop notifications** — get alerted the moment a watched fissure appears, no matter which tab is open
 
 ### Statistics
 - **Trades** — auto-detected from EE.log. Captures all items from both sides of every trade, including item-for-item barters (no platinum involved). Each trade is classified as Sale, Purchase, or Trade.
@@ -61,6 +61,15 @@ Live dashboard from DE's worldstate API:
 
 ### Riven Analyzer
 Analyses riven rolls against the community-curated [44bananas spreadsheet](https://docs.google.com/spreadsheets/d/1zbaeJBuBn44cbVKzJins_E3hTDpnmvOk8heYN-G8yy8) (413+ weapons). Click **Check Riven** while the riven screen is open for instant per-stat quality ratings. Comparison mode shows old vs new roll side-by-side after each cycle. Supports primary, secondary, melee, and archwing weapons.
+
+### Relic Pick Overlay
+When you open the Void Relics / Refinement screen, FrameForge detects the fissure era via OCR and instantly shows a compact overlay at the top-right of your screen ranking your relics by the metric you care about most.
+
+**Priority modes** — Collect (probability of getting an item you don't own yet), Platinum (expected plat value per run), or Ducats (expected ducat yield). The top 3 relics are shown with refinement badge, copy count, score, and per-reward detail: vaulted status, ownership, platinum price, ducat value, and a refinement recommendation (REC) based on rarity.
+
+**Shown lines** — All rewards (full 6-item list per relic), Best pick (the single highest-value reward), or Score summary (compact one-liner: plat EV · ducat EV · new items). Configure in Settings → General.
+
+The overlay auto-sizes to its content and dismisses when you return to the star map.
 
 ### OCR Relic Reward Overlay
 When a void fissure reward screen opens, FrameForge automatically captures it via Windows OCR and shows a transparent overlay with platinum price, ducat value, and set completion for each card. Priority mode: Completion / Plat / Ducats / Set Value.
