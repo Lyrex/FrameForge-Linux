@@ -1,6 +1,6 @@
 [package]
 name = "warframe-companion"
-version = "3.1.0-linux.1"
+version = "3.2.0-linux.1"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -33,6 +33,7 @@ tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-log = "0.2.0"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tauri-plugin-notification = "2"
 
 [profile.dev]
 opt-level = 1

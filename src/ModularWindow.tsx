@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./ModularWindow.css";
-import { WorldState, TIMER_LABELS, getTimerInfo, fmtMs, FissureWatch, matchesWatch, WsFissure, WsStorm } from "./TimerHelper";
+import { TIMER_LABELS, getTimerInfo, fmtMs, FissureWatch, matchesWatch, WsFissure, WsStorm } from "./TimerHelper";
 import type { InventoryItem } from "./App";
+import { useWorldState } from "./worldstate";
 
 interface CatalogItem {
   unique_name: string;
@@ -93,7 +94,7 @@ export default function ModularWindow({
   const [trackedRecipes, setTrackedRecipes] = useState<Map<string, RecipeComponent[]>>(new Map());
   const [trackingView, setTrackingView] = useState<"need" | "all">("need");
   const [collapsedReqs, setCollapsedReqs] = useState<Set<string>>(new Set());
-  const [worldState, setWorldState] = useState<WorldState | null>(null);
+  const { worldState } = useWorldState();
   const [timerNow, setTimerNow] = useState(Date.now());
 
   const toggleCollapsedReqs = useCallback((id: string) => {
@@ -135,14 +136,6 @@ export default function ModularWindow({
       });
     });
   }, [tracked]); // eslint-disable-line
-
-  useEffect(() => {
-    if (!sectionOrder.includes("timers")) return;
-    const fetch_ = () => invoke<WorldState>("fetch_worldstate").then(setWorldState).catch(() => {});
-    fetch_();
-    const iv = setInterval(fetch_, 60000);
-    return () => clearInterval(iv);
-  }, [sectionOrder]);
 
   useEffect(() => {
     const iv = setInterval(() => setTimerNow(Date.now()), 1000);

@@ -370,6 +370,36 @@ pub fn capture_rect_and_ocr(x_start: f32, x_end: f32, y_start: f32, y_end: f32) 
     ocr_pixels_rect(&pixels, w, h, x_start, x_end, y_start, y_end)
 }
 
+/// Detect the void fissure era from the relic selection screen.
+/// The era label ("LITH ERA", "MESO ERA", etc.) is displayed in the top-left quarter
+/// of the screen. Returns the era key ("LITH", "MESO", "NEO", "AXI", "ALL") or None.
+// Upstream gates this to Windows because its capture/OCR primitives are Windows-only;
+// the fork supplies Linux impls of both, so the era detection runs on Linux too.
+pub fn detect_fissure_era() -> Option<String> {
+    let (pixels, w, h) = capture_warframe_pixels().ok()?;
+    let text = ocr_pixels_rect(&pixels, w, h, 0.0, 0.5, 0.0, 0.25).ok()?;
+    let upper = text.to_uppercase();
+    // Prefer the full "LITH ERA" pattern for specificity
+    for era in &["LITH", "MESO", "NEO", "AXI"] {
+        if upper.contains(&format!("{} ERA", era)) {
+            return Some(era.to_string());
+        }
+    }
+    if upper.contains("ALL ERA") || upper.contains("ALL ERAS") {
+        return Some("ALL".to_string());
+    }
+    // Fallback: bare era word (OCR might drop "ERA")
+    for era in &["LITH", "MESO", "NEO", "AXI"] {
+        if upper.contains(era) {
+            return Some(era.to_string());
+        }
+    }
+    if upper.contains("ALL") {
+        return Some("ALL".to_string());
+    }
+    None
+}
+
 /// Captures the full Warframe window region from the desktop using GDI BitBlt.
 /// Because this reads the composited desktop surface (not the window in isolation),
 /// any Tauri overlay window sitting on top is included in the result.

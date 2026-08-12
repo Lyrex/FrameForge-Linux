@@ -60,7 +60,11 @@ import MarketHelper, { MARKET_FILTERS_DEFAULT } from "./MarketHelper";
 import RelicHelper, { RELIC_FILTERS_DEFAULT } from "./RelicHelper";
 import RivenAnalyzer from "./RivenAnalyzer";
 import RivenOverlayWindow from "./RivenOverlayWindow";
-import TimerHelper, { FissureWatch } from "./TimerHelper";
+import RelicPickOverlay from "./RelicPickOverlay";
+import TimerHelper, { FissureWatch, fmtMs } from "./TimerHelper";
+import { useWorldState } from "./worldstate";
+import { notify, ensurePermission } from "./notify";
+import { collectNewMatches, type SeenFissures } from "./fissureAlerts";
 import Statistics from "./Statistics";
 import Syndicates from "./Syndicates";
 import Overlay from "./Overlay";
@@ -75,8 +79,9 @@ const _params          = new URLSearchParams(window.location.search);
 const _hash            = window.location.hash;
 const IS_OVERLAY       = _params.has("overlay")      || _hash === "#overlay"      || _winLabel === "relic-overlay";
 const IS_MODULAR       = _params.has("modular")      || _hash === "#modular"      || _winLabel === "modular-popout";
-const IS_RIVEN_OVERLAY = _params.has("rivenoverlay") || _hash === "#rivenoverlay" || _winLabel === "riven-overlay";
-const IS_OVERLAY_TEST  = _params.has("overlaytest")  || _hash === "#overlaytest"  || _winLabel === "overlay-test";
+const IS_RIVEN_OVERLAY      = _params.has("rivenoverlay")      || _hash === "#rivenoverlay"      || _winLabel === "riven-overlay";
+const IS_RELIC_PICK_OVERLAY = _params.has("relicpickoverlay") || _hash === "#relicpickoverlay" || _winLabel === "relic-pick-overlay";
+const IS_OVERLAY_TEST       = _params.has("overlaytest")       || _hash === "#overlaytest"       || _winLabel === "overlay-test";
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { err: string | null }> {
   constructor(props: any) { super(props); this.state = { err: null }; }
@@ -693,6 +698,7 @@ export default function App() {
   // If we're the overlay window, render only the overlay UI
   if (IS_OVERLAY) return <Overlay />;
   if (IS_RIVEN_OVERLAY) return <RivenOverlayWindow />;
+  if (IS_RELIC_PICK_OVERLAY) return <RelicPickOverlay />;
   // If we're the pop-out modular window, render the standalone modular UI
   if (IS_MODULAR) return <ModularWindowPage />;
 
@@ -711,6 +717,12 @@ export default function App() {
   const [memoryProbing, setMemoryProbing] = useState(false);
   const [rawScanning, setRawScanning] = useState(false);
   const [diagCapturing, setDiagCapturing] = useState(false);
+  const [notifyTestResult, setNotifyTestResult] = useState("");
+  const [relicPickOcrTesting, setRelicPickOcrTesting] = useState(false);
+  const [relicPickOcrResult, setRelicPickOcrResult] = useState<string | null>(null);
+  const [relicPickTestEra, setRelicPickTestEra] = useState("LITH");
+  const [relicPickTestResult, setRelicPickTestResult] = useState<string | null>(null);
+  const [eeLogTail, setEeLogTail] = useState<string | null>(null);
   const [diagPath, setDiagPath] = useState<string | null>(null);
   const [autoDiagEnabled, setAutoDiagEnabled] = useState(false);
   const [diagFolderSize, setDiagFolderSize] = useState<number>(0);
@@ -785,6 +797,10 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [overlayPriority, setOverlayPriority] = useState<string>(
     () => localStorage.getItem("ff-overlay-priority") ?? "completion"
   );
+  const [relicPickEnabled,    setRelicPickEnabled]    = useState<boolean>(true);
+  const [relicPickPriority,   setRelicPickPriority]   = useState<"unowned" | "ducat" | "platinum">("unowned");
+  const [relicPickRefinement, setRelicPickRefinement] = useState<"intact" | "exceptional" | "flawless" | "radiant">("radiant");
+  const [relicPickLines,      setRelicPickLines]      = useState<"all" | "best" | "estimated">("all");
   const [clearMsg, setClearMsg] = useState("");
   const [appVersion, setAppVersion] = useState("");
   const [updateAvailable, setUpdateAvailable] = useState<string | null>(null);
@@ -813,6 +829,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [timerFavorites, setTimerFavorites] = useState<string[]>([]);
   const [fissureWatches, setFissureWatches] = useState<FissureWatch[]>([]);
+  const [fissureNotifications, setFissureNotifications] = useState(true);
   const [modularWidth, setModularWidth] = useState(240);
   const [modularSectionOrder, setModularSectionOrder] = useState<string[]>(["tracking", "favorites", "timers", "fissures"]);
   const [modularPopout, setModularPopout] = useState(false);
@@ -829,11 +846,12 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const settingsLoadedRef = useRef(false);
   const settingsRef = useRef({
     overlayEnabled: true, overlayPriority: "completion", textScale: 1, colorblindMode: false, clockFormat: "auto" as "auto" | "12h" | "24h", companionApiEnabled: false, memoryScannerEnabled: false, blobLogEnabled: false, apiLogEnabled: false, autoDiagEnabled: false,
-    tracked: [] as string[], favorites: [] as string[], timerFavorites: [] as string[], fissureWatches: [] as FissureWatch[], modularWidth: 240,
+    tracked: [] as string[], favorites: [] as string[], timerFavorites: [] as string[], fissureWatches: [] as FissureWatch[], fissureNotifications: true, modularWidth: 240,
     modularSectionOrder: ["tracking", "favorites", "timers"] as string[], modularPopout: false,
     wfmInvisibleOnStart: false, wfmInvisibleOnClose: false, wfmAutoInvisible: false, wfmAutoInvisibleMins: 30,
+    relicPickEnabled: true, relicPickPriority: "unowned" as "unowned" | "ducat" | "platinum", relicPickRefinement: "radiant" as "intact" | "exceptional" | "flawless" | "radiant", relicPickLines: "all" as "all" | "best" | "estimated",
   });
-  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, companionApiEnabled, memoryScannerEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins };
+  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, companionApiEnabled, memoryScannerEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines };
 
   const saveAllSettings = useCallback(() => {
     // Until the on-disk settings have been applied, settingsRef still holds
@@ -988,7 +1006,11 @@ if (typeof s.autoDiagEnabled === "boolean") {
         if (Array.isArray(s.tracked)) setTracked(s.tracked);
         if (Array.isArray(s.favorites)) setFavorites(s.favorites);
         if (Array.isArray(s.timerFavorites)) setTimerFavorites(s.timerFavorites);
-        if (Array.isArray(s.fissureWatches)) setFissureWatches(s.fissureWatches);
+        if (Array.isArray(s.fissureWatches)) {
+          setFissureWatches(s.fissureWatches);
+          restoredWatchIdsRef.current = new Set((s.fissureWatches as FissureWatch[]).map(w => w.id));
+        }
+        if (typeof s.fissureNotifications === "boolean") setFissureNotifications(s.fissureNotifications);
         if (typeof s.modularWidth === "number") setModularWidth(s.modularWidth);
         if (Array.isArray(s.modularSectionOrder)) {
           const order: string[] = s.modularSectionOrder;
@@ -1005,6 +1027,10 @@ if (typeof s.autoDiagEnabled === "boolean") {
         if (typeof s.wfmInvisibleOnClose === "boolean") { setWfmInvisibleOnClose(s.wfmInvisibleOnClose); wfmInvisibleOnCloseRef.current = s.wfmInvisibleOnClose; }
         if (typeof s.wfmAutoInvisible    === "boolean") setWfmAutoInvisible(s.wfmAutoInvisible);
         if (typeof s.wfmAutoInvisibleMins === "number") setWfmAutoInvisibleMins(s.wfmAutoInvisibleMins);
+        if (typeof s.relicPickEnabled    === "boolean") setRelicPickEnabled(s.relicPickEnabled);
+        if (["unowned","ducat","platinum"].includes(s.relicPickPriority)) setRelicPickPriority(s.relicPickPriority);
+        if (["intact","exceptional","flawless","radiant"].includes(s.relicPickRefinement)) setRelicPickRefinement(s.relicPickRefinement);
+        if (["all","best","estimated"].includes(s.relicPickLines)) setRelicPickLines(s.relicPickLines);
       } catch {}
       // Unblock saving even if the file failed to parse, since the backend
       // refuses to overwrite a settings.json that is not a valid JSON object.
@@ -1459,7 +1485,64 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
   useEffect(() => {
     if (settingsLoadedRef.current) saveAllSettings();
-  }, [tracked, favorites, timerFavorites, fissureWatches, modularWidth, memoryScannerEnabled, companionApiEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, modularSectionOrder, modularPopout]); // eslint-disable-line
+  }, [tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, memoryScannerEnabled, companionApiEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, modularSectionOrder, modularPopout]); // eslint-disable-line
+
+  // ── Watched fissure notifications ──────────────────────────────────────────
+  //
+  // Lives here rather than in TimerHelper because TimerHelper only mounts while
+  // its tab is open, and the whole point is to hear about a fissure while
+  // looking at something else. The pop-out window deliberately does not run
+  // this — two windows would otherwise notify twice for the same fissure.
+
+  const { worldState } = useWorldState();
+
+  const seenFissuresRef = useRef<SeenFissures>(new Map());
+  // Watch IDs that should not fire on the first poll they're seen —
+  // populated from saved settings on load, and extended whenever the user
+  // adds a new watch mid-session (so adding a watch doesn't immediately
+  // announce every currently-live fissure that matches it).
+  const restoredWatchIdsRef = useRef<Set<string>>(new Set());
+  const knownWatchIdsRef    = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!worldState) return;
+
+    // Any watch added since the last render is treated as "restored" so it
+    // doesn't immediately alert for fissures that are already live.
+    for (const w of fissureWatches) {
+      if (!knownWatchIdsRef.current.has(w.id)) {
+        restoredWatchIdsRef.current.add(w.id);
+        knownWatchIdsRef.current.add(w.id);
+      }
+    }
+
+    const { fresh, live } = collectNewMatches(worldState, fissureWatches, seenFissuresRef.current, restoredWatchIdsRef.current);
+    // Tracked even while notifications are off, so switching them back on does
+    // not announce everything that rotated in during the quiet period.
+    seenFissuresRef.current = live;
+    if (!fissureNotifications || fresh.length === 0) return;
+
+    const suffix = (variant: string, sep: string) =>
+      variant === "hard" ? `${sep}Steel Path` : variant === "storm" ? `${sep}Void Storm` : "";
+
+    if (fresh.length === 1) {
+      const { f, variant } = fresh[0];
+      // fmtMs renders a dash once the clock runs out, which would read as
+      // "Tessera (Void) — — left" for a fissure that expired mid-poll.
+      const remaining = new Date(f.expiry).getTime() - Date.now();
+      void notify(
+        `${f.tier} ${f.missionType}${suffix(variant, " · ")}`,
+        remaining > 0 ? `${f.node} — ${fmtMs(remaining)} left` : f.node,
+      );
+    } else {
+      // A rotation can bring up a dozen matches at once, and a toast each is
+      // enough to make anyone turn the feature off.
+      const shown = fresh.slice(0, 5).map(({ f, variant }) =>
+        `${f.tier} ${f.missionType}${suffix(variant, " ")} — ${f.node}`);
+      if (fresh.length > shown.length) shown.push(`+${fresh.length - shown.length} more`);
+      void notify(`${fresh.length} new fissures`, shown.join("\n"));
+    }
+  }, [worldState, fissureWatches, fissureNotifications]);
 
   // ── Modular pop-out window ─────────────────────────────────────────────────
   useEffect(() => {
@@ -2182,6 +2265,45 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
                   {platform.linux && <EeLogSettings />}
 
+                  {/* Relic Pick Overlay */}
+                  <div className="settings-section">
+                    <div className="settings-section-title">Relic Pick Overlay</div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">Recommendation Base</span>
+                        <span className="settings-row-desc">How relics are ranked in the overlay.</span>
+                      </div>
+                      <select className="settings-select" value={relicPickPriority}
+                        onChange={e => {
+                          const next = e.target.value as "unowned" | "ducat" | "platinum";
+                          setRelicPickPriority(next);
+                          settingsRef.current = { ...settingsRef.current, relicPickPriority: next };
+                          saveAllSettings();
+                        }}>
+                        <option value="unowned">Unowned / Mastery</option>
+                        <option value="ducat">Most Ducats (EV)</option>
+                        <option value="platinum">Most Platinum (EV)</option>
+                      </select>
+                    </div>
+                    <div className="settings-row" style={{ marginTop: 8 }}>
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">Shown Lines Per Relic</span>
+                        <span className="settings-row-desc">How much reward detail to show per relic card.</span>
+                      </div>
+                      <select className="settings-select" value={relicPickLines}
+                        onChange={e => {
+                          const next = e.target.value as "all" | "best" | "estimated";
+                          setRelicPickLines(next);
+                          settingsRef.current = { ...settingsRef.current, relicPickLines: next };
+                          saveAllSettings();
+                        }}>
+                        <option value="all">All items</option>
+                        <option value="best">Only most valuable</option>
+                        <option value="estimated">Score summary only</option>
+                      </select>
+                    </div>
+                  </div>
+
                   {/* Memory Scanner */}
                   <div className="settings-section" style={{ borderColor: memoryScannerEnabled ? "rgba(240,192,64,.3)" : undefined }}>
                     <div className="settings-section-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -2504,6 +2626,26 @@ if (typeof s.autoDiagEnabled === "boolean") {
                     <div className="settings-section-title">Diagnostics</div>
                     <div className="debug-table">
 
+                      {/* Test Notification */}
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">Test Notification</span>
+                        <span className="settings-row-desc">
+                          Send a desktop notification now, to check the OS delivers them at all.
+                          {notifyTestResult && <span style={{ display: "block", marginTop: 2, color: notifyTestResult.startsWith("Sent") ? "var(--green)" : "var(--red)", fontSize: 11 }}>{notifyTestResult}</span>}
+                        </span>
+                      </div>
+                      <div />{/* Go To Folder placeholder */}
+                      <button className="btn-secondary" onClick={async () => {
+                        setNotifyTestResult("");
+                        if (!(await ensurePermission())) {
+                          setNotifyTestResult("Permission denied — notifications are blocked for FrameForge in your system settings.");
+                          return;
+                        }
+                        await notify("FrameForge", "Test notification — watched fissure alerts will look like this.");
+                        setNotifyTestResult("Sent. If nothing appeared, the OS notification daemon is dropping it.");
+                      }}>Send</button>
+                      <div />{/* Clear placeholder */}
+
                       {/* Overlay Log */}
                       <div className="settings-row-info">
                         <span className="settings-row-label">Overlay Log</span>
@@ -2598,6 +2740,81 @@ if (typeof s.autoDiagEnabled === "boolean") {
                     </div>
                   </div>
 
+                  <div className="settings-section">
+                    <div className="settings-section-title">Relic Pick Overlay</div>
+                    <div className="debug-table">
+
+                      {/* OCR Era Test */}
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">OCR Era Detect</span>
+                        <span className="settings-row-desc">
+                          Reads the top-left quarter of the Warframe window and reports which fissure era OCR finds.
+                          {relicPickOcrResult && <span style={{ display: "block", marginTop: 2, color: "var(--accent)", fontSize: 11 }}>{relicPickOcrResult}</span>}
+                        </span>
+                      </div>
+                      <div />
+                      <button className="btn-secondary" disabled={relicPickOcrTesting} onClick={async () => {
+                        setRelicPickOcrTesting(true); setRelicPickOcrResult(null);
+                        try { setRelicPickOcrResult(await invoke<string>("debug_detect_fissure_era")); }
+                        catch (e) { setRelicPickOcrResult(`Error: ${e}`); }
+                        finally { setRelicPickOcrTesting(false); }
+                      }}>{relicPickOcrTesting ? "Running…" : "Test OCR"}</button>
+                      <div />
+
+                      {/* Test Overlay */}
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">Test Overlay</span>
+                        <span className="settings-row-desc">
+                          Manually fire the relic pick overlay with a specific era.
+                          {relicPickTestResult && <span style={{ display: "block", marginTop: 2, color: "var(--accent)", fontSize: 11 }}>{relicPickTestResult}</span>}
+                        </span>
+                      </div>
+                      <div />
+                      <select
+                        value={relicPickTestEra}
+                        onChange={e => setRelicPickTestEra(e.target.value)}
+                        style={{ fontSize: 12, padding: "3px 6px", borderRadius: 4, background: "var(--bg2)", border: "1px solid var(--border)", color: "var(--text)" }}
+                      >
+                        {["LITH","MESO","NEO","AXI","ALL"].map(e => <option key={e} value={e}>{e}</option>)}
+                      </select>
+                      <button className="btn-secondary" onClick={async () => {
+                        setRelicPickTestResult(null);
+                        try { setRelicPickTestResult(await invoke<string>("test_relic_pick_overlay", { era: relicPickTestEra })); }
+                        catch (e) { setRelicPickTestResult(`Error: ${e}`); }
+                      }}>Launch</button>
+
+                      {/* EE.log tail — reveals what string to trigger on */}
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">EE.log Tail</span>
+                        <span className="settings-row-desc">
+                          Open the relic screen in-game, then click this to see what EE.log wrote.
+                          Paste the result here so we can find the correct trigger string.
+                        </span>
+                      </div>
+                      <div />
+                      <button className="btn-secondary" onClick={async () => {
+                        setEeLogTail(null);
+                        try { setEeLogTail(await invoke<string>("debug_ee_log_tail")); }
+                        catch (e) { setEeLogTail(`Error: ${e}`); }
+                      }}>Tail Log</button>
+                      <div />
+                      {eeLogTail && (
+                        <div style={{ gridColumn: "1 / -1", marginTop: 4 }}>
+                          <textarea
+                            readOnly
+                            value={eeLogTail}
+                            style={{
+                              width: "100%", height: 160, fontSize: 10, fontFamily: "monospace",
+                              background: "var(--bg2)", border: "1px solid var(--border)",
+                              color: "var(--text)", borderRadius: 4, padding: 6,
+                              resize: "vertical", boxSizing: "border-box"
+                            }}
+                          />
+                        </div>
+                      )}
+
+                    </div>
+                  </div>
 
                 </>}
 
@@ -2900,6 +3117,8 @@ if (typeof s.autoDiagEnabled === "boolean") {
               fissureWatches={fissureWatches}
               onAddWatch={w => setFissureWatches(prev => [...prev, w])}
               onRemoveWatch={id => setFissureWatches(prev => prev.filter(w => w.id !== id))}
+              fissureNotifications={fissureNotifications}
+              onFissureNotificationsChange={setFissureNotifications}
               inventory={inventory}
             />
           </ErrorBoundary>

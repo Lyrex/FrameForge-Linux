@@ -738,6 +738,25 @@
 }
 .watch-add-btn:hover { background: rgba(56,139,253,.3); }
 
+.watch-notify {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(48,54,61,.5);
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.watch-notify input { margin: 0; cursor: pointer; }
+
+.watch-notify-denied {
+  margin-top: 4px;
+  color: var(--red);
+  font-size: 10px;
+}
+
 /* ── Watched fissure highlight ── */
 .fissure-watched {
   background: rgba(56,139,253,.08);
@@ -846,25 +865,4 @@
   background: rgba(255,255,255,.08);
   color: var(--text);
   border-color: rgba(139,148,158,.5);
-}
-
-/* ── Duviri mood spiral ── */
-.duviri-spiral {
-  display: flex;
-  gap: 4px;
-  padding: 6px 10px 8px;
-  flex-wrap: wrap;
-}
-.duviri-mood-chip {
-  font-size: 10px;
-  font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 10px;
-  border: 1px solid transparent;
-  opacity: .45;
-  white-space: nowrap;
-}
-.duviri-mood-chip.active {
-  opacity: 1;
-  border-color: currentColor;
 }
