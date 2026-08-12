@@ -25,9 +25,11 @@ mod logging;
 mod memory_scanner;
 mod ocr;
 mod wfcd;
+mod wfm;
 
 use db::{QuantityChange, SnapshotPoint, Trade, TrackedItem};
 use wfcd::{RecipeComponent, SyndicateOffer, WfcdItem};
+use wfm::{to_wfm_slug, Wfm, WfmItem, WfmPrice, WfmRivenAttribute, WfmTopItem};
 
 pub struct AppState {
     pub db_path: PathBuf,
@@ -79,10 +81,9 @@ pub struct AppState {
     /// When true, save the raw DE API response to api_logs/ on each fetch.
     pub api_log_enabled: Arc<AtomicBool>,
     pub api_log_dir: PathBuf,
-    /// WFM slug → median sell price (None = item not listed on WFM). Arc so the queue thread can share it.
-    pub wfm_price_cache: Arc<Mutex<HashMap<String, Option<u32>>>>,
-    /// Active WFM session (JWT + username). Held in memory only, never written to disk.
-    pub wfm_session: Arc<Mutex<Option<WfmSession>>>,
+    /// The warframe.market client: session, rate limiters, and the slug → price
+    /// cache all live behind this one seam, shared (Arc) with the prefetch thread.
+    pub wfm: Arc<Wfm>,
     /// Slugs waiting for a price fetch (normal priority). Drained by the WFM queue thread.
     pub wfm_price_queue: Arc<Mutex<std::collections::VecDeque<String>>>,
     /// High-priority slugs (popup / on-demand). Drained before wfm_price_queue.
@@ -126,38 +127,6 @@ pub struct AppState {
     /// activation/expiry filtering stays anchored to the current time. Held
     /// behind `Arc` so serving a hit shares the ~1MB tree instead of cloning it.
     pub worldstate_cache: Mutex<Option<(std::time::Instant, Arc<serde_json::Value>, Arc<serde_json::Value>)>>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-pub struct WfmSession {
-    pub access_token: String,
-    pub refresh_token: String,
-    pub client_id: String,
-    pub device_id: String,
-    pub username: String,
-    pub status: String,   // "online" | "ingame" | "invisible" | "offline"
-    /// v1 JWT captured from the Authorization response header during signin.
-    /// v1 endpoints (/v1/auctions/create etc.) require this; they reject v2 OAuth Bearer tokens.
-    #[serde(default)]
-    pub v1_jwt: String,
-    /// CSRF token from the page <meta name="csrf-token"> captured after login.
-    /// Required as x-csrftoken header on mutating WFM API calls (PUT, DELETE).
-    #[serde(default)]
-    pub csrf_token: String,
-}
-
-impl WfmSession {
-    pub fn auth_header(&self) -> String {
-        format!("Bearer {}", self.access_token)
-    }
-    /// Auth header for v1 WFM endpoints. WFM v1 uses "JWT <token>" scheme, not Bearer.
-    pub fn v1_auth_header(&self) -> String {
-        if !self.v1_jwt.is_empty() {
-            format!("JWT {}", self.v1_jwt)
-        } else {
-            format!("Bearer {}", self.access_token)
-        }
-    }
 }
 
 // ─── Item catalog ─────────────────────────────────────────────────────────────
@@ -934,208 +903,10 @@ async fn fetch_warframe_inventory(account_id: String, nonce: String, steam_id: S
 
 // ─── Warframe.market ──────────────────────────────────────────────────────────
 
-#[derive(serde::Serialize)]
-pub struct WfmItem {
-    pub id: String,
-    pub item_name: String,
-    pub url_name: String,
-}
-
-#[derive(serde::Deserialize)]
-struct WfmRivenAttribute {
-    url_name: String,
-    positive: bool,
-    value:    f64,
-}
-
-// ─── Warframe.market rate limiters ────────────────────────────────────────────
-// Two separate sliding-window limiters:
-//   wfm_wait()         — general: ≤3 requests per second (all WFM endpoints)
-//   wfm_auction_wait() — auction: ≤10 requests per minute AND ≤3 per second
-//                        (rivens, liches, sisters — /v1/auctions/... endpoints)
-
-struct WfmRateLimiter {
-    times: std::collections::VecDeque<std::time::Instant>,
-    limit: usize,
-    window: std::time::Duration,
-}
-
-impl WfmRateLimiter {
-    fn new(limit: usize, window: std::time::Duration) -> Self {
-        Self { times: std::collections::VecDeque::new(), limit, window }
-    }
-
-    /// Returns None if a slot is available (and records the timestamp),
-    /// or Some(duration) if the caller should sleep before retrying.
-    /// Mutex is released BEFORE the caller sleeps — no blocking while holding the lock.
-    fn try_acquire(&mut self) -> Option<std::time::Duration> {
-        let now = std::time::Instant::now();
-        while let Some(&front) = self.times.front() {
-            if now.duration_since(front) >= self.window { self.times.pop_front(); } else { break; }
-        }
-        if self.times.len() < self.limit {
-            self.times.push_back(now);
-            None
-        } else {
-            let oldest = *self.times.front().unwrap();
-            Some(self.window.saturating_sub(now.duration_since(oldest)) + std::time::Duration::from_millis(10))
-        }
-    }
-}
-
-static WFM_LIMITER: std::sync::OnceLock<std::sync::Mutex<WfmRateLimiter>> =
-    std::sync::OnceLock::new();
-static WFM_AUCTION_LIMITER: std::sync::OnceLock<std::sync::Mutex<WfmRateLimiter>> =
-    std::sync::OnceLock::new();
-
-/// Call this before every warframe.market HTTP request.
-/// Sleeps without holding the mutex so other callers are not blocked during the wait.
-fn wfm_wait() {
-    let limiter = WFM_LIMITER.get_or_init(|| std::sync::Mutex::new(
-        WfmRateLimiter::new(3, std::time::Duration::from_secs(1))
-    ));
-    loop {
-        let sleep_dur = limiter.lock().unwrap_or_else(|e| e.into_inner()).try_acquire();
-        match sleep_dur {
-            None => break,
-            Some(d) => std::thread::sleep(d),
-        }
-    }
-}
-
-/// Call this before every /v1/auctions/... request (rivens, liches, sisters).
-/// Enforces both the general 3/sec limit and the contract-specific 10/min limit.
-fn wfm_auction_wait() {
-    wfm_wait();
-    let limiter = WFM_AUCTION_LIMITER.get_or_init(|| std::sync::Mutex::new(
-        WfmRateLimiter::new(10, std::time::Duration::from_secs(60))
-    ));
-    loop {
-        let sleep_dur = limiter.lock().unwrap_or_else(|e| e.into_inner()).try_acquire();
-        match sleep_dur {
-            None => break,
-            Some(d) => std::thread::sleep(d),
-        }
-    }
-}
-
 // ─── Warframe.market trading ──────────────────────────────────────────────────
-
-fn wfm_request(method: &str, path: &str, auth_header: &str) -> ureq::Request {
-    let url = format!("https://api.warframe.market{}", path);
-    let req = match method {
-        "POST"   => ureq::post(&url),
-        "PUT"    => ureq::put(&url),
-        "PATCH"  => ureq::patch(&url),
-        "DELETE" => ureq::delete(&url),
-        _        => ureq::get(&url),
-    };
-    req.set("Authorization", auth_header)
-       .set("Content-Type", "application/json")
-       .set("Accept", "application/json")
-       .set("language", "en")
-       .set("platform", "pc")
-       .set("User-Agent", "FrameForge/3.2.0")
-}
-
-#[tracing::instrument(level = "debug", skip_all, fields(method = %method, path = %path))]
-fn wfm_call(method: &str, path: &str, auth_header: &str) -> Result<ureq::Response, ureq::Error> {
-    wfm_request(method, path, auth_header).call()
-}
-
-#[tracing::instrument(level = "debug", skip_all, fields(method = %method, path = %path))]
-fn wfm_send_json(
-    method: &str,
-    path: &str,
-    auth_header: &str,
-    body: impl serde::Serialize,
-) -> Result<ureq::Response, ureq::Error> {
-    wfm_request(method, path, auth_header).send_json(body)
-}
-
-/// Like wfm_request but authenticates via Cookie (JWT=...) instead of Authorization header.
-
-/// Decode the payload of a JWT (base64url, middle part) and extract a field by name.
-fn jwt_payload_field(jwt: &str, field: &str) -> Option<String> {
-    let parts: Vec<&str> = jwt.splitn(3, '.').collect();
-    if parts.len() < 2 { return None; }
-    // base64url without padding
-    let payload_b64 = parts[1];
-    let padded = match payload_b64.len() % 4 {
-        2 => format!("{}==", payload_b64),
-        3 => format!("{}=", payload_b64),
-        _ => payload_b64.to_string(),
-    };
-    let decoded = base64_decode_url(&padded)?;
-    let json: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
-    json[field].as_str().map(|s| s.to_string())
-}
-
-fn base64_decode_url(s: &str) -> Option<Vec<u8>> {
-    // manual base64url → standard base64 → decode
-    let s = s.replace('-', "+").replace('_', "/");
-    // Simple base64 decode without external crates
-    let chars: Vec<u8> = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=".to_vec();
-    let mut out = Vec::new();
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i + 3 < bytes.len() {
-        let c0 = chars.iter().position(|&c| c == bytes[i])? as u32;
-        let c1 = chars.iter().position(|&c| c == bytes[i+1])? as u32;
-        let c2 = chars.iter().position(|&c| c == bytes[i+2]).unwrap_or(64) as u32;
-        let c3 = chars.iter().position(|&c| c == bytes[i+3]).unwrap_or(64) as u32;
-        out.push(((c0 << 2) | (c1 >> 4)) as u8);
-        if c2 != 64 { out.push(((c1 << 4) | (c2 >> 2)) as u8); }
-        if c3 != 64 { out.push(((c2 << 6) | c3) as u8); }
-        i += 4;
-    }
-    Some(out)
-}
-
-/// Fetch the CSRF token from warframe.market by loading the authenticated page.
-/// The meta tag `<meta name="csrf-token" content="...">` in the response HTML contains it.
-/// Falls back to the csrf_token embedded in the JWT payload if the page fetch fails.
-#[tracing::instrument(level = "debug", skip_all)]
-fn fetch_csrf_from_site(jwt: &str) -> Option<String> {
-    if jwt.is_empty() { return None; }
-    let resp = ureq::get("https://warframe.market/")
-        .set("Cookie", &format!("JWT={}", jwt))
-        .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-        .call();
-    let html = match resp {
-        Ok(r) => { debug!("site fetch status=200"); r.into_string().ok()? }
-        Err(e) => {
-            warn!(error = %e, "site fetch failed, trying JWT payload fallback");
-            if let Some(t) = jwt_payload_field(jwt, "csrf_token") {
-                debug!(len = t.len(), "JWT payload csrf_token");
-                return Some(t);
-            }
-            return None;
-        }
-    };
-    // Try meta tag
-    let needle = r#"name="csrf-token" content=""#;
-    if let Some(start) = html.find(needle) {
-        let start = start + needle.len();
-        if let Some(end_rel) = html[start..].find('"') {
-            let token = html[start..start + end_rel].to_string();
-            if !token.is_empty() {
-                debug!(len = token.len(), "found meta token");
-                return Some(token);
-            }
-        }
-    }
-    warn!(len = html.len(), "meta tag not found in HTML, trying JWT payload fallback");
-    // Log a snippet to see what we got (first 200 chars)
-    debug!(snippet = %truncate_chars(&html, 200), "HTML snippet");
-    if let Some(t) = jwt_payload_field(jwt, "csrf_token") {
-        debug!(len = t.len(), "JWT payload csrf_token");
-        Some(t)
-    } else {
-        None
-    }
-}
+// The WFM client lives in `wfm.rs`; the command handlers below are thin adapters
+// over `state.wfm`. Session acquisition (this login webview) and keyring
+// persistence stay here at the Tauri boundary.
 
 /// Open warframe.market signin in an embedded WebView.
 /// Emits `wfm-login-window-closed` if the window is closed before auth completes.
@@ -1383,30 +1154,10 @@ fn wfm_receive_tokens(
     #[allow(non_snake_case)] v1Jwt: Option<String>,
     #[allow(non_snake_case)] csrfToken: Option<String>,
 ) -> Result<(), String> {
-    wfm_wait();
-    let json: serde_json::Value = ureq::get("https://api.warframe.market/v2/me")
-        .set("Authorization", &format!("Bearer {}", access_token))
-        .set("language", "en").set("platform", "pc")
-        .set("User-Agent", "FrameForge/3.2.0")
-        .call().map_err(|e| format!("Profile: {}", e))?
-        .into_json().map_err(|e| format!("Parse: {}", e))?;
-    let username = json["data"]["ingameName"].as_str().unwrap_or("Tenno").to_string();
-    let status   = json["data"]["status"].as_str().unwrap_or("offline").to_string();
-    let v1_jwt_val = v1Jwt.unwrap_or_default();
-    // Fetch the CSRF token from the WFM page. The injected script captures it from the meta tag
-    // as a best-effort fallback; if that fails (SPA timing), we fetch the page directly.
-    let csrf = csrfToken.unwrap_or_default();
-    let csrf = if !csrf.is_empty() {
-        csrf
-    } else {
-        fetch_csrf_from_site(&v1_jwt_val).unwrap_or_default()
-    };
-    info!(len = csrf.len(), "csrf_token captured");
-    *state.wfm_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(WfmSession {
-        access_token, refresh_token, client_id, device_id, username: username.clone(), status,
-        v1_jwt: v1_jwt_val,
-        csrf_token: csrf,
-    });
+    let (username, _status) = state.wfm.adopt_tokens(
+        access_token, refresh_token, client_id, device_id,
+        v1Jwt.unwrap_or_default(), csrfToken,
+    )?;
     if let Some(win) = app.get_webview_window("wfm-login") { let _ = win.close(); }
     let _ = app.emit("wfm-auth-complete", &username);
     Ok(())
@@ -1415,65 +1166,16 @@ fn wfm_receive_tokens(
 /// Use the stored refresh token to silently get a new access token.
 #[tauri::command]
 fn wfm_refresh_token(state: State<AppState>) -> Result<(), String> {
-    let (refresh_token, client_id, device_id) = {
-        let lock = state.wfm_session.lock().unwrap_or_else(|e| e.into_inner());
-        let s = lock.as_ref().ok_or("Not logged in")?;
-        (s.refresh_token.clone(), s.client_id.clone(), s.device_id.clone())
-    };
-    if refresh_token.is_empty() { return Err("No refresh token".into()); }
-    let body = serde_json::json!({
-        "grantType": "refresh_token",
-        "clientId": client_id,
-        "deviceId": device_id,
-        "refreshToken": refresh_token,
-    });
-    wfm_wait();
-    let json: serde_json::Value = ureq::post("https://api.warframe.market/auth/refresh")
-        .set("Content-Type", "application/json")
-        .set("User-Agent", "FrameForge/3.2.0")
-        .send_string(&body.to_string())
-        .map_err(|e| format!("Refresh: {}", e))?
-        .into_json().map_err(|e| format!("Parse: {}", e))?;
-    let new_access  = json["data"]["accessToken"].as_str().ok_or("No accessToken")?.to_string();
-    let new_refresh = json["data"]["refreshToken"].as_str().unwrap_or(&refresh_token).to_string();
-    let mut lock = state.wfm_session.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(s) = lock.as_mut() { s.access_token = new_access; s.refresh_token = new_refresh; }
-    Ok(())
+    state.wfm.refresh()
 }
 
 /// Restore a session from saved token data (JSON string).
 /// Returns (username, status) so the frontend can set both in one step.
 #[tauri::command]
 fn wfm_set_jwt(state: State<AppState>, jwt: String) -> Result<(String, String), String> {
-    // `jwt` here is a JSON string saved by wfm_save_credentials: { accessToken, refreshToken, ... }
-    let data: serde_json::Value = serde_json::from_str(&jwt)
-        .unwrap_or_else(|_| serde_json::json!({ "accessToken": jwt })); // backward compat
-    let access_token  = data["accessToken"].as_str().unwrap_or(&jwt).to_string();
-    let refresh_token = data["refreshToken"].as_str().unwrap_or("").to_string();
-    let client_id     = data["clientId"].as_str().unwrap_or("").to_string();
-    let device_id     = data["deviceId"].as_str().unwrap_or("").to_string();
-    let v1_jwt        = data["v1Jwt"].as_str().unwrap_or("").to_string();
-    let mut csrf_token = data["csrfToken"].as_str().unwrap_or("").to_string();
-    // Validate by calling /v2/me
-    wfm_wait();
-    let json: serde_json::Value = ureq::get("https://api.warframe.market/v2/me")
-        .set("Authorization", &format!("Bearer {}", access_token))
-        .set("language", "en").set("platform", "pc")
-        .set("User-Agent", "FrameForge/3.2.0")
-        .call().map_err(|e| format!("401: {}", e))?
-        .into_json().map_err(|e| format!("Parse: {}", e))?;
-    let username = json["data"]["ingameName"].as_str().unwrap_or("Tenno").to_string();
-    let status   = json["data"]["status"].as_str().unwrap_or("offline").to_string();
-    // If no saved CSRF token, fetch it from the site now
-    if csrf_token.is_empty() && !v1_jwt.is_empty() {
-        debug!("set_jwt: no saved token, fetching from site");
-        csrf_token = fetch_csrf_from_site(&v1_jwt).unwrap_or_default();
-        debug!(len = csrf_token.len(), "set_jwt: csrf_token fetched");
-    }
-    *state.wfm_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(WfmSession {
-        access_token, refresh_token, client_id, device_id, username: username.clone(), status: status.clone(), v1_jwt, csrf_token,
-    });
-    Ok((username, status))
+    // `jwt` is the JSON bundle saved by wfm_save_credentials (or, for old saves,
+    // a bare access token — restore_from_json handles both).
+    state.wfm.restore_from_json(&jwt)
 }
 
 /// Log in via v1 signin (current recommended method per WFM Discord).
@@ -1481,107 +1183,23 @@ fn wfm_set_jwt(state: State<AppState>, jwt: String) -> Result<(String, String), 
 /// Use it as: Authorization: Bearer <token>
 #[tauri::command]
 fn wfm_login(state: State<AppState>, email: String, password: String) -> Result<String, String> {
-    let body = serde_json::json!({ "email": email, "password": password });
-    wfm_wait();
-    let resp = ureq::post("https://api.warframe.market/v1/auth/signin")
-        .set("Content-Type", "application/json")
-        .set("Authorization", "JWT")
-        .set("User-Agent", "FrameForge/3.2.0")
-        .send_string(&body.to_string())
-        .map_err(|e| format!("Login failed: {}", e))?;
-
-    // Token lives in set-cookie: "JWT=eyJ...; Path=/; HttpOnly"
-    let token = resp.header("set-cookie")
-        .and_then(|h| h.split(';').next())
-        .and_then(|s| s.strip_prefix("JWT="))
-        .map(|s| s.to_string())
-        .ok_or("No JWT token in response cookies")?;
-
-    let json: serde_json::Value = resp.into_json()
-        .map_err(|e| format!("Parse: {}", e))?;
-    let username = json["payload"]["user"]["ingame_name"]
-        .as_str().unwrap_or("Tenno").to_string();
-    let status = json["payload"]["user"]["status"]
-        .as_str().unwrap_or("offline").to_string();
-
-    *state.wfm_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(WfmSession {
-        v1_jwt: token.clone(), // v1 login: JWT is the auth token for v1 endpoints
-        csrf_token: String::new(),
-        access_token: token,
-        refresh_token: String::new(),
-        client_id: String::new(),
-        device_id: String::new(),
-        username: username.clone(),
-        status,
-    });
-    Ok(username)
+    state.wfm.login(&email, &password)
 }
 
 /// Fetch current in-game buy and sell orders for an item, sorted by price.
 /// When `mod_rank` is provided the results are filtered to that specific rank only.
 #[tauri::command]
 fn wfm_get_item_orders(state: State<AppState>, url_name: String, mod_rank: Option<u32>) -> Result<serde_json::Value, String> {
-    let auth = state.wfm_session.lock().unwrap_or_else(|e| e.into_inner())
-        .as_ref().map(|s| s.auth_header());
-    wfm_wait();
-    let mut req = ureq::get(&format!("https://api.warframe.market/v2/orders/item/{}", url_name))
-        .set("language", "en").set("platform", "pc").set("User-Agent", "FrameForge/3.2.0");
-    if let Some(ref h) = auth { req = req.set("Authorization", h); }
-    let json: serde_json::Value = req.call().map_err(|e| format!("orders: {}", e))?
-        .into_json().map_err(|e| format!("parse: {}", e))?;
-    fn status_rank(o: &serde_json::Value) -> u8 {
-        match o["user"]["status"].as_str().unwrap_or("offline") {
-            "ingame" => 0,
-            "online" => 1,
-            _ => 2,
-        }
-    }
-    let all_orders = json["data"].as_array().cloned().unwrap_or_default();
-    let orders: Vec<serde_json::Value> = if let Some(rank) = mod_rank {
-        all_orders.into_iter().filter(|o| {
-            o["rank"].as_u64().map(|r| r as u32 == rank).unwrap_or(false)
-        }).collect()
-    } else {
-        all_orders
-    };
-    let mut sell: Vec<serde_json::Value> = orders.iter().filter(|o| o["type"] == "sell").cloned().collect();
-    sell.sort_by(|a, b| {
-        status_rank(a).cmp(&status_rank(b))
-            .then_with(|| a["platinum"].as_i64().unwrap_or(999_999).cmp(&b["platinum"].as_i64().unwrap_or(999_999)))
-    });
-    let mut buy: Vec<serde_json::Value> = orders.iter().filter(|o| o["type"] == "buy").cloned().collect();
-    buy.sort_by(|a, b| {
-        status_rank(a).cmp(&status_rank(b))
-            .then_with(|| b["platinum"].as_i64().unwrap_or(0).cmp(&a["platinum"].as_i64().unwrap_or(0)))
-    });
-    Ok(serde_json::json!({ "sell": sell.into_iter().take(15).collect::<Vec<_>>(), "buy": buy.into_iter().take(15).collect::<Vec<_>>() }))
+    state.wfm.item_orders(&url_name, mod_rank)
 }
 
 /// Fetch 90-day price statistics for an item (daily medians for the chart).
 #[tauri::command]
 fn wfm_get_item_statistics(state: State<AppState>, url_name: String) -> Result<serde_json::Value, String> {
-    let auth = state.wfm_session.lock().unwrap_or_else(|e| e.into_inner())
-        .as_ref().map(|s| s.auth_header());
-    wfm_wait();
-    let mut req = ureq::get(&format!("https://api.warframe.market/v1/items/{}/statistics", url_name))
-        .set("language", "en").set("platform", "pc").set("User-Agent", "FrameForge/3.2.0");
-    if let Some(ref h) = auth { req = req.set("Authorization", h); }
-    let json: serde_json::Value = req.call().map_err(|e| format!("stats: {}", e))?
-        .into_json().map_err(|e| format!("parse: {}", e))?;
-    Ok(json["payload"]["statistics_closed"]["90days"].clone())
+    state.wfm.item_statistics(&url_name)
 }
 
 // ── Top WFM items by 7-day trade volume ───────────────────────────────────────
-
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-pub struct WfmTopItem {
-    pub name:           String,
-    pub url_name:       String,
-    pub image_name:     Option<String>,
-    pub unit_price:     u32,    // median sell price (plat)
-    pub daily_volume:   f64,    // average trades/day over last 7 days
-    pub total_value_7d: u64,    // unit_price × total volume over 7 days
-}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct WfmTopDiskCache {
@@ -1589,105 +1207,26 @@ struct WfmTopDiskCache {
     items: Vec<WfmTopItem>,
 }
 
-/// Fetch all Prime Set (name, url_name) pairs from WFM's /v2/items endpoint.
-/// Returns empty vec if the request fails.
-fn fetch_wfm_prime_sets() -> Vec<(String, String)> {
-    wfm_wait();
-    let resp = ureq::get("https://api.warframe.market/v2/items")
-        .set("User-Agent", "FrameForge/3.2.0")
-        .timeout(std::time::Duration::from_secs(15))
-        .call();
-    let json: serde_json::Value = match resp {
-        Ok(r) => match r.into_json() { Ok(v) => v, Err(_) => return Vec::new() },
-        Err(_) => return Vec::new(),
-    };
-    // v2 format: { "data": [{ "slug": "ash_prime_set", "i18n": { "en": { "name": "Ash Prime Set" } } }] }
-    let items = match json["data"].as_array() {
-        Some(a) => a,
-        None => return Vec::new(),
-    };
-    items.iter()
-        .filter_map(|item| {
-            let name = item["i18n"]["en"]["name"].as_str()?;
-            let url  = item["slug"].as_str()?;
-            let lower = name.to_lowercase();
-            if lower.contains("prime") && lower.ends_with(" set") {
-                Some((name.to_string(), url.to_string()))
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-/// Return the session-scoped WFM prime sets, fetching once if not yet cached.
-fn get_or_fetch_wfm_prime_sets() -> Vec<(String, String)> {
-    let cache = WFM_PRIME_SETS_CACHE.get_or_init(|| std::sync::Mutex::new(None));
-    {
-        let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(ref sets) = *guard {
-            return sets.clone();
-        }
-    }
-    let sets = fetch_wfm_prime_sets();
-    if !sets.is_empty() {
-        let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = Some(sets.clone());
-    }
-    sets
-}
-
-/// Fetch price + 7-day volume for a single WFM slug.
-/// Returns None if the item is not listed or has no recent data.
-fn wfm_stats_7day(slug: &str) -> Option<(u32, f64)> {
-    wfm_wait();
-    let url = format!("https://api.warframe.market/v1/items/{}/statistics", slug);
-    let json: serde_json::Value = ureq::get(&url)
-        .timeout(std::time::Duration::from_secs(10))
-        .call().ok()?.into_json().ok()?;
-
-    let days = json["payload"]["statistics_closed"]["90days"].as_array()?;
-    if days.is_empty() { return None; }
-
-    // Price: most recent entry's median
-    let price = days.last()?.get("median")?.as_f64().map(|f| f.round() as u32)?;
-
-    // Volume: sum of the last 7 daily entries
-    let vol_7d: f64 = days.iter().rev().take(7)
-        .filter_map(|e| e["volume"].as_f64())
-        .sum();
-
-    if vol_7d == 0.0 { return None; }
-    Some((price, vol_7d / 7.0))
-}
-
 /// Return the top 10 most-traded items on warframe.market by 7-day total value.
 /// Queries Prime Sets and Arcanes from the local WFCD catalog (already loaded).
 /// Results are cached for 3 hours so repeated tab opens are instant.
 #[tauri::command]
 async fn get_wfm_top_items(state: State<'_, AppState>) -> Result<Vec<WfmTopItem>, String> {
-    let cache = WFM_TOP_CACHE.get_or_init(|| std::sync::Mutex::new(None));
+    const TOP_TTL: std::time::Duration = std::time::Duration::from_secs(3 * 3600);
 
-    // Return in-memory cached result if still fresh
-    {
-        let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((ts, ref items)) = *guard {
-            if ts.elapsed().as_secs() < 3 * 3600 {
-                return Ok(items.clone());
-            }
-        }
+    // In-memory cache, fresh within the TTL — the client owns it.
+    if let Some(items) = state.wfm.cached_top_items(TOP_TTL) {
+        return Ok(items);
     }
 
-    // Try disk cache — survives app restarts
+    // Disk cache — survives app restarts.
     let disk_cache_path = state.wfm_top_cache_path.clone();
     if let Ok(s) = std::fs::read_to_string(&disk_cache_path) {
         if let Ok(dc) = serde_json::from_str::<WfmTopDiskCache>(&s) {
             let now_secs = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-            if now_secs.saturating_sub(dc.saved_at) < 3 * 3600 && !dc.items.is_empty() {
-                // Populate in-memory cache so subsequent calls this session are instant
-                let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
-                *guard = Some((std::time::Instant::now(), dc.items.clone()));
+            if now_secs.saturating_sub(dc.saved_at) < TOP_TTL.as_secs() && !dc.items.is_empty() {
+                state.wfm.set_top_items(dc.items.clone());
                 return Ok(dc.items);
             }
         }
@@ -1699,11 +1238,8 @@ async fn get_wfm_top_items(state: State<'_, AppState>) -> Result<Vec<WfmTopItem>
     if WFM_SCAN_RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
         for _ in 0..120u32 {  // poll every 5 s, max 10 minutes
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some((ts, ref items)) = *guard {
-                if ts.elapsed().as_secs() < 3 * 3600 {
-                    return Ok(items.clone());
-                }
+            if let Some(items) = state.wfm.cached_top_items(TOP_TTL) {
+                return Ok(items);
             }
         }
         return Err("WFM top items scan timed out".to_string());
@@ -1721,14 +1257,13 @@ async fn get_wfm_top_items(state: State<'_, AppState>) -> Result<Vec<WfmTopItem>
     };
 
     // Run blocking ureq calls on the thread pool — keeps the async runtime free
+    let wfm = state.wfm.clone();
     let scan_result = tokio::task::spawn_blocking(move || {
-        // One API call to get all WFM prime sets (cached for the session after first call)
-        let prime_sets = get_or_fetch_wfm_prime_sets();
-
+        let prime_sets = wfm.prime_sets();
         let mut out: Vec<WfmTopItem> = Vec::new();
 
         for (name, url_name) in &prime_sets {
-            if let Some((price, daily_vol)) = wfm_stats_7day(url_name) {
+            if let Some((price, daily_vol)) = wfm.stats_7day(url_name) {
                 out.push(WfmTopItem {
                     name:           name.clone(),
                     url_name:       url_name.clone(),
@@ -1741,7 +1276,7 @@ async fn get_wfm_top_items(state: State<'_, AppState>) -> Result<Vec<WfmTopItem>
         }
 
         for (name, slug, image_name) in &arcane_candidates {
-            if let Some((price, daily_vol)) = wfm_stats_7day(slug) {
+            if let Some((price, daily_vol)) = wfm.stats_7day(slug) {
                 out.push(WfmTopItem {
                     name:           name.clone(),
                     url_name:       slug.clone(),
@@ -1770,9 +1305,7 @@ async fn get_wfm_top_items(state: State<'_, AppState>) -> Result<Vec<WfmTopItem>
         let _ = std::fs::write(&disk_cache_path, json);
     }
 
-    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
-    *guard = Some((std::time::Instant::now(), results.clone()));
-
+    state.wfm.set_top_items(results.clone());
     Ok(results)
 }
 
@@ -1865,17 +1398,14 @@ async fn wfm_delete_credentials() -> Result<(), String> {
 /// site so every route to a logout inherits it.
 #[tauri::command]
 async fn wfm_logout(state: State<'_, AppState>) -> Result<(), String> {
-    // Binding the guard to a name would hold a std mutex across the await below
-    // and make the future non-Send.
-    *state.wfm_session.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    state.wfm.clear_session();
     wfm_delete_credentials().await
 }
 
 /// Return (username, status) for the current session, or None if not logged in.
 #[tauri::command]
 fn wfm_get_session(state: State<AppState>) -> Option<(String, String)> {
-    state.wfm_session.lock().unwrap_or_else(|e| e.into_inner())
-        .as_ref().map(|s| (s.username.clone(), s.status.clone()))
+    state.wfm.identity()
 }
 
 /// Fetch the user's actual current status from WFM (`/v2/me`).
@@ -1884,51 +1414,19 @@ fn wfm_get_session(state: State<AppState>) -> Option<(String, String)> {
 /// not just the hardcoded default.
 #[tauri::command]
 fn wfm_fetch_status(state: State<AppState>) -> Result<String, String> {
-    let token = state.wfm_session.lock().unwrap_or_else(|e| e.into_inner())
-        .as_ref().ok_or("Not logged in")?.access_token.clone();
-    wfm_wait();
-    let json: serde_json::Value = ureq::get("https://api.warframe.market/v2/me")
-        .set("Authorization", &format!("Bearer {}", token))
-        .set("language", "en").set("platform", "pc")
-        .set("User-Agent", "FrameForge/3.2.0")
-        .call().map_err(|e| format!("Status fetch: {}", e))?
-        .into_json().map_err(|e| format!("Parse: {}", e))?;
-    Ok(json["data"]["status"].as_str().unwrap_or("offline").to_string())
+    state.wfm.fetch_status()
 }
 
 /// Return the current session token data as JSON for saving.
 #[tauri::command]
 fn wfm_get_jwt(state: State<AppState>) -> Option<String> {
-    state.wfm_session.lock().unwrap_or_else(|e| e.into_inner())
-        .as_ref().map(|s| serde_json::json!({
-            "accessToken":  s.access_token,
-            "refreshToken": s.refresh_token,
-            "clientId":     s.client_id,
-            "deviceId":     s.device_id,
-            "v1Jwt":        s.v1_jwt,
-            "csrfToken":    s.csrf_token,
-        }).to_string())
-}
-
-fn session_auth(state: &State<AppState>) -> Result<String, String> {
-    state.wfm_session.lock().unwrap_or_else(|e| e.into_inner())
-        .as_ref().map(|s| s.auth_header()).ok_or("Not logged in to warframe.market".into())
-}
-
-fn session_v1_auth(state: &State<AppState>) -> Result<String, String> {
-    state.wfm_session.lock().unwrap_or_else(|e| e.into_inner())
-        .as_ref().map(|s| s.v1_auth_header()).ok_or("Not logged in to warframe.market".into())
+    state.wfm.token_json()
 }
 
 /// Fetch the authenticated user's active buy + sell orders.
 #[tauri::command]
 fn wfm_get_orders(state: State<AppState>) -> Result<serde_json::Value, String> {
-    let auth = session_auth(&state)?;
-    wfm_wait();
-    let json: serde_json::Value = wfm_call("GET", "/v2/orders/my", &auth)
-        .map_err(|e| format!("Get orders: {}", e))?
-        .into_json().map_err(|e| format!("Parse: {}", e))?;
-    Ok(json["data"].clone())
+    state.wfm.my_orders()
 }
 
 /// Set WFM online status via WebSocket.
@@ -1937,91 +1435,11 @@ fn wfm_get_orders(state: State<AppState>) -> Result<serde_json::Value, String> {
 /// Values: "online" | "ingame" | "invisible"
 #[tauri::command]
 async fn wfm_set_status(state: State<'_, AppState>, status: String) -> Result<(), String> {
-    if !["online", "ingame", "invisible"].contains(&status.as_str()) {
-        return Err("Status must be: online, ingame, or invisible".into());
-    }
-    let token = state.wfm_session.lock().unwrap_or_else(|e| e.into_inner())
-        .as_ref().ok_or("Not logged in")?.access_token.clone();
-    let status_for_ws = status.clone();
-
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
-        use tungstenite::{Message, stream::MaybeTlsStream, client::IntoClientRequest};
-        use std::{net::TcpStream, time::Duration};
-
-        const HOST: &str = "ws.warframe.market:443";
-        const RW_TIMEOUT: Duration = Duration::from_secs(5);
-
-        // Resolve + connect with an explicit timeout so a slow/unresponsive
-        // WFM server can't block this thread for the OS default (~20 s).
-        let addr = HOST.parse::<std::net::SocketAddr>()
-            .or_else(|_| {
-                use std::net::ToSocketAddrs;
-                HOST.to_socket_addrs()?.next().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no addr"))
-            })
-            .map_err(|e| format!("DNS: {}", e))?;
-        let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
-            .map_err(|e| format!("TCP connect: {}", e))?;
-        tcp.set_read_timeout(Some(RW_TIMEOUT)).ok();
-        tcp.set_write_timeout(Some(RW_TIMEOUT)).ok();
-
-        let req = "wss://ws.warframe.market/socket".into_client_request()
-            .map_err(|e| format!("WS request: {}", e))?;
-        let (mut ws, _) = tungstenite::client_tls(req, tcp)
-            .map_err(|e| format!("WS connect: {}", e))?;
-
-        // Read timeout is already set on the stream; also applies post-TLS
-        // because native-tls forwards read/write to the underlying TcpStream.
-        // Belt-and-suspenders: confirm via get_ref in case the TLS wrapper
-        // resets it.
-        match ws.get_ref() {
-            MaybeTlsStream::Plain(s)     => { let _ = s.set_read_timeout(Some(RW_TIMEOUT)); }
-            MaybeTlsStream::NativeTls(s) => { let _ = s.get_ref().set_read_timeout(Some(RW_TIMEOUT)); }
-            _ => {}
-        }
-
-        let send = |ws: &mut tungstenite::WebSocket<_>, route: &str, payload: serde_json::Value| {
-            let msg = serde_json::json!({ "route": route, "payload": payload, "id": route }).to_string();
-            ws.send(Message::Text(msg.into())).map_err(|e| format!("WS send: {}", e))
-        };
-
-        let wait_for = |ws: &mut tungstenite::WebSocket<_>, ok_route: &str, err_route: &str| -> Result<(), String> {
-            for _ in 0..20 {
-                match ws.read() {
-                    Ok(Message::Text(text)) => {
-                        let v: serde_json::Value = serde_json::from_str(text.as_str()).unwrap_or_default();
-                        let route = v["route"].as_str().unwrap_or("");
-                        if route == ok_route  { return Ok(()); }
-                        if route == err_route { return Err(format!("WFM error: {}", v["payload"])); }
-                    }
-                    Err(e) => return Err(format!("WS read: {}", e)),
-                    _ => {}
-                }
-            }
-            Err("WS response timeout".into())
-        };
-
-        // 1. Authenticate
-        send(&mut ws, "@wfm|cmd/auth/signIn", serde_json::json!({ "token": token }))?;
-        wait_for(&mut ws, "@wfm|cmd/auth/signIn:ok", "@wfm|cmd/auth/signIn:error")?;
-
-        // 2. Set status — 6-hour duration so it persists after disconnect
-        send(&mut ws, "@wfm|cmd/status/set", serde_json::json!({
-            "status": status_for_ws,
-            "duration": 21600   // max 6 hours
-        }))?;
-        wait_for(&mut ws, "@wfm|cmd/status/set:ok", "@wfm|cmd/status/set:error")?;
-
-        let _ = ws.close(None);
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("Task: {}", e))??;
-
-    // Keep cached status in sync so wfm_get_session reflects the new value
-    if let Some(s) = state.wfm_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-        s.status = status;
-    }
-    Ok(())
+    // The WebSocket round-trip is blocking; run it off the async runtime.
+    let wfm = state.wfm.clone();
+    tokio::task::spawn_blocking(move || wfm.set_status(&status))
+        .await
+        .map_err(|e| format!("Task: {}", e))?
 }
 
 // ─── Riven database ───────────────────────────────────────────────────────────
@@ -2320,19 +1738,12 @@ fn get_weapon_dispositions(state: State<AppState>) -> HashMap<String, f32> {
     state.weapon_dispositions.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// Cache for top WFM items: (fetched_at, items). Refreshed when older than 3 hours.
-static WFM_TOP_CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, Vec<WfmTopItem>)>>> =
-    std::sync::OnceLock::new();
-
 /// Guards against concurrent scans: only one get_wfm_top_items scan runs at a time.
 /// Concurrent callers wait (polling the cache) rather than starting a second scan.
+/// Scan orchestration is the command's concern; the cached result it produces
+/// lives in `Wfm`.
 static WFM_SCAN_RUNNING: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
-
-/// Session-scoped cache for WFM prime set slugs (name, url_name).
-/// Populated once per app session from the WFM /v1/items list.
-static WFM_PRIME_SETS_CACHE: std::sync::OnceLock<std::sync::Mutex<Option<Vec<(String, String)>>>> =
-    std::sync::OnceLock::new();
 
 /// Cache: (warframe_pid, Option<flag_va>). None inner = scanned this PID, pattern not found.
 /// Re-scanned only when PID changes (game restart). Prevents 200ms re-scan storm.
@@ -3479,41 +2890,15 @@ fn analyze_riven(weapon: String, positives: Vec<String>, negatives: Vec<String>)
 /// Debug: return the raw JSON from any authenticated WFM endpoint.
 #[tauri::command]
 fn wfm_debug_dump(state: State<AppState>, path: String) -> Result<String, String> {
-    let auth = session_auth(&state)?;
-    wfm_wait();
-    let json: serde_json::Value = wfm_call("GET", &path, &auth)
-        .map_err(|e| format!("Dump: {}", e))?
-        .into_json().map_err(|e| format!("Parse: {}", e))?;
-    serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
+    state.wfm.debug_dump(&path)
 }
 
 /// Collect known riven attribute url_names by sampling real auction listings.
 /// /v1/riven/attributes was removed; this scrapes url_names from search results instead.
 /// Exposed so the browser console can call: window.__wfmAttrs()
 #[tauri::command]
-fn wfm_get_riven_attributes() -> Result<Vec<String>, String> {
-    wfm_auction_wait();
-    let json: serde_json::Value = ureq::get("https://api.warframe.market/v1/auctions/search")
-        .query("type", "riven")
-        .set("language", "en").set("platform", "pc")
-        .set("User-Agent", "FrameForge/3.2.0")
-        .call().map_err(|e| format!("Search: {}", e))?
-        .into_json().map_err(|e| format!("Parse: {}", e))?;
-    let mut seen = std::collections::HashSet::new();
-    if let Some(auctions) = json["payload"]["auctions"].as_array() {
-        for auction in auctions {
-            if let Some(attrs) = auction["item"]["attributes"].as_array() {
-                for attr in attrs {
-                    if let Some(url) = attr["url_name"].as_str() {
-                        seen.insert(url.to_string());
-                    }
-                }
-            }
-        }
-    }
-    let mut list: Vec<String> = seen.into_iter().collect();
-    list.sort();
-    Ok(list)
+fn wfm_get_riven_attributes(state: State<AppState>) -> Result<Vec<String>, String> {
+    state.wfm.riven_attributes()
 }
 
 /// Get the internal WFM item ID for a URL slug (needed to create orders).
@@ -3521,13 +2906,7 @@ fn wfm_get_riven_attributes() -> Result<Vec<String>, String> {
 /// so the frontend never needs a second network request to detect this.
 #[tauri::command]
 fn wfm_get_item_info(state: State<AppState>, url_name: String) -> Result<serde_json::Value, String> {
-    let auth = state.wfm_session.lock().unwrap_or_else(|e| e.into_inner())
-        .as_ref().map(|s| s.auth_header()).unwrap_or_default();
-    wfm_wait();
-    let mut data = wfm_call("GET", &format!("/v2/items/{}", url_name), &auth)
-        .map_err(|e| format!("Item info: {}", e))?
-        .into_json::<serde_json::Value>().map_err(|e| format!("Parse: {}", e))
-        .map(|j| j["data"].clone())?;
+    let mut data = state.wfm.item_info(&url_name)?;
 
     // Enrich with modMaxRank from inventory_state_cache.json — the canonical source.
     // Match by display name since url_name ↔ unique_name conversion isn't 1:1.
@@ -3550,38 +2929,19 @@ fn wfm_get_item_info(state: State<AppState>, url_name: String) -> Result<serde_j
 /// Create a new buy or sell order. `mod_rank` must be set for mods — WFM returns 400 without it.
 #[tauri::command]
 fn wfm_create_order(state: State<AppState>, item_id: String, order_type: String, platinum: u32, quantity: u32, visible: bool, mod_rank: Option<u32>) -> Result<serde_json::Value, String> {
-    let auth = session_auth(&state)?;
-    let mut body = serde_json::json!({ "itemId": item_id, "type": order_type, "platinum": platinum, "quantity": quantity, "visible": visible });
-    if let Some(rank) = mod_rank {
-        body["rank"] = serde_json::json!(rank);
-    }
-    wfm_wait();
-    wfm_send_json("POST", "/v2/order", &auth, &body)
-        .map_err(|e| format!("Create order: {}", e))?
-        .into_json::<serde_json::Value>().map_err(|e| format!("Parse: {}", e))
-        .map(|j| j["data"].clone())
+    state.wfm.create_order(&item_id, &order_type, platinum, quantity, visible, mod_rank)
 }
 
 /// Update an existing order's price, quantity, or visibility.
 #[tauri::command]
 fn wfm_update_order(state: State<AppState>, order_id: String, platinum: u32, quantity: u32, visible: bool) -> Result<serde_json::Value, String> {
-    let auth = session_auth(&state)?;
-    let body = serde_json::json!({ "platinum": platinum, "quantity": quantity, "visible": visible });
-    wfm_wait();
-    wfm_send_json("PATCH", &format!("/v2/order/{}", order_id), &auth, &body)
-        .map_err(|e| format!("Update order: {}", e))?
-        .into_json::<serde_json::Value>().map_err(|e| format!("Parse: {}", e))
-        .map(|j| j["data"].clone())
+    state.wfm.update_order(&order_id, platinum, quantity, visible)
 }
 
 /// Delete an order.
 #[tauri::command]
 fn wfm_delete_order(state: State<AppState>, order_id: String) -> Result<(), String> {
-    let auth = session_auth(&state)?;
-    wfm_wait();
-    wfm_call("DELETE", &format!("/v2/order/{}", order_id), &auth)
-        .map_err(|e| format!("Delete order: {}", e))?;
-    Ok(())
+    state.wfm.delete_order(&order_id)
 }
 
 /// Post a revealed riven as an auction on warframe.market.
@@ -3602,50 +2962,11 @@ fn wfm_create_riven_auction(
     visible: bool,
     is_direct_sell: bool,
 ) -> Result<serde_json::Value, String> {
-    let auth = session_v1_auth(&state)?;
-    let attrs: Vec<serde_json::Value> = attributes.iter().map(|a| serde_json::json!({
-        "url_name": a.url_name,
-        "positive": a.positive,
-        "value":    a.value,
-    })).collect();
-    let mut payload = serde_json::json!({
-        "item": {
-            "type": "riven",
-            "weapon_url_name": weapon_url_name,
-            "name": riven_name,
-            "mastery_level": mastery_level,
-            "mod_rank": mod_rank,
-            "re_rolls": re_rolls,
-            "polarity": polarity,
-            "attributes": attrs,
-        },
-        "starting_price": starting_price,
-        "minimal_reputation": minimal_reputation,
-        "note": note,
-        "visible": visible,
-        "is_direct_sell": is_direct_sell,
-    });
-    // WFM v1 requires buyout_price to be present in the payload (null = no buyout).
-    payload["buyout_price"] = serde_json::json!(buyout_price);
-    wfm_auction_wait();
-    let resp = wfm_send_json("POST", "/v1/auctions/create", &auth, payload)
-        .map_err(|e| match e {
-            ureq::Error::Status(code, r) => {
-                let body = r.into_string().unwrap_or_default();
-                format!("Create riven auction: HTTP {}: {}", code, body)
-            }
-            other => format!("Create riven auction: {}", other),
-        })?;
-    let json: serde_json::Value = resp.into_json()
-        .map_err(|e| format!("Parse auction response: {}", e))?;
-    if let Some(id) = json["payload"]["auction"]["id"].as_str() {
-        let mut ids = state.auction_ids.lock().unwrap_or_else(|e| e.into_inner());
-        if !ids.contains(&id.to_string()) {
-            ids.push(id.to_string());
-            drop(ids);
-            save_auction_ids(&state);
-        }
-    }
+    let json = state.wfm.create_riven_auction(
+        &weapon_url_name, &riven_name, mastery_level, mod_rank, re_rolls, &polarity,
+        &attributes, starting_price, buyout_price, minimal_reputation, &note, visible, is_direct_sell,
+    )?;
+    record_new_auction_id(&state, &json);
     Ok(json)
 }
 
@@ -3654,54 +2975,11 @@ fn wfm_create_riven_auction(
 /// endpoint which only returns visible auctions.
 #[tauri::command]
 async fn wfm_get_my_riven_auctions(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let (v1_auth, username, stored_ids) = {
-        let lock = state.wfm_session.lock().unwrap_or_else(|e| e.into_inner());
-        let s = lock.as_ref().ok_or("Not logged in to warframe.market")?;
-        let ids = state.auction_ids.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        (s.v1_auth_header(), s.username.clone(), ids)
-    };
-    tauri::async_runtime::spawn_blocking(move || {
-        // Phase 1: profile endpoint with Bearer auth — returns visible auctions.
-        wfm_auction_wait();
-        let profile_resp: serde_json::Value = wfm_call(
-            "GET", &format!("/v1/profile/{}/auctions", username), &v1_auth,
-        )
-        .map_err(|e| format!("Fetch auctions: {}", e))?
-        .into_json()
-        .map_err(|e| format!("Parse auctions: {}", e))?;
-
-        let mut auctions: Vec<serde_json::Value> = profile_resp["payload"]["auctions"]
-            .as_array().cloned().unwrap_or_default();
-
-        // Collect IDs already returned so we don't double-fetch.
-        let seen_ids: std::collections::HashSet<String> = auctions.iter()
-            .filter_map(|a| a["id"].as_str().map(|s| s.to_string()))
-            .collect();
-
-        // Phase 2: fetch each stored ID that wasn't in the public list (i.e. hidden auctions).
-        for id in &stored_ids {
-            if seen_ids.contains(id) { continue; }
-            wfm_auction_wait();
-            let entry: serde_json::Value = match wfm_call(
-                "GET", &format!("/v1/auctions/entry/{}", id), &v1_auth,
-            ) {
-                Ok(r) => match r.into_json() {
-                    Ok(j) => j,
-                    Err(_) => continue,
-                },
-                Err(_) => continue,
-            };
-            if let Some(auction) = entry["payload"]["auction"].as_object() {
-                // Skip closed auctions — they've been traded and shouldn't clutter the list.
-                if auction.get("closed").and_then(|v| v.as_bool()).unwrap_or(false) { continue; }
-                auctions.push(serde_json::Value::Object(auction.clone()));
-            }
-        }
-
-        Ok(serde_json::json!({ "payload": { "auctions": auctions } }))
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let stored_ids = state.auction_ids.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let wfm = state.wfm.clone();
+    tauri::async_runtime::spawn_blocking(move || wfm.my_riven_auctions(&stored_ids))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 fn save_auction_ids(state: &State<AppState>) {
@@ -3711,11 +2989,23 @@ fn save_auction_ids(state: &State<AppState>) {
     }
 }
 
+/// Record a newly created auction's id so hidden auctions survive restarts.
+/// FrameForge-created auctions can be hidden, and the WFM profile endpoint only
+/// lists visible ones, so their ids are the only way to fetch them back.
+fn record_new_auction_id(state: &State<AppState>, json: &serde_json::Value) {
+    if let Some(id) = json["payload"]["auction"]["id"].as_str() {
+        let mut ids = state.auction_ids.lock().unwrap_or_else(|e| e.into_inner());
+        if !ids.contains(&id.to_string()) {
+            ids.push(id.to_string());
+            drop(ids);
+            save_auction_ids(state);
+        }
+    }
+}
+
 /// Switch a riven auction between Auction and Direct Sale types.
-/// Because WFM's update endpoint does not accept is_direct_sell, this must be done via
-/// delete + recreate. This command fetches the full auction detail first (guaranteeing all
-/// fields including attributes are available), then closes the old listing and creates a new
-/// one with the requested type and updated prices.
+/// The close-and-recreate lives in `Wfm`; here we reconcile the stored auction
+/// ids — drop the closed one, record its replacement.
 #[tauri::command]
 fn wfm_switch_riven_type(
     state: State<AppState>,
@@ -3725,88 +3015,18 @@ fn wfm_switch_riven_type(
     buyout_price: Option<u32>,
     visible: bool,
 ) -> Result<serde_json::Value, String> {
-    let auth = session_v1_auth(&state)?;
-
-    // Step 1: fetch full auction detail so we have all fields (attributes, polarity, etc.).
-    wfm_auction_wait();
-    let entry: serde_json::Value = wfm_call("GET", &format!("/v1/auctions/entry/{}", auction_id), &auth)
-        .map_err(|e| match e {
-            ureq::Error::Status(code, r) => format!("Fetch auction: HTTP {}: {}", code, r.into_string().unwrap_or_default()),
-            other => format!("Fetch auction: {}", other),
-        })?
-        .into_json()
-        .map_err(|e| format!("Parse auction entry: {}", e))?;
-
-    let auction = &entry["payload"]["auction"];
-    let item    = &auction["item"];
-
-    let item_payload = serde_json::json!({
-        "type":             "riven",
-        "weapon_url_name":  item["weapon_url_name"],
-        "name":             item["name"],
-        "mastery_level":    item["mastery_level"],
-        "mod_rank":         item["mod_rank"],
-        "re_rolls":         item["re_rolls"],
-        "polarity":         item["polarity"],
-        "attributes":       item["attributes"],
-    });
-    let note               = auction["note"].as_str().unwrap_or("").to_string();
-    let minimal_reputation = auction["minimal_reputation"].as_u64().unwrap_or(0) as u32;
-
-    // Step 2: close the old auction.
-    wfm_auction_wait();
-    wfm_call("PUT", &format!("/v1/auctions/entry/{}/close", auction_id), &auth)
-        .map_err(|e| match e {
-            ureq::Error::Status(code, r) => format!("Delete auction: HTTP {}: {}", code, r.into_string().unwrap_or_default()),
-            other => format!("Delete auction: {}", other),
-        })?;
+    let json = state.wfm.switch_riven_type(&auction_id, new_is_direct_sell, starting_price, buyout_price, visible)?;
+    // The old listing is now closed; drop its id and record the replacement.
     state.auction_ids.lock().unwrap_or_else(|e| e.into_inner()).retain(|id| id != &auction_id);
     save_auction_ids(&state);
-
-    // Step 3: create new auction with the chosen type.
-    let mut payload = serde_json::json!({
-        "item":               item_payload,
-        "starting_price":     starting_price,
-        "minimal_reputation": minimal_reputation,
-        "note":               note,
-        "visible":            visible,
-        "is_direct_sell":     new_is_direct_sell,
-    });
-    payload["buyout_price"] = serde_json::json!(buyout_price);
-
-    wfm_auction_wait();
-    let resp = wfm_send_json("POST", "/v1/auctions/create", &auth, payload)
-        .map_err(|e| match e {
-            ureq::Error::Status(code, r) => format!("Create riven auction: HTTP {}: {}", code, r.into_string().unwrap_or_default()),
-            other => format!("Create riven auction: {}", other),
-        })?;
-    let json: serde_json::Value = resp.into_json()
-        .map_err(|e| format!("Parse auction response: {}", e))?;
-
-    if let Some(id) = json["payload"]["auction"]["id"].as_str() {
-        let mut ids = state.auction_ids.lock().unwrap_or_else(|e| e.into_inner());
-        if !ids.contains(&id.to_string()) {
-            ids.push(id.to_string());
-            drop(ids);
-            save_auction_ids(&state);
-        }
-    }
+    record_new_auction_id(&state, &json);
     Ok(json)
 }
 
 /// Delete a riven auction via the /close endpoint.
 #[tauri::command]
 fn wfm_delete_auction(state: State<AppState>, auction_id: String) -> Result<(), String> {
-    let auth = session_v1_auth(&state)?;
-    wfm_auction_wait();
-    wfm_call("PUT", &format!("/v1/auctions/entry/{}/close", auction_id), &auth)
-        .map_err(|e| match e {
-            ureq::Error::Status(code, r) => {
-                let body = r.into_string().unwrap_or_default();
-                format!("Delete auction: HTTP {}: {}", code, body)
-            }
-            other => format!("Delete auction: {}", other),
-        })?;
+    state.wfm.delete_auction(&auction_id)?;
     state.auction_ids.lock().unwrap_or_else(|e| e.into_inner()).retain(|id| id != &auction_id);
     save_auction_ids(&state);
     Ok(())
@@ -3816,96 +3036,30 @@ fn wfm_delete_auction(state: State<AppState>, auction_id: String) -> Result<(), 
 /// Sends PUT /v1/auctions/entry/{id}. Pass buyout_price=None to clear the buyout.
 #[tauri::command]
 fn wfm_update_auction(state: State<AppState>, auction_id: String, starting_price: u32, buyout_price: Option<u32>, visible: bool) -> Result<(), String> {
-    let auth = session_v1_auth(&state)?;
-    let mut body = serde_json::json!({ "starting_price": starting_price, "visible": visible });
-    body["buyout_price"] = buyout_price.map_or(serde_json::Value::Null, |v| serde_json::json!(v));
-    wfm_auction_wait();
-    wfm_send_json("PUT", &format!("/v1/auctions/entry/{}", auction_id), &auth, body)
-        .map_err(|e| match e {
-            ureq::Error::Status(code, r) => {
-                let body = r.into_string().unwrap_or_default();
-                format!("Update auction: HTTP {}: {}", code, body)
-            }
-            other => format!("Update auction: {}", other),
-        })?;
-    Ok(())
+    state.wfm.update_auction(&auction_id, starting_price, buyout_price, visible)
 }
 
 /// Toggle visibility of a riven auction (visible / hidden).
 #[tauri::command]
 fn wfm_set_auction_visible(state: State<AppState>, auction_id: String, visible: bool) -> Result<(), String> {
-    let auth = session_v1_auth(&state)?;
-    wfm_auction_wait();
-    wfm_send_json("PUT", &format!("/v1/auctions/entry/{}", auction_id), &auth, serde_json::json!({ "visible": visible }))
-        .map_err(|e| match e {
-            ureq::Error::Status(code, r) => {
-                let body = r.into_string().unwrap_or_default();
-                format!("Set auction visibility: HTTP {}: {}", code, body)
-            }
-            other => format!("Set auction visibility: {}", other),
-        })?;
-    Ok(())
+    state.wfm.set_auction_visible(&auction_id, visible)
 }
 
 /// Fetch warframe.market item list using v2 API (v1 /items returns 404).
 #[tauri::command]
-fn fetch_wfm_items() -> Result<Vec<WfmItem>, String> {
-    wfm_wait();
-    let json: serde_json::Value = ureq::get("https://api.warframe.market/v2/items")
-        .call()
-        .map_err(|e| format!("wfm items: {}", e))?
-        .into_json()
-        .map_err(|e| format!("wfm items parse: {}", e))?;
-
-    // v2 format: { "data": [{ "slug": "rhino_prime_set", "i18n": { "en": { "name": "Rhino Prime Set" } } }] }
-    let items = json["data"]
-        .as_array()
-        .ok_or("no data array in v2 response")?
-        .iter()
-        .filter_map(|v| Some(WfmItem {
-            id:        v["id"].as_str().unwrap_or("").to_string(),
-            item_name: v["i18n"]["en"]["name"].as_str()?.to_string(),
-            url_name:  v["slug"].as_str()?.to_string(),
-        }))
-        .collect();
-    Ok(items)
-}
-
-#[derive(serde::Serialize)]
-pub struct WfmPrice {
-    pub url_name: String,
-    pub sell_median: Option<f64>,
-    pub buy_median: Option<f64>,
+fn fetch_wfm_items(state: State<AppState>) -> Result<Vec<WfmItem>, String> {
+    state.wfm.items()
 }
 
 /// Fetch 48-hour median sell price for a single item from warframe.market.
 /// Tries the slug as-is first, then retries with the Blueprint suffix added or
 /// removed — WFM is inconsistent about whether component blueprints include it.
 #[tauri::command]
-fn fetch_wfm_price(url_name: String) -> Result<WfmPrice, String> {
-    let sell_median = wfm_price_for_slug(&url_name).map_err(|e| e)?
-        .or_else(|| {
-            if url_name.ends_with("_blueprint") {
-                let stripped = &url_name[..url_name.len() - "_blueprint".len()];
-                wfm_price_for_slug(stripped).unwrap_or(None)
-            } else {
-                let with_bp = format!("{}_blueprint", url_name);
-                wfm_price_for_slug(&with_bp).unwrap_or(None)
-            }
-        })
-        .map(|p| p as f64);
-
+fn fetch_wfm_price(state: State<AppState>, url_name: String) -> Result<WfmPrice, String> {
+    // A lookup that errors and one that finds no listing both surface the same way
+    // to the UI — no price — so `price_with_fallback` collapsing both to None is fine.
+    let sell_median = state.wfm.price_with_fallback(&url_name).map(|p| p as f64);
     Ok(WfmPrice { url_name, sell_median, buy_median: None })
-}
-
-/// Convert a display name to a warframe.market URL slug.
-/// E.g. "Ash Prime Neuroptics Blueprint" → "ash_prime_neuroptics_blueprint"
-fn to_wfm_slug(name: &str) -> String {
-    name.to_lowercase()
-        .chars()
-        .map(|c| if c == ' ' { '_' } else { c })
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .collect()
 }
 
 /// Fetch the 48-hour median sell price for an item by display name.
@@ -3924,29 +3078,19 @@ fn get_item_price(item_name: String, state: State<AppState>) -> Result<Option<u3
 
     let slug = to_wfm_slug(&item_name);
 
-    {
-        let cache = state.wfm_price_cache.lock().map_err(|e| e.to_string())?;
-        if let Some(&cached) = cache.get(&slug) {
-            return Ok(cached);
-        }
+    if let Some(cached) = state.wfm.cached_price(&slug) {
+        return Ok(cached);
     }
 
-    let price = wfm_price_for_slug(&slug).map_err(|e| e)?
-        .or_else(|| {
-            // WFM lists prime component blueprints WITHOUT the "_blueprint" suffix.
-            // e.g. "nautilus_prime_systems_blueprint" → "nautilus_prime_systems"
-            if slug.ends_with("_blueprint") {
-                let stripped = &slug[..slug.len() - "_blueprint".len()];
-                wfm_price_for_slug(stripped).unwrap_or(None)
-            } else {
-                None
-            }
-        });
-
-    {
-        let mut cache = state.wfm_price_cache.lock().map_err(|e| e.to_string())?;
-        cache.insert(slug, price);
-    }
+    // Only strip "_blueprint" here — never append it. This is called with inventory
+    // display names, where a prime component's name carries "Blueprint" but WFM lists
+    // it without the suffix. A non-blueprint name must NOT fall back to a _blueprint
+    // slug, or a frame would be priced as its blueprint.
+    let price = state.wfm.price_for_slug(&slug)?.or_else(|| {
+        slug.strip_suffix("_blueprint")
+            .and_then(|base| state.wfm.price_for_slug(base).unwrap_or(None))
+    });
+    state.wfm.cache_price(slug, price);
 
     // Persist WFM price into the inventory cache file so it survives restarts.
     // Only write for tradeable items: prime parts/blueprints (have ducats) and mods/arcanes.
@@ -3971,82 +3115,11 @@ fn get_item_price(item_name: String, state: State<AppState>) -> Result<Option<u3
     Ok(price)
 }
 
-/// Trimmed median of per-bucket price medians.
-/// Removes the bottom and top 15 % of buckets by price before computing the
-/// median. This filters single-trade outlier days (e.g. a Disruptor mod listed
-/// at 45 834 p) without needing volume data.
-/// Falls back to the full-set median when there are too few data points to trim.
-fn trimmed_median_from_stats(arr: &[serde_json::Value]) -> Option<u32> {
-    let mut prices: Vec<f64> = arr.iter()
-        .filter_map(|e| e["median"].as_f64())
-        .filter(|&p| p > 0.0)
-        .collect();
-
-    if prices.is_empty() { return None; }
-    prices.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-    let n   = prices.len();
-    let cut = (n as f64 * 0.15).floor() as usize;
-    let lo  = cut;
-    let hi  = n.saturating_sub(cut);
-
-    let slice = if lo < hi { &prices[lo..hi] } else { &prices[..] };
-    let mid   = slice.len() / 2;
-    let median = if slice.len() % 2 == 0 {
-        (slice[mid - 1] + slice[mid]) / 2.0
-    } else {
-        slice[mid]
-    };
-    Some(median.round() as u32)
-}
-
-#[tracing::instrument(level = "debug", skip_all, fields(slug = %slug))]
-fn wfm_price_for_slug(slug: &str) -> Result<Option<u32>, String> {
-    wfm_wait();
-    let url = format!("https://api.warframe.market/v1/items/{}/statistics", slug);
-    match ureq::get(&url).call() {
-        Ok(resp) => {
-            let json: serde_json::Value = resp.into_json()
-                .map_err(|e| format!("wfm price parse: {}", e))?;
-
-            let h48 = json["payload"]["statistics_closed"]["48hours"].as_array();
-            let d90 = json["payload"]["statistics_closed"]["90days"].as_array();
-
-            // Use 48h VWAP only when there are enough trades to be meaningful.
-            // Rare items with <3 trades in 48h fall through to the 90-day window.
-            let vol_48: f64 = h48.map(|arr| {
-                arr.iter().filter_map(|e| e["volume"].as_f64()).sum()
-            }).unwrap_or(0.0);
-
-            let p = if vol_48 >= 3.0 {
-                h48.and_then(|arr| trimmed_median_from_stats(arr))
-            } else {
-                None
-            };
-
-            Ok(p.or_else(|| d90.and_then(|arr| trimmed_median_from_stats(arr))))
-        }
-        Err(_) => Ok(None),
-    }
-}
-
 // ─── WFM price queue ──────────────────────────────────────────────────────────
 // All warframe.market price fetches are routed through a single background
 // thread that enforces the ≤3 req/sec rate limit globally. The frontend enqueues
 // slugs via wfm_queue_prices / wfm_queue_price_priority and listens for
 // "wfm-price-update" events instead of calling fetch_wfm_price directly.
-
-/// Fetch price for a slug, trying the blueprint suffix variant as a fallback.
-/// Calls wfm_wait() internally so rate-limit is always respected.
-fn fetch_price_with_fallback(slug: &str) -> Option<u32> {
-    wfm_price_for_slug(slug).unwrap_or(None).or_else(|| {
-        if slug.ends_with("_blueprint") {
-            wfm_price_for_slug(&slug[..slug.len() - "_blueprint".len()]).unwrap_or(None)
-        } else {
-            wfm_price_for_slug(&format!("{}_blueprint", slug)).unwrap_or(None)
-        }
-    })
-}
 
 #[derive(serde::Serialize, Clone)]
 struct WfmPriceUpdate {
@@ -4068,14 +3141,13 @@ fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<
     // and the queue drain skips slugs that already have a fresh price.
     {
         let disk = load_inventory_state_cache(&state.inventory_state_cache_path);
-        let mut cache = state.wfm_price_cache.lock().unwrap_or_else(|e| e.into_inner());
         for item in disk.items.values() {
             if !item.name.is_empty() {
                 let slug = to_wfm_slug(&item.name);
                 if !slug.is_empty() {
                     // Only insert if we have a price; None entries are kept absent so they get re-queued.
                     if let Some(p) = item.wfm_price {
-                        cache.insert(slug, Some(p));
+                        state.wfm.cache_price(slug, Some(p));
                     }
                 }
             }
@@ -4107,7 +3179,7 @@ fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<
 
     let queue          = state.wfm_price_queue.clone();
     let priority_queue = state.wfm_priority_queue.clone();
-    let price_cache    = state.wfm_price_cache.clone();
+    let wfm            = state.wfm.clone();
     let cache_path     = state.inventory_state_cache_path.clone();
 
     std::thread::spawn(move || {
@@ -4130,18 +3202,14 @@ fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<
             };
 
             // Skip if already cached (avoid redundant API calls within a session).
-            {
-                let cache = price_cache.lock().unwrap_or_else(|e| e.into_inner());
-                if cache.contains_key(&slug) { continue; }
-            }
+            if wfm.is_price_cached(&slug) { continue; }
 
-            // Fetch — wfm_wait() inside enforces the 3 req/sec limit.
-            let price = fetch_price_with_fallback(&slug);
+            // Fetch — the rate limiter inside enforces the 3 req/sec limit.
+            let price = wfm.price_with_fallback(&slug);
             let tradeable = price.is_some();
 
             // Update in-memory cache.
-            price_cache.lock().unwrap_or_else(|e| e.into_inner())
-                .insert(slug.clone(), price);
+            wfm.cache_price(slug.clone(), price);
 
             // Write price + tradeable_wfm into inventory_state_cache.json if we know the item.
             if let Some((unique_name, _)) = slug_map.get(&slug) {
@@ -4169,12 +3237,11 @@ fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<
 /// Slugs already cached in-memory are silently skipped.
 #[tauri::command]
 fn wfm_queue_prices(state: State<'_, AppState>, url_names: Vec<String>) {
-    let cached = state.wfm_price_cache.lock().unwrap_or_else(|e| e.into_inner());
-    let mut q  = state.wfm_price_queue.lock().unwrap_or_else(|e| e.into_inner());
+    let mut q = state.wfm_price_queue.lock().unwrap_or_else(|e| e.into_inner());
     // Snapshot existing queue entries to deduplicate without holding a borrow during push_back.
     let already_queued: std::collections::HashSet<String> = q.iter().cloned().collect();
     for slug in url_names {
-        if !cached.contains_key(&slug) && !already_queued.contains(&slug) {
+        if !state.wfm.is_price_cached(&slug) && !already_queued.contains(&slug) {
             q.push_back(slug);
         }
     }
@@ -4185,8 +3252,7 @@ fn wfm_queue_prices(state: State<'_, AppState>, url_names: Vec<String>) {
 #[tauri::command]
 fn wfm_queue_price_priority(state: State<'_, AppState>, url_name: String) {
     // Remove any existing cached entry so the drain thread fetches fresh.
-    state.wfm_price_cache.lock().unwrap_or_else(|e| e.into_inner())
-        .remove(&url_name);
+    state.wfm.uncache_price(&url_name);
     state.wfm_priority_queue.lock().unwrap_or_else(|e| e.into_inner())
         .push_front(url_name);
 }
@@ -4195,7 +3261,7 @@ fn wfm_queue_price_priority(state: State<'_, AppState>, url_name: String) {
 /// Frontend calls this on startup to populate prices without waiting for the queue.
 #[tauri::command]
 fn wfm_get_cached_prices(state: State<'_, AppState>) -> HashMap<String, Option<u32>> {
-    state.wfm_price_cache.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    state.wfm.cached_prices()
 }
 
 
@@ -8894,8 +7960,7 @@ pub fn run() {
             blob_log_dir,
             api_log_enabled: Arc::new(AtomicBool::new(false)),
             api_log_dir,
-            wfm_price_cache: Arc::new(Mutex::new(HashMap::new())),
-            wfm_session: Arc::new(Mutex::new(None)),
+            wfm: Arc::new(Wfm::new()),
             wfm_price_queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             wfm_priority_queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             wfm_queue_started: Arc::new(AtomicBool::new(false)),
@@ -8994,9 +8059,10 @@ pub fn run() {
                     };
                     if by_name.is_empty() { return; }
                     *state.relics_run_prices.lock().unwrap_or_else(|e| e.into_inner()) = by_name;
-                    let mut wfm = state.wfm_price_cache.lock().unwrap_or_else(|e| e.into_inner());
                     for (slug, price) in by_slug {
-                        wfm.entry(slug).or_insert(Some(price));
+                        if !state.wfm.is_price_cached(&slug) {
+                            state.wfm.cache_price(slug, Some(price));
+                        }
                     }
                 });
             }
