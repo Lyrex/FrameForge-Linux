@@ -9037,6 +9037,16 @@ pub fn run() {
         std::env::set_var("GDK_BACKEND", "x11");
     }
 
+    // A <select> opens a native GTK menu the GTK theme paints, not the page, so
+    // our dark CSS never reaches it. The AppImage launcher pins GTK_THEME to the
+    // desktop's Adwaita variant, so on a light desktop the popup renders light.
+    // Force the dark variant before GTK starts; an explicit APPIMAGE_GTK_THEME
+    // still overrides it.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("APPIMAGE_GTK_THEME").is_none() {
+        std::env::set_var("GTK_THEME", "Adwaita:dark");
+    }
+
     let data_dir = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("warframe-companion");

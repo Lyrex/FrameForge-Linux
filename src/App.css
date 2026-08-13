@@ -1,6 +1,9 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
+  /* The palette below is our own CSS; native controls (notably the
+     <select> popup) ignore it and render light until told the theme. */
+  color-scheme: dark;
   --bg:       #0d1117;
   --surface:  #161b22;
   --border:   #30363d;
