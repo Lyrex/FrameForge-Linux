@@ -1,6 +1,9 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
+  /* App is fixed dark; tell the engine so native controls (the <select>
+     popup especially) render dark instead of light-on-white. */
+  color-scheme: dark;
   --bg:       #0d1117;
   --surface:  #161b22;
   --border:   #30363d;
