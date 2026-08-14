@@ -16,6 +16,8 @@ pub struct WfcdItem {
     pub omega_attenuation: Option<f32>,
     /// Maximum rank a mod can be fused to (fusionLimit from WFCD). Present on mods only.
     pub fusion_limit: Option<u32>,
+    /// Maximum level cap override (maxLevelCap from WFCD). Present on items with non-standard max levels.
+    pub max_level_cap: Option<u32>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -682,6 +684,8 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
             let mastery_req       = item.get("masteryReq").and_then(|v| v.as_u64()).map(|n| n as u32);
             let omega_attenuation = item.get("omegaAttenuation").and_then(|v| v.as_f64()).map(|n| n as f32);
             let fusion_limit      = item.get("fusionLimit").and_then(|v| v.as_u64()).map(|n| n as u32);
+            let max_level_cap     = item.get("maxLevelCap").and_then(|v| v.as_u64()).map(|n| n as u32)
+                .or_else(|| if unique_name.contains("/EntratiMech/") { Some(40) } else { None });
 
             // `category` (display category from wfcd_category_to_display) groups similar WFCD
             // categories together (e.g. "Sentinels"+"SentinelWeapons"+"Pets" → "Companions").
@@ -716,7 +720,7 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
                     unique_name: unique_name.clone(),
                     category: corrected_cat.clone(),
                     image_name: image_name.clone(),
-                    vaulted, ducats, mastery_req, omega_attenuation, fusion_limit,
+                    vaulted, ducats, mastery_req, omega_attenuation, fusion_limit, max_level_cap,
                 });
             }
 
@@ -837,6 +841,7 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
                             mastery_req: None,
                             omega_attenuation: None,
                             fusion_limit: None,
+                            max_level_cap: None,
                         });
 
                         // Note: blueprint entries for these components are provided by
@@ -927,6 +932,7 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
                             mastery_req:      None,
                             omega_attenuation: None,
                             fusion_limit:     None,
+                            max_level_cap:    None,
                         });
                     }
                 }
@@ -954,6 +960,7 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
                             mastery_req:      None,
                             omega_attenuation: None,
                             fusion_limit:     None,
+                            max_level_cap:    None,
                         });
                     }
                 }
@@ -982,6 +989,7 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
                     mastery_req:      None,
                     omega_attenuation: None,
                     fusion_limit:     None,
+                    max_level_cap:    None,
                 });
             }
         }
@@ -1045,6 +1053,7 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
                             mastery_req:      item.mastery_req,
                             omega_attenuation: None,
                             fusion_limit:     None,
+                            max_level_cap:    None,
                         });
                     }
 
@@ -1196,7 +1205,7 @@ pub fn fallback_items() -> Vec<WfcdItem> {
         unique_name: u.to_string(),
         name: n.to_string(),
         category: c.to_string(),
-        image_name: None, vaulted: None, ducats: None, mastery_req: None, omega_attenuation: None, fusion_limit: None,
+        image_name: None, vaulted: None, ducats: None, mastery_req: None, omega_attenuation: None, fusion_limit: None, max_level_cap: None,
     })
     .collect()
 }

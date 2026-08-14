@@ -1,4 +1,4 @@
-# FrameForge — Warframe Companion `v3.2.0-linux.1`
+# FrameForge — Warframe Companion `v3.3.0-linux.1`
 
 A desktop companion for Warframe — live inventory, market prices, trading, timers, relic overlay, and riven analysis. Read-only, no game modification.
 
@@ -30,7 +30,7 @@ This gives complete coverage: resources, mods, arcanes, relics, weapons, Warfram
 **View modes** — Cards (icon + text), Icon grid, Text cards, List with icon, or Compact list (text-only, maximum density). Persisted per tab.
 
 ### Foundry
-Browse every craftable item with full ingredient trees. Components are colour-coded by ownership status and show which relics drop them. Star items to track them in the Modular Window. Filter by Prime, Vaulted/Unvaulted, Owned/Unowned, Ready to build, and Mastered/Unmastered.
+Browse every craftable item with full ingredient trees. Components are colour-coded by ownership status and show which relics drop them. Star items to track them in the Modular Window. Filter by Prime, Non-Prime, Vaulted/Unvaulted, Owned/Unowned, Ready to build, Mastered/Unmastered, and Lvl > 30 (Kuva/Tenet/Incarnon weapons, Necramechs). Items per page is configurable in Settings → General (30 / 60 / 100).
 
 **View modes** — switch between Cards (icon + text), Icon grid, Text cards, List (compact row with icon), and Compact list (text-only) via the toggle in the filter bar. Each tab remembers its own preference.
 
@@ -81,7 +81,7 @@ When you open the Void Relics / Refinement screen, FrameForge detects the fissur
 
 **Priority modes** — Collect (probability of getting an item you don't own yet), Platinum (expected plat value per run), or Ducats (expected ducat yield). The top 3 relics are shown with refinement badge, copy count, score, and per-reward detail: vaulted status, ownership, platinum price, ducat value, and a refinement recommendation (REC) based on rarity.
 
-**Shown lines** — All rewards (full 6-item list per relic), Best pick (the single highest-value reward), or Score summary (compact one-liner: plat EV · ducat EV · new items). Configure in Settings → General.
+**Shown lines** — All rewards (full 6-item list per relic), Best pick (the single highest-value reward), or Score summary (compact one-liner: plat EV · ducat EV · new items). Configure in Settings → Overlays.
 
 The overlay auto-sizes to its content and dismisses when you return to the star map.
 
@@ -94,7 +94,7 @@ The item catalog used for OCR matching is built exclusively from known relic rew
 Customisable sidebar with reorderable sections: tracked crafting items, favourite inventory items, pinned timers, and watched fissures.
 
 ### Settings
-Reorganised into a tabbed sidebar layout: **General** (overlay, scanner, API, account info, pop-out), **Market** (WFM status automation), **Accessibility** (colorblind mode, text size up to 200%), **Data** (item database, cache), and **Debugging** (loggers, diagnostic tools with folder access and one-click clear).
+Tabbed sidebar layout: **General** (Foundry page size, scanner, API, account info, pop-out), **Overlays** (Relic Overlay and Relic Pick Overlay settings), **Market** (WFM status automation), **Accessibility** (colorblind mode, text size up to 200%), **Data** (item database, cache), and **Debugging** (loggers, diagnostic tools with folder access and one-click clear).
 
 ---
 

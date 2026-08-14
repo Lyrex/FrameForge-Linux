@@ -1,6 +1,6 @@
 [package]
 name = "warframe-companion"
-version = "3.2.0-linux.1"
+version = "3.3.0-linux.1"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -37,6 +37,7 @@ tauri-plugin-notification = "2"
 
 [profile.dev]
 opt-level = 1
+incremental = false
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
