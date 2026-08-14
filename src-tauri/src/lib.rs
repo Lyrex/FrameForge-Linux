@@ -140,6 +140,7 @@ pub struct CatalogItem {
     pub vaulted: Option<bool>,
     pub ducats: Option<u32>,
     pub mastery_req: Option<u32>,
+    pub max_level_cap: Option<u32>,
 }
 
 /// Determine the correct display category for an item.
@@ -300,6 +301,7 @@ fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
                 vaulted,
                 ducats:      *bp_ducats,
                 mastery_req: None,
+                max_level_cap: None,
             });
         }
     }
@@ -323,8 +325,9 @@ fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
             category:    cat,
             image_name:  i.image_name.clone(),
             vaulted,
-            ducats:      i.ducats,
-            mastery_req: i.mastery_req,
+            ducats:        i.ducats,
+            mastery_req:   i.mastery_req,
+            max_level_cap: i.max_level_cap,
         });
     }
 
@@ -337,13 +340,14 @@ fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
             if item.name.to_lowercase().contains("prime") { prime_vaulted(&item.name) } else { None }
         });
         result.push(CatalogItem {
-            unique_name: item.unique_name.clone(),
-            name:        item.name.clone(),
-            category:    "Blueprints".to_string(),
-            image_name:  item.image_name.clone(),
+            unique_name:   item.unique_name.clone(),
+            name:          item.name.clone(),
+            category:      "Blueprints".to_string(),
+            image_name:    item.image_name.clone(),
             vaulted,
-            ducats:      item.ducats,
-            mastery_req: item.mastery_req,
+            ducats:        item.ducats,
+            mastery_req:   item.mastery_req,
+            max_level_cap: None,
         });
     }
 
@@ -359,9 +363,10 @@ fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
             name:        name.to_string(),
             category:    "Miscellaneous".to_string(),
             image_name:  Some(img.to_string()),
-            vaulted:     None,
-            ducats:      None,
-            mastery_req: None,
+            vaulted:       None,
+            ducats:        None,
+            mastery_req:   None,
+            max_level_cap: None,
         });
     }
 
@@ -418,7 +423,7 @@ async fn fetch_item_list(state: State<'_, AppState>) -> Result<usize, String> {
         "unique_name": i.unique_name, "name": i.name, "category": i.category,
         "image_name": i.image_name, "vaulted": i.vaulted, "ducats": i.ducats,
         "mastery_req": i.mastery_req, "omega_attenuation": i.omega_attenuation,
-        "fusion_limit": i.fusion_limit
+        "fusion_limit": i.fusion_limit, "max_level_cap": i.max_level_cap
     })).collect::<Vec<_>>()) {
         let _ = std::fs::write(&state.items_cache_path, json);
     }
@@ -492,13 +497,14 @@ fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
     items.iter()
         .filter(|i| recipe_keys.contains(&i.unique_name) && !i.unique_name.contains("PvPVariant"))
         .map(|i| CatalogItem {
-            unique_name: i.unique_name.clone(),
-            name: i.name.clone(),
-            category: fix_category(&i.name, &i.category, &i.unique_name),
-            image_name: i.image_name.clone(),
-            vaulted: i.vaulted,
-            ducats: i.ducats,
-            mastery_req: i.mastery_req,
+            unique_name:   i.unique_name.clone(),
+            name:          i.name.clone(),
+            category:      fix_category(&i.name, &i.category, &i.unique_name),
+            image_name:    i.image_name.clone(),
+            vaulted:       i.vaulted,
+            ducats:        i.ducats,
+            mastery_req:   i.mastery_req,
+            max_level_cap: i.max_level_cap,
         })
         .collect()
 }
@@ -7465,7 +7471,9 @@ fn load_items_cache(path: &PathBuf) -> Option<Vec<WfcdItem>> {
         let mastery_req       = v["mastery_req"].as_u64().map(|n| n as u32);
         let omega_attenuation = v["omega_attenuation"].as_f64().map(|n| n as f32);
         let fusion_limit      = v["fusion_limit"].as_u64().map(|n| n as u32);
-        Some(WfcdItem { unique_name, name, category, image_name, vaulted, ducats, mastery_req, omega_attenuation, fusion_limit })
+        let max_level_cap     = v["max_level_cap"].as_u64().map(|n| n as u32)
+            .or_else(|| if unique_name.contains("/EntratiMech/") { Some(40) } else { None });
+        Some(WfcdItem { unique_name, name, category, image_name, vaulted, ducats, mastery_req, omega_attenuation, fusion_limit, max_level_cap })
     }).collect();
     if items.is_empty() { None } else { Some(dedup_known_aliases(items)) }
 }

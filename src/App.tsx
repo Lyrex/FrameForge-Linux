@@ -762,9 +762,10 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   // ── Per-tab persisted filter state ────────────────────────────────────────
   const [foundryFilters, setFoundryFilters] = useState({
     search: "", activeCat: "Warframes",
-    filterPrime: false, filterVaulted: false, filterUnvaulted: false,
+    filterPrime: false, filterNonPrime: false, filterVaulted: false, filterUnvaulted: false,
     filterMastered: false, filterUnmastered: false,
     filterOwned: false, filterUnowned: false, filterReady: false,
+    filterLvlCap: false,
   });
   const [marketFilters, setMarketFilters] = useState(MARKET_FILTERS_DEFAULT);
   const [relicFilters, setRelicFilters] = useState(RELIC_FILTERS_DEFAULT);
@@ -783,7 +784,8 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [fetchMsg, setFetchMsg] = useState("");
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'general' | 'market' | 'accessibility' | 'data' | 'debugging'>('general');
+  const [settingsTab, setSettingsTab] = useState<'general' | 'overlays' | 'market' | 'accessibility' | 'data' | 'debugging'>('general');
+  const [foundryPageSize, setFoundryPageSize] = useState<30 | 60 | 100>(30);
   const [overlayEnabled, setOverlayEnabled] = useState<boolean>(
     () => localStorage.getItem("ff-overlay-enabled") !== "false"
   );
@@ -843,8 +845,9 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     modularSectionOrder: ["tracking", "favorites", "timers"] as string[], modularPopout: false,
     wfmInvisibleOnStart: false, wfmInvisibleOnClose: false, wfmAutoInvisible: false, wfmAutoInvisibleMins: 30,
     relicPickEnabled: true, relicPickPriority: "unowned" as "unowned" | "ducat" | "platinum", relicPickRefinement: "radiant" as "intact" | "exceptional" | "flawless" | "radiant", relicPickLines: "all" as "all" | "best" | "estimated",
+    foundryPageSize: 30 as 30 | 60 | 100,
   });
-  settingsRef.current = { overlayEnabled, overlayPriority, textScale, colorblindMode, clockFormat, companionApiEnabled, memoryScannerEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines };
+  settingsRef.current = { overlayEnabled, overlayPriority, textScale, colorblindMode, clockFormat, companionApiEnabled, memoryScannerEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize };
 
   const saveAllSettings = useCallback(() => {
     // Until the on-disk settings have been applied, settingsRef still holds
@@ -1024,6 +1027,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         if (["unowned","ducat","platinum"].includes(s.relicPickPriority)) setRelicPickPriority(s.relicPickPriority);
         if (["intact","exceptional","flawless","radiant"].includes(s.relicPickRefinement)) setRelicPickRefinement(s.relicPickRefinement);
         if (["all","best","estimated"].includes(s.relicPickLines)) setRelicPickLines(s.relicPickLines);
+        if ([30, 60, 100].includes(s.foundryPageSize)) setFoundryPageSize(s.foundryPageSize);
       } catch {}
       // Unblock saving even if the file failed to parse, since the backend
       // refuses to overwrite a settings.json that is not a valid JSON object.
@@ -2171,7 +2175,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
             <div className="settings-layout">
               {/* ── Sidebar nav ── */}
               <nav className="settings-sidebar">
-                {(["general", "market", "accessibility", "data", "debugging"] as const).map(tab => (
+                {(["general", "overlays", "market", "accessibility", "data", "debugging"] as const).map(tab => (
                   <button
                     key={tab}
                     className={`settings-tab-item${settingsTab === tab ? " active" : ""}`}
@@ -2187,6 +2191,122 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
                 {/* ════════════ GENERAL ════════════ */}
                 {settingsTab === "general" && <>
+
+                  {/* Foundry */}
+                  <div className="settings-section">
+                    <div className="settings-section-title">Foundry</div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">Items per page</span>
+                        <span className="settings-row-desc">How many items to show per page in the Foundry browser.</span>
+                      </div>
+                      <select className="settings-select" value={foundryPageSize}
+                        onChange={e => {
+                          const next = Number(e.target.value) as 30 | 60 | 100;
+                          setFoundryPageSize(next);
+                          settingsRef.current = { ...settingsRef.current, foundryPageSize: next };
+                          saveAllSettings();
+                        }}>
+                        <option value={30}>30</option>
+                        <option value={60}>60</option>
+                        <option value={100}>100</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Memory Scanner */}
+                  <div className="settings-section" style={{ borderColor: memoryScannerEnabled ? "rgba(240,192,64,.3)" : undefined }}>
+                    <div className="settings-section-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      Memory Scanner
+                      <span style={{ fontSize: 10, background: "rgba(240,192,64,.15)", color: "#f0c040", border: "1px solid rgba(240,192,64,.35)", borderRadius: 3, padding: "1px 6px", fontWeight: 700 }}>
+                        EULA GREY AREA
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8, lineHeight: 1.5 }}>
+                      Reads live inventory, crafting jobs, and mod ranks from Warframe's process memory via <code style={{ fontSize: 10 }}>ReadProcessMemory</code>. DE has historically tolerated read-only tools, but has not given explicit permission. Enable at your own risk.
+                    </div>
+                    <div className="settings-row">
+                      <div>
+                        <span className="settings-row-label">Enable</span>
+                        <span className="settings-row-desc">Required for live inventory, quantity tracking, and mod ranks</span>
+                      </div>
+                      <button
+                        className="btn-secondary"
+                        style={{ minWidth: 64, background: memoryScannerEnabled ? "rgba(240,192,64,.15)" : undefined, borderColor: memoryScannerEnabled ? "#f0c040" : undefined, color: memoryScannerEnabled ? "#f0c040" : undefined }}
+                        onClick={() => setMemoryScannerEnabled(v => !v)}
+                      >
+                        {memoryScannerEnabled ? "Enabled" : "Disabled"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Warframe API */}
+                  <div className="settings-section">
+                    <div className="settings-section-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      Warframe API
+                      <span style={{ fontSize: 10, background: "rgba(240,192,64,.15)", color: "#f0c040", border: "1px solid rgba(240,192,64,.35)", borderRadius: 3, padding: "1px 6px", fontWeight: 700 }}>
+                        SUSPENDED
+                      </span>
+                    </div>
+                    <div style={{
+                      fontSize: 11, color: "var(--muted)", lineHeight: 1.6,
+                      background: "rgba(240,192,64,.06)", border: "1px solid rgba(240,192,64,.25)",
+                      borderRadius: 6, padding: "8px 10px",
+                    }}>
+                      <strong style={{ color: "#f0c040" }}>Temporarily unavailable.</strong>
+                      {" "}This feature connects to an undocumented DE endpoint (<code style={{ fontSize: 10 }}>api.warframe.com/api/inventory.php</code>).
+                      {" "}DE confirmed third-party tools run at your own risk but could not clarify whether this specific endpoint is permitted.
+                      {" "}The feature is disabled until we receive clearer guidance.
+                    </div>
+                  </div>
+
+                  {/* Account Login */}
+                  <div className="settings-section">
+                    <div className="settings-section-title">Account Login</div>
+                    <div style={{
+                      fontSize: 11, color: "var(--muted)", lineHeight: 1.6,
+                      background: "rgba(255,100,100,.07)", border: "1px solid rgba(255,100,100,.2)",
+                      borderRadius: 6, padding: "8px 10px",
+                    }}>
+                      <strong style={{ color: "#ff8080" }}>Login is temporarily unavailable.</strong>
+                      {" "}Digital Extremes encrypted their login API in March 2026, which blocked all third-party tools — including FrameForge — from authenticating on your behalf.
+                      {" "}PC players are not affected: inventory is synced automatically while the game is running.
+                    </div>
+                    <div style={{
+                      marginTop: 8, fontSize: 11, color: "var(--muted)", lineHeight: 1.6,
+                      background: "rgba(100,180,255,.06)", border: "1px solid rgba(100,180,255,.18)",
+                      borderRadius: 6, padding: "8px 10px",
+                    }}>
+                      FrameForge is actively exploring ways to restore inventory access for console and non-PC players.
+                      {" "}Follow the project for updates.
+                    </div>
+                  </div>
+
+                  {/* Modular Window */}
+                  <div className="settings-section">
+                    <div className="settings-section-title">Modular Window</div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">Pop-out</span>
+                        <span className="settings-row-desc">Detach the Modular Window into its own floating window.</span>
+                      </div>
+                      <button
+                        className="btn-secondary"
+                        style={{ minWidth: 64, background: modularPopout ? "rgba(56,139,253,.15)" : undefined, borderColor: modularPopout ? "var(--accent)" : undefined }}
+                        onClick={() => {
+                          const next = !modularPopout;
+                          setModularPopout(next);
+                          settingsRef.current = { ...settingsRef.current, modularPopout: next };
+                          saveAllSettings();
+                        }}
+                      >{modularPopout ? "On" : "Off"}</button>
+                    </div>
+                  </div>
+
+                </>}
+
+                {/* ════════════ OVERLAYS ════════════ */}
+                {settingsTab === "overlays" && <>
 
                   {/* Relic Overlay */}
                   <div className="settings-section">
@@ -2281,95 +2401,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
                         <option value="best">Only most valuable</option>
                         <option value="estimated">Score summary only</option>
                       </select>
-                    </div>
-                  </div>
-
-                  {/* Memory Scanner */}
-                  <div className="settings-section" style={{ borderColor: memoryScannerEnabled ? "rgba(240,192,64,.3)" : undefined }}>
-                    <div className="settings-section-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      Memory Scanner
-                      <span style={{ fontSize: 10, background: "rgba(240,192,64,.15)", color: "#f0c040", border: "1px solid rgba(240,192,64,.35)", borderRadius: 3, padding: "1px 6px", fontWeight: 700 }}>
-                        EULA GREY AREA
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8, lineHeight: 1.5 }}>
-                      Reads live inventory, crafting jobs, and mod ranks from Warframe's process memory via <code style={{ fontSize: 10 }}>ReadProcessMemory</code>. DE has historically tolerated read-only tools, but has not given explicit permission. Enable at your own risk.
-                    </div>
-                    <div className="settings-row">
-                      <div>
-                        <span className="settings-row-label">Enable</span>
-                        <span className="settings-row-desc">Required for live inventory, quantity tracking, and mod ranks</span>
-                      </div>
-                      <button
-                        className="btn-secondary"
-                        style={{ minWidth: 64, background: memoryScannerEnabled ? "rgba(240,192,64,.15)" : undefined, borderColor: memoryScannerEnabled ? "#f0c040" : undefined, color: memoryScannerEnabled ? "#f0c040" : undefined }}
-                        onClick={() => setMemoryScannerEnabled(v => !v)}
-                      >
-                        {memoryScannerEnabled ? "Enabled" : "Disabled"}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Warframe API */}
-                  <div className="settings-section">
-                    <div className="settings-section-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      Warframe API
-                      <span style={{ fontSize: 10, background: "rgba(240,192,64,.15)", color: "#f0c040", border: "1px solid rgba(240,192,64,.35)", borderRadius: 3, padding: "1px 6px", fontWeight: 700 }}>
-                        SUSPENDED
-                      </span>
-                    </div>
-                    <div style={{
-                      fontSize: 11, color: "var(--muted)", lineHeight: 1.6,
-                      background: "rgba(240,192,64,.06)", border: "1px solid rgba(240,192,64,.25)",
-                      borderRadius: 6, padding: "8px 10px",
-                    }}>
-                      <strong style={{ color: "#f0c040" }}>Temporarily unavailable.</strong>
-                      {" "}This feature connects to an undocumented DE endpoint (<code style={{ fontSize: 10 }}>api.warframe.com/api/inventory.php</code>).
-                      {" "}DE confirmed third-party tools run at your own risk but could not clarify whether this specific endpoint is permitted.
-                      {" "}The feature is disabled until we receive clearer guidance.
-                    </div>
-                  </div>
-
-                  {/* Account Login */}
-                  <div className="settings-section">
-                    <div className="settings-section-title">Account Login</div>
-                    <div style={{
-                      fontSize: 11, color: "var(--muted)", lineHeight: 1.6,
-                      background: "rgba(255,100,100,.07)", border: "1px solid rgba(255,100,100,.2)",
-                      borderRadius: 6, padding: "8px 10px",
-                    }}>
-                      <strong style={{ color: "#ff8080" }}>Login is temporarily unavailable.</strong>
-                      {" "}Digital Extremes encrypted their login API in March 2026, which blocked all third-party tools — including FrameForge — from authenticating on your behalf.
-                      {" "}PC players are not affected: inventory is synced automatically while the game is running.
-                    </div>
-                    <div style={{
-                      marginTop: 8, fontSize: 11, color: "var(--muted)", lineHeight: 1.6,
-                      background: "rgba(100,180,255,.06)", border: "1px solid rgba(100,180,255,.18)",
-                      borderRadius: 6, padding: "8px 10px",
-                    }}>
-                      FrameForge is actively exploring ways to restore inventory access for console and non-PC players.
-                      {" "}Follow the project for updates.
-                    </div>
-                  </div>
-
-                  {/* Modular Window */}
-                  <div className="settings-section">
-                    <div className="settings-section-title">Modular Window</div>
-                    <div className="settings-row">
-                      <div className="settings-row-info">
-                        <span className="settings-row-label">Pop-out</span>
-                        <span className="settings-row-desc">Detach the Modular Window into its own floating window.</span>
-                      </div>
-                      <button
-                        className="btn-secondary"
-                        style={{ minWidth: 64, background: modularPopout ? "rgba(56,139,253,.15)" : undefined, borderColor: modularPopout ? "var(--accent)" : undefined }}
-                        onClick={() => {
-                          const next = !modularPopout;
-                          setModularPopout(next);
-                          settingsRef.current = { ...settingsRef.current, modularPopout: next };
-                          saveAllSettings();
-                        }}
-                      >{modularPopout ? "On" : "Off"}</button>
                     </div>
                   </div>
 
@@ -3059,7 +3090,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         {/* ── Foundry module ── */}
         {activeModule === "foundry" && (
           <ErrorBoundary>
-            <Foundry inventory={inventory} refreshKey={itemsRefreshKey} crafting={crafting} colorblindMode={colorblindMode} subsummedWarframes={subsummedWarframes} tracked={tracked} onTrackToggle={toggleTracked} filters={foundryFilters} onFiltersChange={setFoundryFilters} />
+            <Foundry inventory={inventory} refreshKey={itemsRefreshKey} crafting={crafting} colorblindMode={colorblindMode} subsummedWarframes={subsummedWarframes} tracked={tracked} onTrackToggle={toggleTracked} filters={foundryFilters} onFiltersChange={setFoundryFilters} pageSize={foundryPageSize} />
           </ErrorBoundary>
         )}
 

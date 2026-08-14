@@ -15,6 +15,7 @@ interface CatalogItem {
   image_name?: string;
   vaulted?: boolean | null;
   mastery_req?: number | null;
+  max_level_cap?: number | null;
 }
 
 interface RecipeComponent {
@@ -35,15 +36,17 @@ interface ArchonShard { type: string; tauforged: boolean; color: string; boost?:
 
 export interface FoundryFilters {
   search: string; activeCat: string;
-  filterPrime: boolean; filterVaulted: boolean; filterUnvaulted: boolean;
+  filterPrime: boolean; filterNonPrime: boolean; filterVaulted: boolean; filterUnvaulted: boolean;
   filterMastered: boolean; filterUnmastered: boolean;
   filterOwned: boolean; filterUnowned: boolean; filterReady: boolean;
+  filterLvlCap: boolean;
 }
 export const FOUNDRY_FILTERS_DEFAULT: FoundryFilters = {
   search: "", activeCat: "Warframes",
-  filterPrime: false, filterVaulted: false, filterUnvaulted: false,
+  filterPrime: false, filterNonPrime: false, filterVaulted: false, filterUnvaulted: false,
   filterMastered: false, filterUnmastered: false,
   filterOwned: false, filterUnowned: false, filterReady: false,
+  filterLvlCap: false,
 };
 
 interface Props {
@@ -56,6 +59,7 @@ interface Props {
   onTrackToggle: (id: string) => void;
   filters: FoundryFilters;
   onFiltersChange: (f: FoundryFilters) => void;
+  pageSize?: number;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -543,7 +547,7 @@ const CRAFT_CATEGORIES = [
   "Companions", "Archwing", "Parts", "Blueprints", "Misc",
 ];
 
-export default function Foundry({ inventory, refreshKey, crafting, subsummedWarframes = new Set(), tracked, onTrackToggle, filters, onFiltersChange }: Props) {
+export default function Foundry({ inventory, refreshKey, crafting, subsummedWarframes = new Set(), tracked, onTrackToggle, filters, onFiltersChange, pageSize = 30 }: Props) {
   const [craftable, setCraftable] = useState<CatalogItem[]>([]);
   const [recipes, setRecipes]     = useState<Map<string, RecipeComponent[]>>(new Map());
   const [relicDrops, setRelicDrops] = useState<Record<string, string[]>>({});
@@ -576,9 +580,9 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
     return () => clearTimeout(id);
   }, [inputSearch]); // eslint-disable-line
 
-  const { search, activeCat, filterPrime, filterVaulted, filterUnvaulted, filterMastered, filterUnmastered, filterOwned, filterUnowned, filterReady } = filters;
+  const { search, activeCat, filterPrime, filterNonPrime, filterVaulted, filterUnvaulted, filterMastered, filterUnmastered, filterOwned, filterUnowned, filterReady, filterLvlCap } = filters;
   const set = <K extends keyof FoundryFilters>(k: K, v: FoundryFilters[K]) => onFiltersChange({ ...filters, [k]: v });
-  const isFiltered = search !== "" || filterPrime || filterVaulted || filterUnvaulted || filterMastered || filterUnmastered || filterOwned || filterUnowned || filterReady;
+  const isFiltered = search !== "" || filterPrime || filterNonPrime || filterVaulted || filterUnvaulted || filterMastered || filterUnmastered || filterOwned || filterUnowned || filterReady || filterLvlCap;
 
   useEffect(() => {
     invoke<CatalogItem[]>("get_craftable_items").then(setCraftable).catch(() => setCraftable([]));
@@ -596,7 +600,8 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
     return craftable
       .filter(i => i.category === activeCat || activeCat === "All")
       .filter(i => !q || i.name.toLowerCase().includes(q))
-      .filter(i => !filterPrime     || i.name.includes("Prime") || i.vaulted != null)
+      .filter(i => !filterPrime    || i.name.includes("Prime") || i.vaulted != null)
+      .filter(i => !filterNonPrime || (!i.name.includes("Prime") && i.vaulted == null))
       .filter(i => !filterVaulted   || i.vaulted === true)
       .filter(i => !filterUnvaulted || i.vaulted === false)
       .filter(i => {
@@ -615,9 +620,10 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
         if (!r || r.length === 0) return false;
         if ((inventory[i.unique_name]?.quantity ?? 0) > 0) return false;
         return mergeComponents(r).every(c => (inventory[c.unique_name]?.quantity ?? 0) >= (c.count || 1));
-      });
-  }, [craftable, activeCat, search, filterPrime, filterVaulted, filterUnvaulted,
-      filterMastered, filterUnmastered, filterOwned, filterUnowned, filterReady,
+      })
+      .filter(i => !filterLvlCap || (i.max_level_cap != null && i.max_level_cap > 30));
+  }, [craftable, activeCat, search, filterPrime, filterNonPrime, filterVaulted, filterUnvaulted,
+      filterMastered, filterUnmastered, filterOwned, filterUnowned, filterReady, filterLvlCap,
       // Only pull in inventory/recipes when a filter that actually reads them is active.
       // Without this guard, every 10-second scanner update re-renders all 100+ cards.
       (filterMastered || filterUnmastered || filterOwned || filterUnowned || filterReady) ? inventory : null,
@@ -628,13 +634,13 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
   // but NOT when inventory or recipes update in the background.
   // Without this guard, every 10-second scan resets the page mid-browse.
   useEffect(() => { setPage(0); }, [ // eslint-disable-line
-    activeCat, search, filterPrime, filterVaulted, filterUnvaulted,
-    filterMastered, filterUnmastered, filterOwned, filterUnowned, filterReady,
-    craftable,
+    activeCat, search, filterPrime, filterNonPrime, filterVaulted, filterUnvaulted,
+    filterMastered, filterUnmastered, filterOwned, filterUnowned, filterReady, filterLvlCap,
+    craftable, pageSize,
   ]);
-  const PAGE_SIZE = 30;
+  const PAGE_SIZE = pageSize;
   const pageCount = Math.ceil(visible.length / PAGE_SIZE);
-  const pagedItems = useMemo(() => visible.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE), [visible, page]);
+  const pagedItems = useMemo(() => visible.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE), [visible, page, PAGE_SIZE]);
 
   // Load recipes for visible items — one bulk IPC call instead of N concurrent calls
   useEffect(() => {
@@ -726,7 +732,8 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
       {/* ── Col 2: Card grid ── */}
       <div className="foundry-main">
         <div className="filter-bar">
-          <button className={`fchip ${filterPrime     ? "fchip-on" : ""}`} onClick={() => set("filterPrime", !filterPrime)}>Prime</button>
+          <button className={`fchip ${filterPrime    ? "fchip-on" : ""}`} onClick={() => set("filterPrime", !filterPrime)}>Prime</button>
+          <button className={`fchip ${filterNonPrime ? "fchip-on" : ""}`} onClick={() => set("filterNonPrime", !filterNonPrime)}>Non-Prime</button>
           <button className={`fchip ${filterVaulted   ? "fchip-on" : ""}`} onClick={() => set("filterVaulted", !filterVaulted)}>🔒 Vaulted</button>
           <button className={`fchip ${filterUnvaulted ? "fchip-on" : ""}`} onClick={() => set("filterUnvaulted", !filterUnvaulted)}>🔓 Unvaulted</button>
           <span className="fbar-sep"/>
@@ -736,6 +743,8 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
           <span className="fbar-sep"/>
           <button className={`fchip ${filterMastered  ? "fchip-on" : ""}`} onClick={() => set("filterMastered", !filterMastered)}>★ Mastered</button>
           <button className={`fchip ${filterUnmastered? "fchip-on" : ""}`} onClick={() => set("filterUnmastered", !filterUnmastered)}>☆ Unmastered</button>
+          <span className="fbar-sep"/>
+          <button className={`fchip ${filterLvlCap   ? "fchip-on" : ""}`} onClick={() => onFiltersChange({ ...filters, filterLvlCap: !filterLvlCap, ...(!filterLvlCap ? { activeCat: "All" } : {}) })}>Lvl &gt; 30</button>
           {isFiltered && <button className="fchip fchip-reset" onClick={() => onFiltersChange({ ...FOUNDRY_FILTERS_DEFAULT, activeCat })}>Show All</button>}
           <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>{visible.length} items</span>
           <ViewToggle view={craftView} onChange={v => { setCraftView(v); localStorage.setItem("ff-view-foundry", v); }} />

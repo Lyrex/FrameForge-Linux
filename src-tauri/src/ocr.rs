@@ -1382,6 +1382,29 @@ pub fn extract_reward_items_twophase(
         }
     }
 
+    match_reward_items(
+        pixels, pix_w, pix_h, &raw_full, &ocr_lines,
+        catalog, capture_info, hint_squad_size, player_names,
+    )
+}
+
+/// Post-OCR reward matching: rarity bars → card columns → catalog match → fill.
+///
+/// Split out from `extract_reward_items_twophase` so the pure text logic can be
+/// driven with recorded OCR lines, independent of the platform-specific capture
+/// and OCR path. `pixels` is still needed for the rarity-bar and card-icon
+/// probes; pass the captured frame, or an empty slice when replaying recorded
+/// lines (bar detection then returns no bars and the text path is exercised).
+fn match_reward_items(
+    pixels: &[u8], pix_w: u32, pix_h: u32,
+    raw_full: &str,
+    ocr_lines: &[(String, f32, f32)],
+    catalog: &[(String, String)],
+    capture_info: &str,
+    hint_squad_size: Option<usize>,
+    player_names: &[String],
+) -> (bool, bool, Vec<String>, Vec<f32>, String) {
+
     // ── 2. Find card positions from rarity bars ───────────────────────────────
     // Rarity bars are always present regardless of Owned/Crafted labels.
     // If detection fails, fall back to X-gap grouping of OCR lines.
@@ -1434,7 +1457,7 @@ pub fn extract_reward_items_twophase(
     //   • starts with "prim"         → catches merged tokens like "primete..."
     //   • within edit-distance 1     → catches "+rime", "pnme", "prlme" etc.
     //   • "forma" or ≤1 edit of it  → catches "rorma", "torma" etc.
-    let raw_norm = normalise(&raw_full);
+    let raw_norm = normalise(raw_full);
     let is_prime_like = |w: &str| -> bool {
         if w.starts_with("prim") && w.len() >= 4 { return true; }
         if w == "pri" { return true; }  // OCR truncation: "Lavos Prime" → "Lavos Pri"
@@ -1541,7 +1564,7 @@ pub fn extract_reward_items_twophase(
     let columns: Vec<(Vec<String>, f32)> = {
         let mut cols: Vec<(Vec<String>, f32)> =
             active_centers.iter().map(|&cx| (Vec::new(), cx)).collect();
-        for (text, x, y) in &ocr_lines {
+        for (text, x, y) in ocr_lines {
             if *y < 0.10 || *y >= ocr_y_max || is_player_name(text) || is_ui_badge(text) { continue; }
             let idx = active_centers.iter().enumerate()
                 .min_by(|(_, a), (_, b)| {
@@ -1727,7 +1750,26 @@ pub fn extract_reward_items_twophase(
         .max(if bars_trusted { card_centers.len() } else { 0 })
         .max(1);
 
-    if items.len() < estimated_cards {
+    // The fill may only recover cards the OCR actually saw. Every real card
+    // leaves text in its column, so the number of columns that carried text is
+    // the ceiling on how many items can exist. estimated_cards can exceed it when
+    // a signal over-counts — a hovered card's description tooltip adds a stray
+    // "Prime" token, or item artwork trips a phantom rarity bar — and the fill was
+    // padding that surplus with a catalog item assembled from the other cards'
+    // shared "prime"/"chassis"/"blueprint" words (fuzzy matching even lets an
+    // absent model name like "trinity" register), inventing a reward for a column
+    // that showed nothing. Cap the fill at the columns with text; estimated_cards
+    // is left untouched so is_complete still waits for every card to be read
+    // across retries rather than locking on a partial frame.
+    //
+    // Trade-off: a card whose text collapsed into a neighbour's column is no
+    // longer recovered by guessing from the whole frame. That is rare once the
+    // columns are spread apart, and a fabricated reward is the worse outcome.
+    let fill_limit = estimated_cards.min(
+        columns.iter().filter(|(t, _)| !build_word_set(t).is_empty()).count()
+    );
+
+    if items.len() < fill_limit {
         // Apply the same y-range filter used in column matching: exclude top-HUD
         // lines (y < 0.10) AND lines below the rarity bars (y >= ocr_y_max).
         // Without the bar cutoff, player names just below the bars (e.g. "HAR180::")
@@ -1800,7 +1842,7 @@ pub fn extract_reward_items_twophase(
         }
 
         for (_, _, _, unique) in candidates {
-            if items.len() >= estimated_cards { break; }
+            if items.len() >= fill_limit { break; }
             let dn = match catalog.iter().find(|(u, _)| *u == unique) {
                 Some((_, n)) => n.clone(),
                 None => continue,
@@ -1962,5 +2004,100 @@ mod tests {
         assert!(!bar_centers_are_valid(&[0.204, 0.316, 0.655]));
         assert!(bar_centers_are_valid(&[0.27, 0.50, 0.73]));
         assert!(bar_centers_are_valid(&[0.24, 0.41, 0.59, 0.76]));
+    }
+
+    /// Hovering a reward card makes the game render its description tooltip
+    /// ("A prime weapon-crafting component.") and repeat the card title in caps.
+    /// Those lines add stray "Prime" tokens that push the card-count estimate to
+    /// four on a three-card screen, and the full-frame fill then fabricates a
+    /// catalog item — a reward that was never on screen — to reach that count.
+    ///
+    /// The OCR lines below are the exact ones the live pipeline read from a
+    /// three-player run whose overlay showed a phantom "Trinity Prime Chassis
+    /// Blueprint" alongside the three real rewards.
+    #[test]
+    fn a_hovered_card_tooltip_does_not_fabricate_a_fourth_reward() {
+        let lines: &[(&str, f32, f32)] = &[
+            ("0", 0.05, 0.01),
+            ("99%", 0.09, 0.01),
+            ("C", 0.11, 0.01),
+            ("15%", 0.15, 0.01),
+            ("53\"", 0.16, 0.01),
+            ("——— = VOID FISSURE/REWARDS", 0.19, 0.08),
+            ("3", 0.50, 0.19),
+            ("& Crafted", 0.59, 0.28),
+            ("® Owned", 0.34, 0.28),
+            ("® Owned", 0.46, 0.28),
+            ("Lavos Prime Chassis", 0.50, 0.49),
+            ("Lex Prime Barrel", 0.37, 0.52),
+            ("Blueprint", 0.50, 0.52),
+            ("2 X Forma Blueprint", 0.61, 0.52),
+            ("LEX PRIME BARREL", 0.32, 0.57),
+            ("teOwl12 5a", 0.52, 0.59),
+            ("Falcon1719+", 0.62, 0.59),
+            ("N", 0.47, 0.64),
+            ("©@ 1 Owned", 0.30, 0.63),
+            ("A prime weapon-crafting component.", 0.34, 0.70),
+            ("Can be exchanged for", 0.33, 0.76),
+            ("15 Ducats", 0.43, 0.76),
+            ("Steel Path Bonus", 0.53, 0.77),
+            ("+1 Steel Essence", 0.53, 0.80),
+            ("Endless Bonus Affinity Booster | 1 Relic Opened", 0.51, 0.89),
+        ];
+        let ocr_lines: Vec<(String, f32, f32)> =
+            lines.iter().map(|(t, x, y)| (t.to_string(), *x, *y)).collect();
+        // prime_count scans the whole-frame text, so raw_full must carry every token.
+        let raw_full = lines.iter().map(|(t, _, _)| *t).collect::<Vec<_>>().join(" ");
+
+        // The three real rewards, plus the sibling and look-alike families that
+        // share their component words — enough for the full-frame fill to prefer a
+        // fabricated fourth (as the live catalog did). Each name doubles as its own
+        // key, matching the live catalog shape.
+        let catalog: Vec<(String, String)> = [
+            "Lex Prime Barrel", "Lex Prime Blueprint", "Lex Prime Receiver",
+            "Lavos Prime Blueprint", "Lavos Prime Chassis Blueprint",
+            "Lavos Prime Neuroptics Blueprint", "Lavos Prime Systems Blueprint",
+            "Forma Blueprint", "2X Forma Blueprint",
+            "Trinity Prime Blueprint", "Trinity Prime Chassis Blueprint",
+            "Trinity Prime Neuroptics Blueprint", "Trinity Prime Systems Blueprint",
+            "Atlas Prime Chassis Blueprint", "Acceltra Prime Barrel",
+            "Afuris Prime Barrel", "Boltor Prime Barrel",
+        ]
+        .iter()
+        .map(|n| (n.to_string(), n.to_string()))
+        .collect();
+
+        let player_names: Vec<String> = [
+            "Vireo_", "q-lox", "grimlo1994", "Duo-vertex",
+            "yubblenix", "TheVortexKnave1", "Falcon1719", "PrivateOwl12",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        // A small black frame yields no rarity bars, so matching takes the same
+        // hardcoded-column path the live capture used after its (bunched) bars
+        // were rejected. The phantom is produced by the text fill, not the bars.
+        let pixels = vec![0u8; 8 * 8 * 4];
+
+        let (_complete, _skip, items, _positions, diag) = match_reward_items(
+            &pixels, 8, 8, &raw_full, &ocr_lines,
+            &catalog, "replay", None, &player_names,
+        );
+
+        // The catalog carries a distinct "2X Forma Blueprint"; either spelling is
+        // the same real card.
+        let fold = |n: &str| n.trim_start_matches("2X ").to_string();
+        let mut got: Vec<String> = items.iter().map(|n| fold(n)).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                "Forma Blueprint".to_string(),
+                "Lavos Prime Chassis Blueprint".to_string(),
+                "Lex Prime Barrel".to_string(),
+            ],
+            "expected exactly the three real rewards, no fabricated fourth\n{diag}"
+        );
     }
 }
