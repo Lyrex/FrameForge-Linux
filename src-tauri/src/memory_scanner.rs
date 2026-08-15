@@ -1062,6 +1062,30 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
         return None;
     }
 
+    // Section completeness check: a partial/mid-write blob may pass all marker
+    // checks (SubscribedToEmails present, DeathSquadable present, size OK) yet be
+    // missing MiscItems, RegularCredits, and other top-level sections entirely.
+    // Reject such blobs before the expensive JSON parse — they would wipe the
+    // displayed inventory even though prior state was valid.
+    const REQUIRED_SECTIONS: &[&[u8]] = &[
+        b"\"MiscItems\":",
+        b"\"RegularCredits\":",
+        b"\"Suits\":",
+        b"\"XPInfo\":",
+        b"\"FusionPoints\":",
+    ];
+    let search_range = &raw[..end_pos.min(raw.len())];
+    for required in REQUIRED_SECTIONS {
+        if memchr::memmem::find(search_range, required).is_none() {
+            debug!(
+                target: "frameforge::blob_parse",
+                missing = %std::str::from_utf8(required).unwrap_or("?"),
+                "incomplete blob — missing required section, skipping"
+            );
+            return None;
+        }
+    }
+
     let json_bytes = extract_blob_json_at(raw, end_pos)?;
 
     let json: serde_json::Value = serde_json::from_slice(&json_bytes)
@@ -1277,6 +1301,14 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
     let consumed_suits: Vec<String> = json["InfestedFoundry"]["ConsumedSuits"].as_array()
         .map(|a| a.iter().filter_map(|e| e["s"].as_str().map(String::from)).collect())
         .unwrap_or_default();
+
+    // Every valid FULL_ACCOUNT blob at the orbiter has at least one Warframe in Suits.
+    // An empty unique_items means we captured an incomplete blob (game is mid-write,
+    // returning from mission, or the blob sections were partially stitched out of order).
+    if unique_items.is_empty() {
+        debug!(target: "frameforge::blob_parse", "blob has no warframes/weapons — incomplete blob, rejecting");
+        return None;
+    }
 
     Some(BlobInventory {
         credits, endo, platinum, free_platinum, mastery_level,
@@ -3581,7 +3613,7 @@ mod linux_tests {
     #[test]
     fn probe_outcomes_distinguish_fresh_unchanged_and_miss() {
         let _digest_guard = blob_digest_test_guard();
-        let mut data = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"#.to_vec();
+        let mut data = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#.to_vec();
         data.resize(64_000, b' ');
         data.extend_from_slice(br#""DeathSquadable":false}"#);
         data.resize(128_000, 0);
@@ -3626,7 +3658,7 @@ mod linux_tests {
         let _digest_guard = blob_digest_test_guard();
         // Blobs under 50 KB are rejected as coincidental fragments, so the
         // fixture pads the object out to a realistic size.
-        let mut data = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"#.to_vec();
+        let mut data = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#.to_vec();
         data.resize(64_000, b' ');
         data.extend_from_slice(br#""DeathSquadable":false}"#);
         data.resize(128_000, 0);
@@ -3659,7 +3691,7 @@ mod linux_tests {
         let marker = b"\"DeathSquadable\":";
         let (marker_head, marker_tail) = marker.split_at(7);
 
-        let mut first = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"#.to_vec();
+        let mut first = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#.to_vec();
         first.resize(64_000 - marker_head.len(), b' ');
         first.extend_from_slice(marker_head);
 
@@ -3689,7 +3721,7 @@ mod linux_tests {
         let _digest_guard = blob_digest_test_guard();
         let marker = br#""DeathSquadable":"#;
 
-        let mut first = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"#.to_vec();
+        let mut first = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#.to_vec();
         first.resize(64_000 - marker.len() - 4, b' ');
         first.extend_from_slice(marker);
         first.extend_from_slice(b"fals");
@@ -3717,7 +3749,7 @@ mod linux_tests {
     #[test]
     fn linux_cached_blob_skips_reparse_when_bytes_are_unchanged() {
         let _digest_guard = blob_digest_test_guard();
-        let mut data = br#"{"SubscribedToEmails":true,"RegularCredits":99,"MiscItems":[],"#.to_vec();
+        let mut data = br#"{"SubscribedToEmails":true,"RegularCredits":99,"MiscItems":[],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#.to_vec();
         data.resize(64_000, b' ');
         data.extend_from_slice(br#""DeathSquadable":false}"#);
         data.resize(128_000, 0);
@@ -3782,7 +3814,7 @@ mod linux_tests {
     fn linux_inventory_scan_reports_unchanged_instead_of_reparsing() {
         let _digest_guard = blob_digest_test_guard();
 
-        let mut mapping = br#"{"SubscribedToEmails":true,"RegularCredits":7,"MiscItems":[],"#.to_vec();
+        let mut mapping = br#"{"SubscribedToEmails":true,"RegularCredits":7,"MiscItems":[],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#.to_vec();
         mapping.resize(64_000, b' ');
         mapping.extend_from_slice(br#""DeathSquadable":false}"#);
         mapping.resize(128_000, 0);
@@ -3818,7 +3850,7 @@ mod linux_tests {
     fn linux_inventory_scan_finds_blob_via_file_backed_fallback() {
         let _digest_guard = blob_digest_test_guard();
 
-        let mut blob = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"#.to_vec();
+        let mut blob = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#.to_vec();
         blob.resize(64_000, b' ');
         blob.extend_from_slice(br#""DeathSquadable":false}"#);
         blob.resize(128_000, 0);
@@ -3853,12 +3885,12 @@ mod linux_tests {
     fn linux_inventory_scan_skips_file_backed_tier_when_anonymous_pass_finds_a_blob() {
         let _digest_guard = blob_digest_test_guard();
 
-        let mut anon_blob = br#"{"SubscribedToEmails":true,"RegularCredits":1,"MiscItems":[],"#.to_vec();
+        let mut anon_blob = br#"{"SubscribedToEmails":true,"RegularCredits":1,"MiscItems":[],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#.to_vec();
         anon_blob.resize(64_000, b' ');
         anon_blob.extend_from_slice(br#""DeathSquadable":false}"#);
         anon_blob.resize(128_000, 0);
 
-        let mut file_blob = br#"{"SubscribedToEmails":true,"RegularCredits":2,"MiscItems":[],"#.to_vec();
+        let mut file_blob = br#"{"SubscribedToEmails":true,"RegularCredits":2,"MiscItems":[],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#.to_vec();
         file_blob.resize(64_000, b' ');
         file_blob.extend_from_slice(br#""DeathSquadable":false}"#);
         file_blob.resize(128_000, 0);
@@ -3897,7 +3929,7 @@ mod linux_tests {
     #[test]
     fn linux_inventory_scan_stitches_and_parses_regions() {
         let _digest_guard = blob_digest_test_guard();
-        let first_json = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"#;
+        let first_json = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#;
         let second_json = br#""DeathSquadable":false}"#;
         let mut first = first_json.to_vec();
         first.resize(64_000, b' ');
@@ -3937,7 +3969,7 @@ mod linux_tests {
         let mut prefix = br#"{"Mods":garbage/Lotus/Weapons/Tenno/Rifle "#.to_vec();
         prefix.resize(64_000, b' ');
         let mut blob =
-            br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[{"ItemType":"/Lotus/Types/Items/x"}],"#
+            br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[{"ItemType":"/Lotus/Types/Items/x"}],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#
                 .to_vec();
         blob.resize(64_000, b' ');
         blob.extend_from_slice(br#""DeathSquadable":false}"#);
@@ -3999,7 +4031,7 @@ mod linux_tests {
 
         let marker = b"\"DeathSquadable\":";
 
-        let mut opening = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"#.to_vec();
+        let mut opening = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#.to_vec();
         opening.resize(64_000, b' ');
 
         let mut marker_flush = vec![b' '; 64_000 - marker.len()];
@@ -4042,7 +4074,7 @@ mod linux_tests {
     #[test]
     fn linux_inventory_scan_finishes_before_rejecting_large_mapping() {
         let _digest_guard = blob_digest_test_guard();
-        let first_json = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"#;
+        let first_json = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#;
         let second_json = br#""DeathSquadable":false}"#;
         let mut first = first_json.to_vec();
         first.resize(64_000, b' ');
@@ -4073,7 +4105,7 @@ mod linux_tests {
     fn linux_inventory_scan_finds_blob_past_first_chunk_boundary() {
         let _digest_guard = blob_digest_test_guard();
 
-        let mut blob = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"#.to_vec();
+        let mut blob = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#.to_vec();
         blob.resize(64_000, b' ');
         blob.extend_from_slice(br#""DeathSquadable":false}"#);
         blob.resize(128_000, 0);
@@ -4110,7 +4142,7 @@ mod linux_tests {
     fn linux_inventory_scan_finds_blob_straddling_chunk_boundary() {
         let _digest_guard = blob_digest_test_guard();
 
-        let mut blob = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"#.to_vec();
+        let mut blob = br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#.to_vec();
         blob.resize(64_000, b' ');
         blob.extend_from_slice(br#""DeathSquadable":false}"#);
         blob.resize(128_000, 0);
@@ -4145,7 +4177,7 @@ mod linux_tests {
     fn linux_inventory_scan_recovers_fields_before_start_marker() {
         let _digest_guard = blob_digest_test_guard();
         let prefix =
-            br#"{"RegularCredits":42,"MiscItems":[{"ItemType":"/Lotus/Test","ItemCount":1}],"#;
+            br#"{"RegularCredits":42,"MiscItems":[{"ItemType":"/Lotus/Test","ItemCount":1}],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#;
         let suffix = br#""SubscribedToEmails":true,"DeathSquadable":false}"#;
         let mut mapping = vec![b' '; 128_000];
         mapping[..prefix.len()].copy_from_slice(prefix);

@@ -609,6 +609,13 @@ fn fetch_relics_rewards(image_by_name: &HashMap<String, String>) -> HashMap<Stri
 
         reward_list.sort_by_key(|r| match r.rarity.as_str() { "Silver" => 1u8, "Gold" => 2, _ => 0 });
         if !reward_list.is_empty() {
+            // Also key by uniqueName (EE.log path) so the OCR prefilter can look
+            // up directly by the path it gets from EE.log without any decoding.
+            if let Some(unique_name) = relic.get("uniqueName").and_then(|v| v.as_str()) {
+                if !unique_name.is_empty() {
+                    result.insert(unique_name.to_string(), reward_list.clone());
+                }
+            }
             result.insert(relic_name, reward_list);
         }
     }

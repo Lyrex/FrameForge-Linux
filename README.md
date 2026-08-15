@@ -1,4 +1,4 @@
-# FrameForge — Warframe Companion `v3.3.0-linux.1`
+# FrameForge — Warframe Companion `v3.4.0-linux.1`
 
 A desktop companion for Warframe — live inventory, market prices, trading, timers, relic overlay, and riven analysis. Read-only, no game modification.
 
@@ -31,6 +31,8 @@ This gives complete coverage: resources, mods, arcanes, relics, weapons, Warfram
 
 ### Foundry
 Browse every craftable item with full ingredient trees. Components are colour-coded by ownership status and show which relics drop them. Star items to track them in the Modular Window. Filter by Prime, Non-Prime, Vaulted/Unvaulted, Owned/Unowned, Ready to build, Mastered/Unmastered, and Lvl > 30 (Kuva/Tenet/Incarnon weapons, Necramechs). Items per page is configurable in Settings → General (30 / 60 / 100).
+
+Items with Forma applied show a **Forma icon badge** with the count overlaid — sourced live from memory, no manual tracking needed. Mastered / Unmastered filters use each item's actual level cap (30 for standard gear, higher for Incarnon/Kuva/Tenet weapons), and exclude non-levelable items (parts, blueprints) from both filters entirely.
 
 **View modes** — switch between Cards (icon + text), Icon grid, Text cards, List (compact row with icon), and Compact list (text-only) via the toggle in the filter bar. Each tab remembers its own preference.
 
