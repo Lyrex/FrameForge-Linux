@@ -70,11 +70,6 @@ pub struct AppState {
     /// Controls the raw memory string-dump background thread.
     pub raw_scan_active: Arc<AtomicBool>,
     pub raw_scan_path: PathBuf,
-    /// Set by the EE.log tail when Warframe reports finishing an inventory
-    /// refresh; cleared by the monitor loop when it acts on it. A bool rather
-    /// than a count because the game flushes its log in bursts, so several
-    /// markers can land at once and all of them call for the same single walk.
-    pub blob_sync_pending: Arc<AtomicBool>,
     /// When true, save a timestamped inventory blob to blobs/ on each full scan pass.
     pub blob_log_enabled: Arc<AtomicBool>,
     pub blob_log_dir: PathBuf,
@@ -143,6 +138,7 @@ pub struct CatalogItem {
     pub max_level_cap: Option<u32>,
 }
 
+
 /// Determine the correct display category for an item.
 ///
 /// Rules (in order):
@@ -198,9 +194,10 @@ fn fix_category(name: &str, wfcd_cat: &str, path: &str) -> String {
         " receiver", " stock", " barrel", " blade", " handle", " guard",
         " hilt", " link", " gauntlet", " carapace", " cerebrum", " systems",
         " upper limb", " lower limb", " strike", " boot", " head", " grip",
-        // Additional weapon-component suffixes not covered above:
-        // bow string, throwing-star disc, throwing-star stars
+        // Bow/thrown weapon components
         " string", " disc", " stars",
+        // Modular companion (MOA) components — gyrome/loader/bracket are never the companion itself
+        " gyrome", " loader", " bracket",
     ];
     if PART_SUFFIXES.iter().any(|s| lower.ends_with(s)) {
         return "Parts".to_string();
@@ -2350,11 +2347,6 @@ fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
         .map(|d| d.join("Warframe").join("EE.log"))
         .ok_or("Cannot find LocalAppData")?;
 
-    // Second source for the inventory-sync marker (slower of the two — the tail
-    // only sees a line once Warframe flushes it). With no EE.log the monitor
-    // still escalates on its own interval, so a missing tail costs latency only.
-    let blob_sync_pending = app.state::<AppState>().blob_sync_pending.clone();
-
     std::thread::spawn(move || {
         use std::io::{Read, Seek, SeekFrom};
         let mut file_pos: u64 = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
@@ -2396,9 +2388,6 @@ fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
             if f.read_to_string(&mut buf).is_err() { continue; }
             file_pos = len;
             if buf.is_empty() { continue; }
-            if buf.contains(memory_scanner::INVENTORY_SYNC_MARKER) {
-                blob_sync_pending.store(true, Ordering::SeqCst);
-            }
             let lower = buf.to_lowercase();
 
             // ── Riven reroll / unveil ─────────────────────────────────────────
@@ -3580,44 +3569,6 @@ pub struct BlobStatusPayload {
     pub detail:  String,  // human-readable detail
 }
 
-/// Floor on walk frequency, inherited from the fixed cadence this policy
-/// replaced: whatever the probe reports, walking is never worth doing faster.
-const WALK_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
-/// A client with no blob found yet is usually at the login screen. The marker
-/// ends that wait as soon as the inventory arrives, so this interval only
-/// applies when no marker reaches us at all.
-const WALK_COLD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
-/// Covers the state a probe cannot detect: the game reallocates the blob but
-/// the old address still holds a parseable copy of the old bytes, so every
-/// probe answers "unchanged". That is rare and a walk costs the player frames,
-/// hence the long interval.
-const WALK_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_secs(900);
-/// Nothing changes the inventory without a sync, and a sync is always logged,
-/// so this only covers syncs that both marker sources missed.
-const BLOB_PROBE_FALLBACK: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// Whether a full region walk is worth its cost this tick.
-///
-/// None of this depends on the marker for correctness. Every case has an
-/// interval that fires without one, so a missing EE.log or an unlocatable log
-/// buffer costs only latency.
-fn walk_is_due(
-    outcome: &memory_scanner::ScanOutcome,
-    sync_seen: bool,
-    has_cached_blob: bool,
-    since_walk: std::time::Duration,
-) -> bool {
-    use memory_scanner::ScanOutcome;
-    match outcome {
-        ScanOutcome::Updated => false,
-        ScanOutcome::CacheMiss if sync_seen => true,
-        ScanOutcome::CacheMiss if has_cached_blob => since_walk >= WALK_MIN_INTERVAL,
-        ScanOutcome::Unchanged if sync_seen => since_walk >= WALK_MIN_INTERVAL,
-        ScanOutcome::CacheMiss => since_walk >= WALK_COLD_INTERVAL,
-        ScanOutcome::Unchanged => since_walk >= WALK_MAX_INTERVAL,
-    }
-}
-
 // ── Relic pick overlay ────────────────────────────────────────────────────────
 
 fn relic_pick_show(app: &tauri::AppHandle) {
@@ -3875,6 +3826,9 @@ pub struct InventoryUpdate {
     /// Warframe unique-name → socketed Archon Shards read from memory.
     /// Only populated for warframes where ArchonCrystalUpgrades was found.
     pub socketed_shards: HashMap<String, Vec<memory_scanner::ArchonShard>>,
+    /// Item unique-name → number of Forma applied (polarized count from blob).
+    /// Only populated for items that have at least one Forma applied.
+    pub forma_counts: HashMap<String, u32>,
     /// True only on the end-of-full-pass emit. Frontend should REPLACE archonShards
     /// state instead of merging so stale entries are cleaned up.
     pub is_full_pass: bool,
@@ -3966,7 +3920,6 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     let shared_crafting      = state.current_crafting.clone();
     let blob_log_enabled     = state.blob_log_enabled.clone();
     let blob_log_dir         = state.blob_log_dir.clone();
-    let blob_sync_pending    = state.blob_sync_pending.clone();
     let reward_app = app.clone();  // clone before app is moved into the inventory thread
 
     // Channel for the blob capture thread to deliver a parsed BlobInventory to the monitor loop.
@@ -4067,6 +4020,9 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     .filter(|(_, v)| !v.archon_shards.is_empty())
                     .map(|(k, v)| (k.clone(), v.archon_shards.clone()))
                     .collect(),
+                forma_counts: startup_cache.items.iter()
+                    .filter_map(|(k, v)| v.forma_count.map(|n| (k.clone(), n)))
+                    .collect(),
                 warframe_running: game_found,
                 scanned_at: now_pre,
                 is_full_pass: true,
@@ -4086,9 +4042,10 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
             .filter(|(_, v)| !v.archon_shards.is_empty())
             .map(|(k, v)| (k.clone(), v.archon_shards.clone()))
             .collect();
-        let mut last_walk_time: Option<std::time::Instant> = None;
-        let mut last_probe_time: Option<std::time::Instant> = None;
-        let mut last_blob_probe: Option<std::time::Instant> = None;
+        let mut current_forma_counts: HashMap<String, u32> = startup_cache.items.iter()
+            .filter_map(|(k, v)| v.forma_count.map(|n| (k.clone(), n)))
+            .collect();
+        let mut last_blob_time: Option<std::time::Instant> = None;
         // Guard against overlapping captures: a full memory walk can take >10 s on large
         // game processes, so without this flag we'd stack up concurrent scan threads.
         let blob_scan_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -4142,6 +4099,16 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     m
                 };
 
+                // Completeness guard: parse_full_account_blob already rejects blobs missing
+                // required sections (MiscItems, RegularCredits, etc.) — see memory_scanner.rs.
+                // Keep this secondary guard for the unique-items case as a belt-and-suspenders
+                // defence against incomplete blobs that slipped through parsing.
+                let prev_unique_count = confirmed_unique.len();
+                if blob.unique_items.is_empty() && prev_unique_count > 0 {
+                    warn!("blob rejected at commit: 0 unique items vs {} previously — incomplete blob", prev_unique_count);
+                    continue;
+                }
+
                 // Blob is authoritative — full replacement, not a merge.
                 // Clear known so items that disappeared from the blob drop to 0.
                 known.clear();
@@ -4161,6 +4128,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 unique_stable.clear();
                 confirmed_unique.clear();
                 current_socketed_shards.clear();
+                current_forma_counts.clear();
                 for entry in &blob.unique_items {
                     let canonical = path_aliases.get(entry.item_type.as_str())
                         .map(|s| s.to_string())
@@ -4169,7 +4137,10 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     unique_stable.insert(canonical.clone(), 4);
                     confirmed_unique.insert(canonical.clone());
                     if !entry.archon_shards.is_empty() {
-                        current_socketed_shards.insert(canonical, entry.archon_shards.clone());
+                        current_socketed_shards.insert(canonical.clone(), entry.archon_shards.clone());
+                    }
+                    if entry.polarized > 0 {
+                        current_forma_counts.insert(canonical, entry.polarized);
                     }
                 }
 
@@ -4264,6 +4235,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     consumed_suits:   current_consumed_suits.clone(),
                     mods:             known_mods.clone(),
                     socketed_shards:  current_socketed_shards.clone(),
+                    forma_counts:     current_forma_counts.clone(),
                     is_full_pass:     true,
                     player_name: app.state::<AppState>().local_player_name
                         .lock().ok().and_then(|g| g.clone()),
@@ -4311,54 +4283,14 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
             }
             let game_running = cached_game_running;
             if game_running {
-                // ── Blob capture: cheap probe, rate-limited walk ──────────────
-                // The probe runs at PROBE_INTERVAL; re-reading the blob itself is
-                // gated additionally by BLOB_PROBE_FALLBACK or the sync marker.
-                const PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+                // ── Blob capture: unconditional scan every 10 seconds ─────────
+                let should_capture = last_blob_time
+                    .map_or(true, |t: std::time::Instant| t.elapsed() >= std::time::Duration::from_secs(10));
+                let already_running = blob_scan_active.load(Ordering::SeqCst);
 
-                let walk_in_flight = blob_scan_active.load(Ordering::SeqCst);
-                let probe_due = last_probe_time
-                    .map_or(true, |t: std::time::Instant| t.elapsed() >= PROBE_INTERVAL);
-
-                let mut should_capture = false;
-                if probe_due && !walk_in_flight {
-                    last_probe_time = Some(std::time::Instant::now());
-                    let stitch_due = last_blob_probe
-                        .map_or(true, |t: std::time::Instant| t.elapsed() >= BLOB_PROBE_FALLBACK)
-                        || blob_sync_pending.load(Ordering::SeqCst)
-                        || !memory_scanner::has_cached_blob();
-                    let (outcome, sync_marker) = match last_pid {
-                        Some(pid) => memory_scanner::probe_tick(pid, blob_tx.clone(), stitch_due),
-                        None => (None, false),
-                    };
-                    if outcome.is_some() {
-                        last_blob_probe = Some(std::time::Instant::now());
-                    }
-                    if sync_marker {
-                        blob_sync_pending.store(true, Ordering::SeqCst);
-                    }
-                    let sync_seen  = blob_sync_pending.load(Ordering::SeqCst);
-                    let blob_known = memory_scanner::has_cached_blob();
-                    let since_walk = last_walk_time
-                        .map_or(std::time::Duration::MAX, |t: std::time::Instant| t.elapsed());
-                    should_capture = outcome
-                        .as_ref()
-                        .is_some_and(|o| walk_is_due(o, sync_seen, blob_known, since_walk));
-                    if should_capture || outcome == Some(memory_scanner::ScanOutcome::Updated) {
-                        blob_sync_pending.store(false, Ordering::SeqCst);
-                    }
-                    if should_capture {
-                        let since = match last_walk_time {
-                            Some(t) => format!("{:.1}s", t.elapsed().as_secs_f64()),
-                            None => "never".into(),
-                        };
-                        info!(outcome = ?outcome, sync_seen, blob_known, since_last_walk = %since, "escalating to full walk");
-                    }
-                }
-
-                if should_capture {
+                if should_capture && !already_running {
                     blob_scan_active.store(true, Ordering::SeqCst);
-                    last_walk_time = Some(std::time::Instant::now());
+                    last_blob_time = Some(std::time::Instant::now());
                     let ts     = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
                     let dir    = blob_log_dir.clone();
                     let tx     = blob_tx.clone();
@@ -4409,6 +4341,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         consumed_suits: current_consumed_suits.clone(),
                         mods: known_mods.clone(),
                         socketed_shards: current_socketed_shards.clone(),
+                        forma_counts: current_forma_counts.clone(),
                         is_full_pass: false,
                         player_name: app.state::<AppState>().local_player_name
                             .lock().ok().and_then(|g| g.clone()),
@@ -7884,8 +7817,34 @@ pub fn run() {
     let initial_recipes = load_recipes_cache(&recipes_cache_path);
     let initial_relic_drops: HashMap<String, Vec<String>> = std::fs::read_to_string(&relic_drops_cache_path)
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-    let _ = std::fs::remove_file(&relic_rewards_cache_path);
-    let initial_relic_rewards: HashMap<String, Vec<wfcd::RelicReward>> = HashMap::new();
+    // Load relic rewards cache. Two invalidation conditions:
+    // 1. Format: must contain at least one EE.log path key ("/Lotus/...") — old caches only
+    //    had display-name keys and would cause the OCR prefilter to always miss.
+    // 2. Age: discard after 24 hours so new relics added with game updates are picked up.
+    let initial_relic_rewards: HashMap<String, Vec<wfcd::RelicReward>> = {
+        let cache_age_ok = std::fs::metadata(&relic_rewards_cache_path)
+            .and_then(|m| m.modified())
+            .map(|t| t.elapsed().unwrap_or(std::time::Duration::MAX) < std::time::Duration::from_secs(86_400))
+            .unwrap_or(false);
+        let loaded: Option<HashMap<String, Vec<wfcd::RelicReward>>> = if cache_age_ok {
+            std::fs::read_to_string(&relic_rewards_cache_path)
+                .ok().and_then(|s| serde_json::from_str(&s).ok())
+        } else {
+            None
+        };
+        match loaded {
+            Some(map) if map.keys().any(|k| k.starts_with("/Lotus/")) => map,
+            Some(_) => {
+                info!("relic_rewards cache is old format (no path keys) — discarding, will regenerate");
+                let _ = std::fs::remove_file(&relic_rewards_cache_path);
+                HashMap::new()
+            }
+            None => {
+                let _ = std::fs::remove_file(&relic_rewards_cache_path);
+                HashMap::new()
+            }
+        }
+    };
     // Load unified inventory state cache. All data lives in items: unique_name → CachedItem.
     let initial_state = load_inventory_state_cache(&inventory_state_cache_path);
     // Stackable resources: non-mod, non-unique paths.
@@ -7963,7 +7922,6 @@ pub fn run() {
             monitor_active: Arc::new(AtomicBool::new(false)),
             raw_scan_active: Arc::new(AtomicBool::new(false)),
             raw_scan_path,
-            blob_sync_pending: Arc::new(AtomicBool::new(false)),
             blob_log_enabled: Arc::new(AtomicBool::new(false)),
             blob_log_dir,
             api_log_enabled: Arc::new(AtomicBool::new(false)),
@@ -8521,64 +8479,3 @@ MR 11
     }
 }
 
-#[cfg(test)]
-mod walk_policy_tests {
-    use super::{walk_is_due, WALK_COLD_INTERVAL, WALK_MAX_INTERVAL, WALK_MIN_INTERVAL};
-    use crate::memory_scanner::ScanOutcome;
-    use std::time::Duration;
-
-    /// At the login screen no blob has ever been found, and re-checking that
-    /// every WALK_MIN_INTERVAL reads gigabytes and costs the player frames for
-    /// seconds at a time.
-    #[test]
-    fn a_client_with_no_blob_yet_waits_for_the_backstop() {
-        let just_walked = WALK_MIN_INTERVAL + Duration::from_secs(1);
-        assert!(!walk_is_due(&ScanOutcome::CacheMiss, false, false, just_walked));
-        assert!(walk_is_due(&ScanOutcome::CacheMiss, false, false, WALK_COLD_INTERVAL));
-    }
-
-    /// A settled inventory answers "unchanged" every couple of seconds for as
-    /// long as the player stays docked.
-    #[test]
-    fn a_settled_inventory_does_not_walk_on_the_minute() {
-        assert!(!walk_is_due(&ScanOutcome::Unchanged, false, true, Duration::from_secs(60)));
-        assert!(!walk_is_due(&ScanOutcome::Unchanged, false, true, Duration::from_secs(300)));
-        assert!(walk_is_due(&ScanOutcome::Unchanged, false, true, WALK_MAX_INTERVAL));
-    }
-
-    /// The client announced a fetch and our copy did not move. Usually a sync
-    /// with no delta, but it is also what a stale address holding the old bytes
-    /// looks like.
-    #[test]
-    fn an_unchanged_probe_with_a_marker_still_walks() {
-        assert!(walk_is_due(&ScanOutcome::Unchanged, true, true, WALK_MIN_INTERVAL));
-        assert!(!walk_is_due(&ScanOutcome::Unchanged, true, true, Duration::from_secs(3)));
-    }
-
-    /// The probe already delivered the new inventory.
-    #[test]
-    fn a_fresh_parse_never_escalates() {
-        assert!(!walk_is_due(&ScanOutcome::Updated, true, true, Duration::MAX));
-    }
-
-    /// Once a blob is known, a miss plausibly means the game reallocated it.
-    #[test]
-    fn a_miss_on_a_known_blob_keeps_the_old_cadence() {
-        assert!(walk_is_due(&ScanOutcome::CacheMiss, false, true, WALK_MIN_INTERVAL));
-        assert!(!walk_is_due(&ScanOutcome::CacheMiss, false, true, Duration::from_secs(4)));
-    }
-
-    /// The marker resolves the ambiguity, including at the login screen.
-    #[test]
-    fn a_sync_marker_escalates_immediately() {
-        assert!(walk_is_due(&ScanOutcome::CacheMiss, true, false, Duration::ZERO));
-        assert!(walk_is_due(&ScanOutcome::CacheMiss, true, true, Duration::ZERO));
-    }
-
-    /// The first tick after the game appears has no previous walk to rate-limit
-    /// against, so the app still gets one immediately at startup.
-    #[test]
-    fn the_first_walk_is_never_delayed() {
-        assert!(walk_is_due(&ScanOutcome::CacheMiss, false, false, Duration::MAX));
-    }
-}

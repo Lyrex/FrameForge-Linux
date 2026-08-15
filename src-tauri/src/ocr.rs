@@ -863,7 +863,11 @@ fn find_rarity_bars(pixels: &[u8], pix_w: u32, pix_h: u32) -> (Option<(Vec<f32>,
         let is_orange = r > 80  && r > b + 20;
         let is_teal   = b > 65  && g > 50  && b > r + 8;
         let is_gold   = r > 100 && g > 80  && b < r.saturating_sub(10);
-        let is_bright = lum > 100 && r > 70 && g > 70 && b > 70;
+        // Near-white only — card artwork at 1440p has mid-lum coloured pixels that
+        // trigger the old r/g/b>70 check and create false bar peaks.
+        let max_ch = r.max(g).max(b);
+        let min_ch = r.min(g).min(b);
+        let is_bright = lum > 160 && max_ch - min_ch < 50;
         is_orange || is_teal || is_gold || is_bright
     }
 
@@ -1220,8 +1224,10 @@ fn extract_item_name_words(words: &std::collections::HashSet<String>) -> Vec<Str
 fn bar_centers_are_valid(centers: &[f32]) -> bool {
     let n = centers.len();
     if n == 0 { return false; }
-    // Outermost centers must be in a plausible screen zone
-    if centers[0] < 0.15 || centers[n - 1] > 0.85 { return false; }
+    // Outermost centers must be in a plausible screen zone.
+    // Upper bound raised to 0.90 — at 2560×1440 the rightmost card genuinely
+    // lands past 0.85 (observed at x=0.862 in a live session log).
+    if centers[0] < 0.15 || centers[n - 1] > 0.90 { return false; }
     if n < 2 { return true; }
     // Reject if any two adjacent bars are closer than 0.08.
     // The expected gap between cards is ~0.17 (4-card layout).
@@ -1418,7 +1424,7 @@ fn match_reward_items(
     // Fixed cutoff near the bottom of the capture.
     // is_player_name handles name filtering; the bar-based cutoff was unreliable
     // (bar detection often placed bar_y too high, deleting valid item text).
-    let ocr_y_max: f32 = 0.95;
+    let ocr_y_max: f32 = 0.57;
 
     // Returns true if `text` resembles a known player name (≥80% char similarity).
     // Handles typical OCR garbling: "Dragonivan65" → "Dragonivan650", trailing symbols, etc.

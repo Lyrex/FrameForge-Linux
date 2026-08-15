@@ -548,6 +548,30 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
         return None;
     }
 
+    // Section completeness check: a partial/mid-write blob may pass all marker
+    // checks (SubscribedToEmails present, DeathSquadable present, size OK) yet be
+    // missing MiscItems, RegularCredits, and other top-level sections entirely.
+    // Reject such blobs before the expensive JSON parse — they would wipe the
+    // displayed inventory even though prior state was valid.
+    const REQUIRED_SECTIONS: &[&[u8]] = &[
+        b"\"MiscItems\":",
+        b"\"RegularCredits\":",
+        b"\"Suits\":",
+        b"\"XPInfo\":",
+        b"\"FusionPoints\":",
+    ];
+    let search_range = &raw[..end_pos.min(raw.len())];
+    for required in REQUIRED_SECTIONS {
+        if memchr::memmem::find(search_range, required).is_none() {
+            debug!(
+                target: "frameforge::blob_parse",
+                missing = %std::str::from_utf8(required).unwrap_or("?"),
+                "incomplete blob — missing required section, skipping"
+            );
+            return None;
+        }
+    }
+
     let json_bytes = extract_blob_json(raw)?;
 
     let json: serde_json::Value = serde_json::from_slice(&json_bytes)
@@ -764,6 +788,14 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
         .map(|a| a.iter().filter_map(|e| e["s"].as_str().map(String::from)).collect())
         .unwrap_or_default();
 
+    // Every valid FULL_ACCOUNT blob at the orbiter has at least one Warframe in Suits.
+    // An empty unique_items means we captured an incomplete blob (game is mid-write,
+    // returning from mission, or the blob sections were partially stitched out of order).
+    if unique_items.is_empty() {
+        debug!(target: "frameforge::blob_parse", "blob has no warframes/weapons — incomplete blob, rejecting");
+        return None;
+    }
+
     Some(BlobInventory {
         credits, endo, platinum, free_platinum, mastery_level,
         unique_items, stackable_items, mods,
@@ -788,63 +820,18 @@ fn blob_extract_mod_rank(fingerprint: Option<&str>) -> u8 {
 // ─── Blob capture ─────────────────────────────────────────────────────────────
 
 // Cache: remember the region address where the blob was last successfully found.
-// On the next cycle we probe that address first — if the blob is still there we
-// finish in milliseconds instead of walking the full address space.
+// On the next cycle the fast path re-reads that address first — if the blob is
+// still there we finish in milliseconds instead of walking the full address space.
 static LAST_BLOB_REGION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-static LAST_BLOB_DIGEST: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-/// Set once the probe has reported that nothing changed, cleared as soon as
-/// anything does. Probes run every couple of seconds and nearly all of them
-/// find byte-identical JSON, so logging each one drowns out the rest of the
-/// log. Only the transition into that state is logged.
-static STEADY_STATE_LOGGED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-fn steady_state_notice_due() -> bool {
-    !STEADY_STATE_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Whether a previous scan left an address for the probe to re-read. Without
-/// one the probe can only ever miss, so the caller must walk instead.
-pub fn has_cached_blob() -> bool {
-    LAST_BLOB_REGION.load(std::sync::atomic::Ordering::Relaxed) != 0
-}
-
-/// Clear the region cache, blob digest, and steady-state flag. Call when
-/// Warframe's PID changes so the next scan doesn't probe a stale address.
+/// Clear the region cache. Call when Warframe's PID changes so the next scan
+/// doesn't probe a stale address from the previous process instance.
 pub fn reset_last_blob_region() {
     LAST_BLOB_REGION.store(0, std::sync::atomic::Ordering::Relaxed);
-    LAST_BLOB_DIGEST.store(0, std::sync::atomic::Ordering::Relaxed);
-    STEADY_STATE_LOGGED.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Returns `true` if the blob content (trimmed to DeathSquadable) is byte-for-byte
-/// identical to the previous call.  Always returns `false` on the first call after
-/// startup or after `forget_blob_digest`.
-pub fn blob_unchanged(raw: &[u8]) -> bool {
-    use std::hash::{Hash, Hasher};
-    let end = find_blob_end(raw).unwrap_or(raw.len());
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    raw[..end].hash(&mut h);
-    let digest = h.finish() | 1; // ensure non-zero so the 0 sentinel always reads as changed
-    let prev = LAST_BLOB_DIGEST.swap(digest, std::sync::atomic::Ordering::Relaxed);
-    let unchanged = prev == digest;
-    if !unchanged {
-        STEADY_STATE_LOGGED.store(false, std::sync::atomic::Ordering::Relaxed);
-    }
-    unchanged
-}
-
-/// Forget the last blob digest so the next `blob_unchanged` call reports changed.
-/// Call after a failed parse so a persistently-bad blob is retried every cycle.
-fn forget_blob_digest() {
-    LAST_BLOB_DIGEST.store(0, std::sync::atomic::Ordering::Relaxed);
-}
-
-// ─── Shared constants used by both scan_windows_cached_blob and capture_all_blobs ─
+// ─── Shared constants ─────────────────────────────────────────────────────────
 
 #[cfg(target_os = "windows")]
 const MAX_READ: usize = 64 * 1024 * 1024;
@@ -863,95 +850,6 @@ const ANCHORS: &[&[u8]] = &[
     b"\"Melee\":[",
     b"\"Pistols\":[",
 ];
-
-#[cfg(target_os = "windows")]
-enum CachedBlobScan {
-    Fresh(usize, BlobInventory),
-    Unchanged,
-}
-
-/// Re-read the blob straight from the address the last successful scan found
-/// it at, stitching forward through following regions until the JSON closes.
-///
-/// Returns `None` whenever anything looks different from last time, which puts
-/// the caller back on the full walk rather than reporting a stale inventory.
-#[cfg(target_os = "windows")]
-fn scan_windows_cached_blob(process: windows_sys::Win32::Foundation::HANDLE) -> Option<CachedBlobScan> {
-    use std::ffi::c_void;
-    use std::mem;
-    use windows_sys::Win32::System::{
-        Diagnostics::Debug::ReadProcessMemory,
-        Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS},
-    };
-
-    let cached_addr = LAST_BLOB_REGION.load(std::sync::atomic::Ordering::Relaxed) as usize;
-    if cached_addr == 0 {
-        return None;
-    }
-
-    let mut mbi = unsafe { mem::zeroed::<MEMORY_BASIC_INFORMATION>() };
-    let ok = unsafe { VirtualQueryEx(process, cached_addr as *const c_void, &mut mbi,
-        mem::size_of::<MEMORY_BASIC_INFORMATION>()) } != 0;
-    if !ok || mbi.State != MEM_COMMIT
-        || mbi.Protect & PAGE_GUARD != 0
-        || mbi.Protect & PAGE_NOACCESS != 0
-    {
-        return None;
-    }
-
-    let read_cap = mbi.RegionSize.min(MAX_READ);
-    let mut buf = vec![0u8; read_cap];
-    let mut n = 0usize;
-    let read_ok = unsafe { ReadProcessMemory(process, cached_addr as *const c_void,
-        buf.as_mut_ptr() as *mut c_void, read_cap, &mut n) } != 0 && n >= 8;
-    if !read_ok {
-        return None;
-    }
-
-    buf.truncate(n);
-    let chunk = &buf[..];
-    let is_mission = memchr::memmem::find(chunk, MISSION_DELTA).is_some();
-    let has_anchor = ANCHORS.iter().any(|a| memchr::memmem::find(chunk, a).is_some());
-    let has_lotus  = memchr::memmem::find(chunk, LOTUS_KEY).is_some();
-    if is_mission || !(has_anchor || has_lotus) || !chunk.starts_with(b"{\"") {
-        return None;
-    }
-
-    let mut stitched = buf;
-    let mut walk = cached_addr + n;
-    while stitched.len() < MAX_SCAN && find_blob_end(&stitched).is_none() {
-        let mut nmbi = unsafe { mem::zeroed::<MEMORY_BASIC_INFORMATION>() };
-        if unsafe { VirtualQueryEx(process, walk as *const c_void, &mut nmbi,
-            mem::size_of::<MEMORY_BASIC_INFORMATION>()) } == 0 { break; }
-        let nr = nmbi.BaseAddress as usize;
-        let ns = nmbi.RegionSize;
-        walk = nr + ns;
-        if nmbi.State != MEM_COMMIT
-            || nmbi.Protect & PAGE_GUARD != 0
-            || nmbi.Protect & PAGE_NOACCESS != 0
-            || ns == 0 { continue; }
-        let cap = ns.min(MAX_READ);
-        let mut nb = vec![0u8; cap];
-        let mut nn = 0usize;
-        if unsafe { ReadProcessMemory(process, nr as *const c_void,
-            nb.as_mut_ptr() as *mut c_void, cap, &mut nn) } == 0 { continue; }
-        stitched.extend_from_slice(&nb[..nn]);
-    }
-
-    if blob_unchanged(&stitched) {
-        if steady_state_notice_due() {
-            debug!(addr = format_args!("0x{cached_addr:012x}"), "probe hit: blob unchanged, quiet until it changes");
-        }
-        return Some(CachedBlobScan::Unchanged);
-    }
-    match parse_full_account_blob(&stitched) {
-        Some(inventory) => Some(CachedBlobScan::Fresh(cached_addr, inventory)),
-        None => {
-            forget_blob_digest();
-            None
-        }
-    }
-}
 
 /// Scans Warframe process memory for the FULL_ACCOUNT inventory blob and sends it
 /// through `blob_tx` for the monitor loop to apply.
@@ -1004,9 +902,66 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
     const PAGE_EXECUTE_WC:   u32 = 0x80;
     const EXEC_MASK: u32 = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_RW | PAGE_EXECUTE_WC;
 
-    // No fast path here on purpose: the monitor already ran that scan in
-    // `probe_tick` and escalated to this walk on the result, so repeating it
-    // would answer the same and skip the walk it asked for.
+    // Fast path: try the cached region from last successful scan.
+    let cached_addr = LAST_BLOB_REGION.load(std::sync::atomic::Ordering::Relaxed) as usize;
+    if cached_addr != 0 && !save {
+        let mut mbi = unsafe { mem::zeroed::<MEMORY_BASIC_INFORMATION>() };
+        let ok = unsafe { VirtualQueryEx(process, cached_addr as *const c_void, &mut mbi,
+            mem::size_of::<MEMORY_BASIC_INFORMATION>()) } != 0;
+        if ok && mbi.State == MEM_COMMIT
+            && mbi.Protect & PAGE_GUARD == 0
+            && mbi.Protect & PAGE_NOACCESS == 0
+        {
+            let read_cap = mbi.RegionSize.min(MAX_READ);
+            let mut buf = vec![0u8; read_cap];
+            let mut n = 0usize;
+            let read_ok = unsafe { ReadProcessMemory(process, cached_addr as *const c_void,
+                buf.as_mut_ptr() as *mut c_void, read_cap, &mut n) } != 0 && n >= 8;
+            if read_ok {
+                let chunk = &buf[..n];
+                let is_mission = memchr::memmem::find(chunk, MISSION_DELTA).is_some();
+                let has_anchor = ANCHORS.iter().any(|a| memchr::memmem::find(chunk, a).is_some());
+                let has_lotus  = memchr::memmem::find(chunk, LOTUS_KEY).is_some();
+                if !is_mission && (has_anchor || has_lotus) && chunk.starts_with(b"{\"") {
+                    let mut stitched = chunk.to_vec();
+                    let mut walk = cached_addr + n;
+                    while stitched.len() < MAX_SCAN && find_blob_end(&stitched).is_none() {
+                        let mut nmbi = unsafe { mem::zeroed::<MEMORY_BASIC_INFORMATION>() };
+                        if unsafe { VirtualQueryEx(process, walk as *const c_void, &mut nmbi,
+                            mem::size_of::<MEMORY_BASIC_INFORMATION>()) } == 0 { break; }
+                        let nr = nmbi.BaseAddress as usize;
+                        let ns = nmbi.RegionSize;
+                        walk = nr + ns;
+                        if nmbi.State != MEM_COMMIT
+                            || nmbi.Protect & PAGE_GUARD != 0
+                            || nmbi.Protect & PAGE_NOACCESS != 0
+                            || ns == 0 { continue; }
+                        let cap = ns.min(MAX_READ);
+                        let mut nb = vec![0u8; cap];
+                        let mut nn = 0usize;
+                        if unsafe { ReadProcessMemory(process, nr as *const c_void,
+                            nb.as_mut_ptr() as *mut c_void, cap, &mut nn) } == 0 { continue; }
+                        stitched.extend_from_slice(&nb[..nn]);
+                    }
+                    // Require the FULL_ACCOUNT start marker — mission-context blobs
+                    // at the cached address pass the anchor check but lack this field.
+                    if memchr::memmem::find(&stitched, START_MARKER).is_some() {
+                        if let Some(inv) = parse_full_account_blob(&stitched) {
+                            info!(addr = format_args!("0x{cached_addr:012x}"),
+                                unique = inv.unique_items.len(),
+                                stackable = inv.stackable_items.len(),
+                                "fast-path hit");
+                            blob_tx.send(inv).ok();
+                            unsafe { CloseHandle(process); }
+                            return 0;
+                        }
+                    }
+                }
+            }
+        }
+        debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path miss — falling through to cold walk");
+    }
+
     struct ActiveScan {
         data: Vec<u8>,
         id: usize,
@@ -1109,12 +1064,6 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
             // Only search the newly-added window, not the full buffer.
             let has_end = memchr::memmem::find(&scan.data[search_from..], END_MARKER).is_some();
             if has_end && find_blob_end(&scan.data).is_some() {
-                if !save && blob_unchanged(&scan.data) {
-                    debug!(scan_id = scan.id, "walk: blob unchanged, skipping parse");
-                    LAST_BLOB_REGION.store(scan.start_region_addr as u64, std::sync::atomic::Ordering::Relaxed);
-                    found_result = true;
-                    return false;
-                }
                 match parse_full_account_blob(&scan.data) {
                     Some(inv) => {
                         info!(
@@ -1138,7 +1087,6 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
                     }
                     None => {
                         warn!(scan_id = scan.id, "end marker found but JSON parse failed — dropped");
-                        forget_blob_digest();
                     }
                 }
                 false // remove completed (or failed) scan
@@ -1221,11 +1169,7 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
             let seed = combined[json_open..].to_vec();
 
             let seed_ends = find_blob_end(&seed).is_some();
-            if seed_ends && !save && blob_unchanged(&seed) {
-                debug!(scan_id = id, "walk: immediate blob unchanged, skipping parse");
-                LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
-                found_result = true;
-            } else if seed_ends {
+            if seed_ends {
                 match parse_full_account_blob(&seed) {
                     Some(inv) => {
                         info!(
@@ -1247,7 +1191,6 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
                     }
                     None => {
                         warn!(scan_id = id, "immediate end found but parse failed — dropping");
-                        forget_blob_digest();
                     }
                 }
             } else {
@@ -1277,80 +1220,6 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
 
 #[cfg(not(target_os = "windows"))]
 pub fn capture_all_blobs(_blob_dir: &std::path::Path, _ts: &str, _blob_tx: std::sync::mpsc::Sender<BlobInventory>, _save: bool) -> usize { 0 }
-
-// ─── Cheap probe ──────────────────────────────────────────────────────────────
-
-/// What a probe of the cached blob address concluded.
-///
-/// `Unchanged` and `Updated` are definitive answers obtained for a few
-/// megabytes of reads. `CacheMiss` is not: the game may have reallocated the
-/// blob because the inventory changed, or the address may be stale for some
-/// unrelated reason, and telling those apart costs a full region walk.
-#[derive(Debug, PartialEq, Eq)]
-pub enum ScanOutcome {
-    Unchanged,
-    Updated,
-    CacheMiss,
-}
-
-#[cfg(target_os = "windows")]
-fn probe_outcome(
-    scan: Option<CachedBlobScan>,
-    blob_tx: &std::sync::mpsc::Sender<BlobInventory>,
-) -> ScanOutcome {
-    match scan {
-        Some(CachedBlobScan::Fresh(address, inventory)) => {
-            info!(addr = format_args!("0x{address:012x}"),
-                unique = inventory.unique_items.len(),
-                stackable = inventory.stackable_items.len(),
-                "probe hit");
-            blob_tx.send(inventory).ok();
-            ScanOutcome::Updated
-        }
-        Some(CachedBlobScan::Unchanged) => ScanOutcome::Unchanged,
-        None => ScanOutcome::CacheMiss,
-    }
-}
-
-/// One monitor tick: re-read the blob from its remembered address, and check
-/// whether the game has logged an inventory sync since the last tick.
-///
-/// Never falls back to a full region walk. `capture_all_blobs` does that.
-/// Splitting the two lets the caller poll cheaply and decide when a miss
-/// is worth the full walk cost.
-///
-/// Returns `(Option<ScanOutcome>, sync_marker_seen)`. A `None` outcome means
-/// the blob was not re-read this tick (no sync marker and `force` was false).
-#[cfg(target_os = "windows")]
-pub fn probe_tick(
-    pid: u32,
-    blob_tx: std::sync::mpsc::Sender<BlobInventory>,
-    force: bool,
-) -> (Option<ScanOutcome>, bool) {
-    use windows_sys::Win32::{
-        Foundation::{CloseHandle, FALSE},
-        System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
-    };
-
-    let process = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid) };
-    if process == 0 {
-        return (None, false);
-    }
-    let sync = sync_marker_is_new(windows_newest_sync_timestamp(process));
-    let outcome = (force || sync)
-        .then(|| probe_outcome(scan_windows_cached_blob(process), &blob_tx));
-    unsafe { CloseHandle(process) };
-    (outcome, sync)
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn probe_tick(
-    _pid: u32,
-    _blob_tx: std::sync::mpsc::Sender<BlobInventory>,
-    _force: bool,
-) -> (Option<ScanOutcome>, bool) {
-    (None, false)
-}
 
 // ─── Inventory-sync marker, read from memory rather than from EE.log ──────────
 //
@@ -1912,91 +1781,6 @@ mod seed_tests {
 
         let overwritten = br#"x"SubscribedToEmails":0,"DeathSquadable":false}"#;
         assert!(matches!(extract_blob_json_ref(overwritten), Some(Cow::Owned(_))));
-    }
-}
-
-#[cfg(test)]
-mod blob_digest_tests {
-    use super::{blob_unchanged, forget_blob_digest, reset_last_blob_region, steady_state_notice_due};
-
-    // LAST_BLOB_DIGEST is a process-global static shared with every other test
-    // in this binary. Resetting first is not enough on its own: these cases run
-    // in parallel, so one can land its own digest write between another's reset
-    // and its assertions. Taking this lock keeps them off each other.
-    static DIGEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    #[test]
-    fn digest_tracks_changes_and_resets() {
-        let _guard = DIGEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        reset_last_blob_region();
-
-        let blob = b"{\"SubscribedToEmails\":1,\"RegularCredits\":100}".to_vec();
-        assert!(!blob_unchanged(&blob), "first call always reports changed");
-        assert!(blob_unchanged(&blob), "identical bytes report unchanged");
-
-        let mut mutated = blob.clone();
-        mutated[0] = b'[';
-        assert!(!blob_unchanged(&mutated), "a changed byte must report changed");
-        assert!(blob_unchanged(&mutated), "the new bytes become the baseline");
-
-        reset_last_blob_region();
-        assert!(!blob_unchanged(&mutated), "reset forces the next call to report changed");
-    }
-
-    // The scan stitches whole regions, so the blob arrives with a tail of
-    // unrelated heap that a running client rewrites between cycles. Digesting
-    // that tail is indistinguishable from the inventory itself changing, which
-    // reparses a settled inventory on every cycle.
-    #[test]
-    fn a_rewritten_tail_after_the_blob_is_not_a_change() {
-        let _guard = DIGEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        reset_last_blob_region();
-
-        let blob = br#"{"SubscribedToEmails":1,"DeathSquadable":false}"#;
-        let mut first = blob.to_vec();
-        first.extend_from_slice(b"\x00\x11garbage from a neighbouring allocation");
-        let mut second = blob.to_vec();
-        second.extend_from_slice(b"\xff\xfe an entirely different neighbour, and longer");
-
-        assert!(!blob_unchanged(&first), "first sighting reports changed");
-        assert!(blob_unchanged(&second), "same blob, different tail, is unchanged");
-    }
-
-    // Unparseable bytes that persist across scan cycles must not start
-    // reporting as unchanged — the skip paths read that as "already parsed
-    // this", which would wedge the walk on a region that never parsed.
-    #[test]
-    fn forgetting_after_a_failed_parse_forces_a_retry() {
-        let _guard = DIGEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        reset_last_blob_region();
-
-        let garbage = b"{\"MiscItems\":[ truncated".to_vec();
-        assert!(!blob_unchanged(&garbage), "first sighting reports changed");
-        forget_blob_digest();
-        assert!(!blob_unchanged(&garbage), "same bytes report changed again after a failed parse");
-    }
-
-    /// Nearly every probe finds identical bytes, so the notice cannot be a
-    /// per-probe line, otherwise it drowns out everything else in the log.
-    #[test]
-    fn the_steady_state_notice_fires_once_per_settle() {
-        let _guard = DIGEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        reset_last_blob_region();
-
-        let blob = b"{\"SubscribedToEmails\":1,\"RegularCredits\":100}".to_vec();
-        assert!(!blob_unchanged(&blob), "first sighting reports changed");
-        assert!(blob_unchanged(&blob), "second sighting is the steady state");
-        assert!(steady_state_notice_due(), "entering the steady state logs once");
-        assert!(!steady_state_notice_due(), "staying in it does not log again");
-
-        let mut mutated = blob.clone();
-        mutated[0] = b'[';
-        assert!(!blob_unchanged(&mutated), "the bytes changed");
-        assert!(blob_unchanged(&mutated), "and settled again");
-        assert!(steady_state_notice_due(), "the next settle logs again");
-
-        reset_last_blob_region();
-        assert!(steady_state_notice_due(), "a new game process starts the cycle over");
     }
 }
 
