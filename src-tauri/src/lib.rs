@@ -4275,7 +4275,6 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     if current_pid.is_some() {
                         info!(?last_pid, ?current_pid, "Warframe PID changed, clearing blob region cache");
                         memory_scanner::reset_last_blob_region();
-                        memory_scanner::reset_log_region();
                     }
                     last_pid = current_pid;
                 }
