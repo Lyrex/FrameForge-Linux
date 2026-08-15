@@ -5,6 +5,7 @@ import { HelpTip } from "./HelpTip";
 import type { InventoryItem, ViewMode } from "./App";
 import { ViewToggle } from "./App";
 import sentientIcon from "./assets/SentientFactionIcon.webp";
+import formaIcon from "./assets/forma-icon.png";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -113,6 +114,15 @@ function isLichWeapon(item: CatalogItem): boolean {
   return item.name.startsWith("Kuva ") || item.name.startsWith("Tenet ");
 }
 
+const LEVELABLE_CATS = new Set(["Warframes", "Primary", "Secondary", "Melee", "Companions", "Archwing"]);
+
+/** Effective max rank for an item. WFCD only sets maxLevelCap for items above 30;
+ *  levelable-category items without it default to 30. Non-levelable items return null. */
+function effectiveMaxCap(item: CatalogItem): number | null {
+  if (item.max_level_cap != null && item.max_level_cap > 0) return item.max_level_cap;
+  return LEVELABLE_CATS.has(item.category) ? 30 : null;
+}
+
 // ─── Relic helpers ────────────────────────────────────────────────────────────
 
 // Pentagon where each of the 5 sides represents one shard slot.
@@ -187,6 +197,17 @@ function RelicIcon() {
       <path d="M10 4 C7 7 6 10 8 13 C10 16 9 19 10 22" stroke="rgba(255,220,100,.9)" strokeWidth="1.3" strokeLinecap="round" fill="none"/>
       <path d="M10 4 C13 7 14 10 12 13 C10 16 11 19 10 22" stroke="rgba(255,220,100,.6)" strokeWidth="0.9" strokeLinecap="round" fill="none"/>
     </svg>
+  );
+}
+
+function FormaIcon({ count }: { count: number }) {
+  return (
+    <span className="craft-icon-tag craft-icon-forma" title={`${count} Forma applied`}>
+      <span className="craft-icon-forma-img-wrap">
+        <img src={formaIcon} alt="" className="craft-icon-forma-img" />
+      </span>
+      <span className="craft-icon-forma-count">{count}</span>
+    </span>
   );
 }
 
@@ -385,9 +406,11 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
   const invEntry   = inventory[item.unique_name];
   const isOwned    = (invEntry?.quantity ?? 0) > 0;
   const rank       = invEntry?.mastery_rank;
-  const isMastered = rank != null && rank > 0 && rank >= 30;
+  const effCap     = effectiveMaxCap(item);
+  const isMastered = rank != null && effCap != null && rank >= effCap;
   const isSubsumed  = item.category === "Warframes" && subsummedWarframes.has(item.unique_name);
   const shards      = item.category === "Warframes" ? (invEntry?.archon_shards ?? []) : [];
+  const formaCount  = invEntry?.forma_count ?? 0;
   // Memory scanner stores the recipe/blueprint path; catalog uses the result-item path.
   // Check both so items like Forma (recipe path ≠ item path) still get the badge.
   const isCrafting = crafting.some(c =>
@@ -430,6 +453,7 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
           {isOwned && !isMastered && <span className="craft-icon-tag craft-icon-owned">✓✓</span>}
           {!isOwned && allParts && <span className="craft-icon-tag craft-icon-ready">⚡</span>}
           {isCrafting && <span className="craft-icon-tag craft-icon-foundry" title="Building">⚒</span>}
+          {formaCount > 0 && <FormaIcon count={formaCount} />}
         </div>
         {mergedRecipe && mergedRecipe.length > 0 &&
           <span className="craft-row-parts">{mergedRecipe.length} part{mergedRecipe.length !== 1 ? "s" : ""}</span>}
@@ -453,6 +477,7 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
           {isOwned && !isMastered && <span className="craft-icon-tag craft-icon-owned">✓✓</span>}
           {!isOwned && allParts && <span className="craft-icon-tag craft-icon-ready">⚡</span>}
           {isCrafting && <span className="craft-icon-tag craft-icon-foundry" title="Building">⚒</span>}
+          {formaCount > 0 && <FormaIcon count={formaCount} />}
         </div>
       </div>
     );
@@ -492,6 +517,7 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
         {isMastered && <span className="craft-icon-tag craft-icon-mastered" title="Mastered">★</span>}
         {isOwned && !isMastered && rank != null && <span className="craft-icon-tag craft-icon-rank">R{rank}</span>}
         {isCrafting  && <span className="craft-icon-tag craft-icon-foundry" title="Building">⚒</span>}
+        {formaCount > 0 && <FormaIcon count={formaCount} />}
         {shards.length > 0 && <ArchonCrystalIcon shards={shards} />}
         {isOwned     && <span className="foundry-cb-badge foundry-cb-owned">✓✓</span>}
         {!isOwned && allParts && <span className="foundry-cb-badge foundry-cb-ready">⚡</span>}
@@ -537,6 +563,7 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
   const pShards = prev.inventory[prev.item.unique_name]?.archon_shards;
   const nShards = next.inventory[next.item.unique_name]?.archon_shards;
   if ((pShards?.length ?? 0) !== (nShards?.length ?? 0)) return false;
+  if ((prev.inventory[prev.item.unique_name]?.forma_count ?? 0) !== (next.inventory[next.item.unique_name]?.forma_count ?? 0)) return false;
   return true;
 });
 
@@ -606,8 +633,10 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
       .filter(i => !filterUnvaulted || i.vaulted === false)
       .filter(i => {
         if (!filterMastered && !filterUnmastered) return true;
-        const isMastered = (inventory[i.unique_name]?.mastery_rank ?? 0) >= 30;
-        return filterMastered ? isMastered : !isMastered;
+        const cap = effectiveMaxCap(i);
+        if (cap == null) return false; // not levelable — exclude from both filters
+        const rank = inventory[i.unique_name]?.mastery_rank ?? 0;
+        return filterMastered ? rank >= cap : rank < cap;
       })
       .filter(i => {
         if (!filterOwned && !filterUnowned) return true;

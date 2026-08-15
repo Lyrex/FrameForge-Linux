@@ -112,6 +112,7 @@ export interface InventoryItem {
   quantity: number;
   mastery_rank: number;
   archon_shards: { type: string; tauforged: boolean; color: string; boost?: string }[];
+  forma_count: number;
   subsumed: boolean;
   vaulted: boolean | null;
   category: string;
@@ -159,6 +160,7 @@ interface InventoryUpdate {
   consumed_suits?: string[];
   mods?: Record<string, { total: number; by_rank: Record<string, number> }>;
   socketed_shards?: Record<string, ArchonShard[]>;
+  forma_counts?: Record<string, number>;
   is_full_pass?: boolean;
   player_name?: string;
 }
@@ -260,6 +262,7 @@ function ModularWindowPage() {
         quantity:      qty,
         mastery_rank:  0,
         archon_shards: [],
+        forma_count:   0,
         subsumed:      false,
         vaulted:       cat?.vaulted ?? null,
         category:      cat?.category ?? "",
@@ -742,6 +745,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   // is used on Windows, where the overlay does work.
   const [subsummedWarframes, setSubsummedWarframes] = useState<Set<string>>(new Set());
   const [archonShards, setArchonShards] = useState<Record<string, {type: string; tauforged: boolean; color: string; boost?: string}[]>>({});
+  const [formaData, setFormaData] = useState<Record<string, number>>({});
   const [lastApiRefresh, setLastApiRefresh] = useState<number | null>(null);
   const wfConnectedRef = useRef(false);
   const inventoryRestoredRef = useRef(false);
@@ -1170,6 +1174,13 @@ if (typeof s.autoDiagEnabled === "boolean") {
           setArchonShards(parsed);
         } else if (Object.keys(parsed).length > 0) {
           setArchonShards(prev => ({ ...prev, ...parsed }));
+        }
+      }
+      if (p.forma_counts) {
+        if (p.is_full_pass) {
+          setFormaData(p.forma_counts);
+        } else if (Object.keys(p.forma_counts).length > 0) {
+          setFormaData(prev => ({ ...prev, ...p.forma_counts }));
         }
       }
       if (p.changes.length > 0) {
@@ -1898,6 +1909,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         quantity:      qty,
         mastery_rank:  masteryData[path] ?? 0,
         archon_shards: archonShards[path] ?? [],
+        forma_count:   formaData[path] ?? 0,
         subsumed:      subsummedWarframes.has(path),
         vaulted:       cat?.vaulted ?? null,
         category:      cat?.category ?? "",
@@ -1910,7 +1922,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
       if (path !== name) inv[path] = entry; // path alias so existing unique_name lookups still work
     }
     return inv;
-  }, [catalog, quantities, apiQuantities, masteryData, archonShards, subsummedWarframes, companionApiEnabled, scannerMods]);
+  }, [catalog, quantities, apiQuantities, masteryData, archonShards, formaData, subsummedWarframes, companionApiEnabled, scannerMods]);
 
   const modCopiesMap = useMemo(() => {
     const map: Record<string, ModCopy[]> = {};
@@ -2596,6 +2608,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                             setScannerMods({});
                             setMasteryData({});
                             setArchonShards({});
+                            setFormaData({});
                             setChangeLog([]);
                             setLastChanged({});
                             setWfConnected(false);

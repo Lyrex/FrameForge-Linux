@@ -205,9 +205,10 @@ fn fix_category(name: &str, wfcd_cat: &str, path: &str) -> String {
         " receiver", " stock", " barrel", " blade", " handle", " guard",
         " hilt", " link", " gauntlet", " carapace", " cerebrum", " systems",
         " upper limb", " lower limb", " strike", " boot", " head", " grip",
-        // Additional weapon-component suffixes not covered above:
-        // bow string, throwing-star disc, throwing-star stars
+        // Bow/thrown weapon components
         " string", " disc", " stars",
+        // Modular companion (MOA) components — gyrome/loader/bracket are never the companion itself
+        " gyrome", " loader", " bracket",
     ];
     if PART_SUFFIXES.iter().any(|s| lower.ends_with(s)) {
         return "Parts".to_string();
@@ -4002,6 +4003,9 @@ pub struct InventoryUpdate {
     /// Warframe unique-name → socketed Archon Shards read from memory.
     /// Only populated for warframes where ArchonCrystalUpgrades was found.
     pub socketed_shards: HashMap<String, Vec<memory_scanner::ArchonShard>>,
+    /// Item unique-name → number of Forma applied (polarized count from blob).
+    /// Only populated for items that have at least one Forma applied.
+    pub forma_counts: HashMap<String, u32>,
     /// True only on the end-of-full-pass emit. Frontend should REPLACE archonShards
     /// state instead of merging so stale entries are cleaned up.
     pub is_full_pass: bool,
@@ -4241,6 +4245,9 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     .filter(|(_, v)| !v.archon_shards.is_empty())
                     .map(|(k, v)| (k.clone(), v.archon_shards.clone()))
                     .collect(),
+                forma_counts: startup_cache.items.iter()
+                    .filter_map(|(k, v)| v.forma_count.map(|n| (k.clone(), n)))
+                    .collect(),
                 warframe_running: game_found,
                 scanned_at: now_pre,
                 is_full_pass: true,
@@ -4259,6 +4266,9 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
         let mut current_socketed_shards: HashMap<String, Vec<memory_scanner::ArchonShard>> = startup_cache.items.iter()
             .filter(|(_, v)| !v.archon_shards.is_empty())
             .map(|(k, v)| (k.clone(), v.archon_shards.clone()))
+            .collect();
+        let mut current_forma_counts: HashMap<String, u32> = startup_cache.items.iter()
+            .filter_map(|(k, v)| v.forma_count.map(|n| (k.clone(), n)))
             .collect();
         let mut last_walk_time: Option<std::time::Instant> = None;
         let mut last_probe_time: Option<std::time::Instant> = None;
@@ -4316,6 +4326,16 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     m
                 };
 
+                // Completeness guard: parse_full_account_blob already rejects blobs missing
+                // required sections (MiscItems, RegularCredits, etc.) — see memory_scanner.rs.
+                // Keep this secondary guard for the unique-items case as a belt-and-suspenders
+                // defence against incomplete blobs that slipped through parsing.
+                let prev_unique_count = confirmed_unique.len();
+                if blob.unique_items.is_empty() && prev_unique_count > 0 {
+                    warn!("blob rejected at commit: 0 unique items vs {} previously — incomplete blob", prev_unique_count);
+                    continue;
+                }
+
                 // Blob is authoritative — full replacement, not a merge.
                 // Clear known so items that disappeared from the blob drop to 0.
                 known.clear();
@@ -4335,6 +4355,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 unique_stable.clear();
                 confirmed_unique.clear();
                 current_socketed_shards.clear();
+                current_forma_counts.clear();
                 for entry in &blob.unique_items {
                     let canonical = path_aliases.get(entry.item_type.as_str())
                         .map(|s| s.to_string())
@@ -4343,7 +4364,10 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     unique_stable.insert(canonical.clone(), 4);
                     confirmed_unique.insert(canonical.clone());
                     if !entry.archon_shards.is_empty() {
-                        current_socketed_shards.insert(canonical, entry.archon_shards.clone());
+                        current_socketed_shards.insert(canonical.clone(), entry.archon_shards.clone());
+                    }
+                    if entry.polarized > 0 {
+                        current_forma_counts.insert(canonical, entry.polarized);
                     }
                 }
 
@@ -4438,6 +4462,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     consumed_suits:   current_consumed_suits.clone(),
                     mods:             known_mods.clone(),
                     socketed_shards:  current_socketed_shards.clone(),
+                    forma_counts:     current_forma_counts.clone(),
                     is_full_pass:     true,
                     player_name: app.state::<AppState>().local_player_name
                         .lock().ok().and_then(|g| g.clone()),
@@ -4583,6 +4608,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         consumed_suits: current_consumed_suits.clone(),
                         mods: known_mods.clone(),
                         socketed_shards: current_socketed_shards.clone(),
+                        forma_counts: current_forma_counts.clone(),
                         is_full_pass: false,
                         player_name: app.state::<AppState>().local_player_name
                             .lock().ok().and_then(|g| g.clone()),
@@ -8165,8 +8191,34 @@ pub fn run() {
     let initial_recipes = load_recipes_cache(&recipes_cache_path);
     let initial_relic_drops: HashMap<String, Vec<String>> = std::fs::read_to_string(&relic_drops_cache_path)
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-    let _ = std::fs::remove_file(&relic_rewards_cache_path);
-    let initial_relic_rewards: HashMap<String, Vec<wfcd::RelicReward>> = HashMap::new();
+    // Load relic rewards cache. Two invalidation conditions:
+    // 1. Format: must contain at least one EE.log path key ("/Lotus/...") — old caches only
+    //    had display-name keys and would cause the OCR prefilter to always miss.
+    // 2. Age: discard after 24 hours so new relics added with game updates are picked up.
+    let initial_relic_rewards: HashMap<String, Vec<wfcd::RelicReward>> = {
+        let cache_age_ok = std::fs::metadata(&relic_rewards_cache_path)
+            .and_then(|m| m.modified())
+            .map(|t| t.elapsed().unwrap_or(std::time::Duration::MAX) < std::time::Duration::from_secs(86_400))
+            .unwrap_or(false);
+        let loaded: Option<HashMap<String, Vec<wfcd::RelicReward>>> = if cache_age_ok {
+            std::fs::read_to_string(&relic_rewards_cache_path)
+                .ok().and_then(|s| serde_json::from_str(&s).ok())
+        } else {
+            None
+        };
+        match loaded {
+            Some(map) if map.keys().any(|k| k.starts_with("/Lotus/")) => map,
+            Some(_) => {
+                info!("relic_rewards cache is old format (no path keys) — discarding, will regenerate");
+                let _ = std::fs::remove_file(&relic_rewards_cache_path);
+                HashMap::new()
+            }
+            None => {
+                let _ = std::fs::remove_file(&relic_rewards_cache_path);
+                HashMap::new()
+            }
+        }
+    };
     // Load unified inventory state cache. All data lives in items: unique_name → CachedItem.
     let initial_state = load_inventory_state_cache(&inventory_state_cache_path);
     // Stackable resources: non-mod, non-unique paths.
