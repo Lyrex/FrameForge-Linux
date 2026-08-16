@@ -366,7 +366,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
   const parentItems = useMemo(() => {
     const map = new Map<string, CatalogItem>();
     for (const i of allItems) {
-      if (i.name.includes("Prime") && ["Warframes","Primary","Secondary","Melee","Companions","Archwing"].includes(i.category))
+      if (i.name.includes("Prime") && ["Warframes","Primary","Secondary","Melee","Companions","Archwing","Operator Weapons"].includes(i.category))
         map.set(i.name, i);
     }
     return map;

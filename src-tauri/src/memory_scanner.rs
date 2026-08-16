@@ -122,6 +122,10 @@ pub struct BlobUniqueEntry {
     pub pet_name:      Option<String>,
     pub focus_lens:    Option<String>,
     pub archon_shards: Vec<ArchonShard>,
+    /// Component paths for modular items (Amps, Kitguns, Zaws).
+    /// Populated from the blob's `ModularParts` array.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modular_parts: Vec<String>,
 }
 
 /// A stackable item: resource, blueprint, relic, Ayatan sculpture, etc.
@@ -146,10 +150,11 @@ fn digits_end(data: &[u8], start: usize) -> usize {
     i
 }
 
-/// Convert raw affinity XP to item rank (0–30).
+/// Convert raw affinity XP to item rank.
 /// Formula from Warframe wiki: cumulative XP to reach rank N is 1000×N² for
 /// Warframes/Sentinels/companions, 500×N² for all weapon types.
 /// Invert: rank = floor(sqrt(xp / base)).
+/// No upper cap — some weapons (e.g. Paracesis) can exceed rank 30.
 pub fn xp_to_rank(xp: i64, path: &str) -> u32 {
     let base = if path.contains("/Powersuits/")
         || path.contains("/SentinelPowersuits/")
@@ -157,7 +162,7 @@ pub fn xp_to_rank(xp: i64, path: &str) -> u32 {
         || path.contains("/Types/Game/KubrowPet/")
         || path.contains("/Types/Game/CatbrowPet/")
     { 1000.0f64 } else { 500.0f64 };
-    ((xp as f64 / base).sqrt().floor() as u32).min(30)
+    (xp as f64 / base).sqrt().floor() as u32
 }
 
 // ─── Auth credentials scan ───────────────────────────────────────────────────
@@ -610,6 +615,9 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
                         })
                     }).collect())
                     .unwrap_or_default();
+                let modular_parts = e["ModularParts"].as_array()
+                    .map(|a| a.iter().filter_map(|p| p.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
                 unique_items.push(BlobUniqueEntry {
                     item_type:     it.to_string(),
                     section:       sec.to_string(),
@@ -617,6 +625,7 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
                     pet_name:      e["Details"]["Name"].as_str().map(String::from),
                     focus_lens:    e["FocusLens"].as_str().map(String::from),
                     archon_shards,
+                    modular_parts,
                 });
             }
         }

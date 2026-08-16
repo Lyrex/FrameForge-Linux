@@ -31,6 +31,40 @@ use db::{QuantityChange, SnapshotPoint, Trade, TrackedItem};
 use wfcd::{RecipeComponent, SyndicateOffer, WfcdItem};
 use wfm::{to_wfm_slug, Wfm, WfmItem, WfmPrice, WfmRivenAttribute, WfmTopItem};
 
+/// Bundled corrections file embedded at compile time. Never absent at runtime.
+const BUNDLED_CORRECTIONS: &str = include_str!("../resources/corrections.json");
+
+/// Load and merge corrections: bundled entries first, then user file overrides on a per-path basis.
+fn load_corrections(user_path: &std::path::Path) -> HashMap<String, CorrectionEntry> {
+    let mut map: HashMap<String, CorrectionEntry> = serde_json::from_str::<Vec<CorrectionEntry>>(BUNDLED_CORRECTIONS)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| (e.path.clone(), e))
+        .collect();
+    if let Ok(content) = std::fs::read_to_string(user_path) {
+        if let Ok(entries) = serde_json::from_str::<Vec<CorrectionEntry>>(&content) {
+            for e in entries { map.insert(e.path.clone(), e); }
+        }
+    }
+    map
+}
+
+/// One entry in corrections.json — a hand-curated override for a specific Lotus path.
+/// Fields are all optional so a minimal entry can omit unused columns.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CorrectionEntry {
+    pub path:          String,
+    /// Display name override. Required unless category is "Ignored".
+    pub name:          Option<String>,
+    /// Display category override, or "Ignored" to suppress the path everywhere.
+    pub category:      Option<String>,
+    /// Explicit WFM tradeability flag. `false` means skip all WFM price lookups.
+    /// When absent the app auto-detects from ducat_price / category.
+    pub tradeable_wfm: Option<bool>,
+    /// True when this item is stackable (quantity shown rather than binary owned).
+    pub is_stackable:  Option<bool>,
+}
+
 pub struct AppState {
     pub db_path: PathBuf,
     pub items_cache_path: PathBuf,
@@ -122,6 +156,16 @@ pub struct AppState {
     /// activation/expiry filtering stays anchored to the current time. Held
     /// behind `Arc` so serving a hit shares the ~1MB tree instead of cloning it.
     pub worldstate_cache: Mutex<Option<(std::time::Instant, Arc<serde_json::Value>, Arc<serde_json::Value>)>>,
+    /// When true, unmatched inventory paths are written to the Unmatched Paths debug folder.
+    pub debug_cat_enabled: Arc<AtomicBool>,
+    /// Subfolders under %LOCALAPPDATA%\warframe-companion\Debugging\
+    pub auto_capture_dir: PathBuf,
+    pub manual_capture_dir: PathBuf,
+    pub memory_probe_path: PathBuf,
+    pub unmatched_paths_dir: PathBuf,
+    /// Merged bundled + user corrections: path → entry.
+    /// Bundled file is embedded at compile time; user file from data dir overrides on a per-path basis.
+    pub corrections: HashMap<String, CorrectionEntry>,
 }
 
 // ─── Item catalog ─────────────────────────────────────────────────────────────
@@ -136,46 +180,188 @@ pub struct CatalogItem {
     pub ducats: Option<u32>,
     pub mastery_req: Option<u32>,
     pub max_level_cap: Option<u32>,
+    /// Explicit tradeability flag from corrections.json. `Some(false)` = not on WFM.
+    /// `None` = auto-detected from ducat_price / category (the normal case for WFCD items).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tradeable_wfm: Option<bool>,
 }
 
 
-/// Determine the correct display category for an item.
-///
-/// Rules (in order):
-///   1. Name contains "Blueprint" → "Blueprints"
-///   2. Name ends with a known weapon/warframe component suffix → "Parts"
-///      (catches WFCD entries that are wrongly tagged as "Blueprints" or
-///       assigned the parent weapon's category instead of their own)
-///   3. WFCD says "Blueprints" but name has no "Blueprint" word → "Parts"
-///      (defensive: WFCD sometimes mis-categorises direct-drop components)
-///   4. Everything else → keep WFCD category as-is
-fn fix_category(name: &str, wfcd_cat: &str, path: &str) -> String {
-    let lower = name.to_lowercase();
+/// Item captured when debug categorization is enabled and an inventory path either
+/// has no WFCD catalog entry or falls through to the "Misc" catch-all.
+#[derive(serde::Serialize, Clone)]
+pub struct DebugUnmatched {
+    pub path:             String,
+    pub name:             String,
+    pub item_type:        String,
+    pub product_category: String,
+    pub wfcd_category:    String,
+    pub final_category:   String,
+    /// "no_wfcd_match" = path not in catalog; "misc_fallback" = in catalog but landed in Misc
+    pub reason:           String,
+    // ── Blob fields present alongside this path ──────────────────────────────
+    /// ItemCount from blob (stackable items only)
+    pub item_count:   Option<i64>,
+    /// Section from blob (unique items: "Suits", "LongGuns", "Melee", etc.)
+    pub section:      Option<String>,
+    /// Number of polarised slots from blob (unique items only)
+    pub polarized:    Option<u32>,
+    /// Total copies from blob (mods only)
+    pub mod_total:    Option<i64>,
+    /// Last 4 non-trivial path segments — helpful when WFCD has no entry for this path
+    pub path_hint:    Vec<String>,
+}
 
-    // Mods and Arcanes are always themselves — check BEFORE the name-contains-
-    // "blueprint" rule so that mods whose names include "Blueprint" (e.g.
-    // "Ballistic Bullseye Blueprint", "Balefire Surge Blueprint") are never
-    // reclassified as Blueprints.
-    if wfcd_cat == "Mods" || wfcd_cat == "Arcanes" {
-        return wfcd_cat.to_string();
+/// Split a PascalCase path segment into space-separated words.
+/// e.g. "GarudaSystemsBlueprint" → "Garuda Systems Blueprint"
+///      "ChromaBeaconCComponent"  → "Chroma Beacon C Component"
+fn camel_to_words(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len() + 8);
+    for (i, &c) in chars.iter().enumerate() {
+        let prev_lower      = i > 0 && chars[i - 1].is_lowercase();
+        let prev_up_next_lo = i > 0 && chars[i - 1].is_uppercase()
+            && i + 1 < chars.len() && chars[i + 1].is_lowercase();
+        if c.is_uppercase() && i > 0 && (prev_lower || prev_up_next_lo) {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Determine the correct display category for an item, using all three WFCD fields
+/// in priority order: type → productCategory → category (display) → name/path heuristics.
+fn fix_category(name: &str, item_type: &str, product_category: &str, wfcd_cat: &str, path: &str) -> String {
+    // ── Tier 0: explicit exclusions ────────────────────────────────────────────
+    // Exalted Weapons are frame abilities, not player inventory items.
+    if matches!(item_type, "Exalted Weapon" | "Node") {
+        return "Excluded".to_string();
+    }
+    // Nightwave/Season challenge definitions leak from the account blob.
+    // They have item_type="Rifle"/"Pistol" etc. which would wrongly place them
+    // in weapon categories. Exclude them entirely — they are not inventory items.
+    if path.contains("/Types/Challenges/") {
+        return "Excluded".to_string();
     }
 
-    // Railjack cosmetics live in Skins.json but have /RailJack/ in their path.
-    if wfcd_cat == "Skins" && path.contains("/RailJack/") {
-        return "Railjack".to_string();
+    // ── Tier 1: Mods and Arcanes ───────────────────────────────────────────────
+    // Checked BEFORE the Blueprint name rule — some mods/arcanes have "Blueprint"
+    // in their display name (e.g. "Balefire Surge Blueprint") and must not flip.
+    if wfcd_cat == "Mods"    { return "Mods".to_string(); }
+    if wfcd_cat == "Arcanes" { return "Arcanes".to_string(); }
+
+    // ── Tier 2: Blueprint name rule ────────────────────────────────────────────
+    if name.contains("Blueprint") { return "Blueprints".to_string(); }
+
+    // ── Tier 3: type field — most reliable, covers all 17 000 items ───────────
+    match item_type {
+        "Warframe" => return "Warframes".to_string(),
+
+        // Companion weapons MUST come before Primary/Secondary checks — WFCD stores
+        // Sentinel weapons (Akaten, Sweeper, Verglas, etc.) with category=Primary.
+        "Companion Weapon" => return "Companions".to_string(),
+
+        "Rifle" | "Shotgun" | "Bow" | "Sniper" | "Launcher" | "Throwing" => {
+            // Railjack turrets/crew weapons share weapon types with Primary weapons.
+            if product_category == "CrewShipWeapons" { return "Railjack".to_string(); }
+            return "Primary".to_string();
+        }
+
+        "Pistol" | "Dual Pistols" => {
+            // Guard against the noisy productCategory=Pistols bucket — Sirocco
+            // (the Operator amp) has type=Pistol but productCategory=OperatorAmps.
+            if product_category == "OperatorAmps" {
+                return "Operator Weapons".to_string();
+            }
+            if product_category != "SentinelWeapons" {
+                return "Secondary".to_string();
+            }
+        }
+
+        "Melee"     => return "Melee".to_string(),
+        "Sentinel"  => return "Companions".to_string(),
+        "Pets"      => return "Companions".to_string(),
+        "Archwing"  => return "Archwing".to_string(),
+        "Arch-Gun"  => return "Archwing".to_string(),
+        "Arch-Melee" => return "Archwing".to_string(),
+        "Railjack Turret" => return "Railjack".to_string(),
+        "Relic"     => return "Relics".to_string(),
+
+        // Modular weapon and companion components → Parts
+        "Zaw Component" | "Kitgun Component" | "K-Drive Component"
+        | "Amp" | "Pet Resource" | "Pet Parts"
+            => return "Parts".to_string(),
+
+        // Forma, Catalysts, Reactors, Arcane Adapters — consumable equipment items.
+        // WFCD groups these under their slot category (Primary/Secondary/etc.) but
+        // they are not weapons — treat them as Resources.
+        "Equipment Adapter" => return "Resources".to_string(),
+
+        // Stackable resources
+        "Resource" | "Fish" | "Fish Part" | "Gem" | "Cut Gem" | "Plant" | "Alloy"
+        | "Medallion" | "Ayatan Sculpture" | "Ayatan Star" | "Eidolon Shard"
+        | "Gear" | "Key" | "Conservation Tag" | "Conservation Prey" | "Boosters"
+        | "Focus Way" | "Focus Lens" | "Currency" | "Fish Bait" | "Specter" | "Extractor"
+            => return "Resources".to_string(),
+
+        // Cosmetics — Sigils and Glyphs get their own tabs
+        "Sigil" => return "Sigils".to_string(),
+        "Glyph" => return "Glyphs".to_string(),
+
+        "Skin" | "Emotes" | "Color Palette" | "Fur Color"
+        | "Fur Pattern" | "Themes" | "Theme Background" | "Theme Sound"
+        | "Ship Decoration" | "Syandana" | "Pet Collar" | "Captura" | "Simulacrum"
+        | "Orbiter" | "Skins"
+            => {
+                if path.contains("/RailJack/") { return "Railjack".to_string(); }
+                return "Skins".to_string();
+            }
+
+        _ => {} // fall through to productCategory
     }
 
-    // Zaw non-strike parts (handles/grips and links) don't grant mastery — only the
-    // strike (tip) does. Move them out of Melee so the Foundry only shows strikes.
-    if path.contains("/Ostron/Melee/ModularMelee")
-        && (path.contains("/Handle/") || path.contains("/Handles/") || path.contains("/Balance/"))
-    {
-        return "Parts".to_string();
+    // ── Tier 4: productCategory — very clean for the 1 137 items that have it ─
+    match product_category {
+        "Suits" | "MechSuits"   => return "Warframes".to_string(),
+        "LongGuns"              => return "Primary".to_string(),
+        "Melee"                 => return "Melee".to_string(),
+        "SentinelWeapons"       => return "Companions".to_string(),
+        "OperatorAmps"          => return "Operator Weapons".to_string(),
+        "SpaceSuits"            => return "Archwing".to_string(),
+        "SpaceGuns"             => return "Archwing".to_string(),
+        "SpaceMelee"            => return "Archwing".to_string(),
+        "Sentinels" | "KubrowPets" => return "Companions".to_string(),
+        "CrewShipWeapons"       => return "Railjack".to_string(),
+        _ => {}
     }
 
-    // MOA/Hound sub-components and Deimos pet crafting parts (mutagens, antigens) are
-    // not companions and don't grant mastery. Only the head grants mastery for
-    // MOAs and Hounds; complete companions (PowerSuit paths) stay as-is.
+    // ── Tier 5: wfcd_cat display-category fallback ─────────────────────────────
+    match wfcd_cat {
+        "Companions"  => return "Companions".to_string(),
+        "Archwing"    => return "Archwing".to_string(),
+        "Railjack"    => return "Railjack".to_string(),
+        "Resources"   => return "Resources".to_string(),
+        // wfcd.rs explicitly sets category="Parts" for built recipe components
+        // (warframe parts, weapon components). Trust that assignment here so they
+        // never fall to the Miscellaneous catch-all.
+        "Parts"       => return "Parts".to_string(),
+        "Primary"     => return "Primary".to_string(),
+        "Secondary"   => return "Secondary".to_string(),
+        "Warframes"   => return "Warframes".to_string(),
+        "Relics" => {
+            // Guard against non-relic items WFCD mis-groups under Relics (segments, etc.)
+            let n = name.to_lowercase();
+            if n.ends_with("intact") || n.ends_with("exceptional")
+                || n.ends_with("flawless") || n.ends_with("radiant")
+            { return "Relics".to_string(); }
+        }
+        "Sigils" => return "Sigils".to_string(),
+        "Glyphs" => return "Glyphs".to_string(),
+        _ => {}
+    }
+
+    // ── Tier 6: path guards for sub-components type/productCategory doesn't cover
     if path.contains("/MoaPetEngine") || path.contains("/MoaPetPayload") || path.contains("/MoaPetLeg")
         || path.contains("/ZanukaPetPartBody") || path.contains("/ZanukaPetPartLegs")
         || path.contains("/ZanukaPetPartTail") || path.contains("/CreaturePetParts/")
@@ -183,13 +369,10 @@ fn fix_category(name: &str, wfcd_cat: &str, path: &str) -> String {
         return "Parts".to_string();
     }
 
-    if lower.contains("blueprint") {
-        return "Blueprints".to_string();
-    }
-
-    // Warframe weapon / sentinel component name endings.
-    // Warframe-frame components (Chassis, Neuroptics, Systems) always have
-    // "Blueprint" in their name, so they are handled by rule 1 above.
+    // ── Tier 7: name-suffix fallback for direct-drop components ───────────────
+    // Warframe-frame components (Chassis, Neuroptics, Systems) always carry
+    // "Blueprint" in their name, caught above. These suffixes cover weapon parts
+    // and companion components that drop pre-built.
     const PART_SUFFIXES: &[&str] = &[
         " receiver", " stock", " barrel", " blade", " handle", " guard",
         " hilt", " link", " gauntlet", " carapace", " cerebrum", " systems",
@@ -199,16 +382,26 @@ fn fix_category(name: &str, wfcd_cat: &str, path: &str) -> String {
         // Modular companion (MOA) components — gyrome/loader/bracket are never the companion itself
         " gyrome", " loader", " bracket",
     ];
+    let lower = name.to_lowercase();
     if PART_SUFFIXES.iter().any(|s| lower.ends_with(s)) {
         return "Parts".to_string();
     }
 
-    // WFCD mis-tags some direct-drop components as "Blueprints".
+    // WFCD mis-tags some direct-drop components as "Blueprints" (no "Blueprint" in name).
     if wfcd_cat == "Blueprints" {
         return "Parts".to_string();
     }
 
-    wfcd_cat.to_string()
+    // ── Tier 8: path-prefix rules ──────────────────────────────────────────────
+    // Bandaid categorization for paths WFCD doesn't cover. Items caught here still
+    // land in the Unmatched Paths debug file (reason: "path_rule") so they can get
+    // explicit name corrections in corrections.json in the future.
+    if path.contains("/CosmeticEnhancers/Antiques/") { return "Arcanes".to_string(); }
+    if path.contains("/SentinelPrecepts/")            { return "Mods".to_string(); }
+    if path.contains("/MeleeTrees/")                  { return "Mods".to_string(); }
+
+    // ── Catch-all ──────────────────────────────────────────────────────────────
+    "Miscellaneous".to_string()
 }
 
 #[tauri::command]
@@ -217,6 +410,7 @@ fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
     // and holding the locks blocks the monitor thread and other commands.
     let items: Vec<wfcd::WfcdItem> = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let bp_names: HashMap<String, (String, Option<u32>)> = state.blueprint_to_result.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let corrections = &state.corrections;
     let items = &items;
     let bp_names = &bp_names;
 
@@ -291,14 +485,15 @@ fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
         if bp_names_added.insert(n.clone()) {
             let vaulted = prime_vaulted(bp_name);
             result.push(CatalogItem {
-                unique_name: bp_unique.clone(),
-                name:        bp_name.clone(),
-                category:    "Blueprints".to_string(),
-                image_name:  None,
+                unique_name:   bp_unique.clone(),
+                name:          bp_name.clone(),
+                category:      "Blueprints".to_string(),
+                image_name:    None,
                 vaulted,
-                ducats:      *bp_ducats,
-                mastery_req: None,
+                ducats:        *bp_ducats,
+                mastery_req:   None,
                 max_level_cap: None,
+                tradeable_wfm: None,
             });
         }
     }
@@ -307,7 +502,8 @@ fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
     // Skip blueprints already covered by ExportRecipes or already added
     // (WFCD may store the same blueprint at multiple paths).
     for i in items.iter().filter(|i| !i.unique_name.contains("PvPVariant")) {
-        let cat = fix_category(&i.name, &i.category, &i.unique_name);
+        let cat = fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name);
+        if cat == "Excluded" { continue; }
         let n = i.name.to_lowercase();
         if cat == "Blueprints" {
             if !bp_names_added.insert(n) { continue; } // skip if already seen
@@ -317,14 +513,15 @@ fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
             if i.name.to_lowercase().contains("prime") { prime_vaulted(&i.name) } else { None }
         });
         result.push(CatalogItem {
-            unique_name: i.unique_name.clone(),
-            name:        i.name.clone(),
-            category:    cat,
-            image_name:  i.image_name.clone(),
+            unique_name:   i.unique_name.clone(),
+            name:          i.name.clone(),
+            category:      cat,
+            image_name:    i.image_name.clone(),
             vaulted,
             ducats:        i.ducats,
             mastery_req:   i.mastery_req,
             max_level_cap: i.max_level_cap,
+            tradeable_wfm: None,
         });
     }
 
@@ -345,7 +542,52 @@ fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
             ducats:        item.ducats,
             mastery_req:   item.mastery_req,
             max_level_cap: None,
+            tradeable_wfm: None,
         });
+    }
+
+    // ── Corrections: remove Ignored items ────────────────────────────────────
+    result.retain(|i| {
+        corrections.get(&i.unique_name)
+            .map(|c| c.category.as_deref() != Some("Ignored"))
+            .unwrap_or(true)
+    });
+
+    // ── Corrections: override name/category/tradeable_wfm ─────────────────────
+    for item in result.iter_mut() {
+        if let Some(c) = corrections.get(&item.unique_name) {
+            if let Some(ref name) = c.name { item.name = name.clone(); }
+            if let Some(ref cat) = c.category {
+                if cat != "Ignored" { item.category = cat.clone(); }
+            }
+            if c.tradeable_wfm.is_some() { item.tradeable_wfm = c.tradeable_wfm; }
+        }
+    }
+
+    // ── Phase 2.5: correction-only items (not in WFCD, have a name) ───────────
+    {
+        let covered: std::collections::HashSet<String> =
+            result.iter().map(|i| i.unique_name.clone()).collect();
+        for (path, c) in corrections.iter() {
+            if covered.contains(path) { continue; }
+            if c.category.as_deref() == Some("Ignored") { continue; }
+            let name = match c.name.as_deref() {
+                Some(n) if !n.is_empty() => n.to_string(),
+                _ => continue,
+            };
+            let category = c.category.clone().unwrap_or_else(|| "Miscellaneous".to_string());
+            result.push(CatalogItem {
+                unique_name:   path.clone(),
+                name,
+                category,
+                image_name:    None,
+                vaulted:       None,
+                ducats:        None,
+                mastery_req:   None,
+                max_level_cap: None,
+                tradeable_wfm: c.tradeable_wfm,
+            });
+        }
     }
 
     // Virtual currency entries (tracked via memory scan, not in WFCD).
@@ -356,15 +598,42 @@ fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
         ("/_currency/PlatinumGift", "Platinum (Gift)", "/platinum-gift.webp"),
     ] {
         result.push(CatalogItem {
-            unique_name: path.to_string(),
-            name:        name.to_string(),
-            category:    "Miscellaneous".to_string(),
-            image_name:  Some(img.to_string()),
+            unique_name:   path.to_string(),
+            name:          name.to_string(),
+            category:      "Miscellaneous".to_string(),
+            image_name:    Some(img.to_string()),
             vaulted:       None,
             ducats:        None,
             mastery_req:   None,
             max_level_cap: None,
+            tradeable_wfm: None,
         });
+    }
+
+    // Phase 4: Path-inferred items — blob paths not covered by any catalog source.
+    // Rule: last path segment ends with "Blueprint" → category Blueprints, name from camelCase parse.
+    // These items are still tracked in the Unmatched Paths debug file (reason: "path_inferred").
+    {
+        let covered: std::collections::HashSet<String> = result.iter()
+            .map(|i| i.unique_name.clone()).collect();
+        let quantities = state.current_quantities.lock().unwrap_or_else(|e| e.into_inner());
+        for (path, _) in quantities.iter() {
+            if covered.contains(path) { continue; }
+            let last = path.rsplit('/').next().unwrap_or(path.as_str());
+            if last.ends_with("Blueprint") && path.contains("/Recipes/") {
+                result.push(CatalogItem {
+                    unique_name:   path.clone(),
+                    name:          camel_to_words(last),
+                    category:      "Blueprints".to_string(),
+                    image_name:    None,
+                    vaulted:       None,
+                    ducats:        None,
+                    mastery_req:   None,
+                    max_level_cap: None,
+                    tradeable_wfm: None,
+                });
+            }
+        }
     }
 
     // Final safety dedup by unique_name
@@ -418,6 +687,7 @@ async fn fetch_item_list(state: State<'_, AppState>) -> Result<usize, String> {
     // Persist items cache
     if let Ok(json) = serde_json::to_string(&result.items.iter().map(|i| serde_json::json!({
         "unique_name": i.unique_name, "name": i.name, "category": i.category,
+        "item_type": i.item_type, "product_category": i.product_category,
         "image_name": i.image_name, "vaulted": i.vaulted, "ducats": i.ducats,
         "mastery_req": i.mastery_req, "omega_attenuation": i.omega_attenuation,
         "fusion_limit": i.fusion_limit, "max_level_cap": i.max_level_cap
@@ -447,11 +717,27 @@ async fn fetch_item_list(state: State<'_, AppState>) -> Result<usize, String> {
     // available at startup without requiring wfcd_items to be loaded first.
     {
         let mut inv = load_inventory_state_cache(&state.inventory_state_cache_path);
-        for item in deduped.iter().filter(|i| i.fusion_limit.is_some()) {
+        for item in deduped.iter().filter(|i| i.fusion_limit.is_some() || i.max_level_cap.is_some() || {
+            let cat = fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name);
+            matches!(cat.as_str(), "Warframes" | "Primary" | "Secondary" | "Melee"
+                                 | "Companions" | "Archwing" | "Operator Weapons")
+        }) {
             let entry = inv.items.entry(item.unique_name.clone())
                 .or_insert_with(|| CachedItem { unique_name: item.unique_name.clone(), ..Default::default() });
             if entry.name.is_empty() { entry.name = item.name.clone(); }
-            entry.mod_max_rank = item.fusion_limit;
+            if item.fusion_limit.is_some() { entry.mod_max_rank = item.fusion_limit; }
+            // Effective level cap: use WFCD's explicit value when present (e.g. 40 for
+            // Necramechs/Paracesis), otherwise fall back to the standard rank-30 cap for
+            // all levelable categories. Non-levelable items get no entry.
+            let effective_cap = item.max_level_cap.or_else(|| {
+                let cat = fix_category(&item.name, &item.item_type, &item.product_category, &item.category, &item.unique_name);
+                match cat.as_str() {
+                    "Warframes" | "Primary" | "Secondary" | "Melee"
+                    | "Companions" | "Archwing" | "Operator Weapons" => Some(30),
+                    _ => None,
+                }
+            });
+            if effective_cap.is_some() { entry.max_level_cap = effective_cap; }
         }
         if let Ok(json) = serde_json::to_string(&inv) {
             let _ = atomic_write(&state.inventory_state_cache_path, json.as_bytes());
@@ -480,6 +766,30 @@ async fn fetch_item_list(state: State<'_, AppState>) -> Result<usize, String> {
 
 // ─── Foundry / Recipes ────────────────────────────────────────────────────────
 
+/// Returns all Primary / Secondary / Melee weapons from the catalog (for the
+/// Weapons completionist tracker). Includes non-craftable weapons (Coda, etc.).
+#[tauri::command]
+fn get_weapon_catalog(state: State<AppState>) -> Vec<CatalogItem> {
+    let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
+    items.iter()
+        .filter(|i| {
+            (i.category == "Primary" || i.category == "Secondary" || i.category == "Melee")
+                && !i.unique_name.contains("PvPVariant")
+        })
+        .map(|i| CatalogItem {
+            unique_name:   i.unique_name.clone(),
+            name:          i.name.clone(),
+            category:      i.category.clone(),
+            image_name:    i.image_name.clone(),
+            vaulted:       i.vaulted,
+            ducats:        i.ducats,
+            mastery_req:   i.mastery_req,
+            max_level_cap: i.max_level_cap,
+            tradeable_wfm: None,
+        })
+        .collect()
+}
+
 /// Returns all items that have a crafting recipe (for the Foundry search list).
 #[tauri::command]
 fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
@@ -493,15 +803,20 @@ fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
     let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
     items.iter()
         .filter(|i| recipe_keys.contains(&i.unique_name) && !i.unique_name.contains("PvPVariant"))
-        .map(|i| CatalogItem {
-            unique_name:   i.unique_name.clone(),
-            name:          i.name.clone(),
-            category:      fix_category(&i.name, &i.category, &i.unique_name),
-            image_name:    i.image_name.clone(),
-            vaulted:       i.vaulted,
-            ducats:        i.ducats,
-            mastery_req:   i.mastery_req,
-            max_level_cap: i.max_level_cap,
+        .filter_map(|i| {
+            let cat = fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name);
+            if cat == "Excluded" { return None; }
+            Some(CatalogItem {
+                unique_name:   i.unique_name.clone(),
+                name:          i.name.clone(),
+                category:      cat,
+                image_name:    i.image_name.clone(),
+                vaulted:       i.vaulted,
+                ducats:        i.ducats,
+                mastery_req:   i.mastery_req,
+                max_level_cap: i.max_level_cap,
+                tradeable_wfm: None,
+            })
         })
         .collect()
 }
@@ -3094,7 +3409,7 @@ fn get_item_price(item_name: String, state: State<AppState>) -> Result<Option<u3
         let mut inv = load_inventory_state_cache(cache_path);
         let items = state.wfcd_items.lock().map_err(|e| e.to_string())?;
         if let Some(item) = items.iter().find(|i| i.name == item_name) {
-            let cat = fix_category(&item.name, &item.category, &item.unique_name);
+            let cat = fix_category(&item.name, &item.item_type, &item.product_category, &item.category, &item.unique_name);
             let tradeable = item.ducats.is_some() || matches!(cat.as_str(), "Mods" | "Arcanes");
             if tradeable {
                 inv.items.entry(item.unique_name.clone())
@@ -3156,7 +3471,7 @@ fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<
         let mut m = HashMap::new();
         for item in items.iter() {
             let slug = to_wfm_slug(&item.name);
-            let cat = fix_category(&item.name, &item.category, &item.unique_name);
+            let cat = fix_category(&item.name, &item.item_type, &item.product_category, &item.category, &item.unique_name);
             let tradeable = item.ducats.is_some() || matches!(cat.as_str(), "Mods" | "Arcanes");
             if tradeable {
                 m.insert(slug.clone(), (item.unique_name.clone(), true));
@@ -3462,7 +3777,7 @@ fn log_api_changes(state: State<AppState>, changes: Vec<ApiChange>) -> Result<()
 
 #[tauri::command]
 async fn dump_memory_probe(state: State<'_, AppState>) -> Result<String, String> {
-    let log_path = state.log_path.with_file_name("memory_probe.txt");
+    let log_path = state.memory_probe_path.clone();
     let lines = tokio::task::spawn_blocking(|| {
         memory_scanner::dump_inventory_regions(40)
     }).await.map_err(|e| e.to_string())?;
@@ -3877,7 +4192,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
 
     // Alias keys (secondary paths) are excluded from the inventory cache entirely —
     // they would show as phantom zero-quantity duplicates of the canonical entry.
-    let alias_excluded: std::collections::HashSet<String> =
+    let mut alias_excluded: std::collections::HashSet<String> =
         path_aliases.keys().map(|s| s.to_string()).collect();
 
     // Build path→name and path→ducat lookups once from the catalog snapshot.
@@ -3896,8 +4211,15 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     let path_to_vaulted: HashMap<String, bool> = items.iter()
         .filter_map(|i| i.vaulted.map(|v| (i.unique_name.clone(), v)))
         .collect();
+    // Owned maps for debug capture — cloned once, no borrow from `items`.
+    let path_to_item_type: HashMap<String, String> = items.iter()
+        .map(|i| (i.unique_name.clone(), i.item_type.clone())).collect();
+    let path_to_product_category: HashMap<String, String> = items.iter()
+        .map(|i| (i.unique_name.clone(), i.product_category.clone())).collect();
+    let path_to_wfcd_cat: HashMap<String, String> = items.iter()
+        .map(|i| (i.unique_name.clone(), i.category.clone())).collect();
     let mut path_to_category: HashMap<String, String> = items.iter()
-        .map(|i| (i.unique_name.clone(), fix_category(&i.name, &i.category, &i.unique_name)))
+        .map(|i| (i.unique_name.clone(), fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name)))
         .collect();
     for (path, name) in [
         ("/_currency/Endo",        "Endo"),
@@ -3908,6 +4230,28 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
         path_to_name.insert(path.to_string(), name.to_string());
         path_to_category.insert(path.to_string(), "Miscellaneous".to_string());
     }
+
+    // ── Apply corrections to path lookups ─────────────────────────────────────
+    let ignored_paths: std::collections::HashSet<String> = state.corrections.iter()
+        .filter(|(_, c)| c.category.as_deref() == Some("Ignored"))
+        .map(|(path, _)| path.clone())
+        .collect();
+    for p in &ignored_paths {
+        path_to_name.remove(p);
+        path_to_category.remove(p);
+    }
+    for (path, c) in &state.corrections {
+        if ignored_paths.contains(path) { continue; }
+        if let Some(ref name) = c.name {
+            if !name.is_empty() { path_to_name.insert(path.clone(), name.clone()); }
+        }
+        if let Some(ref cat) = c.category {
+            path_to_category.insert(path.clone(), cat.clone());
+        }
+    }
+    // Ignored paths are suppressed from the inventory cache just like alias secondaries.
+    alias_excluded.extend(ignored_paths.iter().cloned());
+
     let relic_drops_snapshot: HashMap<String, Vec<String>> =
         state.relic_drops.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
@@ -3920,6 +4264,9 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     let shared_crafting      = state.current_crafting.clone();
     let blob_log_enabled     = state.blob_log_enabled.clone();
     let blob_log_dir         = state.blob_log_dir.clone();
+    let debug_cat_enabled    = state.debug_cat_enabled.clone();
+    let auto_capture_dir     = state.auto_capture_dir.clone();
+    let unmatched_paths_dir  = state.unmatched_paths_dir.clone();
     let reward_app = app.clone();  // clone before app is moved into the inventory thread
 
     // Channel for the blob capture thread to deliver a parsed BlobInventory to the monitor loop.
@@ -4159,6 +4506,105 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 // Cosmetics (FlavourItems + WeaponSkins) — occurrence-counted, go into known
                 for (path, &count) in blob.flavour_items.iter().chain(blob.weapon_skins.iter()) {
                     known.insert(path.clone(), count);
+                }
+
+                // Debug: write paths with no WFCD entry or Misc fallback to the Unmatched Paths folder.
+                if debug_cat_enabled.load(Ordering::Relaxed) {
+                    // ── Reference file (written once per session) ─────────────────────
+                    // Lists every distinct item_type / product_category / wfcd_category value
+                    // present in the catalog, together with the display category fix_category()
+                    // assigns to each.  Useful for adding new tiers to fix_category.
+                    let ref_path = unmatched_paths_dir.join("_reference.json");
+                    if !ref_path.exists() {
+                        // Collect distinct values; BTreeMap keeps them alphabetically sorted.
+                        // Iterate over path_to_name (covers ALL catalog entries, including
+                        // blueprints that have item_type = "" but wfcd_category = "Blueprints").
+                        let mut item_types: std::collections::BTreeMap<String, String> = Default::default();
+                        let mut prod_cats:  std::collections::BTreeMap<String, String> = Default::default();
+                        let mut wfcd_cats:  std::collections::BTreeMap<String, String> = Default::default();
+                        for (path, nm) in &path_to_name {
+                            let it  = path_to_item_type.get(path).map(|s| s.as_str()).unwrap_or("");
+                            let pc  = path_to_product_category.get(path).map(|s| s.as_str()).unwrap_or("");
+                            let wc  = path_to_wfcd_cat.get(path).map(|s| s.as_str()).unwrap_or("");
+                            let cat = fix_category(nm, it, pc, wc, path);
+                            if !it.is_empty() { item_types.entry(it.to_string()).or_insert(cat.clone()); }
+                            if !pc.is_empty() { prod_cats.entry(pc.to_string()).or_insert(cat.clone()); }
+                            if !wc.is_empty() { wfcd_cats.entry(wc.to_string()).or_insert(cat); }
+                        }
+                        let ref_json = serde_json::json!({
+                            "note": "Distinct field values from the loaded WFCD catalog. 'maps_to' shows the display category fix_category() assigns when that field is the deciding factor.",
+                            "item_type": item_types.iter().map(|(v, c)| serde_json::json!({ "value": v, "maps_to": c })).collect::<Vec<_>>(),
+                            "product_category": prod_cats.iter().map(|(v, c)| serde_json::json!({ "value": v, "maps_to": c })).collect::<Vec<_>>(),
+                            "wfcd_category": wfcd_cats.iter().map(|(v, c)| serde_json::json!({ "value": v, "maps_to": c })).collect::<Vec<_>>(),
+                        });
+                        if let Ok(s) = serde_json::to_string_pretty(&ref_json) {
+                            let _ = std::fs::write(&ref_path, s);
+                        }
+                    }
+
+                    // ── Per-scan unmatched file ───────────────────────────────────────
+                    // Build per-path blob field lookups.
+                    let stackable_count: std::collections::HashMap<&str, i64> = blob.stackable_items.iter()
+                        .map(|e| (e.item_type.as_str(), e.item_count)).collect();
+                    let unique_section: std::collections::HashMap<&str, &str> = blob.unique_items.iter()
+                        .map(|e| (e.item_type.as_str(), e.section.as_str())).collect();
+                    let unique_polarized: std::collections::HashMap<&str, u32> = blob.unique_items.iter()
+                        .map(|e| (e.item_type.as_str(), e.polarized)).collect();
+
+                    let all_paths: Vec<&str> = blob.stackable_items.iter().map(|e| e.item_type.as_str())
+                        .chain(blob.unique_items.iter().map(|e| e.item_type.as_str()))
+                        .chain(blob.mods.keys().map(|k| k.as_str()))
+                        .collect();
+                    let mut new_entries: Vec<DebugUnmatched> = Vec::new();
+                    for p in all_paths {
+                        if p.starts_with("/_currency/") { continue; }
+                        if ignored_paths.contains(p) { continue; }
+                        let name = path_to_name.get(p).cloned().unwrap_or_default();
+                        let (reason, final_cat) = if name.is_empty() {
+                            // Check path-prefix rules first (Tier 8 in fix_category).
+                            let inferred_cat = fix_category("", "", "", "", p);
+                            if inferred_cat != "Miscellaneous" && inferred_cat != "Excluded" {
+                                ("path_rule".to_string(), inferred_cat)
+                            } else {
+                                let last = p.rsplit('/').next().unwrap_or("");
+                                if last.ends_with("Blueprint") && p.contains("/Recipes/") {
+                                    ("path_inferred".to_string(), "Blueprints".to_string())
+                                } else {
+                                    ("no_wfcd_match".to_string(), "Unknown".to_string())
+                                }
+                            }
+                        } else {
+                            let cat = path_to_category.get(p).map(|s| s.as_str()).unwrap_or("Miscellaneous");
+                            if cat != "Miscellaneous" { continue; }
+                            ("misc_fallback".to_string(), "Misc".to_string())
+                        };
+                        // Last 4 non-trivial segments for quick identification.
+                        let path_hint: Vec<String> = p.split('/')
+                            .filter(|s| !s.is_empty() && *s != "Lotus")
+                            .rev().take(4).collect::<Vec<_>>()
+                            .into_iter().rev().map(|s| s.to_string()).collect();
+                        new_entries.push(DebugUnmatched {
+                            path: p.to_string(),
+                            name,
+                            item_type:        path_to_item_type.get(p).cloned().unwrap_or_default(),
+                            product_category: path_to_product_category.get(p).cloned().unwrap_or_default(),
+                            wfcd_category:    path_to_wfcd_cat.get(p).cloned().unwrap_or_default(),
+                            final_category:   final_cat,
+                            reason,
+                            item_count:  stackable_count.get(p).copied(),
+                            section:     unique_section.get(p).map(|s| s.to_string()),
+                            polarized:   unique_polarized.get(p).copied(),
+                            mod_total:   blob.mods.get(p).map(|m| m.total),
+                            path_hint,
+                        });
+                    }
+                    if !new_entries.is_empty() {
+                        let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
+                        let out = unmatched_paths_dir.join(format!("{}.json", ts));
+                        if let Ok(json) = serde_json::to_string_pretty(&new_entries) {
+                            let _ = std::fs::write(&out, json);
+                        }
+                    }
                 }
 
                 // Meta
@@ -4472,6 +4918,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     let ee_catalog   = std::sync::Arc::clone(&catalog_pairs);
     let ee_last_path = last_found_path.clone();
     let session_log_path = std::env::temp_dir().join("frameforge_overlay_session.txt");
+    let ee_auto_capture_dir = auto_capture_dir.clone();
 
     if let Some(log_path) = ee_log_path {
         let flag = reward_flag.clone();
@@ -4983,7 +5430,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         warn!(error = %e, "session log write failed");
                     }
                     // Create one diagnostics folder for this entire run.
-                    let run_diag_dir = diag_dir().join(
+                    let run_diag_dir = ee_auto_capture_dir.join(
                         chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string()
                     );
                     let _ = std::fs::create_dir_all(&run_diag_dir);
@@ -6809,6 +7256,15 @@ fn inject_overlay_diagnostic(app: tauri::AppHandle) -> String {
 /// Debug helper: create a test window from Rust side to verify whether JS-side
 /// WebviewWindow creation is broken. Returns Ok("created") or Err(reason).
 /// Uses a URL hash (#modular) so the Tauri asset protocol serves clean index.html
+/// Toggle debug categorization mode. Returns the new state (true = enabled).
+#[tauri::command]
+fn toggle_debug_categorization(state: State<AppState>) -> bool {
+    let prev = state.debug_cat_enabled.fetch_xor(true, Ordering::SeqCst);
+    let enabled = !prev;
+    info!(debug_cat = enabled, "debug categorization toggled");
+    enabled
+}
+
 /// and the Tauri init script is injected properly — query strings prevent this.
 #[tauri::command]
 fn debug_create_window(app: tauri::AppHandle) -> Result<String, String> {
@@ -6943,9 +7399,7 @@ fn get_pending_relic_rewards(state: State<'_, AppState>) -> Option<serde_json::V
     state.pending_relic_rewards.lock().ok()?.take()
 }
 
-fn diag_dir() -> std::path::PathBuf {
-    std::env::temp_dir().join("warframe-companion").join("diagnostics")
-}
+// diag_dir() removed — all callers now use state.auto_capture_dir directly.
 
 fn dir_size_bytes(dir: &std::path::Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else { return 0; };
@@ -6959,15 +7413,15 @@ fn dir_size_bytes(dir: &std::path::Path) -> u64 {
 
 /// Return the total size of %TEMP%\warframe-companion\diagnostics\ in bytes.
 #[tauri::command]
-fn get_diag_folder_size() -> u64 {
-    dir_size_bytes(&diag_dir())
+fn get_diag_folder_size(state: State<AppState>) -> u64 {
+    dir_size_bytes(&state.auto_capture_dir)
 }
 
-/// Delete all timestamped capture folders inside the diagnostics directory.
+/// Delete all timestamped capture folders inside the auto-capture directory.
 /// Returns the size after deletion (always 0 on success).
 #[tauri::command]
-fn clear_diag_folder() -> u64 {
-    let dir = diag_dir();
+fn clear_diag_folder(state: State<AppState>) -> u64 {
+    let dir = state.auto_capture_dir.clone();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.filter_map(|e| e.ok()) {
             let p = entry.path();
@@ -7082,11 +7536,13 @@ async fn prewarm_image_cache(state: tauri::State<'_, AppState>) -> Result<(), St
 #[tauri::command]
 fn open_debug_folder(state: State<AppState>, which: String) -> Result<(), String> {
     let path: std::path::PathBuf = match which.as_str() {
-        "blobs"    => state.blob_log_dir.clone(),
-        "api_logs" => state.api_log_dir.clone(),
-        "raw_scan" | "probe" => state.raw_scan_path.parent()
-            .ok_or("no parent")?.to_path_buf(),
-        "diag"     => diag_dir(),
+        "blobs"           => state.blob_log_dir.clone(),
+        "api_logs"        => state.api_log_dir.clone(),
+        "raw_scan"        => state.raw_scan_path.parent().ok_or("no parent")?.to_path_buf(),
+        "probe"           => state.memory_probe_path.parent().ok_or("no parent")?.to_path_buf(),
+        "diag"            => state.auto_capture_dir.clone(),
+        "manual_capture"  => state.manual_capture_dir.clone(),
+        "unmatched_paths" => state.unmatched_paths_dir.clone(),
         _ => return Err("Unknown debug folder".into()),
     };
     std::fs::create_dir_all(&path).ok();
@@ -7109,25 +7565,37 @@ fn clear_debug_data(state: State<AppState>, which: String) -> Result<(), String>
         }
     };
     match which.as_str() {
-        "blobs"    => clear_dir(&state.blob_log_dir),
-        "api_logs" => clear_dir(&state.api_log_dir),
-        "raw_scan" => { let _ = std::fs::remove_file(&state.raw_scan_path); }
-        "probe"    => { let _ = std::fs::remove_file(state.log_path.with_file_name("memory_probe.txt")); }
+        "blobs"           => clear_dir(&state.blob_log_dir),
+        "api_logs"        => clear_dir(&state.api_log_dir),
+        "raw_scan"        => { let _ = std::fs::remove_file(&state.raw_scan_path); }
+        "probe"           => { let _ = std::fs::remove_file(&state.memory_probe_path); }
+        "unmatched_paths" => clear_dir(&state.unmatched_paths_dir),
+        "manual_capture"  => {
+            if let Ok(entries) = std::fs::read_dir(&state.manual_capture_dir) {
+                for e in entries.filter_map(|e| e.ok()) {
+                    let p = e.path();
+                    if p.is_dir() { let _ = std::fs::remove_dir_all(&p); }
+                    else          { let _ = std::fs::remove_file(&p); }
+                }
+            }
+        }
         _ => return Err("Unknown debug data type".into()),
     }
     Ok(())
 }
 
 /// Return the byte size of a debug folder or file.
-/// `which`: "blobs" | "api_logs" | "raw_scan" | "probe" | "diag"
+/// `which`: "blobs" | "api_logs" | "raw_scan" | "probe" | "diag" | "manual_capture" | "unmatched_paths"
 #[tauri::command]
 fn get_debug_data_size(state: State<AppState>, which: String) -> u64 {
     match which.as_str() {
-        "blobs"    => dir_size_bytes(&state.blob_log_dir),
-        "api_logs" => dir_size_bytes(&state.api_log_dir),
-        "raw_scan" => std::fs::metadata(&state.raw_scan_path).map(|m| m.len()).unwrap_or(0),
-        "probe"    => std::fs::metadata(state.log_path.with_file_name("memory_probe.txt")).map(|m| m.len()).unwrap_or(0),
-        "diag"     => dir_size_bytes(&diag_dir()),
+        "blobs"           => dir_size_bytes(&state.blob_log_dir),
+        "api_logs"        => dir_size_bytes(&state.api_log_dir),
+        "raw_scan"        => std::fs::metadata(&state.raw_scan_path).map(|m| m.len()).unwrap_or(0),
+        "probe"           => std::fs::metadata(&state.memory_probe_path).map(|m| m.len()).unwrap_or(0),
+        "diag"            => dir_size_bytes(&state.auto_capture_dir),
+        "manual_capture"  => dir_size_bytes(&state.manual_capture_dir),
+        "unmatched_paths" => dir_size_bytes(&state.unmatched_paths_dir),
         _ => 0,
     }
 }
@@ -7182,13 +7650,11 @@ async fn save_auto_diag_capture(state: State<'_, AppState>) -> Result<String, St
     let frame = state.last_ocr_frame.lock()
         .ok()
         .and_then(|g| g.clone());
+    let auto_capture_dir = state.auto_capture_dir.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
         let ts = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
-        let folder = std::env::temp_dir()
-            .join("warframe-companion")
-            .join("diagnostics")
-            .join(&ts);
+        let folder = auto_capture_dir.join(&ts);
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
 
         let session_log = std::env::temp_dir().join("frameforge_overlay_session.txt");
@@ -7216,14 +7682,12 @@ async fn save_auto_diag_capture(state: State<'_, AppState>) -> Result<String, St
 
 #[tauri::command]
 async fn capture_diagnostics(state: State<'_, AppState>) -> Result<String, String> {
-    let log_path     = state.log_path.clone();
-    let changes_path = state.changes_log_path.clone();
+    let log_path          = state.log_path.clone();
+    let changes_path      = state.changes_log_path.clone();
+    let manual_capture_dir = state.manual_capture_dir.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let ts = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
-        let folder = std::env::temp_dir()
-            .join("warframe-companion")
-            .join("diagnostics")
-            .join(&ts);
+        let folder = manual_capture_dir.join(&ts);
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
 
         if log_path.exists()     { let _ = std::fs::copy(&log_path,     folder.join("scan_log.txt")); }
@@ -7391,6 +7855,12 @@ fn fetch_relics_run_data() -> (HashMap<String, u32>, HashMap<String, u32>) {
 fn load_items_cache(path: &PathBuf) -> Option<Vec<WfcdItem>> {
     let s = std::fs::read_to_string(path).ok()?;
     let arr: Vec<serde_json::Value> = serde_json::from_str(&s).ok()?;
+    // If the cache predates the item_type/product_category fields, discard it so
+    // a fresh fetch populates the new fields needed by fix_category.
+    if arr.first().map_or(false, |v| v.get("item_type").is_none()) {
+        let _ = std::fs::remove_file(path);
+        return None;
+    }
     let items: Vec<WfcdItem> = arr.into_iter().filter_map(|v| {
         let unique_name = v["unique_name"].as_str()?.to_string();
         let raw_name = v["name"].as_str()?.to_string();
@@ -7398,14 +7868,16 @@ fn load_items_cache(path: &PathBuf) -> Option<Vec<WfcdItem>> {
         let image_name = v["image_name"].as_str().map(|s| s.to_string());
         let vaulted = v["vaulted"].as_bool();
         let ducats = v["ducats"].as_u64().map(|n| n as u32);
-        let raw_cat = v["category"].as_str()?.to_string();
-        let category = patch_item_category(&name, &raw_cat, &unique_name);
+        let raw_cat          = v["category"].as_str()?.to_string();
+        let category         = patch_item_category(&name, &raw_cat, &unique_name);
+        let item_type        = v["item_type"].as_str().unwrap_or("").to_string();
+        let product_category = v["product_category"].as_str().unwrap_or("").to_string();
         let mastery_req       = v["mastery_req"].as_u64().map(|n| n as u32);
         let omega_attenuation = v["omega_attenuation"].as_f64().map(|n| n as f32);
         let fusion_limit      = v["fusion_limit"].as_u64().map(|n| n as u32);
         let max_level_cap     = v["max_level_cap"].as_u64().map(|n| n as u32)
             .or_else(|| if unique_name.contains("/EntratiMech/") { Some(40) } else { None });
-        Some(WfcdItem { unique_name, name, category, image_name, vaulted, ducats, mastery_req, omega_attenuation, fusion_limit, max_level_cap })
+        Some(WfcdItem { unique_name, name, category, item_type, product_category, image_name, vaulted, ducats, mastery_req, omega_attenuation, fusion_limit, max_level_cap })
     }).collect();
     if items.is_empty() { None } else { Some(dedup_known_aliases(items)) }
 }
@@ -7437,6 +7909,14 @@ pub struct ApiModCopy {
     count: i64,
 }
 
+/// One resolved modular component (Amp Prism/Scaffold/Brace, Kitgun barrel, etc.)
+/// stored inside the parent item's cache entry.
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
+struct ModularPart {
+    path: String,
+    name: String,
+}
+
 /// One item's complete persisted state — all data for a single inventory entry in one place.
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
 struct CachedItem {
@@ -7454,9 +7934,17 @@ struct CachedItem {
     /// Socketed Archon Shards (warframes only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     archon_shards: Vec<memory_scanner::ArchonShard>,
+    /// Resolved modular components (Amp Prism/Scaffold/Brace, Kitgun parts, etc.).
+    /// Populated from the blob's ModularParts array with names looked up from WFCD + corrections.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    modular_parts: Vec<ModularPart>,
     /// Maximum rank this mod/arcane can reach (from WFCD fusionLimit). Absent for non-mod items.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mod_max_rank: Option<u32>,
+    /// Maximum level cap override (from WFCD maxLevelCap). Only set for items that exceed rank 30
+    /// (e.g. Paracesis, Ironbride, Necramechs). Absent when the standard 30-cap applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_level_cap: Option<u32>,
     /// Mod/arcane rank breakdown: rank (as string) → copy count at that rank.
     /// Present only for mods and arcanes. Sum of values equals `amount`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -7583,6 +8071,14 @@ fn build_inventory_from_blob(
         item.amount        = 1;
         item.archon_shards = entry.archon_shards.clone();
         if entry.polarized > 0 { item.forma_count = Some(entry.polarized); }
+        if !entry.modular_parts.is_empty() {
+            item.modular_parts = entry.modular_parts.iter()
+                .map(|p| ModularPart {
+                    path: p.clone(),
+                    name: path_to_name.get(p).cloned().unwrap_or_default(),
+                })
+                .collect();
+        }
     }
 
     // Subsumed warframes (InfestedFoundry.ConsumedSuits).
@@ -7789,11 +8285,20 @@ pub fn run() {
     let settings_path = data_dir.join("settings.json");
     let log_path = data_dir.join("scan_log.txt");
     let changes_log_path = data_dir.join("inventory_changes.txt");
-    let raw_scan_path = data_dir.join("raw_scan.txt");
-    let blob_log_dir = data_dir.join("blobs");
-    let _ = std::fs::create_dir_all(&blob_log_dir);
-    let api_log_dir = data_dir.join("api_logs");
-    let _ = std::fs::create_dir_all(&api_log_dir);
+    let debug_root = data_dir.join("Debugging");
+    let blob_log_dir = debug_root.join("Inventory Snapshots");
+    let api_log_dir = debug_root.join("Api Responses");
+    let auto_capture_dir = debug_root.join("Auto-Capture");
+    let manual_capture_dir = debug_root.join("Manual Capture");
+    let memory_probe_dir = debug_root.join("Memory Probe");
+    let raw_scan_dir = debug_root.join("Raw Memory Record");
+    let unmatched_paths_dir = debug_root.join("Unmatched Paths");
+    let raw_scan_path = raw_scan_dir.join("raw_scan.txt");
+    let memory_probe_path = memory_probe_dir.join("memory_probe.txt");
+    for dir in &[&blob_log_dir, &api_log_dir, &auto_capture_dir, &manual_capture_dir,
+                 &memory_probe_dir, &raw_scan_dir, &unmatched_paths_dir] {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let wfm_top_cache_path = data_dir.join("wfm_top_cache.json");
     let syndicate_catalog_path = data_dir.join("syndicate_catalog.json");
     let img_cache_dir = data_dir.join("img_cache");
@@ -7888,6 +8393,8 @@ pub fn run() {
     let initial_syndicate_catalog: HashMap<String, Vec<SyndicateOffer>> = std::fs::read_to_string(&syndicate_catalog_path)
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
 
+    let corrections = load_corrections(&data_dir.join("corrections.json"));
+
     tauri::Builder::default()
         .register_uri_scheme_protocol("ffauth", |ctx, req| console_login::handle_ffauth(ctx.app_handle(), &req)) // [console-login feature]
         .plugin(tauri_plugin_opener::init())
@@ -7941,6 +8448,12 @@ pub fn run() {
             relics_run_prices: Mutex::new(initial_relics_run_prices),
             relics_run_prices_cache_path,
             worldstate_cache: Mutex::new(None),
+            debug_cat_enabled: Arc::new(AtomicBool::new(false)),
+            auto_capture_dir,
+            manual_capture_dir,
+            memory_probe_path,
+            unmatched_paths_dir,
+            corrections,
         })
         .setup(|app| {
             use tauri::Manager;
@@ -8059,7 +8572,9 @@ pub fn run() {
             get_app_version,
             set_app_version,
             force_quit,
+            get_weapon_catalog,
             get_craftable_items,
+            toggle_debug_categorization,
             get_recipe,
             get_recipes_bulk,
             get_relic_drops,
