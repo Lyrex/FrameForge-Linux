@@ -67,6 +67,7 @@ import { notify, ensurePermission } from "./notify";
 import { collectNewMatches, type SeenFissures } from "./fissureAlerts";
 import Statistics from "./Statistics";
 import Syndicates from "./Syndicates";
+import Weapons from "./Weapons";
 import Overlay from "./Overlay";
 import ModularWindow from "./ModularWindow";
 import { HelpTip } from "./HelpTip";
@@ -179,9 +180,10 @@ const CATEGORIES = [
   { id: "Primary",    label: "Primary" },
   { id: "Secondary",  label: "Secondary" },
   { id: "Melee",      label: "Melee" },
-  { id: "Companions", label: "Companions" },
-  { id: "Archwing",   label: "Archwing" },
-  { id: "Parts",      label: "Parts" },
+  { id: "Companions",       label: "Companions" },
+  { id: "Archwing",         label: "Archwing" },
+  { id: "Operator Weapons", label: "Operator Weapons" },
+  { id: "Parts",            label: "Parts" },
   { id: "Blueprints", label: "Blueprints" },
   { id: "Miscellaneous", label: "Miscellaneous" },
   { id: "Sigils",     label: "Sigils" },
@@ -779,6 +781,8 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   });
   const [marketFilters, setMarketFilters] = useState(MARKET_FILTERS_DEFAULT);
   const [relicFilters, setRelicFilters] = useState(RELIC_FILTERS_DEFAULT);
+  const [completionistView, setCompletionistView] = useState<"syndicates" | "weapons">("syndicates");
+  const [weaponsTab, setWeaponsTab] = useState<"Primary" | "Secondary" | "Melee">("Primary");
   const [syndicateFilters, setSyndicateFilters] = useState({
     activeGroup: "main" as "main" | "openworld" | "other" | "lab",
     activeTab: "Steel Meridian", missingOnly: false, search: "",
@@ -814,6 +818,8 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [apiLogSize,     setApiLogSize]     = useState(0);
   const [rawScanSize,    setRawScanSize]    = useState(0);
   const [probeSize,      setProbeSize]      = useState(0);
+  const [debugCatEnabled,    setDebugCatEnabled]    = useState(false);
+  const [unmatchedPathsSize, setUnmatchedPathsSize] = useState(0);
   // "scanning" while blob capture is running, "done" briefly after it finishes
   const [blobStage, setBlobStage] = useState<"scanning" | "done" | null>(null);
   const blobDoneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -894,10 +900,11 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
 
   // ── Debug data sizes — reload when the Debugging settings tab opens ─────────
   const reloadDebugSizes = useCallback(() => {
-    invoke<number>("get_debug_data_size", { which: "blobs"    }).then(setBlobLogSize).catch(() => {});
-    invoke<number>("get_debug_data_size", { which: "api_logs" }).then(setApiLogSize).catch(() => {});
-    invoke<number>("get_debug_data_size", { which: "raw_scan" }).then(setRawScanSize).catch(() => {});
-    invoke<number>("get_debug_data_size", { which: "probe"    }).then(setProbeSize).catch(() => {});
+    invoke<number>("get_debug_data_size", { which: "blobs"           }).then(setBlobLogSize).catch(() => {});
+    invoke<number>("get_debug_data_size", { which: "api_logs"        }).then(setApiLogSize).catch(() => {});
+    invoke<number>("get_debug_data_size", { which: "raw_scan"        }).then(setRawScanSize).catch(() => {});
+    invoke<number>("get_debug_data_size", { which: "probe"           }).then(setProbeSize).catch(() => {});
+    invoke<number>("get_debug_data_size", { which: "unmatched_paths" }).then(setUnmatchedPathsSize).catch(() => {});
     invoke<number>("get_diag_folder_size").then(setDiagFolderSize).catch(() => {});
   }, []);
 
@@ -2731,7 +2738,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                           {diagPath && <span style={{ display: "block", marginTop: 2, color: "var(--green)", fontSize: 11 }}>Saved.</span>}
                         </span>
                       </div>
-                      <button className="btn-secondary" onClick={() => invoke("open_debug_folder", { which: "diag" }).catch(() => {})}>Go To Folder</button>
+                      <button className="btn-secondary" onClick={() => invoke("open_debug_folder", { which: "manual_capture" }).catch(() => {})}>Go To Folder</button>
                       <button className="btn-secondary" disabled={diagCapturing}
                         onClick={async () => {
                           setDiagCapturing(true); setDiagPath(null);
@@ -2857,6 +2864,32 @@ if (typeof s.autoDiagEnabled === "boolean") {
                         </div>
                       )}
 
+                    </div>
+                  </div>
+
+                  {/* ── Categorization Debug ── */}
+                  <div className="settings-section">
+                    <div className="settings-section-title">Categorization Debug</div>
+                    <div className="debug-table">
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">Unmatched Paths</span>
+                        <span className="settings-row-desc">
+                          When on, writes a JSON file per scan to the Unmatched Paths folder for any inventory path with no WFCD match or that fell to the Misc catch-all.
+                        </span>
+                      </div>
+                      <button className="btn-secondary"
+                        onClick={() => invoke("open_debug_folder", { which: "unmatched_paths" }).catch(() => {})}>Go To Folder</button>
+                      <button className="btn-secondary"
+                        style={{ background: debugCatEnabled ? "rgba(56,139,253,.15)" : undefined, borderColor: debugCatEnabled ? "var(--accent)" : undefined }}
+                        onClick={() => invoke<boolean>("toggle_debug_categorization").then(setDebugCatEnabled).catch(() => {})}>
+                        {debugCatEnabled ? "On" : "Off"}
+                      </button>
+                      <button className="btn-secondary"
+                        style={{ color: unmatchedPathsSize > 0 ? "var(--red)" : undefined, borderColor: unmatchedPathsSize > 0 ? "var(--red)" : undefined }}
+                        disabled={unmatchedPathsSize === 0}
+                        onClick={async () => { await invoke("clear_debug_data", { which: "unmatched_paths" }); setUnmatchedPathsSize(0); }}>
+                        {unmatchedPathsSize > 0 ? `Clear (${fmtBytes(unmatchedPathsSize)})` : "Clear"}
+                      </button>
                     </div>
                   </div>
 
@@ -3179,7 +3212,37 @@ if (typeof s.autoDiagEnabled === "boolean") {
         {activeModule === "completionist" && (
           <ErrorBoundary>
             <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-              <Syndicates inventory={inventory} filters={syndicateFilters} onFiltersChange={setSyndicateFilters} />
+              {/* Top-level view switcher */}
+              <div style={{ display: "flex", gap: 2, padding: "8px 12px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+                {(["syndicates", "weapons"] as const).map(v => (
+                  <button
+                    key={v}
+                    onClick={() => setCompletionistView(v)}
+                    style={{
+                      padding: "5px 16px",
+                      border: "none",
+                      borderRadius: "6px 6px 0 0",
+                      borderBottom: `3px solid ${completionistView === v ? "var(--accent, #888)" : "transparent"}`,
+                      background: completionistView === v ? "var(--bg-card)" : "transparent",
+                      color: completionistView === v ? "var(--text)" : "var(--text-dim)",
+                      cursor: "pointer",
+                      fontSize: 13,
+                      fontWeight: 500,
+                      marginBottom: -1,
+                      transition: "background 0.15s, color 0.15s",
+                      textTransform: "capitalize",
+                    }}
+                  >
+                    {v === "syndicates" ? "Syndicates" : "Weapons"}
+                  </button>
+                ))}
+              </div>
+              {completionistView === "syndicates" && (
+                <Syndicates inventory={inventory} filters={syndicateFilters} onFiltersChange={setSyndicateFilters} />
+              )}
+              {completionistView === "weapons" && (
+                <Weapons inventory={inventory} activeTab={weaponsTab} onTabChange={setWeaponsTab} />
+              )}
             </div>
           </ErrorBoundary>
         )}

@@ -114,7 +114,7 @@ function isLichWeapon(item: CatalogItem): boolean {
   return item.name.startsWith("Kuva ") || item.name.startsWith("Tenet ");
 }
 
-const LEVELABLE_CATS = new Set(["Warframes", "Primary", "Secondary", "Melee", "Companions", "Archwing"]);
+const LEVELABLE_CATS = new Set(["Warframes", "Primary", "Secondary", "Melee", "Companions", "Archwing", "Operator Weapons"]);
 
 /** Effective max rank for an item. WFCD only sets maxLevelCap for items above 30;
  *  levelable-category items without it default to 30. Non-levelable items return null. */
@@ -570,8 +570,8 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
 // ─── Foundry ─────────────────────────────────────────────────────────────────
 
 const CRAFT_CATEGORIES = [
-  "Warframes", "Primary", "Secondary", "Melee",
-  "Companions", "Archwing", "Parts", "Blueprints", "Misc",
+  "All", "Warframes", "Primary", "Secondary", "Melee",
+  "Companions", "Archwing", "Operator Weapons", "Parts", "Blueprints", "Miscellaneous",
 ];
 
 export default function Foundry({ inventory, refreshKey, crafting, subsummedWarframes = new Set(), tracked, onTrackToggle, filters, onFiltersChange, pageSize = 30 }: Props) {
@@ -710,7 +710,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
   }, []);
 
   const categoryCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
+    const counts: Record<string, number> = { All: craftable.length };
     for (const i of craftable) counts[i.category] = (counts[i.category] ?? 0) + 1;
     return counts;
   }, [craftable]);

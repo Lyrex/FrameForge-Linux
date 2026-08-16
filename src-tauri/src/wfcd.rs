@@ -7,6 +7,10 @@ pub struct WfcdItem {
     pub name: String,
     pub unique_name: String,
     pub category: String,
+    /// WFCD `type` field — most granular discriminator (110 values). Always set.
+    pub item_type: String,
+    /// WFCD `productCategory` field — inventory slot type. Empty string when not set (~93% of items).
+    pub product_category: String,
     pub image_name: Option<String>,
     /// Some(true) = vaulted, Some(false) = unvaulted, None = no vault status (non-prime)
     pub vaulted: Option<bool>,
@@ -685,6 +689,8 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
                 None => continue,
             };
 
+            let item_type         = item.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let product_category  = item.get("productCategory").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let image_name        = item.get("imageName").and_then(|v| v.as_str()).map(|s| s.to_string());
             let vaulted           = item.get("vaulted").and_then(|v| v.as_bool());
             let ducats            = item.get("ducats").and_then(|v| v.as_u64()).map(|n| n as u32);
@@ -726,6 +732,8 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
                     name: name.clone(),
                     unique_name: unique_name.clone(),
                     category: corrected_cat.clone(),
+                    item_type: item_type.clone(),
+                    product_category: product_category.clone(),
                     image_name: image_name.clone(),
                     vaulted, ducats, mastery_req, omega_attenuation, fusion_limit, max_level_cap,
                 });
@@ -842,6 +850,8 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
                             name: comp_name.clone(),
                             unique_name: cunique.clone(),
                             category: comp_cat.to_string(),
+                            item_type: String::new(),
+                            product_category: String::new(),
                             image_name: comp_image.clone(),
                             vaulted: None,
                             ducats: comp_ducats,
@@ -933,6 +943,8 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
                             name:             format!("{} Blueprint", rname),
                             unique_name:      bp_unique.clone(),
                             category:         "Blueprints".to_string(),
+                            item_type:        String::new(),
+                            product_category: String::new(),
                             image_name:       image_by_unique.get(result_type).and_then(|i| i.clone()),
                             vaulted:          None,
                             ducats:           None,
@@ -961,6 +973,8 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
                             name:             bname,
                             unique_name:      result_type.clone(),
                             category:         "Parts".to_string(),
+                            item_type:        String::new(),
+                            product_category: String::new(),
                             image_name:       image_by_unique.get(result_type).and_then(|i| i.clone()),
                             vaulted:          None,
                             ducats:           None,
@@ -990,6 +1004,8 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
                     name:             format!("{} Blueprint", item.name),
                     unique_name:      bp_unique,
                     category:         "Blueprints".to_string(),
+                    item_type:        String::new(),
+                    product_category: String::new(),
                     image_name:       item.image_name.clone(),
                     vaulted:          None,
                     ducats:           None,
@@ -1054,6 +1070,8 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
                             name:             item.name.clone(),
                             unique_name:      bp_unique.clone(),
                             category:         "Blueprints".to_string(),
+                            item_type:        String::new(),
+                            product_category: String::new(),
                             image_name:       item.image_name.clone(),
                             vaulted:          item.vaulted,
                             ducats:           item.ducats,
@@ -1212,6 +1230,7 @@ pub fn fallback_items() -> Vec<WfcdItem> {
         unique_name: u.to_string(),
         name: n.to_string(),
         category: c.to_string(),
+        item_type: String::new(), product_category: String::new(),
         image_name: None, vaulted: None, ducats: None, mastery_req: None, omega_attenuation: None, fusion_limit: None, max_level_cap: None,
     })
     .collect()

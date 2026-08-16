@@ -1,0 +1,206 @@
+[
+    {
+        "path": "/Lotus/Types/Recipes/Components/VorBoltRemoverFakeItem",
+        "name": "Chroma Mark",
+        "category": "Resources",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/WarframeRecipes/ChromaBeaconCComponent",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Weapons/Tenno/Melee/MeleeTrees/StaffCmbOneMeleeTree",
+        "name": "Clashing Forest",
+        "category": "Mods",
+        "tradeable_wfm": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/WarframeRecipes/GarudaSystemsBlueprint",
+        "name": "Garuda Systems Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/SpinnerexHandleBlueprint",
+        "name": "Spinnerex Handle Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/VinquibusReceiverBlueprint",
+        "name": "Vinquibus Receiver Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/StoreItems/Consumables/TenCipherBlueprint",
+        "name": "Cipher X 10 Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/GrnGhoulSawBladeBlueprint",
+        "name": "GhoulSaw Blade Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/GrnGhoulSawChassisBlueprint",
+        "name": "GhoulSaw Chassis Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/GrnGhoulSawHandleBlueprint",
+        "name": "GhoulSaw Handle Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/InfUziWeaponBarrelBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/LandingCraftRecipes/ZarimanShip/ZarimanShipFuselageBlueprint",
+        "name": "Parallax Fuselage Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/InfTransformClawsWeaponBladeBlueprint",
+        "name": "Keratinos Blades Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/LandingCraftRecipes/ZarimanShip/ZarimanShipAvionicsBlueprint",
+        "name": "Parallax Avionics Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/ThanotechPistolBarrelBlueprint",
+        "name": "Sepulcrum Barrel Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/StoreItems/Consumables/LisetAirSupportHundredBlueprint",
+        "name": "Air Support Charges X 100 Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Weapons/ClanTech/Chemical/LargeHundredTeamAmmoBlueprint",
+        "name": "Squad Ammo Restore (Large) X 100 Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/AmbassadorReceiverBlueprint",
+        "name": "Ambassador Receiver Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/AmbassadorBarrelBlueprint",
+        "name": "Ambassador Barrel Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/LandingCraftRecipes/BlueSky/BlueSkyEnginesBlueprint",
+        "name": "Nightwave Avionics Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/LandingCraftRecipes/ZarimanShip/ZarimanShipEnginesBlueprint",
+        "name": "Parallax Engines Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Weapons/Sentients/OperatorAmplifiers/SentTrainingAmplifier/OperatorTrainingAmpWeapon",
+        "name": "Mote Amp",
+        "category": "Operator Weapons"
+    },
+    {
+        "path": "/Lotus/Weapons/Sentients/OperatorAmplifiers/OperatorAmpWeapon",
+        "name": "Amp",
+        "category": "Operator Weapons"
+    },
+    {
+        "path": "/Lotus/Upgrades/Mods/Warframe/AvatarSlideBoostMod",
+        "name": "Maglev",
+        "category": "Mods",
+        "tradeable_wfm": true
+    },
+    {
+        "path": "/Lotus/Types/Sentinels/SentinelPrecepts/TnCrossAttack",
+        "name": "Retarget",
+        "category": "Mods",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Upgrades/CosmeticEnhancers/Antiques/VoidSlingsOverguardStrip",
+        "name": "Zid-An Osbok",
+        "category": "Arcanes",
+        "tradeable_wfm": true
+    },
+    {
+        "path": "/Lotus/Upgrades/CosmeticEnhancers/Antiques/UltimateInvisibilty",
+        "name": "Zid-An Sek-Eel",
+        "category": "Arcanes",
+        "tradeable_wfm": true
+    },
+    {
+        "path": "/Lotus/Upgrades/CosmeticEnhancers/Antiques/StatusChanceOnUltimateHit",
+        "name": "Zid-An Asheir",
+        "category": "Arcanes",
+        "tradeable_wfm": true
+    },
+    {
+        "path": "/Lotus/Types/Sentinels/SentinelPrecepts/Warrior",
+        "name": "Warrior",
+        "category": "Mods",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Upgrades/CosmeticEnhancers/Antiques/HeatStatusProcOnUltimateKill",
+        "name": "Zid-An Uskos",
+        "category": "Arcanes",
+        "tradeable_wfm": true
+    },
+    {
+        "path": "/Lotus/Types/Sentinels/SentinelPrecepts/SwiftDeth",
+        "name": "Swift Deth",
+        "category": "Mods",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Upgrades/CosmeticEnhancers/Antiques/AmmoEfficencyDuringUltimate",
+        "name": "Zid-An Haras",
+        "category": "Arcanes",
+        "tradeable_wfm": true
+    }
+]
