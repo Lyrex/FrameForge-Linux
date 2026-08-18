@@ -41,6 +41,7 @@ export interface FoundryFilters {
   filterMastered: boolean; filterUnmastered: boolean;
   filterOwned: boolean; filterUnowned: boolean; filterReady: boolean;
   filterLvlCap: boolean;
+  ignoreFormaKuva: boolean;
 }
 export const FOUNDRY_FILTERS_DEFAULT: FoundryFilters = {
   search: "", activeCat: "Warframes",
@@ -48,6 +49,7 @@ export const FOUNDRY_FILTERS_DEFAULT: FoundryFilters = {
   filterMastered: false, filterUnmastered: false,
   filterOwned: false, filterUnowned: false, filterReady: false,
   filterLvlCap: false,
+  ignoreFormaKuva: false,
 };
 
 interface Props {
@@ -607,9 +609,9 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
     return () => clearTimeout(id);
   }, [inputSearch]); // eslint-disable-line
 
-  const { search, activeCat, filterPrime, filterNonPrime, filterVaulted, filterUnvaulted, filterMastered, filterUnmastered, filterOwned, filterUnowned, filterReady, filterLvlCap } = filters;
+  const { search, activeCat, filterPrime, filterNonPrime, filterVaulted, filterUnvaulted, filterMastered, filterUnmastered, filterOwned, filterUnowned, filterReady, filterLvlCap, ignoreFormaKuva } = filters;
   const set = <K extends keyof FoundryFilters>(k: K, v: FoundryFilters[K]) => onFiltersChange({ ...filters, [k]: v });
-  const isFiltered = search !== "" || filterPrime || filterNonPrime || filterVaulted || filterUnvaulted || filterMastered || filterUnmastered || filterOwned || filterUnowned || filterReady || filterLvlCap;
+  const isFiltered = search !== "" || filterPrime || filterNonPrime || filterVaulted || filterUnvaulted || filterMastered || filterUnmastered || filterOwned || filterUnowned || filterReady || filterLvlCap || ignoreFormaKuva;
 
   useEffect(() => {
     invoke<CatalogItem[]>("get_craftable_items").then(setCraftable).catch(() => setCraftable([]));
@@ -640,6 +642,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
       })
       .filter(i => {
         if (!filterOwned && !filterUnowned) return true;
+        if (ignoreFormaKuva && (i.name.includes("Forma") || i.name === "Kuva")) return true;
         const owned = (inventory[i.unique_name]?.quantity ?? 0) > 0;
         return filterOwned ? owned : !owned;
       })
@@ -652,7 +655,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
       })
       .filter(i => !filterLvlCap || (i.max_level_cap != null && i.max_level_cap > 30));
   }, [craftable, activeCat, search, filterPrime, filterNonPrime, filterVaulted, filterUnvaulted,
-      filterMastered, filterUnmastered, filterOwned, filterUnowned, filterReady, filterLvlCap,
+      filterMastered, filterUnmastered, filterOwned, filterUnowned, filterReady, filterLvlCap, ignoreFormaKuva,
       // Only pull in inventory/recipes when a filter that actually reads them is active.
       // Without this guard, every 10-second scanner update re-renders all 100+ cards.
       (filterMastered || filterUnmastered || filterOwned || filterUnowned || filterReady) ? inventory : null,
@@ -664,7 +667,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
   // Without this guard, every 10-second scan resets the page mid-browse.
   useEffect(() => { setPage(0); }, [ // eslint-disable-line
     activeCat, search, filterPrime, filterNonPrime, filterVaulted, filterUnvaulted,
-    filterMastered, filterUnmastered, filterOwned, filterUnowned, filterReady, filterLvlCap,
+    filterMastered, filterUnmastered, filterOwned, filterUnowned, filterReady, filterLvlCap, ignoreFormaKuva,
     craftable, pageSize,
   ]);
   const PAGE_SIZE = pageSize;
@@ -768,6 +771,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
           <span className="fbar-sep"/>
           <button className={`fchip ${filterOwned     ? "fchip-on" : ""}`} onClick={() => set("filterOwned", !filterOwned)}>✓ Owned</button>
           <button className={`fchip ${filterUnowned   ? "fchip-on" : ""}`} onClick={() => set("filterUnowned", !filterUnowned)}>✕ Unowned</button>
+          <button className={`fchip ${ignoreFormaKuva ? "fchip-on" : ""}`} onClick={() => set("ignoreFormaKuva", !ignoreFormaKuva)} title="Treat Forma and Kuva as always owned when filtering">Ignore Forma/Kuva</button>
           <button className={`fchip ${filterReady     ? "fchip-on" : ""}`} onClick={() => set("filterReady", !filterReady)}>⚡ Ready</button>
           <span className="fbar-sep"/>
           <button className={`fchip ${filterMastered  ? "fchip-on" : ""}`} onClick={() => set("filterMastered", !filterMastered)}>★ Mastered</button>

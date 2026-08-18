@@ -141,13 +141,129 @@
     },
     {
         "path": "/Lotus/Weapons/Sentients/OperatorAmplifiers/SentTrainingAmplifier/OperatorTrainingAmpWeapon",
-        "name": "Mote Amp",
-        "category": "Operator Weapons"
+        "category": "Ignored"
     },
     {
         "path": "/Lotus/Weapons/Sentients/OperatorAmplifiers/OperatorAmpWeapon",
-        "name": "Amp",
-        "category": "Operator Weapons"
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Weapons/Ostron/Melee/LotusModularWeapon",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Weapons/Ostron/Melee/ModularMelee01/Tip/TipOne",
+        "name": "Balla",
+        "category": "Melee",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Ostron/Melee/ModularMelee01/Tip/TipTwo",
+        "name": "Ooltha",
+        "category": "Melee",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Ostron/Melee/ModularMelee01/Tip/TipThree",
+        "name": "Mewan",
+        "category": "Melee",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Ostron/Melee/ModularMelee01/Tip/TipFour",
+        "name": "Cyath",
+        "category": "Melee",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Ostron/Melee/ModularMelee01/Tip/TipFive",
+        "name": "Dehtat",
+        "category": "Melee",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Ostron/Melee/ModularMelee01/Tip/TipSix",
+        "name": "Kronsh",
+        "category": "Melee",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Ostron/Melee/ModularMelee02/Tip/TipNine",
+        "name": "Sepfahn",
+        "category": "Melee",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Ostron/Melee/ModularMelee02/Tip/TipTen",
+        "name": "Rabvee",
+        "category": "Melee",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Ostron/Melee/ModularMelee02/Tip/TipEleven",
+        "name": "Dokrahm",
+        "category": "Melee",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Ostron/Melee/ModularMeleeInfested/Tips/InfestedTipOne",
+        "name": "Plague Kripath",
+        "category": "Melee",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Ostron/Melee/ModularMeleeInfested/Tips/InfestedTipTwo",
+        "name": "Plague Keewar",
+        "category": "Melee",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Sentients/OperatorAmplifiers/SentTrainingAmplifier/SentAmpTrainingBarrel",
+        "name": "Mote Prism",
+        "category": "Operator Weapons",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Sentients/OperatorAmplifiers/Set1/Barrel/SentAmpSet1BarrelPartA",
+        "name": "Raplak Prism",
+        "category": "Operator Weapons",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Sentients/OperatorAmplifiers/Set1/Barrel/SentAmpSet1BarrelPartB",
+        "name": "Shwaak Prism",
+        "category": "Operator Weapons",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Sentients/OperatorAmplifiers/Set1/Barrel/SentAmpSet1BarrelPartC",
+        "name": "Granmu Prism",
+        "category": "Operator Weapons",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Sentients/OperatorAmplifiers/Set2/Barrel/SentAmpSet2BarrelPartA",
+        "name": "Rahn Prism",
+        "category": "Operator Weapons",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Corpus/OperatorAmplifiers/Set1/Barrel/CorpAmpSet1BarrelPartA",
+        "name": "Cantic Prism",
+        "category": "Operator Weapons",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Corpus/OperatorAmplifiers/Set1/Barrel/CorpAmpSet1BarrelPartB",
+        "name": "Lega Prism",
+        "category": "Operator Weapons",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Weapons/Corpus/OperatorAmplifiers/Set1/Barrel/CorpAmpSet1BarrelPartC",
+        "name": "Klamora Prism",
+        "category": "Operator Weapons",
+        "tradeable_wfm": false
     },
     {
         "path": "/Lotus/Upgrades/Mods/Warframe/AvatarSlideBoostMod",

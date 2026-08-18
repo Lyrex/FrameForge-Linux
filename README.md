@@ -1,4 +1,4 @@
-# FrameForge — Warframe Companion `v3.5.0-linux.1`
+# FrameForge — Warframe Companion `v3.6.0-linux.1`
 
 A desktop companion for Warframe — live inventory, market prices, trading, timers, relic overlay, and riven analysis. Read-only, no game modification.
 
@@ -30,11 +30,18 @@ This gives complete coverage: resources, mods, arcanes, relics, weapons, Warfram
 **View modes** — Cards (icon + text), Icon grid, Text cards, List with icon, or Compact list (text-only, maximum density). Persisted per tab.
 
 ### Foundry
-Browse every craftable item with full ingredient trees. Components are colour-coded by ownership status and show which relics drop them. Star items to track them in the Modular Window. Filter by Prime, Non-Prime, Vaulted/Unvaulted, Owned/Unowned, Ready to build, Mastered/Unmastered, and Lvl > 30 (Kuva/Tenet/Incarnon weapons, Necramechs). Items per page is configurable in Settings → General (30 / 60 / 100).
+Browse every craftable item with full ingredient trees. Components are colour-coded by ownership status and show which relics drop them. Star items to track them in the Modular Window. Filter by Prime, Non-Prime, Vaulted/Unvaulted, Owned/Unowned, Ready to build, Mastered/Unmastered, and Lvl > 30 (Kuva/Tenet/Incarnon weapons, Necramechs). Items per page is configurable in Settings → General (30 / 60 / 100). **Operator Weapons** (Amp Prisms) appear as their own category.
+
+**Ignore Forma/Kuva** — a toggle chip in the filter bar treats Forma blueprints and Kuva as always owned, so they never clutter the Unowned view.
 
 Items with Forma applied show a **Forma icon badge** with the count overlaid — sourced live from memory, no manual tracking needed. Mastered / Unmastered filters use each item's actual level cap (30 for standard gear, higher for Incarnon/Kuva/Tenet weapons), and exclude non-levelable items (parts, blueprints) from both filters entirely.
 
 **View modes** — switch between Cards (icon + text), Icon grid, Text cards, List (compact row with icon), and Compact list (text-only) via the toggle in the filter bar. Each tab remembers its own preference.
+
+### Weapons
+Track mastery progress across all weapon categories: Primary, Secondary, Melee, and **Operator** (Amp Prisms + Sirocco). Each tab shows items grouped by type — Standard, Prime, Kuva, Tenet, Coda, Wraith, Vandal, Prisma, MK1, and **Zaw** (Strike components) in the Melee tab. Mastered items are highlighted; a progress bar shows how many you've mastered in each category. Filter to unmastered items only.
+
+Amp Prisms and Zaw Strikes use the same modular mastery mechanic — a gilded amp or Zaw at rank 30 counts as mastered, keyed by its Prism or Strike component so each component tracks independently.
 
 ### Market Helper
 Browse Prime sets and mods with live platinum prices from [warframe.market](https://warframe.market). Prices are loaded from the [FrameForgePricing](https://github.com/WyrmStudios/FrameForgePricing) mirror on startup — a daily bulk cache updated twice per day from relics.run. No per-item network calls needed. Click any item for a live order popup with sell/buy orders, 3-week price chart, and one-click listing (requires WFM login). Mod cards show per-rank chips — click a chip to pre-fill the listing form with that exact rank and quantity. A **rank selector** in the orders popup filters listings to a specific mod/arcane rank.
@@ -57,7 +64,7 @@ Full warframe.market integration — manage active listings, post new orders, an
 - **In-app WFM login** — authenticate via a built-in WebView browser popup instead of entering credentials manually.
 
 ### Relic Helper
-Browse void fissure drop tables with rarity colour-coding, ownership status, and platinum values. Supports all refinement levels (Intact → Radiant). View modes apply here too.
+Browse void fissure drop tables with rarity colour-coding, ownership status, and platinum values. Supports all refinement levels (Intact → Radiant). View modes apply here too. Mastered-but-sold prime items (e.g. Bronco crafted into Akbronco) are correctly treated as completed. **Ignore Forma/Kuva** chip hides Forma and Kuva rewards from the Uncompleted filter.
 
 **Relic Planner** — EV (expected value) calculator per refinement tier. Pick your metric (Platinum or Ducats), squad size (Solo → 4-player radshare), and filter by era, owned, or vaulted. Sortable columns: click any header (Relic, Owned, Intact, Except., Flawless, Radiant, Refine gain) to sort ascending or descending.
 

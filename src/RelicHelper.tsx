@@ -35,9 +35,11 @@ export interface RelicFilters {
   vault: ("vaulted" | "unvaulted")[];
   completion: ("complete" | "incomplete")[];
   sortMode: "count" | "plat" | "ducats" | "az" | "za";
+  ignoreFormaKuva: boolean;
 }
 export const RELIC_FILTERS_DEFAULT: RelicFilters = {
   search: "", tiers: [], ownership: [], vault: [], completion: [], sortMode: "count",
+  ignoreFormaKuva: false,
 };
 
 interface Props {
@@ -195,7 +197,11 @@ function RewardBox({ reward, imageSrcs, isOwned, isComplete, isHighlighted, colo
 const REFINEMENT_SUFFIXES_CARD = ["intact", "exceptional", "flawless", "radiant"];
 const REFINEMENT_LABELS_CARD   = ["Intact", "Except.", "Flawless", "Radiant"];
 
-function RelicCard({ drop, catalogRelicByName, inventory, ownedPrimeNames, searchQ, nameMap, colorblindMode, view }: {
+function isFormaOrKuva(itemName: string): boolean {
+  return itemName.includes("Forma") || itemName === "Kuva";
+}
+
+function RelicCard({ drop, catalogRelicByName, inventory, ownedPrimeNames, searchQ, nameMap, colorblindMode, view, ignoreFormaKuva }: {
   drop: RelicDrop;
   catalogRelicByName: Map<string, CatalogItem>;
   inventory: Record<string, InventoryItem>;
@@ -204,6 +210,7 @@ function RelicCard({ drop, catalogRelicByName, inventory, ownedPrimeNames, searc
   nameMap: Map<string, CatalogItem>;
   colorblindMode: boolean;
   view: ViewMode;
+  ignoreFormaKuva: boolean;
 }) {
   const baseLower = drop.fullName.toLowerCase();
 
@@ -254,12 +261,14 @@ function RelicCard({ drop, catalogRelicByName, inventory, ownedPrimeNames, searc
 
   const safeRewards = drop.rewards.filter(r => r?.itemName);
   const allComplete = safeRewards.length > 0 && safeRewards.every(r => {
+    if (ignoreFormaKuva && isFormaOrKuva(r.itemName)) return true;
     const cat = findCatalogItem(r.itemName);
     const isOwned = isCatalogItemOwned(cat, inventory, nameMap);
     const p = extractPrimeName(r.itemName);
     const pItem = p ? nameMap.get(p.toLowerCase()) : undefined;
+    const pInv = pItem ? inventory[pItem.unique_name] : undefined;
     const isComplete = pItem
-      ? (inventory[pItem.unique_name]?.quantity ?? 0) > 0
+      ? (pInv?.quantity ?? 0) > 0 || (pInv?.mastery_rank ?? 0) >= 30
       : (p ? ownedPrimeNames.has(p.toLowerCase()) : false);
     return isOwned || isComplete;
   });
@@ -381,11 +390,13 @@ function RelicCard({ drop, catalogRelicByName, inventory, ownedPrimeNames, searc
           // "Burston Prime Barrel" → find "Burston Prime" → check inventory by name
           const parentName = extractPrimeName(r.itemName);
           const parentItem = parentName ? nameMap.get(parentName.toLowerCase()) : undefined;
-          const isComplete = parentName
-            ? (inventory[parentName]?.quantity ?? 0) > 0 ||
-              (parentItem ? (inventory[parentItem.unique_name]?.quantity ?? 0) > 0 : false) ||
-              ownedPrimeNames.has(parentName.toLowerCase())
-            : false;
+          const parentInv = parentItem ? inventory[parentItem.unique_name] : undefined;
+          const isComplete = (ignoreFormaKuva && isFormaOrKuva(r.itemName))
+            || (parentName
+              ? (inventory[parentName]?.quantity ?? 0) > 0 ||
+                (parentInv ? (parentInv.quantity > 0 || parentInv.mastery_rank >= 30) : false) ||
+                ownedPrimeNames.has(parentName.toLowerCase())
+              : false);
           return (
             <RewardBox
               key={i}
@@ -701,7 +712,7 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
   const [page,        setPage]        = useState(0);
   const PAGE_SIZE = 30;
 
-  const { search, tiers, ownership, vault, completion, sortMode } = filters;
+  const { search, tiers, ownership, vault, completion, sortMode, ignoreFormaKuva } = filters;
   const set = <K extends keyof RelicFilters>(k: K, v: RelicFilters[K]) => onFiltersChange({ ...filters, [k]: v });
 
   const loadDrops = useCallback(() => {
@@ -752,7 +763,8 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
   const ownedPrimeNames = useMemo(() => {
     const s = new Set<string>();
     for (const [key, entry] of Object.entries(inventory)) {
-      if (entry.quantity <= 0) continue;
+      // Owned OR mastered (sold after mastery still counts as done)
+      if (entry.quantity <= 0 && entry.mastery_rank < 30) continue;
       // Only process name-keyed entries (path aliases start with "/")
       if (!key.startsWith("/") && key.includes("Prime")) s.add(key.toLowerCase());
     }
@@ -797,11 +809,15 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
     .filter(d => {
       if (completion.length === 0 || completion.length === 2) return true;
       const allDone = d.rewards.length > 0 && d.rewards.every(r => {
+        if (ignoreFormaKuva && isFormaOrKuva(r.itemName)) return true;
         const cat = findCatalogItemGlobal(r.itemName, nameMap);
         const p = extractPrimeName(r.itemName);
+        const pItem = p ? nameMap.get(p.toLowerCase()) : undefined;
+        const pInv = pItem ? inventory[pItem.unique_name] : undefined;
         return isCatalogItemOwned(cat, inventory, nameMap)
           || (p ? ownedPrimeNames.has(p.toLowerCase()) : false)
-          || (p ? (inventory[p]?.quantity ?? 0) > 0 : false);
+          || (p ? (inventory[p]?.quantity ?? 0) > 0 : false)
+          || (pInv ? pInv.mastery_rank >= 30 : false);
       });
       return completion.includes("complete") ? allDone : !allDone;
     })
@@ -869,6 +885,7 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
           <span className="fbar-sep"/>
           <button className={`fchip ${completion.includes("complete")   ? "fchip-on" : ""}`} onClick={() => set("completion", toggle(completion, "complete"))}>Completed</button>
           <button className={`fchip ${completion.includes("incomplete") ? "fchip-on" : ""}`} onClick={() => set("completion", toggle(completion, "incomplete"))}>Uncompleted</button>
+          <button className={`fchip ${ignoreFormaKuva ? "fchip-on" : ""}`} onClick={() => set("ignoreFormaKuva", !ignoreFormaKuva)} title="Treat Forma and Kuva rewards as always obtained when checking completion">Ignore Forma/Kuva</button>
           <span className="fbar-sep"/>
           <span className="fbar-label">Sort:</span>
           <button className={`fchip ${sortMode === "count"  ? "fchip-on" : ""}`} onClick={() => set("sortMode", "count")}>Most Owned</button>
@@ -923,6 +940,7 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
             nameMap={nameMap}
             colorblindMode={colorblindMode}
             view={relicView}
+            ignoreFormaKuva={ignoreFormaKuva}
           />
         ))}
       </div>

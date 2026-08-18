@@ -131,6 +131,12 @@ pub struct BlobUniqueEntry {
     pub item_type:     String,
     pub section:       String,
     pub polarized:     u32,
+    /// Raw XP from the blob — used to compute rank via `xp_to_rank`.
+    /// For gilded modular items (Amps, Kitguns, Zaws) XP resets to 0 on gilding,
+    /// so this reflects post-gild progress.
+    pub xp:            i64,
+    /// Player-assigned name (set when an item is gilded in the Foundry).
+    pub item_name:     Option<String>,
     pub pet_name:      Option<String>,
     pub focus_lens:    Option<String>,
     pub archon_shards: Vec<ArchonShard>,
@@ -1136,6 +1142,8 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
                     item_type:     it.to_string(),
                     section:       sec.to_string(),
                     polarized:     e["Polarized"].as_u64().unwrap_or(0) as u32,
+                    xp:            e["XP"].as_i64().unwrap_or(0),
+                    item_name:     e["ItemName"].as_str().map(String::from),
                     pet_name:      e["Details"]["Name"].as_str().map(String::from),
                     focus_lens:    e["FocusLens"].as_str().map(String::from),
                     archon_shards,
