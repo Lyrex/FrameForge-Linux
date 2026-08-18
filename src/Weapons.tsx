@@ -16,13 +16,22 @@ interface WeaponItem {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const WEAPON_TABS = ["Primary", "Secondary", "Melee"] as const;
+const WEAPON_TABS = ["Primary", "Secondary", "Melee", "Operator"] as const;
 type WeaponTab = typeof WEAPON_TABS[number];
 
-const GROUP_ORDER = ["Standard", "Prime", "Kuva", "Tenet", "Coda", "Wraith", "Vandal", "Prisma", "MK1"];
-const LEVELABLE_CATS = new Set(["Primary", "Secondary", "Melee"]);
+const TAB_CATEGORY: Record<WeaponTab, string> = {
+  Primary: "Primary",
+  Secondary: "Secondary",
+  Melee: "Melee",
+  Operator: "Operator Weapons",
+};
 
-function weaponGroup(name: string): string {
+const GROUP_ORDER = ["Standard", "Zaw", "Prime", "Kuva", "Tenet", "Coda", "Wraith", "Vandal", "Prisma", "MK1"];
+const LEVELABLE_CATS = new Set(["Primary", "Secondary", "Melee", "Operator Weapons"]);
+
+function weaponGroup(item: WeaponItem): string {
+  if (item.unique_name.includes("/Ostron/Melee/")) return "Zaw";
+  const name = item.name;
   if (name.startsWith("MK1-"))  return "MK1";
   if (name.startsWith("Kuva ")) return "Kuva";
   if (name.startsWith("Tenet "))return "Tenet";
@@ -104,7 +113,7 @@ export default function Weapons({ inventory, activeTab, onTabChange }: Props) {
 
   const { groups, masteredCount, totalCount } = useMemo(() => {
     const q = search.toLowerCase();
-    const tabWeapons = allWeapons.filter(w => w.category === activeTab);
+    const tabWeapons = allWeapons.filter(w => w.category === TAB_CATEGORY[activeTab]);
 
     const byGroup = new Map<string, { item: WeaponItem; rank: number }[]>();
     let mastered = 0;
@@ -120,7 +129,7 @@ export default function Weapons({ inventory, activeTab, onTabChange }: Props) {
       if (unmasteredOnly && isMastered) continue;
       if (q && !w.name.toLowerCase().includes(q)) continue;
 
-      const g = weaponGroup(w.name);
+      const g = weaponGroup(w);
       const list = byGroup.get(g) ?? [];
       list.push({ item: w, rank });
       byGroup.set(g, list);

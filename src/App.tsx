@@ -776,7 +776,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [marketFilters, setMarketFilters] = useState(MARKET_FILTERS_DEFAULT);
   const [relicFilters, setRelicFilters] = useState(RELIC_FILTERS_DEFAULT);
   const [completionistView, setCompletionistView] = useState<"syndicates" | "weapons">("syndicates");
-  const [weaponsTab, setWeaponsTab] = useState<"Primary" | "Secondary" | "Melee">("Primary");
+  const [weaponsTab, setWeaponsTab] = useState<"Primary" | "Secondary" | "Melee" | "Operator">("Primary");
   const [syndicateFilters, setSyndicateFilters] = useState({
     activeGroup: "main" as "main" | "openworld" | "other" | "lab",
     activeTab: "Steel Meridian", missingOnly: false, search: "",

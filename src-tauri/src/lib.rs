@@ -766,28 +766,67 @@ async fn fetch_item_list(state: State<'_, AppState>) -> Result<usize, String> {
 
 // ─── Foundry / Recipes ────────────────────────────────────────────────────────
 
-/// Returns all Primary / Secondary / Melee weapons from the catalog (for the
-/// Weapons completionist tracker). Includes non-craftable weapons (Coda, etc.).
+/// Returns all Primary / Secondary / Melee / Operator Weapons from the catalog (for the
+/// Weapons completionist tracker). Includes non-craftable weapons (Coda, Prisms, etc.).
 #[tauri::command]
 fn get_weapon_catalog(state: State<AppState>) -> Vec<CatalogItem> {
     let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
-    items.iter()
-        .filter(|i| {
-            (i.category == "Primary" || i.category == "Secondary" || i.category == "Melee")
-                && !i.unique_name.contains("PvPVariant")
+    let corrections = &state.corrections;
+
+    let mut result: Vec<CatalogItem> = items.iter()
+        .filter(|i| !i.unique_name.contains("PvPVariant")
+            && i.item_type != "Companion Weapon"
+            && i.product_category != "SentinelWeapons")
+        .filter_map(|i| {
+            let mut cat = fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name);
+            let mut name = i.name.clone();
+            if let Some(c) = corrections.get(&i.unique_name) {
+                if c.category.as_deref() == Some("Ignored") { return None; }
+                if let Some(ref cn) = c.name { name = cn.clone(); }
+                if let Some(ref cc) = c.category { cat = cc.clone(); }
+            }
+            if !matches!(cat.as_str(), "Primary" | "Secondary" | "Melee" | "Operator Weapons") {
+                return None;
+            }
+            Some(CatalogItem {
+                unique_name:   i.unique_name.clone(),
+                name,
+                category:      cat,
+                image_name:    i.image_name.clone(),
+                vaulted:       i.vaulted,
+                ducats:        i.ducats,
+                mastery_req:   i.mastery_req,
+                max_level_cap: i.max_level_cap,
+                tradeable_wfm: None,
+            })
         })
-        .map(|i| CatalogItem {
-            unique_name:   i.unique_name.clone(),
-            name:          i.name.clone(),
-            category:      i.category.clone(),
-            image_name:    i.image_name.clone(),
-            vaulted:       i.vaulted,
-            ducats:        i.ducats,
-            mastery_req:   i.mastery_req,
-            max_level_cap: i.max_level_cap,
-            tradeable_wfm: None,
-        })
-        .collect()
+        .collect();
+
+    // Corrections-only items (e.g. Prisms, Zaw Strikes) not in WFCD but tagged as a weapon category
+    let covered: std::collections::HashSet<String> = result.iter().map(|i| i.unique_name.clone()).collect();
+    for (path, c) in corrections.iter() {
+        if covered.contains(path) { continue; }
+        let cat = match c.category.as_deref() {
+            Some(cat) if matches!(cat, "Primary" | "Secondary" | "Melee" | "Operator Weapons") => cat.to_string(),
+            _ => continue,
+        };
+        let name = match c.name.as_deref() {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => continue,
+        };
+        result.push(CatalogItem {
+            unique_name:   path.clone(),
+            name,
+            category:      cat,
+            image_name:    None,
+            vaulted:       None,
+            ducats:        None,
+            mastery_req:   None,
+            max_level_cap: None,
+            tradeable_wfm: c.tradeable_wfm,
+        });
+    }
+    result
 }
 
 /// Returns all items that have a crafting recipe (for the Foundry search list).
@@ -801,14 +840,22 @@ fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
         recipes.keys().cloned().collect()
     };
     let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
-    items.iter()
+    let corrections = &state.corrections;
+
+    let mut result: Vec<CatalogItem> = items.iter()
         .filter(|i| recipe_keys.contains(&i.unique_name) && !i.unique_name.contains("PvPVariant"))
         .filter_map(|i| {
-            let cat = fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name);
+            let mut cat = fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name);
+            let mut name = i.name.clone();
+            if let Some(c) = corrections.get(&i.unique_name) {
+                if c.category.as_deref() == Some("Ignored") { return None; }
+                if let Some(ref cn) = c.name { name = cn.clone(); }
+                if let Some(ref cc) = c.category { cat = cc.clone(); }
+            }
             if cat == "Excluded" { return None; }
             Some(CatalogItem {
                 unique_name:   i.unique_name.clone(),
-                name:          i.name.clone(),
+                name,
                 category:      cat,
                 image_name:    i.image_name.clone(),
                 vaulted:       i.vaulted,
@@ -818,7 +865,32 @@ fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
                 tradeable_wfm: None,
             })
         })
-        .collect()
+        .collect();
+
+    // Corrections-only items (not in WFCD) that have a craftable recipe
+    let covered: std::collections::HashSet<String> = result.iter().map(|i| i.unique_name.clone()).collect();
+    for (path, c) in corrections.iter() {
+        if covered.contains(path) { continue; }
+        if !recipe_keys.contains(path) { continue; }
+        if c.category.as_deref() == Some("Ignored") { continue; }
+        let name = match c.name.as_deref() {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => continue,
+        };
+        let category = c.category.clone().unwrap_or_else(|| "Miscellaneous".to_string());
+        result.push(CatalogItem {
+            unique_name:   path.clone(),
+            name,
+            category,
+            image_name:    None,
+            vaulted:       None,
+            ducats:        None,
+            mastery_req:   None,
+            max_level_cap: None,
+            tradeable_wfm: c.tradeable_wfm,
+        });
+    }
+    result
 }
 
 /// Returns the recipe component tree for a single item (empty vec = not found).
@@ -8067,6 +8139,50 @@ fn build_inventory_from_blob(
     // Unique items — binary owned (amount = 1).
     for entry in &blob.unique_items {
         if excluded_paths.contains(&entry.item_type) { continue; }
+
+        // Amps: key by Prism (Barrel) path instead of the generic OperatorAmpWeapon type.
+        // Multiple amps sharing the same Prism accumulate into one entry.
+        // Mastery requires both gilding (ItemName present) and rank 30 post-gild (XP ≥ 450 000).
+        if entry.section == "OperatorAmps" {
+            let prism_path = entry.modular_parts.iter()
+                .find(|p| p.contains("/Barrel/"))
+                .cloned()
+                .unwrap_or_else(|| entry.item_type.clone());
+            if excluded_paths.contains(&prism_path) { continue; }
+            let item = items.entry(prism_path.clone()).or_insert_with(|| CachedItem {
+                unique_name: prism_path.clone(),
+                name: path_to_name.get(&prism_path).cloned().unwrap_or_default(),
+                ..Default::default()
+            });
+            item.amount += 1;
+            if entry.item_name.is_some() {
+                let rank = memory_scanner::xp_to_rank(entry.xp, &entry.item_type).min(30);
+                if rank > item.mastery_rank { item.mastery_rank = rank; }
+            }
+            continue;
+        }
+
+        // Zaws: key by Strike (Tip) path instead of the generic LotusModularWeapon type.
+        // Multiple Zaws sharing the same Strike accumulate; mastery = gilded + rank 30.
+        if entry.section == "Melee" && entry.item_type.contains("LotusModularWeapon") {
+            let strike_path = entry.modular_parts.iter()
+                .find(|p| p.contains("/Tip"))
+                .cloned()
+                .unwrap_or_else(|| entry.item_type.clone());
+            if excluded_paths.contains(&strike_path) { continue; }
+            let item = items.entry(strike_path.clone()).or_insert_with(|| CachedItem {
+                unique_name: strike_path.clone(),
+                name: path_to_name.get(&strike_path).cloned().unwrap_or_default(),
+                ..Default::default()
+            });
+            item.amount += 1;
+            if entry.item_name.is_some() {
+                let rank = memory_scanner::xp_to_rank(entry.xp, &entry.item_type).min(30);
+                if rank > item.mastery_rank { item.mastery_rank = rank; }
+            }
+            continue;
+        }
+
         let item = upsert!(&entry.item_type);
         item.amount        = 1;
         item.archon_shards = entry.archon_shards.clone();
@@ -8312,6 +8428,28 @@ pub fn run() {
         .unwrap_or_default();
 
     let conn = db::init_db(&db_path).expect("Failed to initialize database");
+
+    // ── Version-based cache invalidation ──────────────────────────────────────
+    // On first launch after an upgrade, wipe item/recipe caches so bundled
+    // corrections and updated data sources take effect without manual clearing.
+    {
+        const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+        let last_version = read_settings_map(&settings_path)
+            .ok()
+            .and_then(|m| m.get("lastVersion").and_then(|v| v.as_str().map(String::from)));
+        if last_version.as_deref() != Some(CURRENT_VERSION) {
+            for path in &[
+                &items_cache_path, &recipes_cache_path,
+                &relic_drops_cache_path, &relic_rewards_cache_path,
+                &inventory_state_cache_path,
+            ] {
+                let _ = std::fs::remove_file(path);
+            }
+            let _ = merge_settings(&settings_path, |map| {
+                map.insert("lastVersion".to_string(), serde_json::Value::String(CURRENT_VERSION.to_string()));
+            });
+        }
+    }
 
     let initial_items = load_items_cache(&items_cache_path)
         .unwrap_or_else(wfcd::fallback_items);
