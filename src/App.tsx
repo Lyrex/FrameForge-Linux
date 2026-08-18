@@ -53,7 +53,7 @@ async function ensureRivenWindow(wx: number, wy: number, wh: number): Promise<{ 
 import { getCurrentWindow, availableMonitors } from "@tauri-apps/api/window";
 
 import { ImgCacheDirContext } from "./ImgCacheDir";
-import Foundry from "./Foundry";
+import Foundry, { FoundryFilters, FOUNDRY_FILTERS_DEFAULT } from "./Foundry";
 import MarketHelper, { MARKET_FILTERS_DEFAULT } from "./MarketHelper";
 import RelicHelper, { RELIC_FILTERS_DEFAULT } from "./RelicHelper";
 import RivenAnalyzer from "./RivenAnalyzer";
@@ -766,13 +766,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   );
 
   // ── Per-tab persisted filter state ────────────────────────────────────────
-  const [foundryFilters, setFoundryFilters] = useState({
-    search: "", activeCat: "Warframes",
-    filterPrime: false, filterNonPrime: false, filterVaulted: false, filterUnvaulted: false,
-    filterMastered: false, filterUnmastered: false,
-    filterOwned: false, filterUnowned: false, filterReady: false,
-    filterLvlCap: false,
-  });
+  const [foundryFilters, setFoundryFilters] = useState<FoundryFilters>(FOUNDRY_FILTERS_DEFAULT);
   const [marketFilters, setMarketFilters] = useState(MARKET_FILTERS_DEFAULT);
   const [relicFilters, setRelicFilters] = useState(RELIC_FILTERS_DEFAULT);
   const [completionistView, setCompletionistView] = useState<"syndicates" | "weapons">("syndicates");
