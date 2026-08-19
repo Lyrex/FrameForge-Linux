@@ -24,6 +24,9 @@ mod db;
 mod logging;
 mod memory_scanner;
 mod ocr;
+// ── BEGIN ocrs fallback ─────────────────────────────────────────────────────
+mod ocr_fallback;
+// ── END ocrs fallback ───────────────────────────────────────────────────────
 mod wfcd;
 mod wfm;
 
@@ -166,6 +169,10 @@ pub struct AppState {
     /// Merged bundled + user corrections: path → entry.
     /// Bundled file is embedded at compile time; user file from data dir overrides on a per-path basis.
     pub corrections: HashMap<String, CorrectionEntry>,
+    /// Set by `poke_scan` to bypass the 5-second PID-check cooldown immediately.
+    pub force_pid_check: Arc<AtomicBool>,
+    /// When false, the Relic Pick Overlay is suppressed even when EE.log triggers it.
+    pub relic_pick_overlay_enabled: Arc<AtomicBool>,
 }
 
 // ─── Item catalog ─────────────────────────────────────────────────────────────
@@ -404,8 +411,14 @@ fn fix_category(name: &str, item_type: &str, product_category: &str, wfcd_cat: &
     "Miscellaneous".to_string()
 }
 
-#[tauri::command]
-fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
+/// Return the "X Prime" prefix (e.g. "Lex Prime") for a prime item name, or None.
+fn prime_set_prefix(name: &str) -> Option<String> {
+    let lower = name.to_lowercase();
+    let pos = lower.find("prime")?;
+    Some(name[..pos + 5].to_string()) // 5 = "prime".len()
+}
+
+fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
     // Clone data and release locks immediately — the catalog build below is O(n²)
     // and holding the locks blocks the monitor thread and other commands.
     let items: Vec<wfcd::WfcdItem> = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -641,6 +654,45 @@ fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
     result.retain(|i| seen_unique.insert(i.unique_name.clone()));
 
     result
+}
+
+#[tauri::command]
+fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
+    get_all_items_inner(&state)
+}
+
+/// Return catalog items for the given unique-name paths plus all set-sibling items
+/// (every item whose name shares the same "X Prime" prefix).  Used by the relic
+/// overlay so it never needs the full 19 000-item catalog at startup.
+#[tauri::command]
+fn get_items_by_paths(paths: Vec<String>, state: State<AppState>) -> Vec<CatalogItem> {
+    let all = get_all_items_inner(&state);
+
+    // Normalise: strip /Lotus/StoreItems/ so comparisons are consistent.
+    let normalized: Vec<String> = paths.iter()
+        .map(|p| p.replace("/Lotus/StoreItems/", "/Lotus/"))
+        .collect();
+
+    // Collect the prime-set prefixes of the directly-matched items (e.g. "Lex Prime").
+    let prefixes: Vec<String> = all.iter()
+        .filter(|i| {
+            let norm = i.unique_name.replace("/Lotus/StoreItems/", "/Lotus/");
+            normalized.contains(&norm) || paths.contains(&i.unique_name)
+        })
+        .filter_map(|i| prime_set_prefix(&i.name))
+        .collect();
+
+    // Keep an item if it was requested directly OR its name shares a set prefix.
+    all.into_iter()
+        .filter(|i| {
+            let norm = i.unique_name.replace("/Lotus/StoreItems/", "/Lotus/");
+            if normalized.contains(&norm) || paths.contains(&i.unique_name) {
+                return true;
+            }
+            let iname = i.name.to_lowercase();
+            prefixes.iter().any(|p| iname.starts_with(&p.to_lowercase()))
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -2855,7 +2907,8 @@ fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
             if lower.contains("themedprojectionmanager.lua: populateinventorygrid") {
                 info!("relic-pick: PopulateInventoryGrid detected — spawning OCR thread");
                 let now = std::time::Instant::now();
-                let should_trigger = last_relic_pick_trigger
+                let relic_pick_on = app.state::<AppState>().relic_pick_overlay_enabled.load(Ordering::SeqCst);
+                let should_trigger = relic_pick_on && last_relic_pick_trigger
                     .map_or(true, |t| now.duration_since(t).as_secs() >= 5);
                 if should_trigger {
                     last_relic_pick_trigger = Some(now);
@@ -4339,6 +4392,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     let debug_cat_enabled    = state.debug_cat_enabled.clone();
     let auto_capture_dir     = state.auto_capture_dir.clone();
     let unmatched_paths_dir  = state.unmatched_paths_dir.clone();
+    let force_pid_check      = state.force_pid_check.clone();
     let reward_app = app.clone();  // clone before app is moved into the inventory thread
 
     // Channel for the blob capture thread to deliver a parsed BlobInventory to the monitor loop.
@@ -4784,7 +4838,9 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
             }
 
             // Re-enumerate processes at most every 5 s (CreateToolhelp32Snapshot overhead).
-            let needs_pid_check = last_pid_check
+            // force_pid_check bypasses the cooldown (set by the poke_scan command).
+            let forced = force_pid_check.swap(false, Ordering::SeqCst);
+            let needs_pid_check = forced || last_pid_check
                 .map_or(true, |t: std::time::Instant| t.elapsed().as_secs() >= 5);
             if needs_pid_check {
                 let current_pid = memory_scanner::find_warframe_pid_pub();
@@ -5516,15 +5572,16 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     // Window creation takes 1-2 s; pre-creating shaves that off the visible delay.
                     let _ = ee_ocr_app.emit("relic-trigger", ());
 
-                    let app        = ee_ocr_app.clone();
-                    let cat        = filtered_cat; // relic prefilter (was: Arc::clone(&ee_catalog))
-                    let cat_len    = cat.len();
-                    let lpath      = ee_last_path.clone();
-                    let slog       = session_log_path.clone();
-                    let active     = reward_screen_active2.clone();
-                    let squad_arc  = std::sync::Arc::clone(&shared_squad_size);
-                    let names_arc  = std::sync::Arc::clone(&shared_squad_names);
-                    let diag_arc2  = Arc::clone(&diag_arc);
+                    let app          = ee_ocr_app.clone();
+                    let cat          = filtered_cat; // relic prefilter (was: Arc::clone(&ee_catalog))
+                    let cat_len      = cat.len();
+                    let fallback_cat = Arc::clone(&ee_catalog); // full catalog — used after 3 no-match attempts
+                    let lpath        = ee_last_path.clone();
+                    let slog         = session_log_path.clone();
+                    let active       = reward_screen_active2.clone();
+                    let squad_arc    = std::sync::Arc::clone(&shared_squad_size);
+                    let names_arc    = std::sync::Arc::clone(&shared_squad_names);
+                    let diag_arc2    = Arc::clone(&diag_arc);
                     // Do NOT write ee_squad_size here. The mutex is already reset to None
                     // when GetVoidProjectionRewards fires (above), and is updated to the
                     // correct squad count when the sequence completes (line ~3395).
@@ -5552,6 +5609,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         // Allow the catalog to be rebuilt inside the loop — it may be empty
                         // when start_monitor fired before WFCD data finished loading.
                         let mut cat = cat;
+                        let mut no_match_streak = 0u32;
                         let mut attempt = 0u32;
                         let mut best_item_count = 0usize;
                         let mut best_payload: Option<serde_json::Value> = None; // locked when complete
@@ -5634,6 +5692,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                             let sleep_ms = match &result {
                                 // ✅ 1+ items found (solo=1, duo=2, trio=3, full squad=4)
                                 Some((complete, _, ref items, ref positions, ref dbg)) if !items.is_empty() => {
+                                    no_match_streak = 0;
                                     let payload = Some(serde_json::json!({
                                         "items": items, "positions": positions
                                     }));
@@ -5847,17 +5906,42 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                                 }
                                 // ❌ Text found but no catalog match
                                 Some((_, _, ref items, _, ref dbg)) => {
+                                    no_match_streak += 1;
+                                    // After 3 consecutive no-matches on the prefiltered catalog,
+                                    // expand to the full item catalog. The prefilter can miss
+                                    // items when the collected relic paths don't correspond to
+                                    // the relics the squad actually ran (e.g. browsed-but-unused
+                                    // relics loaded by the game UI, or the local player's relic
+                                    // was consumed and is no longer in inventory).
+                                    let expanded = if no_match_streak == 3 && cat.len() < fallback_cat.len() {
+                                        cat = Arc::clone(&fallback_cat);
+                                        true
+                                    } else { false };
+                                    let cur_cat_len = cat.len();
+                                    let expand_note = if expanded {
+                                        format!(" [expanded to full catalog: {}]", cur_cat_len)
+                                    } else { String::new() };
                                     let entry = format!(
                                         "[STEP 2] OCR ATTEMPT #{}\n\
                                          ├─ Time     : {}\n\
                                          {}\n\
-                                         └─ RESULT   : no catalog match (catalog={}) → retrying in 700ms\n\n",
-                                        attempt, ts, dbg, cat_len);
+                                         └─ RESULT   : no catalog match (catalog={}){}→ retrying in 700ms\n\n",
+                                        attempt, ts, dbg, cur_cat_len, expand_note);
                                     let _ = append_to_file(&slog, &entry);
                                     let _ = std::fs::write(&lpath, format!(
                                         "=== {} ===\nno match (catalog={}): {:?}\n{}\n",
-                                        ts, cat_len, items, dbg));
+                                        ts, cur_cat_len, items, dbg));
                                     let _ = app.emit("ff-status", "❌ No catalog match, retrying...");
+                                    // On attempt 1, save the captured frame to the diagnostic folder
+                                    // so we have a screenshot even when OCR never finds a match.
+                                    if attempt == 1 {
+                                        let frame = app.state::<AppState>().last_ocr_frame.lock()
+                                            .ok().and_then(|g| g.clone());
+                                        let diag_snap = diag_arc2.lock().ok().and_then(|g| g.clone());
+                                        if let (Some((px, w, h)), Some(folder)) = (frame, diag_snap) {
+                                            let _ = write_bmp(&folder.join("screenshot.bmp"), &px, w, h);
+                                        }
+                                    }
                                     700u64
                                 }
                                 // ⚠️ Warframe window not found
@@ -7811,6 +7895,16 @@ fn stop_monitor(state: State<AppState>) {
 }
 
 #[tauri::command]
+fn poke_scan(state: State<AppState>) {
+    state.force_pid_check.store(true, Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn set_relic_pick_enabled(state: State<AppState>, enabled: bool) {
+    state.relic_pick_overlay_enabled.store(enabled, Ordering::SeqCst);
+}
+
+#[tauri::command]
 fn get_monitor_status(state: State<AppState>) -> bool {
     state.monitor_active.load(Ordering::SeqCst)
 }
@@ -8138,14 +8232,12 @@ fn build_inventory_from_blob(
 
     // Unique items — binary owned (amount = 1).
     for entry in &blob.unique_items {
-        if excluded_paths.contains(&entry.item_type) { continue; }
-
         // Amps: key by Prism (Barrel) path instead of the generic OperatorAmpWeapon type.
-        // Multiple amps sharing the same Prism accumulate into one entry.
-        // Mastery requires both gilding (ItemName present) and rank 30 post-gild (XP ≥ 450 000).
+        // Must come before the excluded_paths guard because OperatorAmpWeapon is Ignored
+        // (suppressed from the catalog) but the Prism-specific path is not.
         if entry.section == "OperatorAmps" {
             let prism_path = entry.modular_parts.iter()
-                .find(|p| p.contains("/Barrel/"))
+                .find(|p| p.contains("Barrel"))
                 .cloned()
                 .unwrap_or_else(|| entry.item_type.clone());
             if excluded_paths.contains(&prism_path) { continue; }
@@ -8163,7 +8255,7 @@ fn build_inventory_from_blob(
         }
 
         // Zaws: key by Strike (Tip) path instead of the generic LotusModularWeapon type.
-        // Multiple Zaws sharing the same Strike accumulate; mastery = gilded + rank 30.
+        // Must come before the excluded_paths guard for the same reason as Amps above.
         if entry.section == "Melee" && entry.item_type.contains("LotusModularWeapon") {
             let strike_path = entry.modular_parts.iter()
                 .find(|p| p.contains("/Tip"))
@@ -8182,6 +8274,8 @@ fn build_inventory_from_blob(
             }
             continue;
         }
+
+        if excluded_paths.contains(&entry.item_type) { continue; }
 
         let item = upsert!(&entry.item_type);
         item.amount        = 1;
@@ -8207,6 +8301,8 @@ fn build_inventory_from_blob(
     for entry in &blob.stackable_items {
         if excluded_paths.contains(&entry.item_type) { continue; }
         if entry.item_count <= 0 { continue; }
+        // Don't overwrite modular entries already written by the Amp/Zaw branches above.
+        if items.contains_key(&entry.item_type) { continue; }
         let item = upsert!(&entry.item_type);
         item.amount      = entry.item_count;
         item.is_stackable = true;
@@ -8390,6 +8486,9 @@ pub fn run() {
         .join("warframe-companion");
 
     std::fs::create_dir_all(&data_dir).expect("Failed to create data directory");
+    // ── BEGIN ocrs fallback ─────────────────────────────────────────────────
+    ocr_fallback::set_data_dir(data_dir.clone());
+    // ── END ocrs fallback ───────────────────────────────────────────────────
 
     let db_path = data_dir.join("data.db");
     let items_cache_path = data_dir.join("items_cache.json");
@@ -8438,10 +8537,11 @@ pub fn run() {
             .ok()
             .and_then(|m| m.get("lastVersion").and_then(|v| v.as_str().map(String::from)));
         if last_version.as_deref() != Some(CURRENT_VERSION) {
+            // inventory_state_cache intentionally excluded — it holds mastery/shards/forma
+            // that can only be restored by a live scan; wiping it on upgrade loses that data.
             for path in &[
                 &items_cache_path, &recipes_cache_path,
                 &relic_drops_cache_path, &relic_rewards_cache_path,
-                &inventory_state_cache_path,
             ] {
                 let _ = std::fs::remove_file(path);
             }
@@ -8592,6 +8692,8 @@ pub fn run() {
             memory_probe_path,
             unmatched_paths_dir,
             corrections,
+            force_pid_check: Arc::new(AtomicBool::new(false)),
+            relic_pick_overlay_enabled: Arc::new(AtomicBool::new(true)),
         })
         .setup(|app| {
             use tauri::Manager;
@@ -8687,6 +8789,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_all_items,
+            get_items_by_paths,
             get_current_quantities,
             get_item_list_status,
             fetch_item_list,
@@ -8803,6 +8906,8 @@ pub fn run() {
             get_debug_data_size,
             start_monitor,
             stop_monitor,
+            poke_scan,
+            set_relic_pick_enabled,
             get_monitor_status,
             get_blueprint_names,
             get_system_locale,

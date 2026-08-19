@@ -47,18 +47,22 @@ function mergeComponents(comps: RecipeComponent[]): RecipeComponent[] {
 function collectNeeds(
   nodes: RecipeComponent[],
   multiplier: number,
-  acc: Map<string, { name: string; needed: number }>
+  acc: Map<string, { name: string; needed: number }>,
+  inventory: Record<string, InventoryItem>
 ) {
   for (const node of mergeComponents(nodes)) {
     const resultCount = node.result_count ?? 1;
     const craftsNeeded = Math.ceil((node.count * multiplier) / resultCount);
-    if (node.components.length === 0) {
-      // Leaf node: a raw material or blueprint you physically acquire
+    const totalNeeded = node.count * multiplier;
+    const owned = inventory[node.unique_name]?.quantity ?? 0;
+    if (node.components.length === 0 || owned > 0) {
+      // Leaf node (raw material), or player already has some of this crafted intermediate —
+      // show it directly so the display can compare owned vs needed instead of expanding.
       const prev = acc.get(node.unique_name);
-      acc.set(node.unique_name, { name: node.name, needed: (prev?.needed ?? 0) + node.count * multiplier });
+      acc.set(node.unique_name, { name: node.name, needed: (prev?.needed ?? 0) + totalNeeded });
     } else {
-      // Intermediate crafted part: recurse into its ingredients only
-      collectNeeds(node.components, craftsNeeded, acc);
+      // Player has zero of this intermediate — recurse into its raw ingredients.
+      collectNeeds(node.components, craftsNeeded, acc, inventory);
     }
   }
 }
@@ -114,6 +118,25 @@ export default function ModularWindow({
     invoke<CatalogItem[]>("get_craftable_items").then(setCraftable).catch(() => {});
   }, []);
 
+  // Retry if tracked items are present but craftable hasn't loaded (e.g. backend was restarting).
+  useEffect(() => {
+    if (tracked.length > 0 && craftable.length === 0) {
+      invoke<CatalogItem[]>("get_craftable_items").then(setCraftable).catch(() => {});
+    }
+  }, [tracked, craftable]);
+
+  // Clean up collapsedReqs when items are removed from tracked, so re-added items start expanded.
+  useEffect(() => {
+    setCollapsedReqs(prev => {
+      const trackedSet = new Set(tracked);
+      const stale = [...prev].filter(id => !trackedSet.has(id));
+      if (stale.length === 0) return prev;
+      const next = new Set(prev);
+      for (const id of stale) next.delete(id);
+      return next;
+    });
+  }, [tracked]);
+
   useEffect(() => {
     const toLoad = tracked.filter(id => !trackedRecipes.has(id));
     setTrackedRecipes(prev => {
@@ -147,7 +170,7 @@ export default function ModularWindow({
       const recipe = trackedRecipes.get(id);
       if (!recipe || recipe.length === 0) return [];
       const acc = new Map<string, { name: string; needed: number }>();
-      collectNeeds(recipe, 1, acc);
+      collectNeeds(recipe, 1, acc, inventory);
       // Remove the tracked item itself if it appears in its own requirements (data quirk)
       acc.delete(id);
       // Deduplicate by display name: recipe data can store the same item under multiple unique_names.

@@ -30,11 +30,12 @@ pub fn capture_warframe_reward_area() -> Option<(Vec<u8>, u32, u32, u32, String)
     // ── Path A: PrintWindow (Windowed / Borderless Windowed) ──────────────────
     if let Some((pixels, w, cap_h, full_h)) = capture_printwindow() {
         let avg = avg_brightness(&pixels);
-        if avg >= 20 {
+        if avg >= 50 {
             let info = format!("PrintWindow  {}×{}px (top 80%, cap {}px)  avg_brightness={}", w, full_h, cap_h, avg);
             return Some((pixels, w, cap_h, full_h, info));
         }
-        // Dark frame — Fullscreen Exclusive likely. Fall through to DXGI.
+        // Dark frame — Fullscreen Exclusive, or GPU bypassing GDI surface (some Borderless configs).
+        // Fall through to DXGI.
         let _ = avg;
         if let Some((px2, w2, cap_h2, full_h2)) = capture_dxgi(0.85) {
             let avg2 = avg_brightness(&px2);
@@ -432,53 +433,50 @@ fn capture_screen_gdi_scaled(num: u32, denom: u32) -> Option<(Vec<u8>, u32, u32)
 fn capture_dxgi(cap_frac: f32) -> Option<(Vec<u8>, u32, u32, u32)> {
     use windows::core::Interface; // required for .cast() on COM types
     use windows::Win32::Graphics::{
-        Direct3D::D3D_DRIVER_TYPE_HARDWARE,
+        Direct3D::D3D_DRIVER_TYPE_UNKNOWN,
         Direct3D11::{
             D3D11CreateDevice, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ,
             D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
             ID3D11Resource, ID3D11Texture2D, D3D11_MAPPED_SUBRESOURCE,
         },
         Dxgi::{
-            CreateDXGIFactory1, IDXGIFactory1, IDXGIOutput, IDXGIOutput1,
+            CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory1, IDXGIOutput, IDXGIOutput1,
             IDXGIResource, DXGI_OUTDUPL_FRAME_INFO,
         },
         Dxgi::Common::DXGI_SAMPLE_DESC,
     };
 
-    // In fullscreen exclusive mode, DuplicateOutput only succeeds for the output
-    // that the game has exclusive ownership of. We use this to find the correct
-    // monitor automatically — no GetDesc() or HMONITOR matching needed.
-    //
-    // For borderless/windowed games, PrintWindow already handled capture above;
-    // we only reach this code when PrintWindow returned a dark frame.
+    // Walk every adapter → every output. We create a D3D device bound to each
+    // specific adapter before calling DuplicateOutput — cross-adapter calls fail
+    // on multi-GPU systems (e.g. Intel iGPU + NVIDIA dGPU) where the game runs
+    // on the discrete GPU. A single device created with D3D_DRIVER_TYPE_HARDWARE
+    // defaults to adapter 0 (often the iGPU), causing DuplicateOutput to succeed
+    // only on the iGPU's outputs and silently miss the game on the dGPU.
     unsafe {
-        // D3D11 device — required by DuplicateOutput
-        let mut device = None;
-        let mut ctx    = None;
-        D3D11CreateDevice(
-            None, D3D_DRIVER_TYPE_HARDWARE, None,
-            Default::default(), None,
-            7, // D3D11_SDK_VERSION
-            Some(&mut device), None, Some(&mut ctx),
-        ).ok()?;
-        let device = device?;
-        let ctx    = ctx?;
-        let unk: windows::core::IUnknown = device.cast().ok()?;
-
         let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
 
-        // Walk every adapter → every output. In fullscreen exclusive mode, only the
-        // output the game owns accepts DuplicateOutput; all others return an error.
-        // This lets us find the right monitor for any adapter/display configuration.
         let mut result: Option<(Vec<u8>, u32, u32, u32)> = None;
 
         'outer: for ai in 0u32.. {
             let adapter = match factory.EnumAdapters(ai) { Ok(a) => a, Err(_) => break };
+
+            // Create a D3D device bound to THIS adapter so DuplicateOutput is same-adapter.
+            let adapter_iface: IDXGIAdapter = match adapter.cast() { Ok(a) => a, Err(_) => continue };
+            let mut device = None;
+            let mut ctx    = None;
+            if D3D11CreateDevice(
+                Some(&adapter_iface), D3D_DRIVER_TYPE_UNKNOWN, None,
+                Default::default(), None, 7,
+                Some(&mut device), None, Some(&mut ctx),
+            ).is_err() { continue; }
+            let device = match device { Some(d) => d, None => continue };
+            let ctx    = match ctx    { Some(c) => c, None => continue };
+            let unk: windows::core::IUnknown = match device.cast() { Ok(u) => u, Err(_) => continue };
+
             for oi in 0u32.. {
                 let output: IDXGIOutput = match adapter.EnumOutputs(oi) { Ok(o) => o, Err(_) => break };
                 let out1: IDXGIOutput1  = match output.cast() { Ok(o) => o, Err(_) => continue };
 
-                // This fails for all outputs except the one the game is running on
                 let dupl = match out1.DuplicateOutput(&unk) { Ok(d) => d, Err(_) => continue };
 
                 // Acquire current frame (500 ms timeout)
@@ -626,25 +624,60 @@ pub fn run_windows_ocr(bmp: Vec<u8>, img_w: u32, img_h: u32) -> Result<(String, 
         Storage::Streams::{DataWriter, InMemoryRandomAccessStream},
     };
 
-    (|| -> windows::core::Result<(String, Vec<(String, f32, f32)>)> {
-        let stream = InMemoryRandomAccessStream::new()?;
-        let writer = DataWriter::CreateDataWriter(&stream)?;
-        writer.WriteBytes(&bmp)?;
-        writer.StoreAsync()?.get()?;
-        writer.FlushAsync()?.get()?;
-        writer.DetachStream()?;
-        stream.Seek(0)?;
+    let winrt_result = (|| -> windows::core::Result<(String, Vec<(String, f32, f32)>)> {
+        let stream = InMemoryRandomAccessStream::new()
+            .map_err(|e| windows::core::Error::new(e.code(), format!("[stream-create] {e}").as_str()))?;
+        let writer = DataWriter::CreateDataWriter(&stream)
+            .map_err(|e| windows::core::Error::new(e.code(), format!("[writer-create] {e}").as_str()))?;
+        writer.WriteBytes(&bmp)
+            .map_err(|e| windows::core::Error::new(e.code(), format!("[write-bytes] {e}").as_str()))?;
+        writer.StoreAsync().map_err(|e| windows::core::Error::new(e.code(), format!("[store-async] {e}").as_str()))?.get()
+            .map_err(|e| windows::core::Error::new(e.code(), format!("[store-get] {e}").as_str()))?;
+        writer.FlushAsync().map_err(|e| windows::core::Error::new(e.code(), format!("[flush-async] {e}").as_str()))?.get()
+            .map_err(|e| windows::core::Error::new(e.code(), format!("[flush-get] {e}").as_str()))?;
+        writer.DetachStream()
+            .map_err(|e| windows::core::Error::new(e.code(), format!("[detach-stream] {e}").as_str()))?;
+        stream.Seek(0)
+            .map_err(|e| windows::core::Error::new(e.code(), format!("[seek] {e}").as_str()))?;
 
-        let decoder = BitmapDecoder::CreateAsync(&stream)?.get()?;
-        let bitmap  = decoder.GetSoftwareBitmapAsync()?.get()?;
+        let decoder = BitmapDecoder::CreateAsync(&stream)
+            .map_err(|e| windows::core::Error::new(e.code(), format!("[decoder-async] {e}").as_str()))?.get()
+            .map_err(|e| windows::core::Error::new(e.code(), format!("[decoder-get] {e}").as_str()))?;
+        let bitmap = decoder.GetSoftwareBitmapAsync()
+            .map_err(|e| windows::core::Error::new(e.code(), format!("[bitmap-async] {e}").as_str()))?.get()
+            .map_err(|e| windows::core::Error::new(e.code(), format!("[bitmap-get] {e}").as_str()))?;
 
-        // Warframe text is always English. Try "en-US" first so the engine
-        // works correctly on non-English Windows installations (Dutch, etc.).
-        // Fall back to user profile language if English pack isn't installed.
-        let engine = Language::CreateLanguage(&windows::core::HSTRING::from("en-US"))
-            .and_then(|lang| OcrEngine::TryCreateFromLanguage(&lang))
-            .or_else(|_| OcrEngine::TryCreateFromUserProfileLanguages())?;
-        let result = engine.RecognizeAsync(&bitmap)?.get()?;
+        // Try en-US first, then profile languages, then any available language.
+        // TryCreate* returns Err(Error::empty()) / HRESULT(0) when the language
+        // pack is not installed (Windows-rs wraps the null return as Error::empty()).
+        let engine = (|| -> windows::core::Result<OcrEngine> {
+            if let Ok(lang) = Language::CreateLanguage(&windows::core::HSTRING::from("en-US")) {
+                if let Ok(engine) = OcrEngine::TryCreateFromLanguage(&lang) {
+                    return Ok(engine);
+                }
+            }
+            if let Ok(lang) = Language::CreateLanguage(&windows::core::HSTRING::from("en-GB")) {
+                if let Ok(engine) = OcrEngine::TryCreateFromLanguage(&lang) {
+                    return Ok(engine);
+                }
+            }
+            if let Ok(engine) = OcrEngine::TryCreateFromUserProfileLanguages() {
+                return Ok(engine);
+            }
+            let langs = OcrEngine::AvailableRecognizerLanguages()?;
+            if langs.Size()? > 0 {
+                if let Ok(engine) = OcrEngine::TryCreateFromLanguage(&langs.GetAt(0)?) {
+                    return Ok(engine);
+                }
+            }
+            Err(windows::core::Error::new(
+                windows::core::HRESULT(0x80004005u32 as i32), // E_FAIL
+                "[engine-create] No OCR language packs found. Install English (United States) or English (United Kingdom) in Windows Settings → Time & Language → Language & Region.",
+            ))
+        })().map_err(|e| windows::core::Error::new(e.code(), format!("[engine] {e}").as_str()))?;
+        let result = engine.RecognizeAsync(&bitmap)
+            .map_err(|e| windows::core::Error::new(e.code(), format!("[recognize-async] {e}").as_str()))?.get()
+            .map_err(|e| windows::core::Error::new(e.code(), format!("[recognize-get] {e}").as_str()))?;
 
         let mut full = String::new();
         let mut lines_out: Vec<(String, f32, f32)> = Vec::new();
@@ -697,7 +730,18 @@ pub fn run_windows_ocr(bmp: Vec<u8>, img_w: u32, img_h: u32) -> Result<(String, 
             }
         }
         Ok((full, lines_out))
-    })().map_err(|e| e.to_string())
+    })().map_err(|e| e.to_string());
+
+    // ── BEGIN ocrs fallback ──────────────────────────────────────────────────
+    // Remove this block when deleting ocr_fallback.rs + ocrs/rten from Cargo.toml.
+    if let Err(ref e) = winrt_result {
+        if e.contains("[engine]") {
+            return crate::ocr_fallback::run_ocrs(&bmp, img_w, img_h);
+        }
+    }
+    // ── END ocrs fallback ────────────────────────────────────────────────────
+
+    winrt_result
 }
 
 // ─── Word matching helpers ────────────────────────────────────────────────────
@@ -1450,6 +1494,7 @@ fn match_reward_items(
         const BADGE_WORDS: &[&str] = &["owned", "crafted", "unranked", "mastered"];
         let meaningful: Vec<&str> = text.split_whitespace()
             .filter(|w| !w.starts_with('@') && w.parse::<u32>().is_err()
+                    && w.len() > 1  // single chars like "O" (OCR mis-read of "0") are not meaningful
                     && w.chars().any(|c| c.is_alphabetic()))
             .collect();
         !meaningful.is_empty()
@@ -1896,7 +1941,10 @@ fn match_reward_items(
     }).collect();
     // is_complete = true means "found all cards expected for this squad size".
     // lib.rs uses this to decide when to stop retrying OCR.
-    let is_complete = !items.is_empty() && items.len() >= estimated_cards;
+    // Only confirmed catalog matches count toward completion — "?:" unknowns are
+    // noise or garbled text and must not trigger an early lock-in.
+    let n_confirmed = items.iter().filter(|s| !s.starts_with("?:")).count();
+    let is_complete = n_confirmed > 0 && n_confirmed >= estimated_cards;
     let expected_src = match (hint_squad_size, !card_centers.is_empty()) {
         (Some(h), _) if h >= word_card_count && h >= card_centers.len() => "EE.log",
         (_, true) if card_centers.len() >= word_card_count => "bars",

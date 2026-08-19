@@ -1,6 +1,6 @@
 [package]
 name = "warframe-companion"
-version = "3.6.0"
+version = "3.7.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -34,6 +34,14 @@ tracing-appender = "0.2"
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tauri-plugin-notification = "2"
+# ── BEGIN ocrs fallback ─────────────────────────────────────────────────────
+# Pure-Rust neural-net OCR; used when Windows.Media.Ocr has no language packs.
+# To remove: delete ocr_fallback.rs, remove `mod ocr_fallback` from lib.rs,
+# remove the fallback block in ocr.rs (search "BEGIN ocrs fallback"), and
+# delete the four lines below.
+ocrs = "0.7"
+rten = "0.9"
+# ── END ocrs fallback ───────────────────────────────────────────────────────
 
 [profile.dev]
 opt-level = 1
