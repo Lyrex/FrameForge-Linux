@@ -71,11 +71,14 @@ grep -q '^Name=FrameForge$' squashfs-root/FrameForge.desktop
 # without it they fall back to parsing the filename, which shelly gets
 # wrong. The version is only recorded in the Tauri-produced filename
 # (FrameForge_<version>_amd64.AppImage), so recover it from there.
+# shelly compares this value with the GitHub release tag as a literal string.
+# Without the `v`, 3.6.0-linux.1 never equals the tag v3.6.0-linux.1, and every
+# update run reinstalls the version that is already installed.
 version=$(basename "$appimage")
 version=${version#FrameForge_}
 version=${version%_*}
 [ -n "$version" ]
-printf 'X-AppImage-Version=%s\n' "$version" >> squashfs-root/FrameForge.desktop
+printf 'X-AppImage-Version=v%s\n' "$version" >> squashfs-root/FrameForge.desktop
 
 # Match the original filesystem's compression so the repack changes nothing
 # but the two entries above.
@@ -93,7 +96,7 @@ mkdir verify && cd verify
 "$appimage" --appimage-extract FrameForge.desktop > /dev/null
 "$appimage" --appimage-extract .DirIcon > /dev/null
 grep -q '^Name=FrameForge$' squashfs-root/FrameForge.desktop
-grep -q "^X-AppImage-Version=$version\$" squashfs-root/FrameForge.desktop
+grep -q "^X-AppImage-Version=v$version\$" squashfs-root/FrameForge.desktop
 [ -s squashfs-root/.DirIcon ] && [ ! -L squashfs-root/.DirIcon ]
 objcopy -O binary --only-section=.upd_info "$appimage" updinfo.bin
 grep -q 'gh-releases-zsync' updinfo.bin
