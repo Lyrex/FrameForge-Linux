@@ -642,7 +642,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
       })
       .filter(i => {
         if (!filterOwned && !filterUnowned) return true;
-        if (ignoreFormaKuva && (i.name.includes("Forma") || i.name === "Kuva")) return true;
+        if (ignoreFormaKuva && (i.name.includes("Forma") || i.name === "Kuva")) return filterOwned;
         const owned = (inventory[i.unique_name]?.quantity ?? 0) > 0;
         return filterOwned ? owned : !owned;
       })

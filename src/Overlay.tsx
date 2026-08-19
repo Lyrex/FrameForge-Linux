@@ -238,7 +238,7 @@ export default function Overlay() {
   const priority = (localStorage.getItem("ff-overlay-priority") ?? "completion") as PickPriority;
 
   const prevKey      = useRef<string>("");
-  const catalogRef   = useRef<Record<string, any>>({});
+  const sessionCatalogRef = useRef<Record<string, any>>({}); // populated per-session by get_items_by_paths
   const quantRef     = useRef<Record<string, number>>({});
   const craftingRef  = useRef<Record<string, number>>({});  // normalized unique_name → crafting count
 
@@ -269,7 +269,7 @@ export default function Overlay() {
 
       prevKey.current = key;
 
-      const byUnique = catalogRef.current;
+      const byUnique = sessionCatalogRef.current;
       const qty      = quantRef.current;
       invoke("log_relic_fe", { msg: `[OV] building ${paths.length} base items` }).catch(() => {});
       const base: RewardItem[] = paths.map((path, i) => {
@@ -316,7 +316,7 @@ export default function Overlay() {
         // Read the catalog once for this card's async chain; quantities are read
         // from quantRef.current AFTER the recipe await so they reflect any
         // inventory-update that fired while we were waiting.
-        const cat       = catalogRef.current;
+        const cat       = sessionCatalogRef.current;
         const setPrefix = setName + " ";
 
         type RC = { unique_name: string; name: string; count: number; result_count: number };
@@ -429,7 +429,7 @@ export default function Overlay() {
       "relic-rewards",
       async (e) => {
         const payload = e.payload;
-        invoke("log_relic_fe", { msg: `[OV] relic-rewards event: items=${payload?.items?.length ?? "null"} dataReady=${dataReady}` }).catch(() => {});
+        invoke("log_relic_fe", { msg: `[OV] relic-rewards event: items=${payload?.items?.length ?? "null"} dataReady=${dataReady} catalogSize=${Object.keys(sessionCatalogRef.current).length}` }).catch(() => {});
         if (!payload || payload.items.length === 0) {
           invoke("log_relic_fe", { msg: "[OV] null/empty payload → moving off-screen" }).catch(() => {});
           setRewards([]);
@@ -439,6 +439,18 @@ export default function Overlay() {
         }
 
         if (dataReady) {
+          // Fetch only the items relevant to this relic session (the reward items +
+          // their full prime set siblings for the component grid).  Rust already has
+          // the catalog loaded at this point, so this is a fast targeted lookup.
+          try {
+            const items = await invoke<any[]>("get_items_by_paths", { paths: payload.items });
+            const byUnique: Record<string, any> = {};
+            for (const i of items) byUnique[i.unique_name] = i;
+            sessionCatalogRef.current = byUnique;
+            invoke("log_relic_fe", { msg: `[OV] session catalog: ${items.length} items for ${payload.items.length} rewards` }).catch(() => {});
+          } catch (err) {
+            invoke("log_relic_fe", { msg: `[OV] get_items_by_paths failed: ${err}` }).catch(() => {});
+          }
           processPayload(payload.items, payload.positions);
         } else {
           invoke("log_relic_fe", { msg: "[OV] buffering event (dataReady=false)" }).catch(() => {});
@@ -465,17 +477,11 @@ export default function Overlay() {
       })
       .catch((err) => { invoke("log_relic_fe", { msg: `[OV] pull error: ${err}` }).catch(() => {}); });
 
-    invoke("log_relic_fe", { msg: "[OV] starting Promise.allSettled for catalog/qty/crafting" }).catch(() => {});
+    invoke("log_relic_fe", { msg: "[OV] starting Promise.allSettled for qty/crafting" }).catch(() => {});
     Promise.allSettled([
-      invoke<any[]>("get_all_items"),
       invoke<Record<string, number>>("get_current_quantities"),
       invoke<CraftingJobTs[]>("get_current_crafting"),
-    ]).then(([itemsR, quantitiesR, craftingR]) => {
-      if (itemsR.status === 'fulfilled') {
-        const byUnique: Record<string, any> = {};
-        for (const i of itemsR.value) byUnique[i.unique_name] = i;
-        catalogRef.current = byUnique;
-      }
+    ]).then(async ([quantitiesR, craftingR]) => {
       if (quantitiesR.status === 'fulfilled') {
         quantRef.current = quantitiesR.value;
       }
@@ -491,8 +497,18 @@ export default function Overlay() {
       invoke("log_relic_fe", { msg: `[OV] dataReady=true — pendingEvent=${pendingEvent ? pendingEvent.paths.length + " items" : "null"}` }).catch(() => {});
 
       if (pendingEvent) {
-        processPayload(pendingEvent.paths, pendingEvent.positions);
+        const ev = pendingEvent;
         pendingEvent = null;
+        try {
+          const items = await invoke<any[]>("get_items_by_paths", { paths: ev.paths });
+          const byUnique: Record<string, any> = {};
+          for (const i of items) byUnique[i.unique_name] = i;
+          sessionCatalogRef.current = byUnique;
+          invoke("log_relic_fe", { msg: `[OV] pending: session catalog: ${items.length} items` }).catch(() => {});
+        } catch (err) {
+          invoke("log_relic_fe", { msg: `[OV] pending: get_items_by_paths failed: ${err}` }).catch(() => {});
+        }
+        processPayload(ev.paths, ev.positions);
       }
     });
 
@@ -505,22 +521,10 @@ export default function Overlay() {
       if (!newQty) return;
       quantRef.current = newQty;
 
-      // Self-heal: if catalog is still empty (lost the race with load_wfcd_data on startup),
-      // re-fetch now that the scanner has confirmed items are loaded.
-      if (Object.keys(catalogRef.current).length === 0) {
-        invoke<any[]>("get_all_items").then(items => {
-          if (items.length > 0) {
-            const byUnique: Record<string, any> = {};
-            for (const i of items) byUnique[i.unique_name] = i;
-            catalogRef.current = byUnique;
-          }
-        }).catch(() => {});
-      }
-
       setRewards(prev => prev.map(r => {
         if (!r.components || !r.set_name) return r;
 
-        const cat = catalogRef.current;
+        const cat = sessionCatalogRef.current;
 
         // Recompute every component's owned count with the fresh quantities.
         const updatedComponents = r.components.map(c => ({

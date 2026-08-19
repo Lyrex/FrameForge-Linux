@@ -1,14 +1,21 @@
 [
     {
         "path": "/Lotus/Types/Recipes/Components/VorBoltRemoverFakeItem",
-        "name": "Chroma Mark",
-        "category": "Resources",
+        "name": "Ascaris Negator",
+        "category": "Blueprints",
         "tradeable_wfm": false,
-        "is_stackable": true
+        "is_stackable": false
     },
     {
         "path": "/Lotus/Types/Recipes/WarframeRecipes/ChromaBeaconCComponent",
         "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/WarframeRecipes/ChromaBeaconCBlueprint",
+        "name": "Chroma Mark Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
     },
     {
         "path": "/Lotus/Weapons/Tenno/Melee/MeleeTrees/StaffCmbOneMeleeTree",
@@ -24,8 +31,64 @@
         "is_stackable": true
     },
     {
+        "path": "/Lotus/Types/Recipes/WarframeRecipes/EmberSystemsBlueprint",
+        "name": "Ember Systems Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/WarframeRecipes/FrostSystemsBlueprint",
+        "name": "Frost Systems Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/WarframeRecipes/RevenantSystemsBlueprint",
+        "name": "Revenant Systems Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/WarframeRecipes/AnimusSystemsBlueprint",
+        "name": "Equinox Day Systems Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/WarframeRecipes/AnimaHelmetBlueprint",
+        "name": "Equinox Night Neuroptics Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Helmets/StatlessRhinoAltHelmetBlueprint",
+        "name": "Rhino Thrak Helmet Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Helmets/StatlessEmberAltHelmetBlueprint",
+        "name": "Ember Phoenix Helmet Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
         "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/SpinnerexHandleBlueprint",
         "name": "Spinnerex Handle Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/SpinnerexStringBlueprint",
+        "name": "Spinnerex String Blueprint",
         "category": "Blueprints",
         "tradeable_wfm": false,
         "is_stackable": true
@@ -38,8 +101,49 @@
         "is_stackable": true
     },
     {
-        "path": "/Lotus/Types/StoreItems/Consumables/TenCipherBlueprint",
-        "name": "Cipher X 10 Blueprint",
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/VinquibusBarrelBlueprint",
+        "name": "Vinquibus Barrel Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/VinquibusBladeBlueprint",
+        "name": "Vinquibus Blade Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/VinquibusStockBlueprint",
+        "name": "Vinquibus Stock Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Weapons/Tenno/Bayonet/TnBayonetMeleeWeapon",
+        "name": "Vinquibus",
+        "category": "Melee",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/AmbassadorReceiverBlueprint",
+        "name": "Ambassador Receiver Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/AmbassadorBarrelBlueprint",
+        "name": "Ambassador Barrel Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/AmbassadorStockBlueprint",
+        "name": "Ambassador Stock Blueprint",
         "category": "Blueprints",
         "tradeable_wfm": false,
         "is_stackable": true
@@ -66,12 +170,8 @@
         "is_stackable": true
     },
     {
-        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/InfUziWeaponBarrelBlueprint",
-        "category": "Ignored"
-    },
-    {
-        "path": "/Lotus/Types/Recipes/LandingCraftRecipes/ZarimanShip/ZarimanShipFuselageBlueprint",
-        "name": "Parallax Fuselage Blueprint",
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/AmbassadorReceiverBlueprint",
+        "name": "Ambassador Receiver Blueprint",
         "category": "Blueprints",
         "tradeable_wfm": false,
         "is_stackable": true
@@ -84,13 +184,6 @@
         "is_stackable": true
     },
     {
-        "path": "/Lotus/Types/Recipes/LandingCraftRecipes/ZarimanShip/ZarimanShipAvionicsBlueprint",
-        "name": "Parallax Avionics Blueprint",
-        "category": "Blueprints",
-        "tradeable_wfm": false,
-        "is_stackable": true
-    },
-    {
         "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/ThanotechPistolBarrelBlueprint",
         "name": "Sepulcrum Barrel Blueprint",
         "category": "Blueprints",
@@ -98,29 +191,232 @@
         "is_stackable": true
     },
     {
-        "path": "/Lotus/Types/StoreItems/Consumables/LisetAirSupportHundredBlueprint",
-        "name": "Air Support Charges X 100 Blueprint",
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/NokkoArchGunReceiverBlueprint",
+        "name": "Arbucep Receiver Blueprint",
         "category": "Blueprints",
         "tradeable_wfm": false,
         "is_stackable": true
     },
     {
-        "path": "/Lotus/Weapons/ClanTech/Chemical/LargeHundredTeamAmmoBlueprint",
-        "name": "Squad Ammo Restore (Large) X 100 Blueprint",
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/NokkoArchGunStockBlueprint",
+        "name": "Arbucep Stock Blueprint",
         "category": "Blueprints",
         "tradeable_wfm": false,
         "is_stackable": true
     },
     {
-        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/AmbassadorReceiverBlueprint",
-        "name": "Ambassador Receiver Blueprint",
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/DaxDuviriAsymmetricalLongBowUpperLimbBlueprint",
+        "name": "Cinta Upper Limb Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/DaxDuviriAsymmetricalLongBowLowerLimbBlueprint",
+        "name": "Cinta Lower Limb Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/DaxDuviriAsymmetricalLongBowStringBlueprint",
+        "name": "Cinta String Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/DuviriRifleBarrelBlueprint",
+        "name": "Aeolak Barrel Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/DuviriRifleReceiverBlueprint",
+        "name": "Aeolak Receiver Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/DuviriRifleStockBlueprint",
+        "name": "Aeolak Stock Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/DuviriHeavyScytheHandleBlueprint",
+        "name": "Hespar Handle Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/NaginataBladeBlueprint",
+        "name": "Amanata Blade Blueprint",
         "category": "Blueprints",
         "tradeable_wfm": false,
         "is_stackable": true
     },
     {
-        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/AmbassadorBarrelBlueprint",
-        "name": "Ambassador Barrel Blueprint",
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/GunbrellaBarrelBlueprint",
+        "name": "Higasa Barrel Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/GunbrellaReceiverBlueprint",
+        "name": "Higasa Receiver Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/LasSilencedPistolBarrelBlueprint",
+        "name": "Vesper 77 Barrel Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/LasSilencedPistolReceiverBlueprint",
+        "name": "Vesper 77 Receiver Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/LasSilencedPistolStockBlueprint",
+        "name": "Vesper 77 Stock Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/EntFistIncarnonBladeBlueprint",
+        "name": "Ruvox Blade Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/EntFistIncarnonGloveBlueprint",
+        "name": "Ruvox Glove Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/GalariakPrimeBladeBlueprint",
+        "name": "Galariak Prime Blade Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/GalariakPrimeHandleBlueprint",
+        "name": "Galariak Prime Handle Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/SagekPrimeBarrelBlueprint",
+        "name": "Sagek Prime Barrel Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/SagekPrimeReceiverBlueprint",
+        "name": "Sagek Prime Receiver Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/OrionScytheBladeBlueprint",
+        "name": "Wrath Blade Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/OrionScytheHandleBlueprint",
+        "name": "Wrath Handle Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/SiriusScytheBladeBlueprint",
+        "name": "Pride Blade Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/SiriusScytheHandleBlueprint",
+        "name": "Pride Handle Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/EnkausBarrelBlueprint",
+        "name": "Enkaus Barrel Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/EnkausReceiverBlueprint",
+        "name": "Enkaus Receiver Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/1999EntHybridPistolBarrelBlueprint",
+        "name": "Riot-848 Barrel Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/1999EntHybridPistolStockBlueprint",
+        "name": "Riot-848 Stock Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/ArchwingRecipes/PrimeArchwing/PrimeArchwingWingsBlueprint",
+        "name": "Odonata Prime Wings Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/LandingCraftRecipes/ZarimanShip/ZarimanShipFuselageBlueprint",
+        "name": "Parallax Fuselage Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/LandingCraftRecipes/ZarimanShip/ZarimanShipAvionicsBlueprint",
+        "name": "Parallax Avionics Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/LandingCraftRecipes/ZarimanShip/ZarimanShipEnginesBlueprint",
+        "name": "Parallax Engines Blueprint",
         "category": "Blueprints",
         "tradeable_wfm": false,
         "is_stackable": true
@@ -133,11 +429,388 @@
         "is_stackable": true
     },
     {
-        "path": "/Lotus/Types/Recipes/LandingCraftRecipes/ZarimanShip/ZarimanShipEnginesBlueprint",
-        "name": "Parallax Engines Blueprint",
+        "path": "/Lotus/Types/Recipes/LandingCraftRecipes/Mantys/MantysStarChartBlueprint",
+        "name": "Mantis Avionics Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/LandingCraftRecipes/Mantys/MantysPowerCoreBlueprint",
+        "name": "Mantis Engines Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/StoreItems/Consumables/TenCipherBlueprint",
+        "name": "Cipher X 10 Blueprint",
         "category": "Blueprints",
         "tradeable_wfm": false,
         "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/StoreItems/Consumables/LisetAirSupportHundredBlueprint",
+        "name": "Air Support Charges X 100 Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/StoreItems/Consumables/Restoratives/TeamHealTotemBlueprint",
+        "name": "Squad Health Restore (Small) Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/StoreItems/Consumables/Restoratives/TeamAmmoTotemBlueprint",
+        "name": "Squad Ammo Restore (Small) Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/StoreItems/Consumables/Restoratives/TeamShieldTotemBlueprint",
+        "name": "Squad Shield Restore (Small) Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/StoreItems/Consumables/Restoratives/TenTeamHealTotemBlueprint",
+        "name": "Squad Health Restore (Small) X 10 Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Weapons/ClanTech/Chemical/LargeHundredTeamAmmoBlueprint",
+        "name": "Squad Ammo Restore (Large) X 100 Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Weapons/ClanTech/Chemical/ClanTenTeamAmmoBlueprint",
+        "name": "Squad Ammo Restore (Medium) X 10 Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Weapons/ClanTech/Energy/LargeHundredTeamEnergyBlueprint",
+        "name": "Squad Energy Restore (Large) X 100 Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Weapons/ClanTech/Energy/LargeHundredTeamShieldBlueprint",
+        "name": "Squad Shield Restore (Large) X 100 Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/InfUziWeaponBarrelBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/HelminthShieldsBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/FrostIceWaveBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/TitaniaSpellbindBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/HelminthHackBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/OctaviaResonatorBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/ChromaElementalWardBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/AshShurikenBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/HelminthAmmoEfficiencyBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/EmberFireBlastBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/BansheeSilenceBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/HelminthStunBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/OberonSmiteBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/XakuVoidRotBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/NyxMindControlBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/GrendelNourishBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/GaussThermalSunderBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/RevenantReaveBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/IvaraQuiverBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/InarosDesiccationBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/HelminthStatusBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/VoltShockBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/KhoraEnsnareBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/ZephyrAirburstBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/MesaShootingGalleryBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/NezhaFireWalkerBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/RhinoRoarBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/WispBreachSurgeBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/LimboBanishBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/HelminthShieldArmorBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/AtlasPetrifyBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/BaruukLullBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/MagPullBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/HelminthProcBlockBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/EquinoxRestAndRageBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/VaubanTeslaNervosBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/YareliDisksBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/HelminthEnergyShareBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/AlchemistVialBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/HildrynPillageBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/NovaNullStarBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/GaraSpectrorageBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/HelminthMaxStatusBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/WraithGloomBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/OrionBuffBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/SiriusBuffBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/ProteaDispenserBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/HelminthTreasureBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/GyreSphereBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/LokiDecoyBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Types/Recipes/AbilityOverrides/WerewolfLeapBlueprint",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/DropEfervonGrenadeChanceSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/NullStarOnWeakpointKillSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/NPCReviveSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/DropHealingBurgerChanceSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/AllowNecramechSummonSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/ToxinGasResistanceOnHealthOrbSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/AvatarKnockdownResistanceSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/StickerEnemyRifle",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/DecoyOnDamagedSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/RemoveStatusesOnHeavyAttackSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/ElementalAmmoChanceOnEximusKillSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/StickerEnemySmg",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/SuperGlideParkourSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/CreateShieldOnHeavySlamSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/StickerSporePrimer",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/WeaponColdDamageSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/AllowThermianRpgSummonSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/DropSpecialItemChanceOnWeakpointKillSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/ToxinProcOnDamageSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/CreateChasingAntiMatterDropSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/StickerEnemyShotgun",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/EjectButtonSticker",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/StickerEnemyMelee",
+        "category": "Ignored"
+    },
+    {
+        "path": "/Lotus/Upgrades/Stickers/DeathPreventionOnKillsSticker",
+        "category": "Ignored"
     },
     {
         "path": "/Lotus/Weapons/Sentients/OperatorAmplifiers/SentTrainingAmplifier/OperatorTrainingAmpWeapon",
@@ -278,6 +951,30 @@
         "tradeable_wfm": false
     },
     {
+        "path": "/Lotus/Types/Sentinels/SentinelPrecepts/Warrior",
+        "name": "Warrior",
+        "category": "Mods",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Types/Sentinels/SentinelPrecepts/SwiftDeth",
+        "name": "Swift Deth",
+        "category": "Mods",
+        "tradeable_wfm": false
+    },
+    {
+        "path": "/Lotus/Types/Sentinels/SentinelPrecepts/BoomStick",
+        "name": "Striker",
+        "category": "Mods",
+        "tradeable_wfm": true
+    },
+    {
+        "path": "/Lotus/Types/Sentinels/SentinelPrecepts/LocateCreatures",
+        "name": "Scan Aquatic Lifeforms",
+        "category": "Mods",
+        "tradeable_wfm": true
+    },
+    {
         "path": "/Lotus/Upgrades/CosmeticEnhancers/Antiques/VoidSlingsOverguardStrip",
         "name": "Zid-An Osbok",
         "category": "Arcanes",
@@ -296,22 +993,10 @@
         "tradeable_wfm": true
     },
     {
-        "path": "/Lotus/Types/Sentinels/SentinelPrecepts/Warrior",
-        "name": "Warrior",
-        "category": "Mods",
-        "tradeable_wfm": false
-    },
-    {
         "path": "/Lotus/Upgrades/CosmeticEnhancers/Antiques/HeatStatusProcOnUltimateKill",
         "name": "Zid-An Uskos",
         "category": "Arcanes",
         "tradeable_wfm": true
-    },
-    {
-        "path": "/Lotus/Types/Sentinels/SentinelPrecepts/SwiftDeth",
-        "name": "Swift Deth",
-        "category": "Mods",
-        "tradeable_wfm": false
     },
     {
         "path": "/Lotus/Upgrades/CosmeticEnhancers/Antiques/AmmoEfficencyDuringUltimate",

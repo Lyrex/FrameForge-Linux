@@ -720,6 +720,7 @@ export default function App() {
   const [playerName, setPlayerName] = useState<string | null>(null);
   const [wfConnected, setWfConnected] = useState(false);
   const [memoryProbing, setMemoryProbing] = useState(false);
+  const [poking, setPoking] = useState(false);
   const [rawScanning, setRawScanning] = useState(false);
   const [diagCapturing, setDiagCapturing] = useState(false);
   const [notifyTestResult, setNotifyTestResult] = useState("");
@@ -1035,7 +1036,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         if (typeof s.wfmInvisibleOnClose === "boolean") { setWfmInvisibleOnClose(s.wfmInvisibleOnClose); wfmInvisibleOnCloseRef.current = s.wfmInvisibleOnClose; }
         if (typeof s.wfmAutoInvisible    === "boolean") setWfmAutoInvisible(s.wfmAutoInvisible);
         if (typeof s.wfmAutoInvisibleMins === "number") setWfmAutoInvisibleMins(s.wfmAutoInvisibleMins);
-        if (typeof s.relicPickEnabled    === "boolean") setRelicPickEnabled(s.relicPickEnabled);
+        if (typeof s.relicPickEnabled    === "boolean") { setRelicPickEnabled(s.relicPickEnabled); invoke("set_relic_pick_enabled", { enabled: s.relicPickEnabled }); }
         if (["unowned","ducat","platinum"].includes(s.relicPickPriority)) setRelicPickPriority(s.relicPickPriority);
         if (["intact","exceptional","flawless","radiant"].includes(s.relicPickRefinement)) setRelicPickRefinement(s.relicPickRefinement);
         if (["all","best","estimated"].includes(s.relicPickLines)) setRelicPickLines(s.relicPickLines);
@@ -2076,6 +2077,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
               !memoryScannerEnabled ? "OFF"
               : !monitoring         ? "Idle"
               : warframeRunning     ? "Scanning"
+              : poking              ? "Checking…"
               : "No Game";
 
             // WF API chip
@@ -2113,8 +2115,16 @@ if (typeof s.autoDiagEnabled === "boolean") {
               <>
                 <span
                   className={`conn-chip conn-${scanState}`}
-                  title={!memoryScannerEnabled ? "Memory scanner disabled — enable in Settings" : warframeRunning ? "Warframe detected — scanning memory" : "Warframe not detected"}
-                  onClick={!memoryScannerEnabled ? () => setShowSettings(true) : undefined}
+                  title={!memoryScannerEnabled ? "Memory scanner disabled — enable in Settings" : warframeRunning ? "Warframe detected — scanning memory" : "Click to recheck for Warframe"}
+                  style={{ cursor: memoryScannerEnabled && !warframeRunning ? "pointer" : undefined }}
+                  onClick={
+                    !memoryScannerEnabled ? () => setShowSettings(true)
+                    : !warframeRunning && monitoring ? () => {
+                        setPoking(true);
+                        invoke("poke_scan").finally(() => setTimeout(() => setPoking(false), 3000));
+                      }
+                    : undefined
+                  }
                 >
                   <span className="conn-dot" />
                   <span className="conn-label">Memory</span>
@@ -2403,6 +2413,23 @@ if (typeof s.autoDiagEnabled === "boolean") {
                     <div className="settings-section-title">Relic Pick Overlay</div>
                     <div className="settings-row">
                       <div className="settings-row-info">
+                        <span className="settings-row-label">Enable Overlay</span>
+                        <span className="settings-row-desc">Show the relic pick overlay when opening the relic selection screen.</span>
+                      </div>
+                      <button
+                        className="btn-secondary"
+                        style={{ minWidth: 64, background: relicPickEnabled ? "rgba(56,139,253,.15)" : undefined, borderColor: relicPickEnabled ? "var(--accent)" : undefined }}
+                        onClick={() => {
+                          const next = !relicPickEnabled;
+                          setRelicPickEnabled(next);
+                          settingsRef.current = { ...settingsRef.current, relicPickEnabled: next };
+                          saveAllSettings();
+                          invoke("set_relic_pick_enabled", { enabled: next });
+                        }}
+                      >{relicPickEnabled ? "Enabled" : "Disabled"}</button>
+                    </div>
+                    <div className="settings-row" style={{ marginTop: 8, opacity: relicPickEnabled ? 1 : 0.45, pointerEvents: relicPickEnabled ? "auto" : "none" }}>
+                      <div className="settings-row-info">
                         <span className="settings-row-label">Recommendation Base</span>
                         <span className="settings-row-desc">How relics are ranked in the overlay.</span>
                       </div>
@@ -2418,7 +2445,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                         <option value="platinum">Most Platinum (EV)</option>
                       </select>
                     </div>
-                    <div className="settings-row" style={{ marginTop: 8 }}>
+                    <div className="settings-row" style={{ marginTop: 8, opacity: relicPickEnabled ? 1 : 0.45, pointerEvents: relicPickEnabled ? "auto" : "none" }}>
                       <div className="settings-row-info">
                         <span className="settings-row-label">Shown Lines Per Relic</span>
                         <span className="settings-row-desc">How much reward detail to show per relic card.</span>
