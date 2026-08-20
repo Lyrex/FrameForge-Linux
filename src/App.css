@@ -987,6 +987,20 @@ svg.item-img-fallback { background: transparent; border: none; padding: 0; }
   flex: 1; display: flex; align-items: center;
   font-size: 10px; color: var(--muted); padding: 0 6px;
 }
+.comp-row-acquired {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  font-size: 10px; color: var(--accent); padding: 0 6px; text-align: center;
+  font-style: italic; opacity: 0.85;
+}
+.craft-acquired-badge {
+  display: inline-flex; align-items: center;
+  padding: 1px 5px; border-radius: 4px; font-size: 9px;
+  background: rgba(100,180,255,.12); color: #64b4ff;
+  border: 1px solid rgba(100,180,255,.3); cursor: help;
+}
+.craft-row-acquired-tag {
+  color: #64b4ff; font-size: 10px; font-style: italic; cursor: help;
+}
 
 /* Shared */
 .craft-mr-req {

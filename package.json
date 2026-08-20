@@ -1,7 +1,7 @@
 {
   "name": "warframe-companion",
   "private": true,
-  "version": "3.7.0-linux.1",
+  "version": "3.8.0-linux.1",
   "type": "module",
   "scripts": {
     "dev": "vite",

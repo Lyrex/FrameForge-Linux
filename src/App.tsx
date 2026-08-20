@@ -3158,7 +3158,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                       return (
                         <div key={c.id || i} className="log-row">
                           <span className="log-name">
-                            {c.item_name}
+                            {logItem?.name ?? c.item_name}
                             {logItem && <span className="log-cat">{logItem.category}</span>}
                           </span>
                           <span className={`log-delta ${deltaClass(c.delta)}`}>{deltaText(c.delta)}</span>
