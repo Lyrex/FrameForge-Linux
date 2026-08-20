@@ -13,13 +13,13 @@
 ///
 /// `read_at` serves the cached-blob fast path. It returns the bytes starting
 /// at `addr` itself, not at the containing region's base, plus the address
-/// just past that region, so the caller can stitch forward. It skips the
-/// size and executable filters of `next_region`: a caller probing a known
-/// address only cares whether it is still readable. An unreadable-but-mapped
-/// address yields empty bytes rather than `None`.
+/// just past that region, so the caller can stitch forward. The size filter
+/// of `next_region` does not apply: a caller probing a known address only
+/// cares whether it is still readable. Either empty bytes or `None` ends the
+/// stitch. A source can report an unreadable address as whichever of the two
+/// suits how it enumerates memory.
 pub trait RegionSource {
     fn next_region(&mut self) -> Option<(usize, Vec<u8>)>;
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     fn read_at(&self, addr: usize) -> Option<(usize, Vec<u8>)>;
 }
 
