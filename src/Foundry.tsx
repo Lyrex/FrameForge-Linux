@@ -17,6 +17,7 @@ interface CatalogItem {
   vaulted?: boolean | null;
   mastery_req?: number | null;
   max_level_cap?: number | null;
+  source_type?: string;
 }
 
 interface RecipeComponent {
@@ -115,6 +116,7 @@ function mergeComponents(comps: RecipeComponent[]): RecipeComponent[] {
 function isLichWeapon(item: CatalogItem): boolean {
   return item.name.startsWith("Kuva ") || item.name.startsWith("Tenet ");
 }
+
 
 const LEVELABLE_CATS = new Set(["Warframes", "Primary", "Secondary", "Melee", "Companions", "Archwing", "Operator Weapons"]);
 
@@ -311,7 +313,8 @@ function RecipeModal({ item, recipe, inventory, isTracked, onTrack, onClose, cra
   onTrack: () => void; onClose: () => void; crafting: CraftingJob[];
 }) {
   const [mode, setMode] = useState<"tree" | "needs">("tree");
-  const isKuva = isLichWeapon(item);
+  const isKuva     = isLichWeapon(item);
+  const isAcquired = !!item.source_type;
   const craftJob = crafting.find(c =>
     c.unique_name === item.unique_name ||
     (recipe && recipe.length > 0 && recipe[0].unique_name === c.unique_name)
@@ -352,6 +355,15 @@ function RecipeModal({ item, recipe, inventory, isTracked, onTrack, onClose, cra
                 <strong>{item.name}</strong> is obtained by converting a{" "}
                 {item.name.startsWith("Kuva ") ? <strong>Kuva Lich</strong> : <strong>Tenet Sister</strong>},
                 not crafted from a Blueprint.
+              </div>
+            </div>
+          </div>
+        ) : isAcquired ? (
+          <div className="craft-modal-body">
+            <div className="craft-kuva-notice">
+              <span className="craft-kuva-icon">🎮</span>
+              <div>
+                <strong>{item.name}</strong> is acquired in-game and cannot be crafted in the Foundry.
               </div>
             </div>
           </div>
@@ -457,8 +469,11 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
           {isCrafting && <span className="craft-icon-tag craft-icon-foundry" title="Building">⚒</span>}
           {formaCount > 0 && <FormaIcon count={formaCount} />}
         </div>
-        {mergedRecipe && mergedRecipe.length > 0 &&
-          <span className="craft-row-parts">{mergedRecipe.length} part{mergedRecipe.length !== 1 ? "s" : ""}</span>}
+        {item.source_type
+          ? <span className="craft-row-parts craft-row-acquired-tag">Acquired in-game</span>
+          : mergedRecipe && mergedRecipe.length > 0
+            ? <span className="craft-row-parts">{mergedRecipe.length} part{mergedRecipe.length !== 1 ? "s" : ""}</span>
+            : null}
       </div>
     );
   }
@@ -507,7 +522,7 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
           <span className="craft-mr-req">MR {item.mastery_req}</span>}
       </div>
 
-      {/* Col 1, row 6: vault / kuva badges */}
+      {/* Col 1, row 6: vault / kuva / acquired badges */}
       <div className="cc-badges">
         {item.vaulted === true  && <span className="vault-badge vault-yes">🔒 Vaulted</span>}
         {item.vaulted === false && <span className="vault-badge vault-no">🔓 Unvaulted</span>}
@@ -529,6 +544,8 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
       <div className="cc-ingredients">
         {recipe === null ? (
           <div className="comp-row-loading">Loading…</div>
+        ) : item.source_type ? (
+          <div className="comp-row-acquired">Acquired in-game</div>
         ) : recipe.length === 0 ? (
           <div className="comp-row-loading">No recipe</div>
         ) : (

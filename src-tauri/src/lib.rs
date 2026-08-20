@@ -22,6 +22,7 @@ use tauri::{Emitter, Manager, State};
 mod console_login; // [console-login feature] remove this line to drop the feature
 mod db;
 mod logging;
+mod mem_regions;
 mod memory_scanner;
 mod ocr;
 // ── BEGIN ocrs fallback ─────────────────────────────────────────────────────
@@ -191,6 +192,11 @@ pub struct CatalogItem {
     /// `None` = auto-detected from ducat_price / category (the normal case for WFCD items).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tradeable_wfm: Option<bool>,
+    /// Set on non-craftable weapon items returned by get_craftable_items.
+    /// Values: "kuva_lich", "sister", "baro", "duviri", "event", "amp", "zaw", "acquired".
+    /// None = craftable (has a recipe in ExportRecipes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<String>,
 }
 
 
@@ -507,6 +513,7 @@ fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
                 mastery_req:   None,
                 max_level_cap: None,
                 tradeable_wfm: None,
+                source_type:   None,
             });
         }
     }
@@ -535,6 +542,7 @@ fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
             mastery_req:   i.mastery_req,
             max_level_cap: i.max_level_cap,
             tradeable_wfm: None,
+            source_type:   None,
         });
     }
 
@@ -556,6 +564,7 @@ fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
             mastery_req:   item.mastery_req,
             max_level_cap: None,
             tradeable_wfm: None,
+            source_type:   None,
         });
     }
 
@@ -599,6 +608,7 @@ fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
                 mastery_req:   None,
                 max_level_cap: None,
                 tradeable_wfm: c.tradeable_wfm,
+                source_type:   None,
             });
         }
     }
@@ -620,6 +630,7 @@ fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
             mastery_req:   None,
             max_level_cap: None,
             tradeable_wfm: None,
+            source_type:   None,
         });
     }
 
@@ -644,6 +655,7 @@ fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
                     mastery_req:   None,
                     max_level_cap: None,
                     tradeable_wfm: None,
+                    source_type:   None,
                 });
             }
         }
@@ -850,6 +862,7 @@ fn get_weapon_catalog(state: State<AppState>) -> Vec<CatalogItem> {
                 mastery_req:   i.mastery_req,
                 max_level_cap: i.max_level_cap,
                 tradeable_wfm: None,
+                source_type:   None,
             })
         })
         .collect();
@@ -876,9 +889,19 @@ fn get_weapon_catalog(state: State<AppState>) -> Vec<CatalogItem> {
             mastery_req:   None,
             max_level_cap: None,
             tradeable_wfm: c.tradeable_wfm,
+            source_type:   None,
         });
     }
     result
+}
+
+fn acquired_source_label(name: &str, path: &str) -> &'static str {
+    if name.ends_with(" Prisma") || name.starts_with("Prisma ") { return "baro"; }
+    if name.ends_with(" Wraith") || name.ends_with(" Vandal") || name.starts_with("MK1-") { return "event"; }
+    if name.starts_with("Coda ") { return "duviri"; }
+    if path.contains("/ZawWeapon") || path.contains("Zaw/") { return "zaw"; }
+    if path.contains("/Amp/") { return "amp"; }
+    "acquired"
 }
 
 /// Returns all items that have a crafting recipe (for the Foundry search list).
@@ -915,6 +938,7 @@ fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
                 mastery_req:   i.mastery_req,
                 max_level_cap: i.max_level_cap,
                 tradeable_wfm: None,
+                source_type:   None,
             })
         })
         .collect();
@@ -940,8 +964,40 @@ fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
             mastery_req:   None,
             max_level_cap: None,
             tradeable_wfm: c.tradeable_wfm,
+            source_type:   None,
         });
     }
+
+    // Non-recipe weapon items — acquired in-game (Wraith, Vandal, Prisma, Coda, Zaw, Amp, etc.)
+    let weapon_cats: [&str; 5] = ["Primary", "Secondary", "Melee", "Archwing", "Operator Weapons"];
+    let covered: std::collections::HashSet<String> = result.iter().map(|i| i.unique_name.clone()).collect();
+    for i in items.iter() {
+        if i.unique_name.contains("PvPVariant") { continue; }
+        let mut cat = fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name);
+        if !weapon_cats.contains(&cat.as_str()) { continue; }
+        if covered.contains(&i.unique_name) { continue; }
+        let mut name = i.name.clone();
+        if let Some(c) = corrections.get(&i.unique_name) {
+            if c.category.as_deref() == Some("Ignored") { continue; }
+            if let Some(ref cn) = c.name { name = cn.clone(); }
+            if let Some(ref cc) = c.category { cat = cc.clone(); }
+        }
+        if cat == "Excluded" { continue; }
+        let source = acquired_source_label(&name, &i.unique_name);
+        result.push(CatalogItem {
+            unique_name:   i.unique_name.clone(),
+            name,
+            category:      cat,
+            image_name:    i.image_name.clone(),
+            vaulted:       i.vaulted,
+            ducats:        i.ducats,
+            mastery_req:   i.mastery_req,
+            max_level_cap: i.max_level_cap,
+            tradeable_wfm: None,
+            source_type:   Some(source.to_string()),
+        });
+    }
+
     result
 }
 
@@ -5574,7 +5630,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
 
                     let app          = ee_ocr_app.clone();
                     let cat          = filtered_cat; // relic prefilter (was: Arc::clone(&ee_catalog))
-                    let cat_len      = cat.len();
+                    let _cat_len     = cat.len();
                     let fallback_cat = Arc::clone(&ee_catalog); // full catalog — used after 3 no-match attempts
                     let lpath        = ee_last_path.clone();
                     let slog         = session_log_path.clone();

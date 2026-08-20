@@ -850,15 +850,10 @@ pub fn reset_last_blob_region() {
 
 // ─── Shared constants ─────────────────────────────────────────────────────────
 
-#[cfg(target_os = "windows")]
 const MAX_READ: usize = 64 * 1024 * 1024;
-#[cfg(target_os = "windows")]
 const MAX_SCAN: usize = 20 * 1024 * 1024;
-#[cfg(target_os = "windows")]
 const MISSION_DELTA: &[u8] = b"\"InventoryChanges\":";
-#[cfg(target_os = "windows")]
 const LOTUS_KEY: &[u8] = b"/Lotus/";
-#[cfg(target_os = "windows")]
 const ANCHORS: &[&[u8]] = &[
     b"\"SubscribedToEmails\"",
     b"\"MiscItems\":[",
@@ -894,97 +889,107 @@ const ANCHORS: &[&[u8]] = &[
 #[cfg(target_os = "windows")]
 #[tracing::instrument(level = "debug", skip_all, fields(save = save))]
 pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::sync::mpsc::Sender<BlobInventory>, save: bool) -> usize {
-    use std::ffi::c_void;
-    use std::mem;
-    use windows_sys::Win32::{
-        Foundation::{CloseHandle, FALSE},
-        System::{
-            Diagnostics::Debug::ReadProcessMemory,
-            Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, MEM_IMAGE, PAGE_GUARD, PAGE_NOACCESS},
-            Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
-        },
-    };
+    const MIN_REGION: usize = 64_000;
 
     let pid = match find_warframe_pid_pub() { Some(p) => p, None => return 0 };
-    let process = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid) };
-    if process == 0 { return 0; }
+    let mut src = match crate::mem_regions::WindowsRegionSource::open(pid, MIN_REGION, MAX_READ) {
+        Some(s) => s,
+        None => return 0,
+    };
 
-    const MIN_REGION:    usize = 64_000;   // skip regions smaller than 64 KB
-    const MAX_BLOBS:     usize = 25;
-
-    // Executable pages never contain heap data — safe to skip.
-    const PAGE_EXECUTE:      u32 = 0x10;
-    const PAGE_EXECUTE_READ: u32 = 0x20;
-    const PAGE_EXECUTE_RW:   u32 = 0x40;
-    const PAGE_EXECUTE_WC:   u32 = 0x80;
-    const EXEC_MASK: u32 = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_RW | PAGE_EXECUTE_WC;
-
-    // Fast path: try the cached region from last successful scan.
     let cached_addr = LAST_BLOB_REGION.load(std::sync::atomic::Ordering::Relaxed) as usize;
-    if cached_addr != 0 && !save {
-        let mut mbi = unsafe { mem::zeroed::<MEMORY_BASIC_INFORMATION>() };
-        let ok = unsafe { VirtualQueryEx(process, cached_addr as *const c_void, &mut mbi,
-            mem::size_of::<MEMORY_BASIC_INFORMATION>()) } != 0;
-        if ok && mbi.State == MEM_COMMIT
-            && mbi.Protect & PAGE_GUARD == 0
-            && mbi.Protect & PAGE_NOACCESS == 0
-        {
-            let read_cap = mbi.RegionSize.min(MAX_READ);
-            let mut buf = vec![0u8; read_cap];
-            let mut n = 0usize;
-            let read_ok = unsafe { ReadProcessMemory(process, cached_addr as *const c_void,
-                buf.as_mut_ptr() as *mut c_void, read_cap, &mut n) } != 0 && n >= 8;
-            if read_ok {
-                let chunk = &buf[..n];
-                let is_mission = memchr::memmem::find(chunk, MISSION_DELTA).is_some();
-                let has_anchor = ANCHORS.iter().any(|a| memchr::memmem::find(chunk, a).is_some());
-                let has_lotus  = memchr::memmem::find(chunk, LOTUS_KEY).is_some();
-                if !is_mission && (has_anchor || has_lotus) && chunk.starts_with(b"{\"") {
-                    let mut stitched = chunk.to_vec();
-                    let mut walk = cached_addr + n;
-                    while stitched.len() < MAX_SCAN && find_blob_end(&stitched).is_none() {
-                        let mut nmbi = unsafe { mem::zeroed::<MEMORY_BASIC_INFORMATION>() };
-                        if unsafe { VirtualQueryEx(process, walk as *const c_void, &mut nmbi,
-                            mem::size_of::<MEMORY_BASIC_INFORMATION>()) } == 0 { break; }
-                        let nr = nmbi.BaseAddress as usize;
-                        let ns = nmbi.RegionSize;
-                        walk = nr + ns;
-                        if nmbi.State != MEM_COMMIT
-                            || nmbi.Protect & PAGE_GUARD != 0
-                            || nmbi.Protect & PAGE_NOACCESS != 0
-                            || ns == 0 { continue; }
-                        let cap = ns.min(MAX_READ);
-                        let mut nb = vec![0u8; cap];
-                        let mut nn = 0usize;
-                        if unsafe { ReadProcessMemory(process, nr as *const c_void,
-                            nb.as_mut_ptr() as *mut c_void, cap, &mut nn) } == 0 { continue; }
-                        stitched.extend_from_slice(&nb[..nn]);
-                    }
-                    // Require the FULL_ACCOUNT start marker — mission-context blobs
-                    // at the cached address pass the anchor check but lack this field.
-                    if memchr::memmem::find(&stitched, START_MARKER).is_some() {
-                        if let Some(inv) = parse_full_account_blob(&stitched) {
-                            info!(addr = format_args!("0x{cached_addr:012x}"),
-                                unique = inv.unique_items.len(),
-                                stackable = inv.stackable_items.len(),
-                                "fast-path hit");
-                            blob_tx.send(inv).ok();
-                            unsafe { CloseHandle(process); }
-                            return 0;
-                        }
-                    }
-                }
-            }
-        }
-        debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path miss — falling through to cold walk");
+    if !save && cached_addr != 0 && try_cached_blob(&src, cached_addr, &blob_tx) {
+        return 0;
     }
+
+    let saved = stitch_blobs(&mut src, blob_dir, ts, blob_tx, save);
+    let (regions_skipped, vquery_ms, read_ms) = src.stats();
+    debug!(
+        target: "frameforge::blob_capture",
+        regions_skipped,
+        vquery_ms,
+        read_ms,
+        "source stats"
+    );
+    saved
+}
+
+/// Fast path: re-read the cached address from the last successful scan.
+/// Returns true if a valid blob was found and sent, false if the fast path missed.
+#[cfg(target_os = "windows")]
+fn try_cached_blob(
+    src: &crate::mem_regions::WindowsRegionSource,
+    cached_addr: usize,
+    blob_tx: &std::sync::mpsc::Sender<BlobInventory>,
+) -> bool {
+    use crate::mem_regions::RegionSource as _;
+    let (mut next_addr, first_bytes) = match src.read_at(cached_addr) {
+        Some(r) => r,
+        None => {
+            debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path miss — region gone");
+            return false;
+        }
+    };
+    if first_bytes.len() < 8 {
+        debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path miss — unreadable");
+        return false;
+    }
+
+    let is_mission = memchr::memmem::find(&first_bytes, MISSION_DELTA).is_some();
+    let has_anchor = ANCHORS.iter().any(|a| memchr::memmem::find(&first_bytes, a).is_some());
+    let has_lotus  = memchr::memmem::find(&first_bytes, LOTUS_KEY).is_some();
+
+    if is_mission || (!has_anchor && !has_lotus) || !first_bytes.starts_with(b"{\"") {
+        debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path miss — falling through to cold walk");
+        return false;
+    }
+
+    let mut stitched = first_bytes;
+    while stitched.len() < MAX_SCAN && find_blob_end(&stitched).is_none() {
+        match src.read_at(next_addr) {
+            Some((end, bytes)) => {
+                next_addr = end;
+                if bytes.is_empty() { break; }
+                stitched.extend_from_slice(&bytes);
+            }
+            None => break,
+        }
+    }
+
+    if memchr::memmem::find(&stitched, START_MARKER).is_some() {
+        if let Some(inv) = parse_full_account_blob(&stitched) {
+            info!(
+                addr = format_args!("0x{cached_addr:012x}"),
+                unique = inv.unique_items.len(),
+                stackable = inv.stackable_items.len(),
+                "fast-path hit"
+            );
+            blob_tx.send(inv).ok();
+            return true;
+        }
+    }
+
+    debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path miss — falling through to cold walk");
+    false
+}
+
+/// Walk all memory regions via `src`, stitch blobs, parse and send them.
+/// Returns the number of blob files saved (always 0 when `save=false`).
+fn stitch_blobs(
+    src: &mut dyn crate::mem_regions::RegionSource,
+    blob_dir: &std::path::Path,
+    ts: &str,
+    blob_tx: std::sync::mpsc::Sender<BlobInventory>,
+    save: bool,
+) -> usize {
+    const MAX_BLOBS: usize = 25;
 
     struct ActiveScan {
         data: Vec<u8>,
         id: usize,
-        /// Base address of the region where this scan was seeded (JSON start).
-        /// Used to update LAST_BLOB_REGION correctly for multi-region blobs.
-        start_region_addr: usize,
+        /// Absolute address of the JSON opening brace this scan was seeded at
+        /// (mid-region, not a region base). Cached in LAST_BLOB_REGION on success.
+        seed_addr: usize,
         /// Minimum offset at which the end-marker search should start next append.
         /// Avoids rescanning already-checked data on every region append (O(n²) → O(n)).
         search_from: usize,
@@ -1000,13 +1005,9 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
     let mut pre_buf: std::collections::VecDeque<PreChunk> = std::collections::VecDeque::new();
     const PRE_BUF_BYTES: usize = 8 * 1024 * 1024; // keep ≤8 MB of prefix history
 
-    let mut addr: usize = 0;
     let mut saved = 0usize;
-    let mut regions_skipped = 0usize;
     let mut regions_read    = 0usize;
     let mut starts_found    = 0usize;
-    let mut t_vquery = std::time::Duration::ZERO;
-    let mut t_read   = std::time::Duration::ZERO;
     let mut t_search = std::time::Duration::ZERO;
     let mut bytes_read: u64 = 0;
     // Once we have at least one successful parse we stop opening new scans.
@@ -1019,46 +1020,13 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
         // Early exit: we have a result and no active scans left to finish.
         if found_result && scans.is_empty() && !save { break; }
 
-        let t0 = std::time::Instant::now();
-        let mut mbi = unsafe { mem::zeroed::<MEMORY_BASIC_INFORMATION>() };
-        if unsafe { VirtualQueryEx(process, addr as *const c_void, &mut mbi,
-            mem::size_of::<MEMORY_BASIC_INFORMATION>()) } == 0 { break; }
-        t_vquery += t0.elapsed();
-
-        let region_addr = mbi.BaseAddress as usize;
-        let region_size = mbi.RegionSize;
-        let next_addr   = region_addr.saturating_add(region_size);
-        if next_addr <= addr { break; }
-        addr = next_addr;
-
-        // ── Region filters ──────────────────────────────────────────────────
-        // Skip pages that can never hold heap JSON:
-        // • must be committed and readable
-        // • skip execute-only pages (code sections, JIT stubs)
-        // • skip PE image sections — those hold string constants in the exe/DLLs,
-        //   not live heap data; they false-trigger the Lotus anchor check and
-        //   cost ~40 s scanning 20 MB+ without ever finding the blob end
-        // • skip anything smaller than MIN_REGION
-        if mbi.State   != MEM_COMMIT
-            || mbi.Protect &  PAGE_GUARD    != 0
-            || mbi.Protect &  PAGE_NOACCESS != 0
-            || mbi.Protect &  EXEC_MASK     != 0
-            || mbi.Type    == MEM_IMAGE
-            || region_size  < MIN_REGION
-        { regions_skipped += 1; continue; }
-
-        let read_cap = region_size.min(MAX_READ);
-
-        let t1 = std::time::Instant::now();
-        let mut buf = vec![0u8; read_cap];
-        let mut n = 0usize;
-        if unsafe { ReadProcessMemory(process, region_addr as *const c_void,
-            buf.as_mut_ptr() as *mut c_void, read_cap, &mut n) } == 0 || n < 8 {
-            regions_skipped += 1; continue;
-        }
-        t_read += t1.elapsed();
+        let (region_addr, buf) = match src.next_region() {
+            Some(r) => r,
+            None => break,
+        };
+        let n = buf.len();
         bytes_read += n as u64;
-        let chunk = &buf[..n];
+        let chunk = &buf[..];
         regions_read += 1;
 
         // ── Step 1: append this chunk to every active scan and check for completion ──
@@ -1085,13 +1053,13 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
                     Some(inv) => {
                         info!(
                             scan_id = scan.id,
-                            addr = format_args!("0x{region_addr:012x}"),
+                            addr = format_args!("0x{:012x}", scan.seed_addr),
                             unique = inv.unique_items.len(),
                             stackable = inv.stackable_items.len(),
                             mods = inv.mods.len(),
                             "scan SUCCESS"
                         );
-                        LAST_BLOB_REGION.store(scan.start_region_addr as u64, std::sync::atomic::Ordering::Relaxed);
+                        LAST_BLOB_REGION.store(scan.seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                         if save {
                             let name = format!("Actual_inventory_FULL_ACCOUNT_{}_{:02}.txt", ts, saved + 1);
                             let path = blob_dir.join(&name);
@@ -1130,12 +1098,25 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
         // contiguous pre-buffer regions so that the backward {"  search finds the true
         // outermost JSON opening rather than a nested {"$oid":…} inside the blob.
         if !has_start && !is_mission && (has_anchor || has_lotus) {
-            while pre_buf.iter().map(|p| p.data.len()).sum::<usize>() + n > PRE_BUF_BYTES
-                && !pre_buf.is_empty()
-            {
-                pre_buf.pop_front();
-            }
-            pre_buf.push_back(PreChunk { addr: region_addr, end_addr: region_addr + n, data: chunk.to_vec() });
+            // Keep only the tail of large regions in the pre-buffer: a chunk
+            // bigger than PRE_BUF_BYTES can never be fully kept, so trim it to
+            // PRE_BUF_BYTES before enqueueing and skip the normal eviction loop.
+            let chunk_data = if n > PRE_BUF_BYTES {
+                chunk[n - PRE_BUF_BYTES..].to_vec()
+            } else {
+                while pre_buf.iter().map(|p| p.data.len()).sum::<usize>() + n > PRE_BUF_BYTES
+                    && !pre_buf.is_empty()
+                {
+                    pre_buf.pop_front();
+                }
+                chunk.to_vec()
+            };
+            let stored_len = chunk_data.len();
+            pre_buf.push_back(PreChunk {
+                addr:     region_addr + (n - stored_len),
+                end_addr: region_addr + n,
+                data:     chunk_data,
+            });
         }
 
         if qualifies {
@@ -1211,7 +1192,7 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
                     }
                 }
             } else {
-                scans.push(ActiveScan { data: seed, id, start_region_addr: seed_addr, search_from: 0 });
+                scans.push(ActiveScan { data: seed, id, seed_addr, search_from: 0 });
             }
         }
     }
@@ -1219,19 +1200,15 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
     debug!(
         target: "frameforge::blob_capture",
         regions_read,
-        regions_skipped,
         starts_found,
         saved,
         bytes_mb = bytes_read / 1_000_000,
-        vquery_ms = t_vquery.as_secs_f64() * 1000.0,
-        read_ms = t_read.as_secs_f64() * 1000.0,
         search_ms = t_search.as_secs_f64() * 1000.0,
         "capture done"
     );
     if starts_found == 0 {
         warn!(target: "frameforge::blob_capture", "no start-marker found — FULL_ACCOUNT not in memory (game in mission, on login screen, or Arsenal not open?)");
     }
-    unsafe { CloseHandle(process); }
     saved
 }
 
@@ -1705,5 +1682,67 @@ mod credential_scan_tests {
     fn steam_id_none_on_no_match() {
         let buf = b"steamId=short";
         assert_eq!(scan_steam_id(buf), None);
+    }
+}
+
+#[cfg(test)]
+mod stitch_engine_tests {
+    use super::{stitch_blobs, BlobInventory};
+    use crate::mem_regions::RecordedRegions;
+
+    fn make_blob(fields: &str) -> Vec<u8> {
+        format!(
+            r#"{{"SubscribedToEmails":0,{fields},"MiscItems":[],"Suits":[],"LongGuns":[],"Melee":[],"Pistols":[],"DeathSquadable":false}}"#
+        )
+        .into_bytes()
+    }
+
+    fn run(regions: Vec<(usize, Vec<u8>)>) -> Option<BlobInventory> {
+        let mut src = RecordedRegions::new(regions);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir = std::env::temp_dir();
+        stitch_blobs(&mut src, &dir, "test", tx, false);
+        rx.try_recv().ok()
+    }
+
+    #[test]
+    fn single_region_blob_is_parsed() {
+        let blob = make_blob(r#""Credits":12345"#);
+        let inv = run(vec![(0x1000, blob)]).expect("should parse");
+        assert_eq!(inv.credits, 12345);
+    }
+
+    #[test]
+    fn blob_spanning_two_regions_is_stitched() {
+        let blob = make_blob(r#""Credits":999"#);
+        let mid = blob.len() / 2;
+        let r1 = (0x1000, blob[..mid].to_vec());
+        let r2 = (0x1000 + mid, blob[mid..].to_vec());
+        let inv = run(vec![r1, r2]).expect("should stitch and parse");
+        assert_eq!(inv.credits, 999);
+    }
+
+    #[test]
+    fn mission_delta_region_is_skipped() {
+        let delta = b"\"InventoryChanges\":[{\"Credits\":1}]".to_vec();
+        let blob  = make_blob(r#""Credits":77"#);
+        // Delta at a lower address; real blob follows.
+        let inv = run(vec![(0x1000, delta), (0x2000, blob)]).expect("real blob should win");
+        assert_eq!(inv.credits, 77);
+    }
+
+    #[test]
+    fn oversized_scan_is_dropped_and_does_not_panic() {
+        // First region qualifies (has start marker) but never closes;
+        // second region is the real complete blob.
+        let mut open = make_blob(r#""Credits":1"#);
+        // Strip the closing brace so it looks like a truncated blob.
+        open.pop();
+        // Pad it past MAX_SCAN so the engine drops it.
+        open.extend(vec![b' '; super::MAX_SCAN + 1]);
+
+        let real = make_blob(r#""Credits":42"#);
+        let inv = run(vec![(0x1000, open), (0x9000_0000, real)]).expect("real blob should parse");
+        assert_eq!(inv.credits, 42);
     }
 }
