@@ -25,11 +25,10 @@ mod db;
 // path construction lives here rather than being inlined at each watcher.
 mod log_parser;
 mod logging;
-// Windows walks memory through this; every other target only needs it for the
-// recorded-region source the stitch-engine tests replay.
-#[cfg(any(target_os = "windows", test))]
 mod mem_regions;
 mod memory_scanner;
+#[cfg(target_os = "linux")]
+mod memory_scanner_linux;
 mod ocr;
 // ── BEGIN ocrs fallback ─────────────────────────────────────────────────────
 // Linux reads the screen with Tesseract, so this covers Windows alone: it is
