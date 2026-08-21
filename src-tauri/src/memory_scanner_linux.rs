@@ -200,6 +200,12 @@ const WALK_CHUNK: usize = 64 * 1024 * 1024;
 /// Which mappings to offer is the caller's decision: the cold walk passes one
 /// tier at a time, the probe passes everything. What this adds is the read
 /// policy, a per-read cap and, for the walk, a deadline.
+///
+/// The mapping list is a snapshot taken when the caller parsed /proc/maps,
+/// unlike the Windows source's live per-call VirtualQueryEx. Callers build a
+/// fresh source per tick, so it can only age by the milliseconds one probe or
+/// walk runs. A mapping freed inside that window fails at the read, which
+/// ends the stitch the same as a mapping missing from the list.
 struct LinuxRegionSource<'a> {
     process: &'a LinuxProcess,
     regions: Vec<LinuxRegion>,
@@ -210,6 +216,10 @@ struct LinuxRegionSource<'a> {
     /// Only the walk is bounded. The probe reads a handful of mappings and
     /// ends long before any deadline would matter.
     deadline: Option<Instant>,
+    /// Reused across `next_region` calls. The walk copies what it keeps, so
+    /// the alternative is allocating and zeroing up to `WALK_CHUNK` (64 MiB)
+    /// per chunk — gigabytes of pure memset over a full walk.
+    buffer: Vec<u8>,
     bytes_read: u64,
     read_time: Duration,
 }
@@ -242,6 +252,7 @@ impl<'a> LinuxRegionSource<'a> {
             offset: 0,
             read_cap,
             deadline,
+            buffer: Vec::new(),
             bytes_read: 0,
             read_time: Duration::ZERO,
         }
@@ -254,7 +265,7 @@ impl<'a> LinuxRegionSource<'a> {
 }
 
 impl RegionSource for LinuxRegionSource<'_> {
-    fn next_region(&mut self) -> Option<(usize, Vec<u8>)> {
+    fn next_region(&mut self) -> Option<(usize, &[u8])> {
         loop {
             let (start, len) = {
                 let region = self.regions.get(self.next)?;
@@ -274,56 +285,56 @@ impl RegionSource for LinuxRegionSource<'_> {
             self.offset += size;
 
             let started = Instant::now();
-            let mut buffer = vec![0u8; size];
-            let read = self.process.read(address, &mut buffer);
+            // Grow-only, so zeroing happens once per high-water mark instead
+            // of once per chunk. The read overwrites stale bytes up to
+            // `read`, and only `..read` is handed out.
+            if self.buffer.len() < size {
+                self.buffer.resize(size, 0);
+            }
+            let read = self.process.read(address, &mut self.buffer[..size]);
             self.read_time += started.elapsed();
             match read {
                 Ok(read) if read >= Self::MIN_USEFUL => {
-                    buffer.truncate(read);
                     self.bytes_read += read as u64;
-                    return Some((address, buffer));
+                    return Some((address, &self.buffer[..read]));
                 }
                 Ok(_) | Err(_) => continue,
             }
         }
     }
 
-    fn read_at(&self, addr: usize) -> Option<(usize, Vec<u8>)> {
-        // Skipping forward is for continuing a stitch, never for starting one.
-        // A seed unmapped since it was recorded would otherwise return the next
-        // mapping's bytes as if they lived at the seed. The caller would then
-        // cache an inventory it never read there.
-        let mapped_here = self.regions.iter().any(|region| {
-            !region.executable && (region.start..region.start + region.len).contains(&addr)
-        });
-        let continues_a_region = self
+    fn read_at(&self, addr: usize, max_len: usize) -> Option<(usize, Vec<u8>)> {
+        // The blob is contiguous, so `addr` must itself be mapped. A seed in
+        // a hole is a stale seed, and a stitch that reaches a hole has
+        // reached the blob's end. Skipping forward would return a later
+        // mapping's bytes as if they lived at `addr` and splice unrelated
+        // memory into the blob. That includes a seed flush against a
+        // mapping's end — an exclusive bound, so not mapped either.
+        let region = self
             .regions
             .iter()
-            .any(|region| region.start + region.len == addr);
-        if !mapped_here && !continues_a_region {
-            return None;
+            .find(|region| (region.start..region.start + region.len).contains(&addr))?;
+        let end = region.start + region.len;
+        // Executable mappings hold code. File-backed ones hold mapped
+        // PE/data files whose string constants false-trigger the anchor
+        // checks — the same reason the Windows source rejects MEM_IMAGE here.
+        // Empty bytes end the stitch. A blob the tier-2 walk found in a
+        // file-backed mapping loses the fast path this way and re-walks per
+        // sync, the trade Windows already makes for image sections.
+        if region.executable || region.is_file_backed() {
+            return Some((end, Vec::new()));
         }
-
-        // A blob's continuation is the next data mapping, whatever lies in
-        // between. Executable mappings and the gaps between mappings interrupt
-        // the address space, not the JSON, so both are skipped rather than
-        // ending the stitch. A read that errors outright does end it: the
-        // process is gone, or the address is no longer ours to read.
-        for region in &self.regions {
-            let end = region.start + region.len;
-            if end <= addr || region.executable {
-                continue;
-            }
-            let start = addr.max(region.start);
-            let mut buffer = vec![0u8; (end - start).min(self.read_cap)];
-            let read = self.process.read(start, &mut buffer).ok()?;
-            if read == 0 {
-                continue;
-            }
-            buffer.truncate(read);
-            return Some((end, buffer));
+        let mut buffer = vec![0u8; (end - addr).min(self.read_cap).min(max_len)];
+        let read = self.process.read(addr, &mut buffer).ok()?;
+        if read == 0 {
+            return Some((end, Vec::new()));
         }
-        None
+        buffer.truncate(read);
+        // A read cut short — by `max_len`, the cap, or a faulted page inside
+        // the mapping — resumes at its own end rather than the region end.
+        // The next call re-enters this mapping there, so a fault ends the
+        // stitch on its next read instead of silently skipping the hole.
+        Some((addr + read, buffer))
     }
 }
 
@@ -872,9 +883,13 @@ pub fn find_riven_validity_va(pid: u32) -> Option<usize> {
             // STORE has no self-border (no proper suffix of it is also a
             // prefix), so a match can never start inside a previous match's
             // span. find_iter's non-overlapping search cannot skip a real hit.
-            let limit = data.len().saturating_sub(STORE_LEN + COMPARE.len());
+            let Some(limit) = data.len().checked_sub(STORE_LEN + COMPARE.len()) else {
+                return true;
+            };
+            // `limit` is the last index where the full signature still fits,
+            // so it is itself in bounds.
             for index in memmem::find_iter(data, &STORE) {
-                if index >= limit {
+                if index > limit {
                     break;
                 }
                 if data[index + STORE_LEN..index + STORE_LEN + COMPARE.len()] != COMPARE {
@@ -1149,10 +1164,13 @@ mod tests {
         reset_last_blob_region();
     }
 
-    /// An executable mapping between two pieces of the blob interrupts the
-    /// address space, not the JSON, so the stitch has to read straight past it.
+    /// The blob is one contiguous heap allocation. An executable mapping
+    /// where its continuation should be means the cached address no longer
+    /// holds the blob. Reading past it would splice whatever data mapping
+    /// follows onto the truncated head — best case a parse failure, worst
+    /// case a stale tail shipped as live inventory.
     #[test]
-    fn linux_cached_blob_stitches_across_an_executable_mapping() {
+    fn linux_cached_blob_misses_when_an_executable_mapping_cuts_the_blob() {
         let _digest_guard = blob_digest_test_guard();
 
         let head = blob_head(42);
@@ -1180,10 +1198,36 @@ mod tests {
         ];
         let process = this_process();
         LAST_BLOB_REGION.store(base as u64, Ordering::Relaxed);
-        match probe(&process, regions).expect("code mapping must not end the stitch") {
-            CachedBlobScan::Fresh(_, inventory) => assert_eq!(inventory.credits, 42),
-            CachedBlobScan::Unchanged => panic!("first sighting of this blob must parse"),
-        }
+        assert!(
+            probe(&process, regions).is_none(),
+            "a code mapping cutting the blob must miss, not splice around it"
+        );
+
+        reset_last_blob_region();
+    }
+
+    /// A freed seed flush against the end of the mapping below it. The end
+    /// address is an exclusive bound — nothing is mapped at the seed itself —
+    /// so the probe must miss rather than adopt the bytes of whatever mapping
+    /// comes next as the seed's.
+    #[test]
+    fn linux_cached_blob_misses_when_the_seed_sits_at_a_mapping_end() {
+        let _digest_guard = blob_digest_test_guard();
+
+        let filler = vec![0u8; 4096];
+        let mut arena = filler.clone();
+        arena.extend_from_slice(&blob(7));
+        let base = arena.as_ptr() as usize;
+        // Only the filler is mapped. The blob above it lives in a hole, with
+        // the stale seed exactly on the boundary between the two.
+        let regions = vec![LinuxRegion { start: base, len: filler.len(), ..Default::default() }];
+
+        let process = this_process();
+        LAST_BLOB_REGION.store((base + filler.len()) as u64, Ordering::Relaxed);
+        assert!(
+            probe(&process, regions).is_none(),
+            "a seed on a mapping's end bound is unmapped and must miss"
+        );
 
         reset_last_blob_region();
     }

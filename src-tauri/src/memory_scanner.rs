@@ -1067,6 +1067,38 @@ const LOTUS_KEY: &[u8] = b"/Lotus/";
 /// closing brace can still be a region away. It only gates the
 /// `find_blob_end` call that answers that question.
 const END_MARKER: &[u8] = b"\"DeathSquadable\":";
+
+/// Incremental [`END_MARKER`] search over an append-only stitch buffer.
+///
+/// Each `search` covers only the bytes appended since the last one, backed
+/// off by one marker length so a copy split across a region boundary is still
+/// caught (O(n) over the whole stitch instead of O(n²)). The marker's offset
+/// latches once seen, so a marker flush against a boundary is not left behind
+/// the search window. `blob_end` only ever re-scans the tail after the
+/// marker, never the whole buffer.
+#[derive(Default)]
+struct EndMarkerLatch {
+    search_from: usize,
+    marker_at: Option<usize>,
+}
+
+impl EndMarkerLatch {
+    /// Call after every append to `data`.
+    fn search(&mut self, data: &[u8]) {
+        if self.marker_at.is_none() {
+            let from = self.search_from;
+            self.search_from = data.len().saturating_sub(END_MARKER.len() - 1);
+            self.marker_at = memmem::find(&data[from..], END_MARKER).map(|found| from + found);
+        }
+    }
+
+    /// End offset of the blob, once the marker has been seen and the closing
+    /// brace after it has arrived.
+    fn blob_end(&self, data: &[u8]) -> Option<usize> {
+        let at = self.marker_at?;
+        find_blob_end(&data[at..]).map(|end| at + end)
+    }
+}
 const ANCHORS: &[&[u8]] = &[
     b"\"SubscribedToEmails\"",
     b"\"MiscItems\":[",
@@ -1094,46 +1126,40 @@ pub(crate) fn scan_cached_blob(
         return None;
     }
 
-    let (mut next_addr, first_bytes) = src.read_at(cached_addr)?;
+    let (mut next_addr, first_bytes) = src.read_at(cached_addr, MAX_SCAN)?;
     if first_bytes.len() < 8 {
         debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path miss — unreadable");
         return None;
     }
 
-    let is_mission = memmem::find(&first_bytes, MISSION_DELTA).is_some();
-    let has_anchor = ANCHORS.iter().any(|a| memmem::find(&first_bytes, a).is_some());
-    let has_lotus  = memmem::find(&first_bytes, LOTUS_KEY).is_some();
-    // The walk seeds from the blob's opening brace, or from the start marker
-    // itself when the brace sits in a region it could not stitch. Both shapes
-    // are accepted. Anything else reads as a stale address. Field order varies
-    // by account, so a region counts as blob data on its anchors even when
-    // SubscribedToEmails appears further along.
-    let seeds_a_blob = first_bytes.starts_with(b"{\"") || first_bytes.starts_with(START_MARKER);
-    if is_mission || !(has_anchor || has_lotus) || !seeds_a_blob {
+    // The walk seeds from the blob's opening brace, from the start marker
+    // itself when the brace sits in a region it could not stitch, or from an
+    // ALT_STARTS fallback. Every shape `blob_seed_offsets` can cache must be
+    // accepted here, or the walk stores addresses the fast path then rejects
+    // forever. Anything else reads as a stale address. The anchor check waits
+    // for the full stitch below: `first_bytes` end at the seed's mapping, and
+    // a blob whose anchors all live past that boundary is still the blob.
+    // The prefix tests come first: they read a handful of bytes and gate the
+    // mission-delta search over the whole first read.
+    let seeds_a_blob = first_bytes.starts_with(b"{\"")
+        || first_bytes.starts_with(START_MARKER)
+        || ALT_STARTS.iter().any(|alt| first_bytes.starts_with(alt));
+    if !seeds_a_blob || memmem::find(&first_bytes, MISSION_DELTA).is_some() {
         debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path miss — not blob data");
         return None;
     }
 
     let mut stitched = first_bytes;
-    // The end-marker search covers only the newly appended bytes, backed off by
-    // one marker length so a copy split across a region boundary is still
-    // caught. It latches once seen, so a marker flush against a boundary is not
-    // left behind the search window.
-    let mut search_from = 0;
-    let mut end_seen = false;
+    let mut latch = EndMarkerLatch::default();
     loop {
-        if !end_seen {
-            let scan_from = search_from;
-            search_from = stitched.len().saturating_sub(END_MARKER.len() - 1);
-            end_seen = memmem::find(&stitched[scan_from..], END_MARKER).is_some();
-        }
-        if end_seen && find_blob_end(&stitched).is_some() {
+        latch.search(&stitched);
+        if latch.blob_end(&stitched).is_some() {
             break;
         }
         if stitched.len() >= MAX_SCAN {
             break;
         }
-        let Some((end, bytes)) = src.read_at(next_addr) else { break };
+        let Some((end, bytes)) = src.read_at(next_addr, MAX_SCAN - stitched.len()) else { break };
         next_addr = end;
         // An unreadable mapping ends the stitch: the blob is contiguous, so a
         // gap means the address no longer holds what it held last cycle.
@@ -1142,6 +1168,21 @@ pub(crate) fn scan_cached_blob(
         }
         let fits = bytes.len().min(MAX_SCAN - stitched.len());
         stitched.extend_from_slice(&bytes[..fits]);
+    }
+
+    // A stitch that never closed proves nothing about the blob, so it must
+    // not touch the digest. `blob_unchanged` swaps the baseline as it checks,
+    // and clobbering it with a truncated buffer's digest would cost the next
+    // full walk its digest fast-skip.
+    if latch.blob_end(&stitched).is_none() {
+        debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path miss — blob did not close");
+        return None;
+    }
+    let looks_like_blob = memmem::find(&stitched, LOTUS_KEY).is_some()
+        || ANCHORS.iter().any(|a| memmem::find(&stitched, a).is_some());
+    if !looks_like_blob {
+        debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path miss — not blob data");
+        return None;
     }
 
     if blob_unchanged(&stitched) {
@@ -1229,12 +1270,7 @@ pub(crate) fn stitch_blobs(
         /// Absolute address of the JSON opening brace this scan was seeded at
         /// (mid-region, not a region base). Cached in LAST_BLOB_REGION on success.
         seed_addr: usize,
-        /// Minimum offset at which the end-marker search should start next append.
-        /// Avoids rescanning already-checked data on every region append (O(n²) → O(n)).
-        search_from: usize,
-        /// Once set, `search_from` stops advancing, so a marker flush against
-        /// a region edge is not left behind the search window.
-        end_seen: bool,
+        latch: EndMarkerLatch,
     }
     let mut scans: Vec<ActiveScan> = Vec::new();
     let mut next_scan_id = 0usize;
@@ -1252,15 +1288,16 @@ pub(crate) fn stitch_blobs(
     let mut starts_found    = 0usize;
     let mut t_search = std::time::Duration::ZERO;
     let mut bytes_read: u64 = 0;
-    // Once we have at least one successful parse we stop opening new scans.
-    // Active scans already in progress are still stitched to completion (or dropped).
-    // The loop exits as soon as all active scans are gone.
-    let mut found_result = false;
+    // Once at least one blob parsed (or matched the digest), stop opening new
+    // scans — unless saving, which wants every copy. Active scans already in
+    // progress are still stitched to completion (or dropped). The loop exits
+    // as soon as all active scans are gone.
+    let mut found_blob = false;
 
     loop {
         if saved >= MAX_BLOBS { break; }
         // Early exit: we have a result and no active scans left to finish.
-        if found_result && scans.is_empty() && !save { break; }
+        if found_blob && scans.is_empty() && !save { break; }
 
         let (region_addr, buf) = match src.next_region() {
             Some(r) => r,
@@ -1278,23 +1315,15 @@ pub(crate) fn stitch_blobs(
             // A previous scan in this same retain_mut pass already succeeded.
             // Drop this one immediately — applying a second blob overwrites correct data
             // with a stale/parallel copy from a different memory region.
-            if found_result && !save { return false; }
+            if found_blob && !save { return false; }
             // The append is capped at what is left of the budget rather than
             // dropped for overrunning it. A blob that closes on the very last
             // byte the budget allows still parses.
             let remaining = MAX_SCAN.saturating_sub(scan.data.len());
             let exceeds_limit = chunk.len() > remaining;
-            if !scan.end_seen {
-                // Advance the search cursor before appending so the overlap catches split markers.
-                let search_from = scan.search_from;
-                scan.search_from = scan.data.len().saturating_sub(END_MARKER.len() - 1);
-                scan.data.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-                scan.end_seen =
-                    memchr::memmem::find(&scan.data[search_from..], END_MARKER).is_some();
-            } else {
-                scan.data.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-            }
-            let complete = scan.end_seen && find_blob_end(&scan.data).is_some();
+            scan.data.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+            scan.latch.search(&scan.data);
+            let complete = scan.latch.blob_end(&scan.data).is_some();
             if !complete {
                 if exceeds_limit {
                     warn!(scan_id = scan.id, max_mb = MAX_SCAN / 1024 / 1024, "scan exceeded size limit without end — dropped");
@@ -1305,7 +1334,7 @@ pub(crate) fn stitch_blobs(
             if !save && blob_unchanged(&scan.data) {
                 debug!(scan_id = scan.id, "unchanged since last scan — skipping parse");
                 LAST_BLOB_REGION.store(scan.seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
-                found_result = true;
+                found_blob = true;
                 return false;
             }
             match parse_full_account_blob(&scan.data) {
@@ -1327,7 +1356,7 @@ pub(crate) fn stitch_blobs(
                         }
                     }
                     blob_tx.send(inv).ok();
-                    found_result = true;
+                    found_blob = true;
                 }
                 None => {
                     warn!(scan_id = scan.id, "end marker found but JSON parse failed — dropped");
@@ -1338,15 +1367,20 @@ pub(crate) fn stitch_blobs(
         });
 
         // ── Step 2: check if this chunk opens a new scan ──
-        // Don't open new scans once we already have a result — drain the active ones then exit.
-        if found_result { continue; }
+        // Don't open new scans once we already have a result — drain the active
+        // ones then exit. Save mode keeps seeding: comparing the up-to-MAX_BLOBS
+        // in-memory copies against each other is what the debug capture is for.
+        if found_blob && !save { continue; }
 
         let t2 = std::time::Instant::now();
         // Every region pays for this one search, since it gates both
         // prefix-buffer eligibility and qualification. The rest run only once a
         // region already looks like blob data. `/Lotus/` leads because an
         // inventory region contains it within the first few hundred bytes,
-        // which cuts the anchor scans short.
+        // which cuts the anchor scans short. `qualifies` needs no explicit
+        // blob-shape clause: both of its start conditions are &&-gated on
+        // `blob_shaped`, so a region without Lotus paths or anchors can
+        // never open a scan.
         let blob_shaped   = memchr::memmem::find(chunk, LOTUS_KEY).is_some()
             || ANCHORS.iter().any(|a| memchr::memmem::find(chunk, a).is_some());
         let has_start     = blob_shaped && memchr::memmem::find(chunk, START_MARKER).is_some();
@@ -1363,17 +1397,18 @@ pub(crate) fn stitch_blobs(
         if blob_shaped && !has_start && !is_mission {
             // Keep only the tail of large regions in the pre-buffer: a chunk
             // bigger than PRE_BUF_BYTES can never be fully kept, so trim it to
-            // PRE_BUF_BYTES before enqueueing and skip the normal eviction loop.
+            // PRE_BUF_BYTES before enqueueing.
             let chunk_data = if n > PRE_BUF_BYTES {
                 chunk[n - PRE_BUF_BYTES..].to_vec()
             } else {
-                while pre_buf.iter().map(|p| p.data.len()).sum::<usize>() + n > PRE_BUF_BYTES
-                    && !pre_buf.is_empty()
-                {
-                    pre_buf.pop_front();
-                }
                 chunk.to_vec()
             };
+            while pre_buf.iter().map(|p| p.data.len()).sum::<usize>() + chunk_data.len()
+                > PRE_BUF_BYTES
+                && !pre_buf.is_empty()
+            {
+                pre_buf.pop_front();
+            }
             let stored_len = chunk_data.len();
             pre_buf.push_back(PreChunk {
                 addr:     region_addr + (n - stored_len),
@@ -1387,7 +1422,12 @@ pub(crate) fn stitch_blobs(
             // This recovers the full blob when the outer { lives in an earlier region and
             // SubscribedToEmails appears later (field order varies per account/build).
             let mut combined: Vec<u8> = Vec::new();
-            let mut blob_start_addr = region_addr;
+            // `(offset in combined, absolute address)` of every chunk spliced
+            // in. The chain tolerates ≤4 KB address gaps that `combined` does
+            // not represent. An offset into it therefore cannot be turned
+            // into an address by adding it to the first chunk's base — it has
+            // to be resolved against the chunk it falls in.
+            let mut segments: Vec<(usize, usize)> = Vec::new();
             {
                 let mut expect_end = region_addr;
                 let mut chain: Vec<usize> = Vec::new();
@@ -1403,16 +1443,22 @@ pub(crate) fn stitch_blobs(
                 chain.reverse();
                 for &i in &chain {
                     let pc = &pre_buf[i];
-                    if combined.is_empty() { blob_start_addr = pc.addr; }
+                    segments.push((combined.len(), pc.addr));
                     combined.extend_from_slice(&pc.data);
                 }
             }
+            segments.push((combined.len(), region_addr));
             combined.extend_from_slice(chunk);
 
             let (start_off, json_open) = blob_seed_offsets(&combined);
 
             // Absolute memory address of the seed start (for LAST_BLOB_REGION cache).
-            let seed_addr = blob_start_addr + json_open;
+            let seed_addr = segments
+                .iter()
+                .rev()
+                .find(|(offset, _)| *offset <= json_open)
+                .map(|(offset, addr)| addr + (json_open - offset))
+                .expect("segments cover offset 0 onward");
 
             let id = next_scan_id;
             next_scan_id += 1;
@@ -1433,7 +1479,7 @@ pub(crate) fn stitch_blobs(
             if seed_ends && !save && blob_unchanged(&seed) {
                 debug!(scan_id = id, "immediate hit: unchanged since last scan — skipping parse");
                 LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
-                found_result = true;
+                found_blob = true;
             } else if seed_ends {
                 match parse_full_account_blob(&seed) {
                     Some(inv) => {
@@ -1452,7 +1498,7 @@ pub(crate) fn stitch_blobs(
                             }
                         }
                         blob_tx.send(inv).ok();
-                        found_result = true;
+                        found_blob = true;
                     }
                     None => {
                         warn!(scan_id = id, "immediate end found but parse failed — dropping");
@@ -1460,7 +1506,7 @@ pub(crate) fn stitch_blobs(
                     }
                 }
             } else {
-                scans.push(ActiveScan { data: seed, id, seed_addr, search_from: 0, end_seen: false });
+                scans.push(ActiveScan { data: seed, id, seed_addr, latch: EndMarkerLatch::default() });
             }
         }
     }
@@ -1477,7 +1523,7 @@ pub(crate) fn stitch_blobs(
     if starts_found == 0 {
         warn!(target: "frameforge::blob_capture", "no start-marker found — FULL_ACCOUNT not in memory (game in mission, on login screen, or Arsenal not open?)");
     }
-    found_result.then_some(saved)
+    found_blob.then_some(saved)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
