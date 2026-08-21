@@ -11,16 +11,28 @@
 /// sections), read caps, and skipping unreadable regions are the source's
 /// own policy.
 ///
-/// `read_at` serves the cached-blob fast path. It returns the bytes starting
-/// at `addr` itself, not at the containing region's base, plus the address
-/// just past that region, so the caller can stitch forward. It skips the
-/// size and executable filters of `next_region`: a caller probing a known
-/// address only cares whether it is still readable. An unreadable-but-mapped
-/// address yields empty bytes rather than `None`.
+/// The bytes are lent, valid until the next call. The walk copies what it
+/// keeps anyway, and lending lets a source reuse one read buffer instead of
+/// allocating and zeroing up to a chunk-cap-sized `Vec` per region.
+///
+/// `read_at` serves the cached-blob fast path. It returns up to `max_len`
+/// bytes starting at `addr` itself, not at the containing region's base. It
+/// also returns the address the stitch should continue at. The size filter
+/// of `next_region` does not apply: a caller probing a known address only
+/// cares whether it is still readable. Either empty bytes or `None` ends the
+/// stitch. A source can report an unreadable address as whichever of the two
+/// suits how it enumerates memory.
+///
+/// The stitch splices the returned bytes into one contiguous blob, so a
+/// source must never paper over a hole. Bytes it returns for `addr` must
+/// actually live at `addr`. An address it cannot vouch for ends the stitch
+/// instead of skipping forward to the next readable mapping. Whether the
+/// answers come from live queries or from a snapshot taken at open is the
+/// source's own policy. A snapshot only ages by the milliseconds a probe
+/// runs.
 pub trait RegionSource {
-    fn next_region(&mut self) -> Option<(usize, Vec<u8>)>;
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    fn read_at(&self, addr: usize) -> Option<(usize, Vec<u8>)>;
+    fn next_region(&mut self) -> Option<(usize, &[u8])>;
+    fn read_at(&self, addr: usize, max_len: usize) -> Option<(usize, Vec<u8>)>;
 }
 
 #[cfg(test)]
@@ -38,17 +50,20 @@ impl RecordedRegions {
 
 #[cfg(test)]
 impl RegionSource for RecordedRegions {
-    fn next_region(&mut self) -> Option<(usize, Vec<u8>)> {
-        let r = self.regions.get(self.pos).cloned();
+    fn next_region(&mut self) -> Option<(usize, &[u8])> {
+        let pos = self.pos;
         self.pos += 1;
-        r
+        let (base, bytes) = self.regions.get(pos)?;
+        Some((*base, bytes.as_slice()))
     }
 
-    fn read_at(&self, addr: usize) -> Option<(usize, Vec<u8>)> {
+    fn read_at(&self, addr: usize, max_len: usize) -> Option<(usize, Vec<u8>)> {
         for (base, bytes) in &self.regions {
             let end = base + bytes.len();
             if (*base..end).contains(&addr) {
-                return Some((end, bytes[addr - base..].to_vec()));
+                let bytes = &bytes[addr - base..];
+                let bytes = &bytes[..bytes.len().min(max_len)];
+                return Some((addr + bytes.len(), bytes.to_vec()));
             }
         }
         None
@@ -68,6 +83,8 @@ pub struct WindowsRegionSource {
     addr: usize,
     min_region: usize,
     read_cap: usize,
+    /// Read buffer reused across `next_region` calls.
+    buffer: Vec<u8>,
     // Diagnostics for the capture-done log. `Cell`s because `query`/`read`
     // run from both `&self` (`read_at`) and `&mut self` (`next_region`).
     skipped: std::cell::Cell<usize>,
@@ -92,6 +109,7 @@ impl WindowsRegionSource {
             addr: 0,
             min_region,
             read_cap,
+            buffer: Vec::new(),
             skipped: Default::default(),
             query_time: Default::default(),
             read_time: Default::default(),
@@ -147,19 +165,24 @@ impl WindowsRegionSource {
             || mbi.Protect & PAGE_NOACCESS != 0
     }
 
-    /// Reads up to `len.min(read_cap)` bytes at `addr`, truncated to the byte
-    /// count actually read. `None` when the read fails outright.
+    /// Reads up to `len.min(read_cap)` bytes at `addr` into `buf`, returning
+    /// the byte count actually read. `None` when the read fails outright.
+    /// Bytes in `buf` past that count are stale from an earlier read.
     ///
     /// The cap can leave a region's tail unread while the walk advances past
     /// it. That is harmless while `read_cap` (64 MB) exceeds the engine's
     /// scan limit (20 MB): a blob crossing the cap would be dropped anyway.
-    fn read(&self, addr: usize, len: usize) -> Option<Vec<u8>> {
+    fn read_into(&self, addr: usize, len: usize, buf: &mut Vec<u8>) -> Option<usize> {
         use std::ffi::c_void;
         use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 
         let t = std::time::Instant::now();
         let len = len.min(self.read_cap);
-        let mut buf = vec![0u8; len];
+        // Grow-only, so a reused buffer is zeroed once per high-water mark
+        // rather than once per region.
+        if buf.len() < len {
+            buf.resize(len, 0);
+        }
         let mut n = 0usize;
         let ok = unsafe {
             ReadProcessMemory(
@@ -171,17 +194,13 @@ impl WindowsRegionSource {
             )
         } != 0;
         self.read_time.set(self.read_time.get() + t.elapsed());
-        if !ok {
-            return None;
-        }
-        buf.truncate(n);
-        Some(buf)
+        ok.then_some(n)
     }
 }
 
 #[cfg(target_os = "windows")]
 impl RegionSource for WindowsRegionSource {
-    fn next_region(&mut self) -> Option<(usize, Vec<u8>)> {
+    fn next_region(&mut self) -> Option<(usize, &[u8])> {
         use windows_sys::Win32::System::Memory::MEM_IMAGE;
 
         // Executable pages never contain heap data, so they are safe to skip.
@@ -215,15 +234,20 @@ impl RegionSource for WindowsRegionSource {
                 continue;
             }
 
-            match self.read(region_addr, region_size) {
+            // Take the buffer out for the read: `read_into` borrows all of
+            // `self` shared, so it cannot also receive `&mut self.buffer`.
+            let mut buf = std::mem::take(&mut self.buffer);
+            let read = self.read_into(region_addr, region_size, &mut buf);
+            self.buffer = buf;
+            match read {
                 // Fewer than 8 bytes cannot hold any marker, so treat this as a failed read.
-                Some(buf) if buf.len() >= 8 => return Some((region_addr, buf)),
+                Some(n) if n >= 8 => return Some((region_addr, &self.buffer[..n])),
                 _ => continue,
             }
         }
     }
 
-    fn read_at(&self, addr: usize) -> Option<(usize, Vec<u8>)> {
+    fn read_at(&self, addr: usize, max_len: usize) -> Option<(usize, Vec<u8>)> {
         use windows_sys::Win32::System::Memory::MEM_IMAGE;
 
         let mbi = self.query(addr)?;
@@ -237,7 +261,17 @@ impl RegionSource for WindowsRegionSource {
         // Read from the requested address, not the region base: the cached
         // blob-start address sits mid-region, and the caller checks that the
         // returned bytes begin with the blob's opening `{"`.
-        let bytes = self.read(addr, next_addr - addr).unwrap_or_default();
+        let mut bytes = Vec::new();
+        let n = self
+            .read_into(addr, (next_addr - addr).min(max_len), &mut bytes)
+            .unwrap_or(0);
+        bytes.truncate(n);
+        // A read cut short by `max_len` (or by a fault) resumes at its own
+        // end, not at the region end. The stitch then never crosses bytes it
+        // has not read.
+        if !bytes.is_empty() && addr + bytes.len() < next_addr {
+            return Some((addr + bytes.len(), bytes));
+        }
         Some((next_addr, bytes))
     }
 }
