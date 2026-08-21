@@ -1637,9 +1637,6 @@ pub fn reset_log_region() {
     LOG_SEARCH_BACKOFF.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-pub fn reset_log_region() {}
-
 /// Seconds-since-launch stamp opening the line that `offset` falls inside, e.g.
 /// `19761.848` from `19761.848 Sys [Info]: …`.
 ///
