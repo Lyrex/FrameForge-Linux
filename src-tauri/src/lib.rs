@@ -8083,12 +8083,7 @@ fn open_debug_folder(state: State<AppState>, which: String) -> Result<(), String
         _ => return Err("Unknown debug folder".into()),
     };
     std::fs::create_dir_all(&path).ok();
-    // `xdg-open` is the desktop-agnostic equivalent of Windows' `explorer`; it
-    // hands the folder to whichever file manager the session has configured.
-    let file_manager = if cfg!(target_os = "windows") { "explorer" } else { "xdg-open" };
-    std::process::Command::new(file_manager)
-        .arg(path.to_string_lossy().as_ref())
-        .spawn()
+    tauri_plugin_opener::open_path(&path, None::<&str>)
         .map_err(|e| e.to_string())?;
     Ok(())
 }
