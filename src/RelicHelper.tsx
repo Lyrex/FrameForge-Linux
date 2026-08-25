@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { HelpTip } from "./HelpTip";
+import { useImgLadder } from "./ImgCacheDir";
 import type { InventoryItem, ViewMode } from "./App";
 import { ViewToggle } from "./App";
 
@@ -66,10 +67,6 @@ function chanceToRarity(chance: number): string {
   return "Rare";
 }
 
-const DROP_URL       = "https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data/all.json";
-const DROP_CACHE_KEY = "ff-drop-data-v7";
-const DROP_CACHE_TTL = 24 * 60 * 60 * 1000;
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function findCatalogItemGlobal(itemName: string, nameMap: Map<string, CatalogItem>): CatalogItem | undefined {
@@ -128,11 +125,11 @@ function parseDropData(raw: any): RelicDrop[] {
 // ─── Images ───────────────────────────────────────────────────────────────────
 
 function RelicImg({ src }: { src?: string }) {
-  const [failed, setFailed] = useState(false);
+  const img = useImgLadder([src]);
   const base = { width: 44, height: 44, borderRadius: 6, flexShrink: 0 } as const;
-  if (!src || failed)
+  if (!img.src)
     return <div style={{ ...base, background: "rgba(255,255,255,.06)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#8b949e" }}>R</div>;
-  return <img style={{ ...base, objectFit: "contain" }} src={src} alt="" loading="lazy" onError={() => setFailed(true)} />;
+  return <img key={img.src} style={{ ...base, objectFit: "contain" }} src={img.src} alt="" loading="lazy" onError={img.onError} />;
 }
 
 const RARITY_BG: Record<string, string> = {
@@ -142,11 +139,8 @@ const RARITY_BG: Record<string, string> = {
 };
 
 function PartImg({ srcs, rarity }: { srcs: (string | undefined)[]; rarity?: string }) {
-  // Deduplicate so the same failing URL isn't retried
-  const valid = [...new Set(srcs.filter(Boolean) as string[])];
-  const [idx, setIdx] = useState(0);
+  const { src, onError } = useImgLadder(srcs);
   const base = { width: 40, height: 40, borderRadius: 4 } as const;
-  const src = valid[idx];
   if (!src) {
     const bg = rarity ? (RARITY_BG[rarity] ?? "rgba(255,255,255,.06)") : "rgba(255,255,255,.06)";
     return <div style={{ ...base, background: bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: "rgba(255,255,255,.3)" }}>?</div>;
@@ -154,7 +148,7 @@ function PartImg({ srcs, rarity }: { srcs: (string | undefined)[]; rarity?: stri
   // key={src} forces React to unmount/remount the img when src changes,
   // preventing the broken-image icon from persisting between attempts
   return <img key={src} style={{ ...base, objectFit: "contain", display: "block" }} src={src} alt=""
-    onError={() => setIdx(i => i + 1)} />;
+    onError={onError} />;
 }
 
 const CDN = (name?: string) => name ? `https://cdn.warframestat.us/img/${name}` : undefined;
@@ -715,16 +709,11 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
   const { search, tiers, ownership, vault, completion, sortMode, ignoreFormaKuva } = filters;
   const set = <K extends keyof RelicFilters>(k: K, v: RelicFilters[K]) => onFiltersChange({ ...filters, [k]: v });
 
-  const loadDrops = useCallback(() => {
+  const loadDrops = useCallback((force = false) => {
     setDropLoading(true);
     setDropError(false);
-    fetch(DROP_URL)
-      .then(r => r.json())
-      .then(d => {
-        const result = parseDropData(d);
-        setDrops(result);
-        try { localStorage.setItem(DROP_CACHE_KEY, JSON.stringify({ data: result, ts: Date.now() })); } catch {}
-      })
+    invoke<any>("get_drop_data", { force })
+      .then(d => setDrops(parseDropData(d)))
       .catch(() => setDropError(true))
       .finally(() => setDropLoading(false));
   }, []);
@@ -734,16 +723,6 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
   }, [refreshKey]);
 
   useEffect(() => {
-    try {
-      const cached = localStorage.getItem(DROP_CACHE_KEY);
-      if (cached) {
-        const { data, ts } = JSON.parse(cached);
-        if (typeof ts === "number" && Date.now() - ts < DROP_CACHE_TTL && Array.isArray(data)) {
-          setDrops(data);
-          return;
-        }
-      }
-    } catch {}
     loadDrops();
   }, [loadDrops]);
 
@@ -895,7 +874,7 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
           <button className={`fchip ${sortMode === "za"     ? "fchip-on" : ""}`} onClick={() => set("sortMode", "za")}>Z–A</button>
           <span className="fbar-sep"/>
           <button className="fchip fchip-reset" onClick={() => onFiltersChange(RELIC_FILTERS_DEFAULT)}>Show All</button>
-          {dropError && <button className="btn-secondary" style={{ marginLeft: 4 }} onClick={loadDrops}>↺ Retry</button>}
+          {dropError && <button className="btn-secondary" style={{ marginLeft: 4 }} onClick={() => loadDrops(true)}>↺ Retry</button>}
           <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>
             {dropLoading ? "Loading…" : `${visibleDrops.length} relics · ${ownedCount} owned`}
           </span>
