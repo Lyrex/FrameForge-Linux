@@ -200,7 +200,23 @@ pub fn get_conditional(url: &str, etag: Option<&str>) -> Result<Fetched<String>,
     match req.call() {
         Ok(resp) => {
             let etag = resp.header("etag").map(str::to_string);
-            let body = resp.into_string().map_err(|e| e.to_string())?;
+            // Not `into_string()`: ureq caps that at 10 MB and All.json alone
+            // is ~30 MB. The catalogue sources are the largest bodies we pull,
+            // so 256 MB only guards against a runaway response.
+            use std::io::Read;
+            // Capped so a lying Content-Length cannot make us allocate the
+            // whole 256 MB up front.
+            let hint = resp
+                .header("content-length")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0)
+                .min(64 * 1024 * 1024);
+            let mut body = Vec::with_capacity(hint);
+            resp.into_reader()
+                .take(256 * 1024 * 1024)
+                .read_to_end(&mut body)
+                .map_err(|e| e.to_string())?;
+            let body = String::from_utf8(body).map_err(|e| e.to_string())?;
             Ok(Fetched::New(body, etag))
         }
         Err(ureq::Error::Status(304, _)) => Ok(Fetched::NotModified),
