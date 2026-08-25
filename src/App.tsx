@@ -697,6 +697,24 @@ function OverlayTestPage() {
   );
 }
 
+function BulkPriceRefreshButton() {
+  const [state, setState] = useState<'idle' | 'loading' | 'ok' | 'err'>('idle');
+  const label = state === 'loading' ? 'Fetching…' : state === 'ok' ? 'Done!' : state === 'err' ? 'Failed' : 'Refresh Now';
+  return (
+    <button
+      className="btn-secondary"
+      disabled={state === 'loading'}
+      style={{ minWidth: 100, borderColor: state === 'ok' ? 'var(--accent)' : state === 'err' ? '#e05252' : undefined }}
+      onClick={() => {
+        setState('loading');
+        invoke('refresh_bulk_prices')
+          .then(() => { setState('ok'); setTimeout(() => setState('idle'), 3000); })
+          .catch(() => { setState('err'); setTimeout(() => setState('idle'), 4000); });
+      }}
+    >{label}</button>
+  );
+}
+
 export default function App() {
   // Isolated overlay test — no data, no events, just proves the window appears.
   if (IS_OVERLAY_TEST) return <OverlayTestPage />;
@@ -732,6 +750,7 @@ export default function App() {
   const [diagPath, setDiagPath] = useState<string | null>(null);
   const [autoDiagEnabled, setAutoDiagEnabled] = useState(false);
   const [diagFolderSize, setDiagFolderSize] = useState<number>(0);
+  const [overlayLogCopied, setOverlayLogCopied] = useState(false);
   const [companionApiEnabled] = useState(false);
   const [memoryScannerEnabled, setMemoryScannerEnabled] = useState(false);
 const [blobLogEnabled, setBlobLogEnabled] = useState(false);
@@ -2469,6 +2488,16 @@ if (typeof s.autoDiagEnabled === "boolean") {
                 {/* ════════════ MARKET ════════════ */}
                 {settingsTab === "market" && <>
                   <div className="settings-section">
+                    <div className="settings-section-title">Bulk Prices</div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">Force Refresh</span>
+                        <span className="settings-row-desc">Re-download price data from FrameForgePricing right now. Use this if prices look stale or missing.</span>
+                      </div>
+                      <BulkPriceRefreshButton />
+                    </div>
+                  </div>
+                  <div className="settings-section">
                     <div className="settings-section-title">Status Automation</div>
                     {!wfmLoggedIn && (
                       <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10, lineHeight: 1.5,
@@ -2728,7 +2757,16 @@ if (typeof s.autoDiagEnabled === "boolean") {
                         try { alert(await invoke<string>("get_overlay_session_log")); }
                         catch (e) { alert(`Error: ${e}`); }
                       }}>View</button>
-                      <div />{/* Clear placeholder */}
+                      <button className="btn-secondary" onClick={async () => {
+                        try {
+                          const log = await invoke<string>("get_overlay_session_log");
+                          navigator.clipboard.writeText(log).then(() => {
+                            setOverlayLogCopied(true);
+                            setTimeout(() => setOverlayLogCopied(false), 1500);
+                          }).catch(() => {});
+                        }
+                        catch (e) { alert(`Error: ${e}`); }
+                      }}>{overlayLogCopied ? "✓ Copied" : "Copy"}</button>
 
                       {/* Auto-capture */}
                       <div className="settings-row-info">

@@ -1,7 +1,7 @@
 {
   "name": "warframe-companion",
   "private": true,
-  "version": "3.8.0-linux.2",
+  "version": "3.9.0-linux.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -19,7 +19,7 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^5.2.0",
     "terser": "^5.50.0",
     "typescript": "~6.0.3",
