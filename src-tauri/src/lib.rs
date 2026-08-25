@@ -28,10 +28,12 @@ mod ocr;
 // ── BEGIN ocrs fallback ─────────────────────────────────────────────────────
 mod ocr_fallback;
 // ── END ocrs fallback ───────────────────────────────────────────────────────
+mod resolver;
 mod wfcd;
 mod wfm;
 
-use db::{QuantityChange, SnapshotPoint, Trade, TrackedItem};
+use db::{QuantityChange, SnapshotPoint, TrackedItem, Trade};
+use resolver::ItemResolver;
 use wfcd::{RecipeComponent, SyndicateOffer, WfcdItem};
 use wfm::{to_wfm_slug, Wfm, WfmItem, WfmPrice, WfmRivenAttribute, WfmTopItem};
 
@@ -3589,7 +3591,11 @@ fn get_item_price(item_name: String, state: State<AppState>) -> Result<Option<u3
         let cache_path = &state.inventory_state_cache_path;
         let mut inv = load_inventory_state_cache(cache_path);
         let items = state.wfcd_items.lock().map_err(|e| e.to_string())?;
-        if let Some(item) = items.iter().find(|i| i.name == item_name) {
+        // Key the cache entry on the canonical unique_name, not the display string.
+        let unique = ItemResolver::from_items(&items)
+            .by_display(&item_name)
+            .map(|r| r.unique_name.clone());
+        if let Some(item) = unique.and_then(|u| items.iter().find(|i| i.unique_name == u)) {
             let cat = fix_category(&item.name, &item.item_type, &item.product_category, &item.category, &item.unique_name);
             let tradeable = item.ducats.is_some() || matches!(cat.as_str(), "Mods" | "Arcanes");
             if tradeable {
@@ -3649,20 +3655,25 @@ fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<
     // Items are loaded once and the thread keeps this snapshot (items rarely change).
     let slug_map: HashMap<String, (String, bool)> = {
         let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
+        let resolver = ItemResolver::from_items(&items);
         let mut m = HashMap::new();
         for item in items.iter() {
-            let slug = to_wfm_slug(&item.name);
-            let cat = fix_category(&item.name, &item.item_type, &item.product_category, &item.category, &item.unique_name);
+            let cat = fix_category(
+                &item.name,
+                &item.item_type,
+                &item.product_category,
+                &item.category,
+                &item.unique_name,
+            );
             let tradeable = item.ducats.is_some() || matches!(cat.as_str(), "Mods" | "Arcanes");
-            if tradeable {
-                m.insert(slug.clone(), (item.unique_name.clone(), true));
-                // Register both blueprint and non-blueprint variants.
-                if slug.ends_with("_blueprint") {
-                    m.insert(slug[..slug.len() - "_blueprint".len()].to_string(),
-                             (item.unique_name.clone(), true));
-                } else {
-                    m.insert(format!("{}_blueprint", slug), (item.unique_name.clone(), true));
-                }
+            if !tradeable {
+                continue;
+            }
+            let Some(resolved) = resolver.by_unique(&item.unique_name) else {
+                continue;
+            };
+            for slug in resolver::slug_variants(&resolved.slug) {
+                m.insert(slug, (item.unique_name.clone(), true));
             }
         }
         m
@@ -7758,9 +7769,7 @@ fn open_debug_folder(state: State<AppState>, which: String) -> Result<(), String
         _ => return Err("Unknown debug folder".into()),
     };
     std::fs::create_dir_all(&path).ok();
-    std::process::Command::new("explorer")
-        .arg(path.to_string_lossy().as_ref())
-        .spawn()
+    tauri_plugin_opener::open_path(&path, None::<&str>)
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -8010,6 +8019,33 @@ fn patch_item_category(name: &str, category: &str, unique_name: &str) -> String 
         return if name.contains("Blueprint") { "Blueprints".to_string() } else { "Parts".to_string() };
     }
     if name.contains("Blueprint") { "Blueprints".to_string() } else { category.to_string() }
+}
+
+/// Delete the bulk price cache and re-fetch from FrameForgePricing.
+/// Updates both relics_run_prices and the WFM price cache in-place.
+#[tauri::command]
+async fn refresh_bulk_prices(state: State<'_, AppState>) -> Result<(), String> {
+    let _ = std::fs::remove_file(&state.relics_run_prices_cache_path);
+
+    let (by_name, by_slug) = tauri::async_runtime::spawn_blocking(fetch_relics_run_data)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if by_name.is_empty() {
+        return Err("Failed to fetch bulk prices — check your internet connection.".to_string());
+    }
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let j = serde_json::json!({ "date": today, "by_name": &by_name, "by_slug": &by_slug });
+    if let Ok(s) = serde_json::to_string(&j) {
+        let _ = std::fs::write(&state.relics_run_prices_cache_path, s);
+    }
+
+    *state.relics_run_prices.lock().map_err(|e| e.to_string())? = by_name;
+    for (slug, price) in by_slug {
+        state.wfm.cache_price(slug, Some(price));
+    }
+    Ok(())
 }
 
 /// Load today's relics.run price cache from disk.
@@ -8578,8 +8614,12 @@ pub fn run() {
     let initial_auction_ids: Vec<String> = std::fs::read_to_string(&auction_ids_path)
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     let relics_run_prices_cache_path = data_dir.join("relics_run_prices.json");
-    let initial_relics_run_prices = load_relics_run_cache(&relics_run_prices_cache_path)
-        .map(|(by_name, _)| by_name)
+    let initial_relics_run = load_relics_run_cache(&relics_run_prices_cache_path);
+    let initial_relics_run_prices = initial_relics_run.as_ref()
+        .map(|(by_name, _)| by_name.clone())
+        .unwrap_or_default();
+    let initial_wfm_prices: HashMap<String, Option<u32>> = initial_relics_run
+        .map(|(_, by_slug)| by_slug.into_iter().map(|(k, v)| (k, Some(v))).collect())
         .unwrap_or_default();
 
     let conn = db::init_db(&db_path).expect("Failed to initialize database");
@@ -8726,7 +8766,13 @@ pub fn run() {
             blob_log_dir,
             api_log_enabled: Arc::new(AtomicBool::new(false)),
             api_log_dir,
-            wfm: Arc::new(Wfm::new()),
+            wfm: {
+                let w = Arc::new(Wfm::new());
+                for (slug, price) in initial_wfm_prices {
+                    w.cache_price(slug, price);
+                }
+                w
+            },
             wfm_price_queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             wfm_priority_queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             wfm_queue_started: Arc::new(AtomicBool::new(false)),
@@ -8884,6 +8930,7 @@ pub fn run() {
             wfm_get_cached_prices,
             get_wfm_top_items,
             get_item_price,
+            refresh_bulk_prices,
             wfm_set_status,
             start_log_watcher,
             ocr_riven_log_error,
