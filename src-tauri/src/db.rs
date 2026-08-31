@@ -16,6 +16,8 @@ pub struct QuantityChange {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Trade {
     pub id: i64,
+    /// Survives export and import; `id` is the local rowid.
+    pub uid: String,
     pub timestamp: String,      // ISO-8601
     pub with_player: String,
     pub direction: String,      // "sold" | "bought" | "traded-out" | "traded-in"
@@ -35,6 +37,30 @@ pub fn init_db(db_path: &PathBuf) -> Result<Connection> {
     migrate(&conn)?;
     Ok(conn)
 }
+
+/// Derived from content, not random, so installs that shared a database before
+/// the column existed still dedupe each other's imports. Identical rows differ
+/// by insertion rank. The separator is char(31) because a field containing the
+/// joiner would alias another row and fail the unique index mid-migration.
+const BACKFILL_UIDS: &str = "
+    UPDATE trades SET uid = (
+        SELECT key FROM (
+            SELECT id,
+                   'v3' || char(31) || timestamp || char(31) || with_player
+                        || char(31) || direction || char(31) || item_name
+                        || char(31) || item_url || char(31) || quantity
+                        || char(31) || platinum || char(31) || source
+                        || char(31) || notes || char(31) || session_id
+                        || char(31) || trade_type || char(31)
+                        || row_number() OVER (
+                               PARTITION BY timestamp, with_player, direction,
+                                            item_name, item_url, quantity,
+                                            platinum, source, notes,
+                                            session_id, trade_type
+                               ORDER BY id) AS key
+            FROM trades) keyed
+        WHERE keyed.id = trades.id)
+    WHERE uid = '';";
 
 /// Schema migrations keyed by version number.
 /// To add a schema change in a future release: add an `if version < N` block
@@ -97,6 +123,22 @@ fn migrate(conn: &Connection) -> Result<()> {
         )?;
         conn.pragma_update(None, "user_version", 3)?;
     }
+
+    if version < 4 {
+        // Pragma inside the transaction: a crash after the ALTER but before
+        // the version write would make every later launch re-add the column.
+        conn.execute_batch(&format!(
+            "BEGIN;
+             ALTER TABLE trades ADD COLUMN uid TEXT NOT NULL DEFAULT '';
+             {BACKFILL_UIDS}
+             CREATE UNIQUE INDEX trades_uid ON trades(uid);
+             PRAGMA user_version = 4;
+             COMMIT;"
+        ))?;
+    }
+
+    // An older build inserts '' for uid; repair after a downgrade and upgrade.
+    conn.execute_batch(BACKFILL_UIDS)?;
 
     // Prune entries older than 7 days so the log doesn't grow unbounded.
     conn.execute_batch(
@@ -244,10 +286,12 @@ pub fn count_saved_rivens(conn: &Connection) -> Result<i64> {
     conn.query_row("SELECT COUNT(*) FROM saved_rivens", [], |r| r.get(0))
 }
 
+/// `trade.uid` is ignored; a foreign uid only enters via `import_document`.
 pub fn add_trade(conn: &Connection, trade: &Trade) -> Result<i64> {
     conn.execute(
-        "INSERT INTO trades (timestamp, with_player, direction, item_name, item_url, quantity, platinum, source, notes, session_id, trade_type)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        // `randomblob(16)` has a v4 UUID's randomness without a crate for it.
+        "INSERT INTO trades (uid, timestamp, with_player, direction, item_name, item_url, quantity, platinum, source, notes, session_id, trade_type)
+         VALUES (lower(hex(randomblob(16))), ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             trade.timestamp, trade.with_player, trade.direction,
             trade.item_name, trade.item_url, trade.quantity,
@@ -260,23 +304,24 @@ pub fn add_trade(conn: &Connection, trade: &Trade) -> Result<i64> {
 
 pub fn get_trades(conn: &Connection) -> Result<Vec<Trade>> {
     let mut stmt = conn.prepare(
-        "SELECT id, timestamp, with_player, direction, item_name, item_url,
+        "SELECT id, uid, timestamp, with_player, direction, item_name, item_url,
                 quantity, platinum, source, notes, session_id, trade_type
          FROM trades ORDER BY timestamp DESC",
     )?;
     let rows = stmt.query_map([], |row| Ok(Trade {
         id: row.get(0)?,
-        timestamp: row.get(1)?,
-        with_player: row.get(2)?,
-        direction: row.get(3)?,
-        item_name: row.get(4)?,
-        item_url: row.get(5)?,
-        quantity: row.get(6)?,
-        platinum: row.get(7)?,
-        source: row.get(8)?,
-        notes: row.get(9)?,
-        session_id: row.get(10)?,
-        trade_type: row.get(11)?,
+        uid: row.get(1)?,
+        timestamp: row.get(2)?,
+        with_player: row.get(3)?,
+        direction: row.get(4)?,
+        item_name: row.get(5)?,
+        item_url: row.get(6)?,
+        quantity: row.get(7)?,
+        platinum: row.get(8)?,
+        source: row.get(9)?,
+        notes: row.get(10)?,
+        session_id: row.get(11)?,
+        trade_type: row.get(12)?,
     }))?.filter_map(|r| r.ok()).collect();
     Ok(rows)
 }
@@ -334,7 +379,7 @@ pub const EXPORT_FORMAT: &str = "frameforge-stats";
 
 /// Bump only for a change older builds cannot read; import refuses anything
 /// other than the version it was built for.
-pub const EXPORT_VERSION: u32 = 1;
+pub const EXPORT_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct SnapshotRow {
@@ -362,21 +407,11 @@ pub struct ImportCounts {
     pub tracked_skipped:   usize,
 }
 
-/// A trade carries no identifier that survives moving between installs: `id` is
-/// a per-database autoincrement, so two machines both number their trades from
-/// one. What distinguishes a trade is therefore what was recorded about it.
-fn trade_identity(t: &Trade) -> impl Ord + '_ {
-    (
-        &t.timestamp, &t.with_player, &t.direction, &t.item_name, &t.item_url,
-        t.quantity, t.platinum, &t.source, &t.notes, &t.session_id, &t.trade_type,
-    )
-}
-
 pub fn export_document(conn: &Connection) -> Result<ExportDocument> {
-    // Ordered by identity rather than recency so exporting the same data twice
-    // yields the same document.
+    // Sorted and with rowids cleared so a re-export matches its source.
     let mut trades = get_trades(conn)?;
-    trades.sort_by(|a, b| trade_identity(a).cmp(&trade_identity(b)));
+    trades.sort_by(|a, b| a.uid.cmp(&b.uid));
+    for t in &mut trades { t.id = 0 }
 
     let mut stmt = conn.prepare(
         "SELECT unique_name, date, quantity FROM item_snapshots ORDER BY unique_name, date",
@@ -419,7 +454,13 @@ pub fn parse_export(json: &str) -> std::result::Result<ExportDocument, String> {
         None => return Err("Export is missing its version".into()),
     }
 
-    serde_json::from_value(value).map_err(|e| format!("Export is malformed: {e}"))
+    let doc: ExportDocument =
+        serde_json::from_value(value).map_err(|e| format!("Export is malformed: {e}"))?;
+    // One blank uid would land and make every later one read as present.
+    if doc.trades.iter().any(|t| t.uid.is_empty()) {
+        return Err("Export is malformed: a trade has no uid".into());
+    }
+    Ok(doc)
 }
 
 /// Existing rows win on every conflict and nothing is removed, so importing an
@@ -430,20 +471,13 @@ pub fn import_document(conn: &mut Connection, doc: &ExportDocument) -> Result<Im
     let mut counts = ImportCounts::default();
 
     for trade in &doc.trades {
-        // No id is carried over: the destination assigns its own.
         let added = tx.execute(
-            "INSERT INTO trades
-             (timestamp, with_player, direction, item_name, item_url,
+            "INSERT OR IGNORE INTO trades
+             (uid, timestamp, with_player, direction, item_name, item_url,
               quantity, platinum, source, notes, session_id, trade_type)
-             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11
-             WHERE NOT EXISTS (
-                 SELECT 1 FROM trades
-                 WHERE timestamp = ?1 AND with_player = ?2 AND direction = ?3
-                   AND item_name = ?4 AND item_url = ?5 AND quantity = ?6
-                   AND platinum = ?7 AND source = ?8 AND notes = ?9
-                   AND session_id = ?10 AND trade_type = ?11)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
-                trade.timestamp, trade.with_player, trade.direction,
+                trade.uid, trade.timestamp, trade.with_player, trade.direction,
                 trade.item_name, trade.item_url, trade.quantity, trade.platinum,
                 trade.source, trade.notes, trade.session_id, trade.trade_type,
             ],
@@ -488,6 +522,7 @@ mod export_import_tests {
     fn trade(id: i64, item: &str) -> Trade {
         Trade {
             id,
+            uid: String::new(),
             timestamp: format!("2026-01-{id:02}T00:00:00Z"),
             with_player: "Tenno".into(),
             direction: "sold".into(),
@@ -540,27 +575,47 @@ mod export_import_tests {
     }
 
     #[test]
-    fn an_overlapping_import_keeps_both_histories() {
+    fn two_identical_trades_both_survive_a_round_trip() {
+        let source = db("identical-source");
+        let twice = trade(1, "Ash Prime Blueprint");
+        add_trade(&source, &twice).expect("insert succeeds");
+        add_trade(&source, &twice).expect("insert succeeds");
+        let original = export_document(&source).expect("export succeeds");
+        assert_eq!(original.trades.len(), 2);
+
+        let mut target = db("identical-target");
+        import_document(&mut target, &original).expect("import succeeds");
+
+        let round_tripped = export_document(&target).expect("export succeeds");
+        assert_eq!(round_tripped.trades.len(), 2);
+        assert_eq!(
+            serde_json::to_string(&round_tripped).expect("the document is serialisable"),
+            serde_json::to_string(&original).expect("the document is serialisable"),
+        );
+    }
+
+    #[test]
+    fn an_import_never_overwrites_a_trade_the_target_already_has() {
         let source = db("merge-source");
         populate(&source);
         let mut doc = export_document(&source).expect("export succeeds");
-        doc.trades[0].item_name = "Overwritten Prime".into();
-        doc.trades.push(trade(3, "Mag Prime Chassis"));
 
         let mut target = db("merge-target");
-        populate(&target);
+        import_document(&mut target, &doc).expect("import succeeds");
+        doc.trades[0].item_name = "Overwritten Prime".into();
+        doc.trades.push(Trade { uid: "uid-mag".into(), ..trade(3, "Mag Prime Chassis") });
         let counts = import_document(&mut target, &doc).expect("import succeeds");
 
         assert_eq!(counts, ImportCounts {
-            trades_added: 2, trades_skipped: 1,
+            trades_added: 1, trades_skipped: 2,
             snapshots_skipped: 2, tracked_skipped: 1,
             ..Default::default()
         });
         let names: Vec<String> = export_document(&target).expect("export succeeds")
             .trades.into_iter().map(|t| t.item_name).collect();
-        assert_eq!(names.len(), 4);
+        assert_eq!(names.len(), 3);
         assert!(names.contains(&"Rhino Prime Systems".to_string()));
-        assert!(names.contains(&"Overwritten Prime".to_string()));
+        assert!(!names.contains(&"Overwritten Prime".to_string()));
     }
 
     #[test]
@@ -570,14 +625,65 @@ mod export_import_tests {
         add_trade(&source, &trade(2, "Volt Prime Neuroptics")).expect("insert succeeds");
         let doc = export_document(&source).expect("export succeeds");
 
-        // Both databases number these trades 1 and 2, but no two of them are the
-        // same trade.
         let mut target = db("collide-target");
         populate(&target);
         let counts = import_document(&mut target, &doc).expect("import succeeds");
 
         assert_eq!(counts.trades_added, 2);
         assert_eq!(get_trades(&target).expect("read succeeds").len(), 4);
+    }
+
+    fn pre_uid_db(name: &str) -> Connection {
+        let conn = db(name);
+        conn.execute_batch(
+            "DROP INDEX trades_uid;
+             ALTER TABLE trades DROP COLUMN uid;
+             INSERT INTO trades (timestamp, item_name) VALUES ('2026-01-01T00:00:00Z', 'Boar Prime Stock');
+             INSERT INTO trades (timestamp, item_name) VALUES ('2026-01-01T00:00:00Z', 'Boar Prime Stock');
+             PRAGMA user_version = 3;",
+        ).expect("the current schema can be wound back one version");
+        conn
+    }
+
+    fn uids(conn: &Connection) -> Vec<String> {
+        get_trades(conn).expect("read succeeds").into_iter().map(|t| t.uid).collect()
+    }
+
+    #[test]
+    fn the_migration_gives_pre_existing_trades_an_id_and_can_run_again() {
+        let conn = pre_uid_db("migrate");
+        migrate(&conn).expect("migration succeeds on a populated database");
+        migrate(&conn).expect("a second launch migrates nothing");
+
+        let uids = uids(&conn);
+        assert_eq!(uids.len(), 2);
+        assert!(uids.iter().all(|u| !u.is_empty()));
+        assert_ne!(uids[0], uids[1]);
+    }
+
+    #[test]
+    fn two_installs_with_the_same_old_history_migrate_to_the_same_ids() {
+        let desktop = pre_uid_db("migrate-desktop");
+        let laptop = pre_uid_db("migrate-laptop");
+        migrate(&desktop).expect("migration succeeds");
+        migrate(&laptop).expect("migration succeeds");
+
+        let mut desktop_uids = uids(&desktop);
+        let mut laptop_uids = uids(&laptop);
+        desktop_uids.sort();
+        laptop_uids.sort();
+        assert_eq!(desktop_uids, laptop_uids);
+    }
+
+    #[test]
+    fn a_trade_logged_by_an_older_build_gets_its_id_on_the_next_start() {
+        let conn = db("repair");
+        conn.execute(
+            "INSERT INTO trades (timestamp, item_name) VALUES ('2026-01-01T00:00:00Z', 'Boar Prime Stock')",
+            [],
+        ).expect("the column default admits one blank uid");
+        migrate(&conn).expect("a later start repairs it");
+        assert!(uids(&conn).iter().all(|u| !u.is_empty()));
     }
 
     #[test]
@@ -592,7 +698,8 @@ mod export_import_tests {
             r#"{"format":"some-other-tool","version":1,"trades":[],"item_snapshots":[],"tracked_items":[]}"#,
             r#"{"format":"frameforge-stats","trades":[],"item_snapshots":[],"tracked_items":[]}"#,
             r#"{"format":"frameforge-stats","version":99,"trades":[],"item_snapshots":[],"tracked_items":[]}"#,
-            r#"{"format":"frameforge-stats","version":1,"trades":"nope"}"#,
+            r#"{"format":"frameforge-stats","version":2,"trades":"nope"}"#,
+            r#"{"format":"frameforge-stats","version":2,"trades":[{"id":0,"uid":"","timestamp":"","with_player":"","direction":"","item_name":"","item_url":"","quantity":1,"platinum":0,"source":"","notes":"","session_id":"","trade_type":""}],"item_snapshots":[],"tracked_items":[]}"#,
         ] {
             let err = parse_export(bad).expect_err("a bad document must not parse");
             assert!(!err.is_empty(), "rejection must explain itself");
