@@ -19,6 +19,8 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, warn};
 
+use crate::worker;
+
 const API_BASE: &str = "https://api.warframe.market";
 const USER_AGENT: &str = "FrameForge/3.2.0";
 
@@ -675,6 +677,11 @@ impl Wfm {
         // Memoize the raw order list per item, not per rank. A mod-rank change
         // in the popup then filters the memoized data and does not fetch again.
         let json = self.memoized(&format!("orders:{url_name}"), || {
+            // The order book is public, so the cache worker's copy is the same
+            // data — minus the session the direct call may attach.
+            if let Some(body) = worker::get(worker::Route::WfmOrders(url_name)) {
+                return serde_json::from_slice(&body.bytes).map_err(|e| format!("parse: {}", e));
+            }
             let auth = self.auth_opt();
             self.wait();
             let mut req = ureq::get(&format!("{}/v2/orders/item/{}", API_BASE, url_name))
@@ -730,20 +737,24 @@ impl Wfm {
     #[tracing::instrument(level = "debug", skip_all, fields(slug = %url_name))]
     pub fn item_statistics(&self, url_name: &str) -> Result<serde_json::Value, String> {
         self.memoized(&format!("stats:{url_name}"), || {
-            let auth = self.auth_opt();
-            self.wait();
-            let mut req = ureq::get(&format!("{}/v1/items/{}/statistics", API_BASE, url_name))
-                .set("language", "en")
-                .set("platform", "pc")
-                .set("User-Agent", USER_AGENT);
-            if let Some(ref h) = auth {
-                req = req.set("Authorization", h);
-            }
-            let json: serde_json::Value = req
-                .call()
-                .map_err(|e| format!("stats: {}", e))?
-                .into_json()
-                .map_err(|e| format!("parse: {}", e))?;
+            let json: serde_json::Value = match worker::get(worker::Route::WfmStatistics(url_name)) {
+                Some(body) => serde_json::from_slice(&body.bytes).map_err(|e| format!("parse: {}", e))?,
+                None => {
+                    let auth = self.auth_opt();
+                    self.wait();
+                    let mut req = ureq::get(&format!("{}/v1/items/{}/statistics", API_BASE, url_name))
+                        .set("language", "en")
+                        .set("platform", "pc")
+                        .set("User-Agent", USER_AGENT);
+                    if let Some(ref h) = auth {
+                        req = req.set("Authorization", h);
+                    }
+                    req.call()
+                        .map_err(|e| format!("stats: {}", e))?
+                        .into_json()
+                        .map_err(|e| format!("parse: {}", e))?
+                }
+            };
             Ok(json["payload"]["statistics_closed"]["90days"].clone())
         })
     }
@@ -1098,21 +1109,17 @@ impl Wfm {
     /// VWAP when there are ≥3 recent trades, else falls back to the 90-day window.
     #[tracing::instrument(level = "debug", skip_all, fields(slug = %slug))]
     pub fn price_for_slug(&self, slug: &str) -> Result<Option<u32>, String> {
+        if let Some(body) = worker::get(worker::Route::WfmStatistics(slug)) {
+            let json: serde_json::Value =
+                serde_json::from_slice(&body.bytes).map_err(|e| format!("wfm price parse: {}", e))?;
+            return Ok(median_from_statistics(&json));
+        }
         self.wait();
         let url = format!("{}/v1/items/{}/statistics", API_BASE, slug);
         match ureq::get(&url).call() {
             Ok(resp) => {
                 let json: serde_json::Value = resp.into_json().map_err(|e| format!("wfm price parse: {}", e))?;
-                let h48 = json["payload"]["statistics_closed"]["48hours"].as_array();
-                let d90 = json["payload"]["statistics_closed"]["90days"].as_array();
-                let vol_48: f64 =
-                    h48.map(|arr| arr.iter().filter_map(|e| e["volume"].as_f64()).sum()).unwrap_or(0.0);
-                let p = if vol_48 >= 3.0 {
-                    h48.and_then(|arr| trimmed_median_from_stats(arr))
-                } else {
-                    None
-                };
-                Ok(p.or_else(|| d90.and_then(|arr| trimmed_median_from_stats(arr))))
+                Ok(median_from_statistics(&json))
             }
             // 404 is warframe.market's answer for a slug it does not know —
             // that is a real "unlisted", safe to cache.
@@ -1138,14 +1145,14 @@ impl Wfm {
 
     /// 7-day price + average daily volume for a slug, or None if unlisted / stale.
     pub fn stats_7day(&self, slug: &str) -> Option<(u32, f64)> {
-        self.wait();
-        let url = format!("{}/v1/items/{}/statistics", API_BASE, slug);
-        let json: serde_json::Value = ureq::get(&url)
-            .timeout(Duration::from_secs(10))
-            .call()
-            .ok()?
-            .into_json()
-            .ok()?;
+        let json: serde_json::Value = match worker::get(worker::Route::WfmStatistics(slug)) {
+            Some(body) => serde_json::from_slice(&body.bytes).ok()?,
+            None => {
+                self.wait();
+                let url = format!("{}/v1/items/{}/statistics", API_BASE, slug);
+                ureq::get(&url).timeout(Duration::from_secs(10)).call().ok()?.into_json().ok()?
+            }
+        };
         let days = json["payload"]["statistics_closed"]["90days"].as_array()?;
         if days.is_empty() {
             return None;
@@ -1341,6 +1348,16 @@ fn base64_decode_url(s: &str) -> Option<Vec<u8>> {
         i += 4;
     }
     Some(out)
+}
+
+/// The 48-hour price out of a statistics document, or the 90-day one when the
+/// last two days saw too few trades for a median to mean anything.
+fn median_from_statistics(json: &serde_json::Value) -> Option<u32> {
+    let h48 = json["payload"]["statistics_closed"]["48hours"].as_array();
+    let d90 = json["payload"]["statistics_closed"]["90days"].as_array();
+    let vol_48: f64 = h48.map(|arr| arr.iter().filter_map(|e| e["volume"].as_f64()).sum()).unwrap_or(0.0);
+    let recent = if vol_48 >= 3.0 { h48.and_then(|arr| trimmed_median_from_stats(arr)) } else { None };
+    recent.or_else(|| d90.and_then(|arr| trimmed_median_from_stats(arr)))
 }
 
 /// Trimmed median of per-bucket price medians. Drops the cheapest and dearest

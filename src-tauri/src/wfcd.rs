@@ -1545,7 +1545,16 @@ fn load_drop_data(force: bool) -> (Option<serde_json::Value>, Option<String>) {
     let ttl = if force { std::time::Duration::ZERO } else { DROP_DATA_TTL };
     let (data, _, warning) = cache::get_or_refresh(DROP_DATA_CACHE, ttl, |etag| {
         let etag = if force { None } else { etag };
-        match cache::get_conditional(DROP_DATA_URL, etag)? {
+        // The worker relays no request header, so its copy arrives whole rather
+        // than as a 304 — worth it at a daily TTL for the load it keeps off
+        // GitHub.
+        let fetched = match crate::worker::get(crate::worker::Route::CatalogDrops) {
+            Some(body) => {
+                Fetched::New(String::from_utf8(body.bytes).map_err(|e| e.to_string())?, body.etag)
+            }
+            None => cache::get_conditional(DROP_DATA_URL, etag)?,
+        };
+        match fetched {
             Fetched::New(body, etag) => serde_json::from_str(&body)
                 .map(|v| Fetched::New(v, etag))
                 .map_err(|e| e.to_string()),
