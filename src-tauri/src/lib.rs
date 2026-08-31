@@ -9796,6 +9796,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updater::LaunchCheck::default())
         .manage(AppState {
             db_path,
             quantities_cache_path,
@@ -9980,6 +9981,7 @@ pub fn run() {
             get_app_version,
             set_app_version,
             updater::check_for_update,
+            updater::pending_update,
             updater::restart_app,
             force_quit,
             get_weapon_catalog,

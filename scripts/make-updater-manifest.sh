@@ -40,10 +40,14 @@ for sig in "$sig_dir"/*.sig; do
         '$acc + {($key): {url: $url, signature: $signature}}')
 done
 
-if [ "$(jq 'length' <<<"$platforms")" -eq 0 ]; then
-    echo "::error::no updater signatures found in $sig_dir" >&2
-    exit 1
-fi
+# A one-platform manifest would tell the missing platform's users that they
+# are up to date.
+for key in linux-x86_64 windows-x86_64; do
+    if [ "$(jq --arg key "$key" 'has($key)' <<<"$platforms")" != true ]; then
+        echo "::error::no updater signature for $key in $sig_dir" >&2
+        exit 1
+    fi
+done
 
 jq -n \
     --arg version "$version" \

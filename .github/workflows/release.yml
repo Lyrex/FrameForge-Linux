@@ -114,6 +114,9 @@ jobs:
 
   windows:
     if: github.event_name == 'push'
+    # The release action can only add to a draft it can already see, so run
+    # after Linux rather than racing it to create one for the same tag.
+    needs: linux
     runs-on: windows-latest
 
     steps:

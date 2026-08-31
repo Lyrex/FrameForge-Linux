@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { checkForUpdate, type UpdateAvailable } from "./updater";
-import { checkMessage, errorText, type UpdateCheck } from "./updateFlow";
+import { checkMessage, runCheck } from "./updateFlow";
 
 interface Props {
   onUpdateFound: (update: UpdateAvailable) => void;
@@ -13,13 +13,7 @@ export default function UpdateCheckRow({ onUpdateFound }: Props) {
   async function run() {
     setBusy(true);
     setMsg("");
-    let result: UpdateCheck;
-    try {
-      const update = await checkForUpdate();
-      result = update ? { kind: "available", update } : { kind: "current" };
-    } catch (e) {
-      result = { kind: "failed", message: errorText(e) };
-    }
+    const result = await runCheck(checkForUpdate);
     setBusy(false);
     setMsg(checkMessage(result));
     if (result.kind === "available") onUpdateFound(result.update);

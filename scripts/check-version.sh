@@ -37,6 +37,13 @@ if [[ ! "$cargo_version" =~ ^${scheme}$ ]]; then
     exit 1
 fi
 
+# The bundler rejects an unusable key only after both platform builds ran.
+pubkey=$(grep -m1 '"pubkey"' "$root/src-tauri/tauri.conf.json" | cut -d'"' -f4)
+if [[ ! "$pubkey" =~ ^[A-Za-z0-9+/]+=*$ ]]; then
+    echo "::error::the updater public key is not base64 — run scripts/setup-updater-signing.sh"
+    exit 1
+fi
+
 readme_version=$(grep -m1 -oE "Companion \`v$scheme\`" "$root/README.md" | grep -oE "$scheme" || true)
 if [ "$readme_version" != "$cargo_version" ]; then
     echo "::error::README says '$readme_version' but the tree is at $cargo_version"

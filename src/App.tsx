@@ -85,7 +85,7 @@ import ModularWindow from "./ModularWindow";
 import { HelpTip } from "./HelpTip";
 import UpdateDialog from "./UpdateDialog";
 import UpdateCheckRow from "./UpdateCheck";
-import { onUpdateAvailable, type UpdateAvailable } from "./updater";
+import { onUpdateAvailable, pendingUpdate, type UpdateAvailable } from "./updater";
 import "./App.css";
 
 const _winLabel = getCurrentWindow().label;
@@ -1265,10 +1265,12 @@ if (typeof s.autoDiagEnabled === "boolean") {
   // dismissing it leaves only the header badge until the next launch or a
   // manual check.
   useEffect(() => {
-    const unlisten = onUpdateAvailable(u => {
+    const show = (u: UpdateAvailable) => {
       setUpdateAvailable(u);
       setShowUpdateDialog(true);
-    });
+    };
+    const unlisten = onUpdateAvailable(show);
+    pendingUpdate().then(u => { if (u) show(u); }).catch(() => {});
     return () => { unlisten.then(fn => fn()); };
   }, []);
 
