@@ -13,7 +13,7 @@ pub struct QuantityChange {
     pub timestamp: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Trade {
     pub id: i64,
     pub timestamp: String,      // ISO-8601
@@ -108,7 +108,7 @@ fn migrate(conn: &Connection) -> Result<()> {
 
 // ── Tracked items / daily snapshots ──────────────────────────────────────────
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
 pub struct TrackedItem {
     pub unique_name:  String,
     pub display_name: String,
@@ -324,4 +324,281 @@ pub fn get_quantity_changes(conn: &Connection, limit: i64) -> Result<Vec<Quantit
         .filter_map(|r| r.ok())
         .collect();
     Ok(rows)
+}
+
+// ── Stats export / import ─────────────────────────────────────────────────────
+
+/// Written into every export so a file from some other tool is rejected before
+/// it can be interpreted as trade history.
+pub const EXPORT_FORMAT: &str = "frameforge-stats";
+
+/// Bump only for a change older builds cannot read; import refuses anything
+/// other than the version it was built for.
+pub const EXPORT_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct SnapshotRow {
+    pub unique_name: String,
+    pub date:        String,
+    pub quantity:    i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ExportDocument {
+    pub format:         String,
+    pub version:        u32,
+    pub trades:         Vec<Trade>,
+    pub item_snapshots: Vec<SnapshotRow>,
+    pub tracked_items:  Vec<TrackedItem>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct ImportCounts {
+    pub trades_added:      usize,
+    pub trades_skipped:    usize,
+    pub snapshots_added:   usize,
+    pub snapshots_skipped: usize,
+    pub tracked_added:     usize,
+    pub tracked_skipped:   usize,
+}
+
+/// A trade carries no identifier that survives moving between installs: `id` is
+/// a per-database autoincrement, so two machines both number their trades from
+/// one. What distinguishes a trade is therefore what was recorded about it.
+fn trade_identity(t: &Trade) -> impl Ord + '_ {
+    (
+        &t.timestamp, &t.with_player, &t.direction, &t.item_name, &t.item_url,
+        t.quantity, t.platinum, &t.source, &t.notes, &t.session_id, &t.trade_type,
+    )
+}
+
+pub fn export_document(conn: &Connection) -> Result<ExportDocument> {
+    // Ordered by identity rather than recency so exporting the same data twice
+    // yields the same document.
+    let mut trades = get_trades(conn)?;
+    trades.sort_by(|a, b| trade_identity(a).cmp(&trade_identity(b)));
+
+    let mut stmt = conn.prepare(
+        "SELECT unique_name, date, quantity FROM item_snapshots ORDER BY unique_name, date",
+    )?;
+    let item_snapshots = stmt.query_map([], |row| Ok(SnapshotRow {
+        unique_name: row.get(0)?,
+        date:        row.get(1)?,
+        quantity:    row.get(2)?,
+    }))?.collect::<Result<Vec<_>>>()?;
+    drop(stmt);
+
+    let mut tracked_items = get_tracked_items(conn)?;
+    tracked_items.sort_by(|a, b| a.unique_name.cmp(&b.unique_name));
+
+    Ok(ExportDocument {
+        format: EXPORT_FORMAT.to_string(),
+        version: EXPORT_VERSION,
+        trades,
+        item_snapshots,
+        tracked_items,
+    })
+}
+
+/// The header is checked ahead of the body so a version mismatch says so
+/// rather than surfacing as a missing-field error.
+pub fn parse_export(json: &str) -> std::result::Result<ExportDocument, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("Not valid JSON: {e}"))?;
+
+    match value.get("format").and_then(|v| v.as_str()) {
+        Some(EXPORT_FORMAT) => {}
+        Some(other) => return Err(format!("Not a FrameForge export (format: {other})")),
+        None => return Err("Not a FrameForge export (no format marker)".into()),
+    }
+    match value.get("version").and_then(|v| v.as_u64()) {
+        Some(v) if v as u32 == EXPORT_VERSION => {}
+        Some(v) => return Err(format!(
+            "Export version {v} cannot be read by this build (expected {EXPORT_VERSION})"
+        )),
+        None => return Err("Export is missing its version".into()),
+    }
+
+    serde_json::from_value(value).map_err(|e| format!("Export is malformed: {e}"))
+}
+
+/// Existing rows win on every conflict and nothing is removed, so importing an
+/// older backup cannot lose newer history. One transaction covers all three
+/// sections: a failure part-way leaves the database as it was.
+pub fn import_document(conn: &mut Connection, doc: &ExportDocument) -> Result<ImportCounts> {
+    let tx = conn.transaction()?;
+    let mut counts = ImportCounts::default();
+
+    for trade in &doc.trades {
+        // No id is carried over: the destination assigns its own.
+        let added = tx.execute(
+            "INSERT INTO trades
+             (timestamp, with_player, direction, item_name, item_url,
+              quantity, platinum, source, notes, session_id, trade_type)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM trades
+                 WHERE timestamp = ?1 AND with_player = ?2 AND direction = ?3
+                   AND item_name = ?4 AND item_url = ?5 AND quantity = ?6
+                   AND platinum = ?7 AND source = ?8 AND notes = ?9
+                   AND session_id = ?10 AND trade_type = ?11)",
+            params![
+                trade.timestamp, trade.with_player, trade.direction,
+                trade.item_name, trade.item_url, trade.quantity, trade.platinum,
+                trade.source, trade.notes, trade.session_id, trade.trade_type,
+            ],
+        )?;
+        if added == 1 { counts.trades_added += 1 } else { counts.trades_skipped += 1 }
+    }
+
+    for snap in &doc.item_snapshots {
+        let added = tx.execute(
+            "INSERT OR IGNORE INTO item_snapshots (unique_name, date, quantity)
+             VALUES (?1, ?2, ?3)",
+            params![snap.unique_name, snap.date, snap.quantity],
+        )?;
+        if added == 1 { counts.snapshots_added += 1 } else { counts.snapshots_skipped += 1 }
+    }
+
+    for item in &doc.tracked_items {
+        let added = tx.execute(
+            "INSERT OR IGNORE INTO tracked_items (unique_name, display_name, added_at)
+             VALUES (?1, ?2, ?3)",
+            params![item.unique_name, item.display_name, item.added_at],
+        )?;
+        if added == 1 { counts.tracked_added += 1 } else { counts.tracked_skipped += 1 }
+    }
+
+    tx.commit()?;
+    Ok(counts)
+}
+
+#[cfg(test)]
+mod export_import_tests {
+    use super::*;
+
+    fn db(name: &str) -> Connection {
+        let dir = std::env::temp_dir().join("frameforge-export-tests");
+        std::fs::create_dir_all(&dir).expect("temp dir is always writable");
+        let path = dir.join(format!("{name}.sqlite"));
+        let _ = std::fs::remove_file(&path);
+        init_db(&path).expect("a fresh database always initialises")
+    }
+
+    fn trade(id: i64, item: &str) -> Trade {
+        Trade {
+            id,
+            timestamp: format!("2026-01-{id:02}T00:00:00Z"),
+            with_player: "Tenno".into(),
+            direction: "sold".into(),
+            item_name: item.into(),
+            item_url: "".into(),
+            quantity: 1,
+            platinum: 20,
+            source: "manual".into(),
+            notes: "".into(),
+            session_id: "".into(),
+            trade_type: "sale".into(),
+        }
+    }
+
+    fn populate(conn: &Connection) {
+        add_trade(conn, &trade(1, "Rhino Prime Systems")).expect("insert succeeds");
+        add_trade(conn, &trade(2, "Soma Prime Barrel")).expect("insert succeeds");
+        add_tracked_item(conn, "/Lotus/Types/Items/Ducats", "Ducats").expect("insert succeeds");
+        record_snapshot(conn, "/Lotus/Types/Items/Ducats", "2026-01-01", 500).expect("insert succeeds");
+        record_snapshot(conn, "/Lotus/Types/Items/Ducats", "2026-01-02", 620).expect("insert succeeds");
+    }
+
+    #[test]
+    fn a_round_trip_through_a_fresh_database_reproduces_the_document() {
+        let source = db("roundtrip-source");
+        populate(&source);
+        let original = export_document(&source).expect("export succeeds");
+
+        let mut target = db("roundtrip-target");
+        let json = serde_json::to_string(&original).expect("the document is serialisable");
+        let parsed = parse_export(&json).expect("our own export parses");
+        import_document(&mut target, &parsed).expect("import succeeds");
+
+        assert_eq!(export_document(&target).expect("export succeeds"), original);
+    }
+
+    #[test]
+    fn importing_the_same_file_twice_adds_nothing_the_second_time() {
+        let source = db("idempotent-source");
+        populate(&source);
+        let doc = export_document(&source).expect("export succeeds");
+
+        let mut target = db("idempotent-target");
+        import_document(&mut target, &doc).expect("import succeeds");
+        let second = import_document(&mut target, &doc).expect("import succeeds");
+
+        assert_eq!(second, ImportCounts {
+            trades_skipped: 2, snapshots_skipped: 2, tracked_skipped: 1, ..Default::default()
+        });
+    }
+
+    #[test]
+    fn an_overlapping_import_keeps_both_histories() {
+        let source = db("merge-source");
+        populate(&source);
+        let mut doc = export_document(&source).expect("export succeeds");
+        doc.trades[0].item_name = "Overwritten Prime".into();
+        doc.trades.push(trade(3, "Mag Prime Chassis"));
+
+        let mut target = db("merge-target");
+        populate(&target);
+        let counts = import_document(&mut target, &doc).expect("import succeeds");
+
+        assert_eq!(counts, ImportCounts {
+            trades_added: 2, trades_skipped: 1,
+            snapshots_skipped: 2, tracked_skipped: 1,
+            ..Default::default()
+        });
+        let names: Vec<String> = export_document(&target).expect("export succeeds")
+            .trades.into_iter().map(|t| t.item_name).collect();
+        assert_eq!(names.len(), 4);
+        assert!(names.contains(&"Rhino Prime Systems".to_string()));
+        assert!(names.contains(&"Overwritten Prime".to_string()));
+    }
+
+    #[test]
+    fn trades_from_another_install_survive_colliding_ids() {
+        let source = db("collide-source");
+        add_trade(&source, &trade(1, "Mag Prime Chassis")).expect("insert succeeds");
+        add_trade(&source, &trade(2, "Volt Prime Neuroptics")).expect("insert succeeds");
+        let doc = export_document(&source).expect("export succeeds");
+
+        // Both databases number these trades 1 and 2, but no two of them are the
+        // same trade.
+        let mut target = db("collide-target");
+        populate(&target);
+        let counts = import_document(&mut target, &doc).expect("import succeeds");
+
+        assert_eq!(counts.trades_added, 2);
+        assert_eq!(get_trades(&target).expect("read succeeds").len(), 4);
+    }
+
+    #[test]
+    fn a_file_that_is_not_an_export_is_refused() {
+        let conn = db("reject");
+        populate(&conn);
+        let before = export_document(&conn).expect("export succeeds");
+
+        for bad in [
+            "{not json",
+            r#"{"trades":[],"item_snapshots":[],"tracked_items":[]}"#,
+            r#"{"format":"some-other-tool","version":1,"trades":[],"item_snapshots":[],"tracked_items":[]}"#,
+            r#"{"format":"frameforge-stats","trades":[],"item_snapshots":[],"tracked_items":[]}"#,
+            r#"{"format":"frameforge-stats","version":99,"trades":[],"item_snapshots":[],"tracked_items":[]}"#,
+            r#"{"format":"frameforge-stats","version":1,"trades":"nope"}"#,
+        ] {
+            let err = parse_export(bad).expect_err("a bad document must not parse");
+            assert!(!err.is_empty(), "rejection must explain itself");
+        }
+
+        // Nothing above reached import_document, so the database is untouched.
+        assert_eq!(export_document(&conn).expect("export succeeds"), before);
+    }
 }

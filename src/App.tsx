@@ -77,6 +77,7 @@ import TimerHelper, { FissureWatch, fmtMs } from "./TimerHelper";
 import { useWorldState } from "./worldstate";
 import { notify, ensurePermission } from "./notify";
 import { collectNewMatches, type SeenFissures } from "./fissureAlerts";
+import StatsDataTransfer from "./StatsDataTransfer";
 import Statistics from "./Statistics";
 import Syndicates from "./Syndicates";
 import Weapons from "./Weapons";
@@ -2748,6 +2749,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                     </div>
                     {clearMsg && <div className="settings-msg">{clearMsg}</div>}
                   </div>
+                  <StatsDataTransfer />
                   <div className="settings-section" style={{ borderColor: "rgba(224,82,82,.3)" }}>
                     <div className="settings-section-title" style={{ color: "var(--red)" }}>Factory Reset</div>
                     <div className="settings-row">

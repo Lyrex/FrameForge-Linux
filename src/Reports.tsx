@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { cdnUrl, useImgLadder } from "./ImgCacheDir";
 import "./Reports.css";
 
@@ -293,15 +294,21 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat, sys
   const [view, setView]             = useState<"analytics" | "log">("analytics");
 
   useEffect(() => {
-    invoke<Trade[]>("get_trades")
+    const loadTrades = () => invoke<Trade[]>("get_trades")
       .then(t => { setTrades(t); setLoading(false); })
       .catch(() => setLoading(false));
+    loadTrades();
+
+    // Stays mounted through in-game trades and imports.
+    const unlisten = listen("stats-changed", () => { loadTrades(); });
 
     // Fetch top WFM items in background — first load takes ~15s (rate-limited),
     // subsequent opens within 3 hours are instant from cache.
     invoke<WfmTopItem[]>("get_wfm_top_items")
       .then(items => { setTopItems(items); setTopLoading(false); })
       .catch(() => setTopLoading(false));
+
+    return () => { unlisten.then(fn => fn()); };
   }, []);
 
   const filtered = useMemo(() => {

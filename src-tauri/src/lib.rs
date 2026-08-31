@@ -43,6 +43,7 @@ use cache::atomic_write;
 
 use db::{QuantityChange, SnapshotPoint, TrackedItem, Trade};
 use resolver::ItemResolver;
+use tauri_plugin_dialog::DialogExt;
 use wfcd::{RecipeComponent, SyndicateOffer, WfcdItem};
 use wfm::{to_wfm_slug, Wfm, WfmItem, WfmPrice, WfmRivenAttribute, WfmTopItem};
 
@@ -4210,6 +4211,7 @@ fn get_trades(state: State<AppState>) -> Result<Vec<Trade>, String> {
 
 #[tauri::command]
 fn add_trade(
+    app: tauri::AppHandle,
     state: State<AppState>,
     with_player: String,
     direction: String,
@@ -4238,13 +4240,73 @@ fn add_trade(
         trade_type: trade_type.unwrap_or_default(),
     };
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    db::add_trade(&conn, &trade).map_err(|e| e.to_string())
+    let id = db::add_trade(&conn, &trade).map_err(|e| e.to_string())?;
+    app.emit("stats-changed", ()).ok();
+    Ok(id)
 }
 
 #[tauri::command]
-fn delete_trade(state: State<AppState>, id: i64) -> Result<(), String> {
+fn delete_trade(app: tauri::AppHandle, state: State<AppState>, id: i64) -> Result<(), String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    db::delete_trade(&conn, id).map_err(|e| e.to_string())
+    db::delete_trade(&conn, id).map_err(|e| e.to_string())?;
+    app.emit("stats-changed", ()).ok();
+    Ok(())
+}
+
+// ─── Stats export / import ───────────────────────────────────────────────────
+
+/// `None` means the user dismissed the file dialog, which is not an error.
+///
+/// Both commands are `async` so Tauri runs them off the main thread: the
+/// blocking dialog would deadlock the event loop there.
+#[tauri::command]
+async fn export_stats(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let doc = {
+        let conn = state.conn.lock().map_err(|e| e.to_string())?;
+        db::export_document(&conn).map_err(|e| e.to_string())?
+    };
+    let json = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+
+    let Some(target) = app
+        .dialog()
+        .file()
+        .add_filter("FrameForge export", &["json"])
+        .set_file_name("frameforge-stats.json")
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let path = target.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    Ok(Some(path.display().to_string()))
+}
+
+#[tauri::command]
+async fn import_stats(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<db::ImportCounts>, String> {
+    let Some(source) = app
+        .dialog()
+        .file()
+        .add_filter("FrameForge export", &["json"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = source.into_path().map_err(|e| e.to_string())?;
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let doc = db::parse_export(&text)?;
+
+    let counts = {
+        let mut conn = state.conn.lock().map_err(|e| e.to_string())?;
+        db::import_document(&mut conn, &doc).map_err(|e| e.to_string())?
+    };
+    app.emit("stats-changed", ()).ok();
+    Ok(Some(counts))
 }
 
 fn update_version_in_file(path: &std::path::Path, version: &str) -> Result<(), String> {
@@ -9808,6 +9870,7 @@ pub fn run() {
         .register_uri_scheme_protocol("ffauth", |ctx, req| console_login::handle_ffauth(ctx.app_handle(), &req)) // [console-login feature]
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updater::LaunchCheck::default())
         .manage(AppState {
@@ -9981,6 +10044,8 @@ pub fn run() {
             get_trades,
             add_trade,
             delete_trade,
+            export_stats,
+            import_stats,
             clear_cache,
             load_settings,
             save_settings,

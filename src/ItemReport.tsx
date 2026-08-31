@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./ItemReport.css";
 
 interface TrackedItem {
@@ -249,7 +250,7 @@ export default function ItemReport() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    (async () => {
+    const load = async () => {
       try {
         const items = await invoke<TrackedItem[]>("get_tracked_items");
         setTracked(items);
@@ -267,10 +268,17 @@ export default function ItemReport() {
           })
         );
         setSnapshots(snap);
+      } catch {
+        // Keep what was shown.
       } finally {
         setLoading(false);
       }
-    })();
+    };
+    load();
+
+    // Stays mounted through imports.
+    const unlisten = listen("stats-changed", () => { load(); });
+    return () => { unlisten.then(fn => fn()); };
   }, []);
 
   useEffect(() => {
