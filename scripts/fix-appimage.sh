@@ -72,8 +72,8 @@ grep -q '^Name=FrameForge$' squashfs-root/FrameForge.desktop
 # wrong. The version is only recorded in the Tauri-produced filename
 # (FrameForge_<version>_amd64.AppImage), so recover it from there.
 # shelly compares this value with the GitHub release tag as a literal string.
-# Without the `v`, 3.6.0-linux.1 never equals the tag v3.6.0-linux.1, and every
-# update run reinstalls the version that is already installed.
+# Without the `v`, 3.9.1 never equals the tag v3.9.1, and every update run
+# reinstalls the version that is already installed.
 version=$(basename "$appimage")
 version=${version#FrameForge_}
 version=${version%_*}

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Assert the three files carrying the version agree, and — when one is passed as
-# $1 — that they agree with it too.
+# Assert the files carrying the version agree, and — when one is passed as $1 —
+# that they agree with it too. Also rejects a version the updater cannot compare
+# and a public key it cannot decode, both of which otherwise surface only after
+# a full release build.
 #
-# The version is written out in three places with nothing tying them together.
+# The version is written out in several places with nothing tying them together.
 # A drift is invisible until release time, when it surfaces as artifact
 # filenames that contradict the release title, after the build has already run.
 set -euo pipefail
