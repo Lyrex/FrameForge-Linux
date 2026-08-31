@@ -4227,6 +4227,7 @@ fn add_trade(
 ) -> Result<i64, String> {
     let trade = Trade {
         id: 0,
+        uid: String::new(),
         timestamp: timestamp.unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
         with_player,
         direction,
