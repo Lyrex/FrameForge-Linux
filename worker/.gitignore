@@ -1,0 +1,3 @@
+.wrangler/
+# Regenerated from wrangler.jsonc by `npm run typecheck`.
+worker-configuration.d.ts

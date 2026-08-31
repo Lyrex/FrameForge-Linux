@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "worker:dev": "npm --prefix worker run dev",
+    "worker:test": "npm --prefix worker run test"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
