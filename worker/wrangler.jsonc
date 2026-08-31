@@ -10,8 +10,6 @@
 
   // Holds the price snapshot and the prewarm cursor. Both are public,
   // item-keyed data: nothing here is per user.
-  // TODO: `id` is a placeholder until the namespace is created against the
-  // Cloudflare account (`wrangler kv namespace create snapshot`).
   "kv_namespaces": [{ "binding": "SNAPSHOT", "id": "7e307879054f4a059bf00d00450adfe2" }],
 
   // The daily request counter. It has to be one number across every edge
