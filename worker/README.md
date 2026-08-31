@@ -21,6 +21,7 @@ upstream direct; the catalog and the snapshot are worker-native shapes.
 | GET | `/v1/catalog/drops` | `warframe-drop-data/.../all.json` | 6 h, revalidated with `If-None-Match` |
 | GET | `/v1/wfm-items` | `api.warframe.market/v2/items`, reshaped | 6 h |
 | GET | `/v1/snapshot` | none — built by the cron prewarm | 5 min |
+| GET | `/v1/health` | none | not cached |
 
 Prices and statistics are one upstream document, so one route serves both.
 
@@ -67,6 +68,18 @@ those days hold at least three sales, and over the last 90 days otherwise.
 Serving the snapshot is one read of stored state. It never fetches an upstream,
 so a request costs nothing upstream however cold the edge is.
 
+### `/v1/health`
+
+```json
+{ "status": "ok" }
+```
+
+Liveness, nothing more: no upstream call, no stored state, and no report on the
+data being served. It answers whatever else is wrong, including while the
+worker is standing down on a spent budget — an operator has to be able to tell
+"stood down" from "gone". It is the one route the budget neither blocks nor
+counts.
+
 `:slug` is a warframe.market slug — lowercase, digits and underscores. Anything
 else is `400 {"error":"invalid_slug"}`.
 
@@ -87,8 +100,8 @@ request header of any kind is relayed to an upstream.
 | 503 | `{"error":"worker_unavailable"}` + `X-FrameForge-Worker: unavailable` | Stand down and use the upstreams direct |
 
 The last one is the only signal a client acts on structurally: on seeing it, it
-stops using the worker and fetches upstreams directly. Everything else is
-ordinary HTTP. Nothing emits it yet.
+stops using the worker and fetches upstreams directly until the next UTC
+midnight. Everything else is ordinary HTTP. The daily budget is what emits it.
 
 ### Freshness and failure
 
@@ -115,6 +128,53 @@ entry was rewritten.
 
 State lives in the `SNAPSHOT` KV namespace under two keys: `snapshot` for the
 document, `prewarm-cursor` for the position. Both are public, item-keyed data.
+
+## Daily budget
+
+Every request counts against one shared daily total. Past
+`DAILY_REQUEST_BUDGET` requests, every route answers the unavailable signal and
+the cron prewarm does nothing at all, until the counter resets at UTC midnight —
+the same instant the client comes back. So a bug or an abusive caller costs a
+bounded amount, and the app carries on against the upstreams meanwhile.
+
+The counter lives in the `BUDGET` Durable Object (class `DailyBudget`), because
+it has to be one number across every edge location that serves a request; KV's
+eventual consistency would read minutes-old totals in exactly the burst the
+brake exists to stop. If that object is unreachable the request is served
+anyway: an outage of the brake is not evidence the budget was spent, and
+locking every client out is the worse failure.
+
+`/v1/health` is outside all of this — neither counted nor blocked.
+
+The default is 100,000/day, the free plan's own ceiling, so the brake trips
+before the platform does. Change it in `wrangler.jsonc` and deploy, or on a
+running worker without touching the code: Workers → `frameforge-cache` →
+Settings → Variables and Secrets → `DAILY_REQUEST_BUDGET`. Saving there rolls a
+new version of the same code rather than rebuilding it, but the next
+`wrangler deploy` puts the file's value back, so keep the two in step.
+
+## Logs
+
+One line per request, and only these fields:
+
+```json
+{ "route": "/v1/wfm/items/:slug/statistics", "method": "GET", "status": 200, "latency_ms": 41, "version": "3.9.0" }
+```
+
+`route` is the pattern, never the path: a line naming the slug someone asked
+for is a record of what that person was looking up. `version` is the client's
+`X-FrameForge-Version`, or `null`. Nothing else is logged — no address, no user
+agent, no query, no body — and a test asserts the exact key set, so a sixth
+field fails the suite.
+
+## Deploying
+
+`scripts/deploy-worker.sh` from the repository root walks through it: wrangler
+login, creating the KV namespace and writing its id into `wrangler.jsonc`, the
+budget threshold, `wrangler deploy` (which applies the `DailyBudget`
+migration), a health check against the deployed host, and reconciling the URL
+the app ships as its default. It is re-runnable: each step checks whether it has
+already been done.
 
 ## Local development
 

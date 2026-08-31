@@ -11,9 +11,20 @@
   // Cloudflare account (`wrangler kv namespace create snapshot`).
   "kv_namespaces": [{ "binding": "SNAPSHOT", "id": "00000000000000000000000000000000" }],
 
+  // The daily request counter. It has to be one number across every edge
+  // location, which KV's eventual consistency cannot give.
+  "durable_objects": { "bindings": [{ "name": "BUDGET", "class_name": "DailyBudget" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DailyBudget"] }],
+
   "triggers": { "crons": ["*/5 * * * *"] },
 
   "vars": {
+    // Requests served per UTC day before the worker stands down and clients go
+    // back to the upstreams direct. The free plan's own daily ceiling, so the
+    // brake trips before the platform does and the fallback is a deliberate
+    // one rather than a wall of platform errors.
+    "DAILY_REQUEST_BUDGET": 100000,
+
     // Items refreshed per cron tick. 60 every 5 minutes is one upstream request
     // every 5 seconds — well under what warframe.market tolerates — and walks a
     // ~4000-item catalog end to end in about five hours, which is how stale the

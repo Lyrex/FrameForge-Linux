@@ -324,3 +324,105 @@ describe("prewarm", () => {
     expect(body.items["trinity_prime_set"]?.plat).toBe(60);
   });
 });
+
+describe("health", () => {
+  it("answers without an upstream call", async () => {
+    const mock = upstream();
+
+    const response = await get("/v1/health");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ status: "ok" });
+    expect(mock.calls).toEqual([]);
+  });
+});
+
+describe("daily budget", () => {
+  const route = "/v1/worldstate";
+  const body = { WorldSeed: "seed" };
+
+  // Small enough that a test can cross it, given the way the deployed worker
+  // takes it: a binding, not a constant in the code.
+  const capped = (limit: number) => ({ ...env, DAILY_REQUEST_BUDGET: limit }) as unknown as Env;
+
+  const getCapped = (path: string, limit: number) =>
+    worker.fetch(new Request(`${WORKER}${path}`), capped(limit));
+
+  it("serves normally under budget", async () => {
+    upstream({ body });
+
+    const response = await getCapped(route, 5);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get(UNAVAILABLE_HEADER)).toBeNull();
+  });
+
+  it("flips every route to the unavailable signal once the threshold is crossed", async () => {
+    const mock = upstream({ body });
+    await getCapped(route, 1);
+
+    for (const path of ["/v1/worldstate", "/v1/snapshot", "/v1/wfm-items", "/v1/nonsense"]) {
+      const response = await getCapped(path, 1);
+      expect(response.status).toBe(503);
+      expect(response.headers.get(UNAVAILABLE_HEADER)).toBe("unavailable");
+      await expect(response.json()).resolves.toEqual({ error: "worker_unavailable" });
+    }
+
+    expect(mock.remaining()).toBe(0);
+  });
+
+  it("keeps answering health while standing down", async () => {
+    upstream();
+    await getCapped(route, 0);
+
+    const response = await getCapped("/v1/health", 0);
+
+    expect(response.status).toBe(200);
+  });
+
+  it("restores service at the daily reset", async () => {
+    upstream({ body }, { body });
+    await getCapped(route, 1);
+    expect((await getCapped(route, 1)).status).toBe(503);
+
+    advance(24 * 60 * 60);
+
+    expect((await getCapped(route, 1)).status).toBe(200);
+  });
+
+  it("skips the cron prewarm over budget", async () => {
+    const mock = upstream();
+    const ctx = createExecutionContext();
+
+    await worker.scheduled?.(createScheduledController(), capped(0), ctx);
+    await waitOnExecutionContext(ctx);
+
+    expect(mock.calls).toEqual([]);
+  });
+});
+
+describe("request log", () => {
+  it("carries route, method, status, latency and app version — and nothing else", async () => {
+    upstream({ body: { data: [] } });
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line: string) => {
+      lines.push(line);
+    });
+
+    await get("/v1/wfm/items/mirage_prime_set/orders", { "X-FrameForge-Version": "3.9.0" });
+    spy.mockRestore();
+
+    const entry = JSON.parse(lines.at(-1)!);
+    expect(Object.keys(entry).sort()).toEqual([
+      "latency_ms",
+      "method",
+      "route",
+      "status",
+      "version",
+    ]);
+    // The slug is what someone looked up, so no log line may carry it.
+    expect(entry.route).toBe("/v1/wfm/items/:slug/orders");
+    expect(lines.join("")).not.toContain("mirage_prime_set");
+    expect(entry).toMatchObject({ method: "GET", status: 200, version: "3.9.0" });
+  });
+});

@@ -7,11 +7,14 @@
 // Clients identify their release with X-FrameForge-Version. That is the only
 // client-identifying header the contract has, and no route requires it.
 
+import { overBudget } from "./budget";
 import { drops } from "./routes/catalog";
 import { items, orders, statistics } from "./routes/wfm";
 import { worldstate } from "./routes/worldstate";
 import { prewarm, snapshot } from "./snapshot";
-import { jsonError } from "./unavailable";
+import { jsonError, workerUnavailable } from "./unavailable";
+
+export { DailyBudget } from "./budget";
 
 type Handler = (
   request: Request,
@@ -19,48 +22,91 @@ type Handler = (
   env: Env,
 ) => Response | Promise<Response>;
 
-const routes: { pattern: URLPattern; handle: Handler }[] = [
-  {
-    pattern: new URLPattern({ pathname: "/v1/wfm/items/:slug/statistics" }),
-    handle: (request, groups) => statistics(request, groups.slug ?? ""),
-  },
-  {
-    pattern: new URLPattern({ pathname: "/v1/wfm/items/:slug/orders" }),
-    handle: (request, groups) => orders(request, groups.slug ?? ""),
-  },
-  {
-    pattern: new URLPattern({ pathname: "/v1/worldstate" }),
-    handle: (request) => worldstate(request),
-  },
-  {
-    pattern: new URLPattern({ pathname: "/v1/catalog/drops" }),
-    handle: (request) => drops(request),
-  },
-  {
-    pattern: new URLPattern({ pathname: "/v1/wfm-items" }),
-    handle: (request) => items(request),
-  },
-  {
-    pattern: new URLPattern({ pathname: "/v1/snapshot" }),
-    handle: (_request, _groups, env) => snapshot(env),
-  },
+const routes: { path: string; pattern: URLPattern; handle: Handler }[] = [
+  route("/v1/wfm/items/:slug/statistics", (request, groups) =>
+    statistics(request, groups.slug ?? ""),
+  ),
+  route("/v1/wfm/items/:slug/orders", (request, groups) => orders(request, groups.slug ?? "")),
+  route("/v1/worldstate", (request) => worldstate(request)),
+  route("/v1/catalog/drops", (request) => drops(request)),
+  route("/v1/wfm-items", (request) => items(request)),
+  route("/v1/snapshot", (_request, _groups, env) => snapshot(env)),
 ];
+
+function route(path: string, handle: Handler) {
+  return { path, pattern: new URLPattern({ pathname: path }), handle };
+}
+
+const HEALTH_PATH = "/v1/health";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const started = Date.now();
+    const path = new URL(request.url).pathname;
+
+    // Health answers before the budget is consulted, and without counting
+    // against it: an operator has to be able to see that the worker is alive
+    // precisely when it is standing down.
+    if (path === HEALTH_PATH && (request.method === "GET" || request.method === "HEAD")) {
+      return log(request, HEALTH_PATH, started, health());
+    }
+
     if (request.method !== "GET" && request.method !== "HEAD") {
-      return jsonError(405, "method_not_allowed");
+      return log(request, path, started, jsonError(405, "method_not_allowed"));
     }
 
-    for (const route of routes) {
-      const match = route.pattern.exec(request.url);
-      if (match) return route.handle(request, match.pathname.groups, env);
+    const match = routes
+      .map((candidate) => ({ candidate, result: candidate.pattern.exec(request.url) }))
+      .find((attempt) => attempt.result);
+
+    if (await overBudget(env)) {
+      return log(request, match?.candidate.path ?? path, started, workerUnavailable());
     }
 
-    return jsonError(404, "not_found");
+    if (!match) return log(request, path, started, jsonError(404, "not_found"));
+
+    return log(
+      request,
+      match.candidate.path,
+      started,
+      await match.candidate.handle(request, match.result!.pathname.groups, env),
+    );
   },
 
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(prewarm(env));
+    ctx.waitUntil(
+      (async () => {
+        // The prewarm is by far the worker's heaviest upstream consumer, so
+        // over budget it does nothing at all rather than a smaller batch.
+        if (await overBudget(env)) return;
+        await prewarm(env);
+      })(),
+    );
   },
 } satisfies ExportedHandler<Env>;
+
+// A liveness answer, not a status page: no upstream call, no cached state, and
+// nothing an operator could mistake for a report on the data being served.
+function health(): Response {
+  return new Response(JSON.stringify({ status: "ok" }), {
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
+
+// One line per request, and only these five fields. The route pattern is logged
+// rather than the path: a line naming the slug someone asked for is a record of
+// what that person was looking up, which is the one thing this worker must
+// never accumulate. Nothing that could identify a caller — address, agent,
+// query, body — has any business here either.
+function log(request: Request, route: string, started: number, response: Response): Response {
+  console.log(
+    JSON.stringify({
+      route,
+      method: request.method,
+      status: response.status,
+      latency_ms: Date.now() - started,
+      version: request.headers.get("X-FrameForge-Version"),
+    }),
+  );
+  return response;
+}
