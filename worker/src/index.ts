@@ -8,6 +8,7 @@
 // client-identifying header the contract has, and no route requires it.
 
 import { overBudget } from "./budget";
+import { CACHE_STATUS_HEADER } from "./cache";
 import { drops } from "./routes/catalog";
 import { items, orders, statistics } from "./routes/wfm";
 import { worldstate } from "./routes/worldstate";
@@ -99,11 +100,12 @@ function health(): Response {
   });
 }
 
-// One line per request, and only these five fields. The route pattern is logged
-// rather than the path: a line naming the slug someone asked for is a record of
-// what that person was looking up, which is the one thing this worker must
-// never accumulate. Nothing that could identify a caller — address, agent,
-// query, body — has any business here either.
+// One line per request, and only these six fields. A field is admitted when it
+// describes what the worker did and refused when it describes who asked: the
+// route pattern rather than the path, because a line naming the slug someone
+// asked for is a record of what that person was looking up, and no address,
+// agent, query or body at all. `cache` passes the same test — whether the edge
+// answered from its own copy is the worker's own behaviour.
 function log(request: Request, route: string, started: number, response: Response): Response {
   console.log(
     JSON.stringify({
@@ -112,7 +114,16 @@ function log(request: Request, route: string, started: number, response: Respons
       status: response.status,
       latency_ms: Date.now() - started,
       version: request.headers.get("X-FrameForge-Version"),
+      cache: cacheOutcome(response),
     }),
   );
   return response;
+}
+
+// `hit | miss | stale | revalidated` as `readThrough` decided it, and null for a
+// route that never consults the edge cache. A 304 is its own outcome: the body
+// was served from neither, because the caller already held it.
+function cacheOutcome(response: Response): string | null {
+  if (response.status === 304) return "not_modified";
+  return response.headers.get(CACHE_STATUS_HEADER);
 }

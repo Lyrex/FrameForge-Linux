@@ -3,7 +3,10 @@
   "name": "frameforge-cache",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
-  "observability": { "enabled": true },
+  // Every invocation is kept. Sampling below 1 would make the hit rate and the
+  // prewarm failure count estimates rather than counts, and at this request
+  // volume the whole stream fits inside the plan's included ingest.
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
 
   // Holds the price snapshot and the prewarm cursor. Both are public,
   // item-keyed data: nothing here is per user.

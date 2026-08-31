@@ -8469,6 +8469,12 @@ async fn save_auto_diag_capture(state: State<'_, AppState>) -> Result<String, St
 
 #[tauri::command]
 async fn capture_diagnostics(state: State<'_, AppState>) -> Result<String, String> {
+    // Whether the cache worker answered anything this session is the first
+    // question a slow-session report raises, and this is the moment the user
+    // is collecting evidence for one.
+    let (served, fell_back) = worker::tally();
+    tracing::info!(served, fell_back, "cache worker tally");
+
     let log_path          = state.log_path.clone();
     let changes_path      = state.changes_log_path.clone();
     let manual_capture_dir = state.manual_capture_dir.clone();

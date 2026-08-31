@@ -69,6 +69,28 @@ function advance(seconds: number) {
 const get = (path: string, headers: HeadersInit = {}) =>
   worker.fetch(new Request(`${WORKER}${path}`, { headers }), env);
 
+type LogLine = Record<string, unknown>;
+
+// Every line the worker logged while `run` ran, parsed. Asserting on the parsed
+// object rather than the text keeps a test from passing on a field that merely
+// contains the value it looks for.
+async function logsOf(run: () => Promise<unknown>): Promise<LogLine[]> {
+  const lines: string[] = [];
+  const spy = vi.spyOn(console, "log").mockImplementation((line: string) => {
+    lines.push(line);
+  });
+  try {
+    await run();
+  } finally {
+    spy.mockRestore();
+  }
+  return lines.map((line) => JSON.parse(line) as LogLine);
+}
+
+const requestLines = (lines: LogLine[]) => lines.filter((line) => "route" in line);
+const eventLines = (lines: LogLine[], event: string) =>
+  lines.filter((line) => line["event"] === event);
+
 // Each cache class is exercised through its own route, so the TTL that route
 // was given is the one under test. `ttl` is repeated from the source rather
 // than imported: a test that read the same constant as the code would agree
@@ -498,18 +520,16 @@ describe("daily budget", () => {
 });
 
 describe("request log", () => {
-  it("carries route, method, status, latency and app version — and nothing else", async () => {
+  it("carries route, method, status, latency, app version and cache outcome — and nothing else", async () => {
     upstream({ body: { data: [] } });
-    const lines: string[] = [];
-    const spy = vi.spyOn(console, "log").mockImplementation((line: string) => {
-      lines.push(line);
-    });
 
-    await get("/v1/wfm/items/mirage_prime_set/orders", { "X-FrameForge-Version": "3.9.0" });
-    spy.mockRestore();
+    const lines = await logsOf(() =>
+      get("/v1/wfm/items/mirage_prime_set/orders", { "X-FrameForge-Version": "3.9.0" }),
+    );
 
-    const entry = JSON.parse(lines.at(-1)!);
+    const entry = requestLines(lines).at(-1)!;
     expect(Object.keys(entry).sort()).toEqual([
+      "cache",
       "latency_ms",
       "method",
       "route",
@@ -517,24 +537,143 @@ describe("request log", () => {
       "version",
     ]);
     // The slug is what someone looked up, so no log line may carry it.
-    expect(entry.route).toBe("/v1/wfm/items/:slug/orders");
-    expect(lines.join("")).not.toContain("mirage_prime_set");
+    expect(entry["route"]).toBe("/v1/wfm/items/:slug/orders");
+    expect(JSON.stringify(lines)).not.toContain("mirage_prime_set");
     expect(entry).toMatchObject({ method: "GET", status: 200, version: "3.9.0" });
   });
 
   it("keeps the slug out of the log when the path matches no route", async () => {
-    const lines: string[] = [];
-    const spy = vi.spyOn(console, "log").mockImplementation((line: string) => {
-      lines.push(line);
-    });
-
     // A trailing slash is enough to miss every pattern, and the path is then
     // client text that would otherwise be written out verbatim.
-    const response = await get("/v1/wfm/items/mirage_prime_set/orders/");
-    spy.mockRestore();
+    let response: Response;
+    const lines = await logsOf(async () => {
+      response = await get("/v1/wfm/items/mirage_prime_set/orders/");
+    });
 
-    expect(response.status).toBe(404);
-    expect(lines.join("")).not.toContain("mirage_prime_set");
-    expect(JSON.parse(lines.at(-1)!).route).toBe("unmatched");
+    expect(response!.status).toBe(404);
+    expect(JSON.stringify(lines)).not.toContain("mirage_prime_set");
+    expect(requestLines(lines).at(-1)!["route"]).toBe("unmatched");
+  });
+
+  it("reports the miss, then the hit it was serving from", async () => {
+    upstream({ body: { WorldSeed: "seed" } });
+
+    const first = await logsOf(() => get("/v1/worldstate"));
+    const second = await logsOf(() => get("/v1/worldstate"));
+
+    expect(requestLines(first).at(-1)!["cache"]).toBe("miss");
+    expect(requestLines(second).at(-1)!["cache"]).toBe("hit");
+  });
+
+  it("reports a body the caller already held as neither", async () => {
+    upstream({ body: { missionRewards: {} }, etag: '"drops-v3"' });
+    await get("/v1/catalog/drops");
+
+    const lines = await logsOf(() =>
+      get("/v1/catalog/drops", { "If-None-Match": '"drops-v3"' }),
+    );
+
+    expect(requestLines(lines).at(-1)).toMatchObject({ status: 304, cache: "not_modified" });
+  });
+
+  it("reports no cache outcome for a route that never consults the cache", async () => {
+    const lines = await logsOf(() => get("/v1/health"));
+
+    expect(requestLines(lines).at(-1)!["cache"]).toBeNull();
+  });
+});
+
+describe("operator log", () => {
+  it("reports the prewarm tick's counts, cursor and snapshot size", async () => {
+    upstream(
+      { body: catalogBody("ember_prime_set", "frost_prime_set") },
+      { body: priced(90) },
+      { throws: true },
+    );
+
+    const lines = await logsOf(() => runPrewarm(2));
+
+    expect(eventLines(lines, "prewarm")).toEqual([
+      {
+        event: "prewarm",
+        attempted: 2,
+        refreshed: 1,
+        failed: 1,
+        cursor: 0,
+        catalog_size: 2,
+        entries: 1,
+        duration_ms: expect.any(Number),
+      },
+    ]);
+  });
+
+  it("reports a tick that found no catalog to walk", async () => {
+    upstream({ body: { data: [] } });
+
+    const lines = await logsOf(() => runPrewarm(2));
+
+    expect(eventLines(lines, "prewarm")).toEqual([
+      {
+        event: "prewarm",
+        attempted: 0,
+        refreshed: 0,
+        failed: 0,
+        cursor: 0,
+        catalog_size: 0,
+        entries: 0,
+        duration_ms: expect.any(Number),
+      },
+    ]);
+  });
+
+  it("names the upstream and what the caller got when a stale body is served", async () => {
+    const route = "/v1/wfm/items/rhino_prime_set/statistics";
+    upstream({ body: priced(70) }, { status: 503, body: { error: "down" } });
+    await get(route);
+    expireCache();
+
+    const lines = await logsOf(() => get(route));
+
+    expect(eventLines(lines, "upstream_down")).toEqual([
+      {
+        event: "upstream_down",
+        upstream: "api.warframe.market",
+        status: 503,
+        served: "stale",
+      },
+    ]);
+    // The host is ours; the path that would carry the slug is not logged.
+    expect(JSON.stringify(lines)).not.toContain("rhino_prime_set");
+  });
+
+  it("reports an unreachable upstream with no status of its own", async () => {
+    upstream({ throws: true });
+
+    const lines = await logsOf(() => get("/v1/wfm/items/wisp_prime_set/orders"));
+
+    expect(eventLines(lines, "upstream_down")).toEqual([
+      {
+        event: "upstream_down",
+        upstream: "api.warframe.market",
+        status: null,
+        served: "unreachable",
+      },
+    ]);
+  });
+
+  it("marks the budget crossing once, not on every request after it", async () => {
+    upstream({ body: { WorldSeed: "seed" } });
+    const capped = { ...env, DAILY_REQUEST_BUDGET: 1 } as unknown as Env;
+    const request = () => worker.fetch(new Request(`${WORKER}/v1/worldstate`), capped);
+
+    const under = await logsOf(request);
+    const crossing = await logsOf(request);
+    const after = await logsOf(request);
+
+    expect(eventLines(under, "budget_exceeded")).toEqual([]);
+    expect(eventLines(crossing, "budget_exceeded")).toEqual([
+      { event: "budget_exceeded", threshold: 1, count: 2 },
+    ]);
+    expect(eventLines(after, "budget_exceeded")).toEqual([]);
   });
 });

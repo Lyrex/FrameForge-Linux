@@ -13,6 +13,7 @@
 //! accident.
 
 use std::io::Read;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -66,19 +67,74 @@ pub struct Body {
     pub etag: Option<String>,
 }
 
+/// Why a fetch through the seam ended the way it did. Every one but `Served`
+/// leaves the caller on its direct upstream, and a log that cannot tell them
+/// apart cannot answer whether a slow session was the worker's doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Served,
+    /// The worker is off: no base URL configured.
+    Disabled,
+    StandingDown,
+    Unreachable,
+    Fault,
+    /// A 4xx, which is an answer about the request rather than a fault.
+    Rejected,
+    Unparseable,
+}
+
+impl Outcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Outcome::Served => "served",
+            Outcome::Disabled => "disabled",
+            Outcome::StandingDown => "standing_down",
+            Outcome::Unreachable => "unreachable",
+            Outcome::Fault => "fault",
+            Outcome::Rejected => "rejected",
+            Outcome::Unparseable => "unparseable",
+        }
+    }
+}
+
 /// Fetch `route` from the worker. `None` means the caller must use its direct
 /// upstream path.
+#[tracing::instrument(level = "debug", skip_all, fields(route = %route.path(), outcome))]
 pub fn get(route: Route<'_>) -> Option<Body> {
-    client().get(route)
+    let (body, outcome) = client().get(route);
+    tracing::Span::current().record("outcome", outcome.as_str());
+    body
 }
 
 /// `get`, deserialized. A body that does not parse answers `None` like a body
 /// that never arrived: the caller's upstream path fetches the same document,
 /// and its answer is the one worth failing on.
+#[tracing::instrument(level = "debug", skip_all, fields(route = %route.path(), outcome))]
 pub fn get_json<T: serde::de::DeserializeOwned>(route: Route<'_>) -> Option<T> {
-    serde_json::from_slice(&get(route)?.bytes)
-        .inspect_err(|e| tracing::debug!(error = %e, "cache worker body unusable"))
-        .ok()
+    let span = tracing::Span::current();
+    // A miss is already classified by `get`'s own span, so only the parse
+    // verdict is left to record here.
+    let (value, outcome) = parse(&get(route)?.bytes);
+    span.record("outcome", outcome.as_str());
+    value
+}
+
+fn parse<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> (Option<T>, Outcome) {
+    match serde_json::from_slice(bytes) {
+        Ok(value) => (Some(value), Outcome::Served),
+        Err(e) => {
+            tracing::debug!(error = %e, "cache worker body unusable");
+            (None, Outcome::Unparseable)
+        }
+    }
+}
+
+/// How many public fetches this session the worker answered, and how many fell
+/// through to a direct upstream — the pair that says whether the layer is
+/// doing anything for this install.
+pub fn tally() -> (u64, u64) {
+    let client = client();
+    (client.served.load(Ordering::Relaxed), client.fell_back.load(Ordering::Relaxed))
 }
 
 // ==============================================================================
@@ -100,12 +156,24 @@ struct Client {
     base: String,
     transport: Transport,
     stand_down_until: Mutex<Option<Instant>>,
+    served: AtomicU64,
+    fell_back: AtomicU64,
 }
 
 impl Client {
-    fn get(&self, route: Route<'_>) -> Option<Body> {
-        if self.base.is_empty() || self.standing_down() {
-            return None;
+    fn get(&self, route: Route<'_>) -> (Option<Body>, Outcome) {
+        let (body, outcome) = self.attempt(route);
+        let counter = if outcome == Outcome::Served { &self.served } else { &self.fell_back };
+        counter.fetch_add(1, Ordering::Relaxed);
+        (body, outcome)
+    }
+
+    fn attempt(&self, route: Route<'_>) -> (Option<Body>, Outcome) {
+        if self.base.is_empty() {
+            return (None, Outcome::Disabled);
+        }
+        if self.standing_down() {
+            return (None, Outcome::StandingDown);
         }
         let url = format!("{}{}", self.base, route.path());
         match (self.transport)(&url) {
@@ -113,22 +181,23 @@ impl Client {
                 // The signal means the worker has spent its daily budget, so
                 // asking again before the budget resets can only waste a round
                 // trip per fetch.
-                self.stand_down(until_daily_reset());
-                tracing::info!("cache worker unavailable; using upstreams directly until the daily reset");
-                None
+                self.stand_down("out of budget until the daily reset", until_daily_reset());
+                (None, Outcome::StandingDown)
             }
-            Ok(reply) if reply.status == 200 => Some(Body { bytes: reply.bytes, etag: reply.etag }),
+            Ok(reply) if reply.status == 200 => {
+                (Some(Body { bytes: reply.bytes, etag: reply.etag }), Outcome::Served)
+            }
             Ok(reply) if reply.status >= 500 => {
-                self.stand_down(FAULT_BACKOFF);
-                None
+                self.stand_down("server error", FAULT_BACKOFF);
+                (None, Outcome::Fault)
             }
             // A 4xx is an answer about the request rather than a fault, and the
             // upstream will give the same one with its own detail.
-            Ok(_) => None,
+            Ok(_) => (None, Outcome::Rejected),
             Err(e) => {
                 tracing::debug!(error = %e, "cache worker unreachable");
-                self.stand_down(FAULT_BACKOFF);
-                None
+                self.stand_down("unreachable", FAULT_BACKOFF);
+                (None, Outcome::Unreachable)
             }
         }
     }
@@ -139,14 +208,25 @@ impl Client {
             Some(deadline) if Instant::now() < deadline => true,
             Some(_) => {
                 *until = None;
+                tracing::info!("cache worker back in use");
                 false
             }
             None => false,
         }
     }
 
-    fn stand_down(&self, for_: Duration) {
-        *self.stand_down_until.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now() + for_);
+    /// Latching is the transition worth a log line: a worker that is down for
+    /// an hour would otherwise write one warning per fetch for that hour.
+    fn stand_down(&self, reason: &str, for_: Duration) {
+        let mut until = self.stand_down_until.lock().unwrap_or_else(|e| e.into_inner());
+        if until.is_none() {
+            tracing::warn!(
+                reason,
+                seconds = for_.as_secs(),
+                "cache worker stood down; using upstreams directly"
+            );
+        }
+        *until = Some(Instant::now() + for_);
     }
 }
 
@@ -156,6 +236,8 @@ fn client() -> &'static Client {
         base: base_url(),
         transport: Box::new(fetch),
         stand_down_until: Mutex::new(None),
+        served: AtomicU64::new(0),
+        fell_back: AtomicU64::new(0),
     })
 }
 
@@ -237,6 +319,8 @@ mod tests {
                 reply()
             }),
             stand_down_until: Mutex::new(None),
+            served: AtomicU64::new(0),
+            fell_back: AtomicU64::new(0),
         };
         (client, attempts)
     }
@@ -247,7 +331,7 @@ mod tests {
 
     /// A call site: worker body if there is one, today's upstream fetch if not.
     fn through_seam(client: &Client, route: Route<'_>) -> String {
-        match client.get(route) {
+        match client.get(route).0 {
             Some(body) => String::from_utf8(body.bytes).expect("test bodies are UTF-8"),
             None => UPSTREAM_BODY.to_string(),
         }
@@ -324,6 +408,59 @@ mod tests {
                 "{account} must never be addressed through the worker"
             );
         }
+    }
+
+    /// The five ways a fetch can end. Without the distinction a log says only
+    /// that the upstream was used, never why.
+    #[test]
+    fn every_fallback_reason_is_classified_separately() {
+        let (client, _) = client_over(|| reply(200, false, WORKER_BODY));
+        assert_eq!(client.get(Route::Worldstate).1, Outcome::Served);
+
+        let (client, _) = client_over(|| Err("connection refused".to_string()));
+        assert_eq!(client.get(Route::Worldstate).1, Outcome::Unreachable);
+
+        let (client, _) = client_over(|| reply(503, false, ""));
+        assert_eq!(client.get(Route::Worldstate).1, Outcome::Fault);
+
+        let (client, _) = client_over(|| reply(503, true, ""));
+        assert_eq!(client.get(Route::Worldstate).1, Outcome::StandingDown);
+        assert_eq!(client.get(Route::Worldstate).1, Outcome::StandingDown);
+
+        assert_eq!(parse::<serde_json::Value>(b"not json").1, Outcome::Unparseable);
+    }
+
+    /// Entering and leaving are what a log line is worth writing for, so both
+    /// have to be visible in the latch rather than inferred from a timer.
+    #[test]
+    fn a_stand_down_is_entered_once_and_cleared_when_it_expires() {
+        let (client, _) = client_over(|| reply(500, false, ""));
+
+        client.get(Route::Worldstate);
+        assert!(client.stand_down_until.lock().expect("not poisoned").is_some());
+
+        // Expire it in place: the seam has no clock to wind forward, and the
+        // transition is the state change, not the wait.
+        *client.stand_down_until.lock().expect("not poisoned") = Some(Instant::now());
+        assert!(!client.standing_down(), "an expired stand-down is over");
+        assert!(
+            client.stand_down_until.lock().expect("not poisoned").is_none(),
+            "leaving must clear the latch, so the next fault is a fresh transition"
+        );
+    }
+
+    #[test]
+    fn the_tally_separates_worker_answers_from_fallbacks() {
+        let (client, _) = client_over(|| reply(404, false, ""));
+        client.get(Route::Worldstate);
+        assert_eq!(client.served.load(Ordering::Relaxed), 0);
+        assert_eq!(client.fell_back.load(Ordering::Relaxed), 1);
+
+        let (client, _) = client_over(|| reply(200, false, WORKER_BODY));
+        client.get(Route::Worldstate);
+        client.get(Route::Snapshot);
+        assert_eq!(client.served.load(Ordering::Relaxed), 2);
+        assert_eq!(client.fell_back.load(Ordering::Relaxed), 0);
     }
 
     #[test]

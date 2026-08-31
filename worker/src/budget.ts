@@ -32,6 +32,14 @@ export class DailyBudget extends DurableObject {
     const stored = await this.ctx.storage.get<{ day: number; count: number }>("state");
     const count = (stored?.day === day ? stored.count : 0) + 1;
     await this.ctx.storage.put("state", { day, count });
+
+    // The crossing, not the state: from here on every install worldwide falls
+    // back to the upstreams direct, and one line marks the moment rather than
+    // repeating it for every request that follows.
+    if (count === limit + 1) {
+      console.log(JSON.stringify({ event: "budget_exceeded", threshold: limit, count }));
+    }
+
     return count > limit;
   }
 }

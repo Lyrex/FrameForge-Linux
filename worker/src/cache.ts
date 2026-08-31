@@ -26,7 +26,7 @@ const STALE_WINDOW_SECONDS = 86_400;
 export const CACHE_ORIGIN = "https://frameforge.cache";
 
 const FRESH_UNTIL_HEADER = "X-FrameForge-Fresh-Until";
-const CACHE_STATUS_HEADER = "X-FrameForge-Cache";
+export const CACHE_STATUS_HEADER = "X-FrameForge-Cache";
 
 type CacheStatus = "hit" | "miss" | "stale" | "revalidated";
 
@@ -61,6 +61,7 @@ export async function readThrough(
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
   } catch {
+    logUpstreamDown(upstreamUrl, null, cached ? "stale" : "unreachable");
     if (cached) return clientResponse(request, cached, "stale", ttlSeconds);
     return jsonError(502, "upstream_unreachable");
   }
@@ -71,8 +72,10 @@ export async function readThrough(
   }
 
   if (!upstream.ok) {
-    if (upstream.status >= 500 && cached)
-      return clientResponse(request, cached, "stale", ttlSeconds);
+    if (upstream.status >= 500) {
+      logUpstreamDown(upstreamUrl, upstream.status, cached ? "stale" : "passthrough");
+      if (cached) return clientResponse(request, cached, "stale", ttlSeconds);
+    }
     // A 4xx is the upstream's answer about this item, not a failure to reach
     // it — the client needs to see it. It is deliberately not cached.
     return new Response(upstream.body, {
@@ -130,6 +133,25 @@ function clientResponse(
     return new Response(null, { status: 304, headers });
   }
   return new Response(source.body, { headers });
+}
+
+// An upstream that failed, and what the caller got instead. The host is ours to
+// name; the URL is not, because a per-item path carries the slug that was asked
+// for. `status` is null when the fetch never produced one — a timeout or a
+// refused connection.
+function logUpstreamDown(
+  upstreamUrl: string,
+  status: number | null,
+  served: "stale" | "unreachable" | "passthrough",
+): void {
+  console.log(
+    JSON.stringify({
+      event: "upstream_down",
+      upstream: new URL(upstreamUrl).host,
+      status,
+      served,
+    }),
+  );
 }
 
 function contentTypeOf(response: Response): string {

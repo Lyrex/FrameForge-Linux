@@ -39,29 +39,68 @@ export async function snapshot(env: Env): Promise<Response> {
 // only thing standing between us and warframe.market's rate limiter, so it is
 // configuration rather than a number buried here.
 export async function prewarm(env: Env): Promise<void> {
+  const started = Date.now();
+  const current = await load(env);
+
   const catalog = await catalogItems(new Request(`${CACHE_ORIGIN}/v1/wfm-items`));
-  if (!catalog.ok) return;
-  const { items } = (await catalog.json()) as { items: CatalogItem[] };
-  if (items.length === 0) return;
+  const items = catalog.ok ? ((await catalog.json()) as { items: CatalogItem[] }).items : [];
+  if (items.length === 0) {
+    // A tick with no catalog to walk still reports itself. It is the stall an
+    // operator has to see — every route keeps answering from a snapshot that
+    // quietly stops advancing — and no line at all is indistinguishable from a
+    // cron that never fired.
+    logTick(started, current, { attempted: 0, refreshed: 0, cursor: 0, catalog_size: 0 });
+    return;
+  }
 
   const batch = Math.min(env.PREWARM_BATCH_SIZE, items.length);
   // The catalog can gain and lose items between refreshes, so the cursor is
   // only an approximate position — it is re-anchored to the current length
   // rather than trusted to be in range.
   const cursor = (Number(await env.SNAPSHOT.get(CURSOR_KEY)) || 0) % items.length;
-  const current = await load(env);
 
+  let refreshed = 0;
   for (let step = 0; step < batch; step++) {
     const slug = items[(cursor + step) % items.length]!.slug;
     const entry = await priceEntry(slug);
     // A failed fetch leaves the previous entry alone. A price from the last
     // pass is worth far more to a client than a hole.
-    if (entry) current.items[slug] = entry;
+    if (entry) {
+      current.items[slug] = entry;
+      refreshed++;
+    }
   }
 
   current.generation = nowSeconds();
   await env.SNAPSHOT.put(SNAPSHOT_KEY, JSON.stringify(current));
   await env.SNAPSHOT.put(CURSOR_KEY, String((cursor + batch) % items.length));
+
+  logTick(started, current, {
+    attempted: batch,
+    refreshed,
+    cursor,
+    catalog_size: items.length,
+  });
+}
+
+// One line per tick. Failures are a count, never the slugs behind them: a
+// prewarm walks the catalog on its own schedule and its slugs are nobody's
+// lookup, but the count is what an operator acts on and one blanket rule about
+// slugs in logs is easier to keep than two.
+function logTick(
+  started: number,
+  snapshot: Snapshot,
+  tick: { attempted: number; refreshed: number; cursor: number; catalog_size: number },
+): void {
+  console.log(
+    JSON.stringify({
+      event: "prewarm",
+      ...tick,
+      failed: tick.attempted - tick.refreshed,
+      entries: Object.keys(snapshot.items).length,
+      duration_ms: Date.now() - started,
+    }),
+  );
 }
 
 async function load(env: Env): Promise<Snapshot> {

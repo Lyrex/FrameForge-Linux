@@ -162,19 +162,79 @@ new version of the same code rather than rebuilding it, but the next
 
 ## Logs
 
-One line per request, and only these fields:
+Everything is a JSON line on `console.log`, which Workers Logs ingests and
+makes queryable field by field. One line per request, and only these fields:
 
 ```json
-{ "route": "/v1/wfm/items/:slug/statistics", "method": "GET", "status": 200, "latency_ms": 41, "version": "3.9.0" }
+{ "route": "/v1/wfm/items/:slug/statistics", "method": "GET", "status": 200, "latency_ms": 41, "version": "3.9.0", "cache": "hit" }
 ```
 
 `route` is the pattern, never the path: a line naming the slug someone asked
 for is a record of what that person was looking up. A request that matched no
 pattern — a stray trailing slash is enough — logs `"unmatched"` rather than the
-path it asked for. `version` is the client's
-`X-FrameForge-Version`, or `null`. Nothing else is logged — no address, no user
-agent, no query, no body — and a test asserts the exact key set, so a sixth
-field fails the suite.
+path it asked for. `version` is the client's `X-FrameForge-Version`, or `null`.
+`cache` is the `X-FrameForge-Cache` outcome — `hit`, `miss`, `stale`,
+`revalidated`, `not_modified` when the caller's own `If-None-Match` matched, and
+`null` for a route that never consults the cache. Nothing else is logged — no
+address, no user agent, no query, no body — and a test asserts the exact key
+set, so a seventh field fails the suite.
+
+The rule a field has to pass is that it describes what the worker did, not who
+asked. A cache outcome is the worker's own behaviour; a path, an address or a
+per-caller counter is not.
+
+Three more lines are operator events rather than requests, each tagged with
+`event`:
+
+```json
+{ "event": "prewarm", "attempted": 60, "refreshed": 58, "failed": 2, "cursor": 1740, "catalog_size": 4012, "entries": 3894, "duration_ms": 7213 }
+{ "event": "upstream_down", "upstream": "api.warframe.market", "status": 503, "served": "stale" }
+{ "event": "budget_exceeded", "threshold": 100000, "count": 100001 }
+```
+
+A `prewarm` line lands on every cron tick, including one that found no catalog
+to walk (`catalog_size: 0`) — a prewarm that quietly stops is otherwise
+invisible, because every route carries on answering from a snapshot that no
+longer advances. `cursor` is the position the tick started from and `entries` is
+the snapshot's size after it. Failures are a count: the slugs behind them are
+not logged, so there is one rule about slugs in logs rather than two.
+
+`upstream_down` carries the host, which is ours, and never the URL, which for a
+per-item endpoint carries the slug. `status` is the upstream's, or `null` when
+the fetch never got one — a timeout or a refused connection. `served` is what
+the caller got instead: `stale` for the last cached body, `unreachable` for
+`502`, `passthrough` when the upstream's own 5xx went to the client.
+
+`budget_exceeded` is logged once, on the request that crosses the threshold,
+not on the ones that follow it. It is the moment every install worldwide starts
+going to the upstreams direct.
+
+### Reading them
+
+Live, against the deployed worker:
+
+```sh
+npx wrangler tail --format json                       # everything
+npx wrangler tail --format json | jq -c 'select(.logs[].message[0] | fromjson | .event == "prewarm")'
+npx wrangler tail --status error                      # only failed invocations
+```
+
+Historically: Workers → `frameforge-cache` → Observability → Logs. The JSON
+fields are filterable and groupable there. Two worth having saved:
+
+- **Hit rate by route** — filter `cache` exists, group by `route`, and count by
+  `cache`. `hit + revalidated + not_modified` over the total is what the worker
+  is saving the upstreams; a route sitting near all-`miss` is one whose TTL is
+  shorter than the interval clients poll it at.
+- **Prewarm failures over time** — filter `event = prewarm`, chart `sum(failed)`
+  and `sum(refreshed)` by time. `refreshed` flat at zero means the snapshot has
+  stopped advancing while every route still answers, which is the failure that
+  otherwise shows up days later as stale prices. `catalog_size: 0` on the same
+  line points at the catalog upstream rather than at the per-item fetches.
+
+Sampling is off (`head_sampling_rate: 1` in `wrangler.jsonc`): at this volume
+the whole stream is affordable, and a sampled stream turns both of those from
+counts into estimates.
 
 ## Deploying
 
