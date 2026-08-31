@@ -8690,26 +8690,29 @@ struct BulkPrices {
     by_slug: HashMap<String, u32>,
 }
 
-/// Fetch items.json + the latest price_history from the FrameForgePricing mirror.
+/// The worker's price snapshot, or — when the worker has nothing to give — the
+/// FrameForgePricing mirror it supersedes.
 ///
-/// Both files are served without a usable ETag, and the pair only makes sense
-/// together, so the conditional-GET slot goes unused here.
+/// Neither source is served with a usable ETag, and the mirror's two files only
+/// make sense together, so the conditional-GET slot goes unused here.
 #[tracing::instrument(level = "debug", skip_all)]
 fn fetch_relics_run_data(_etag: Option<&str>) -> Result<cache::Fetched<BulkPrices>, String> {
+    let snapshot = worker::get(worker::Route::Snapshot);
+    let catalog = worker::get(worker::Route::WfmItems);
+    let prices = bulk_prices_from_snapshot(
+        snapshot.as_ref().map(|body| body.bytes.as_slice()),
+        catalog.as_ref().map(|body| body.bytes.as_slice()),
+    );
+    if let Some(prices) = prices {
+        return Ok(cache::Fetched::New(prices, None));
+    }
+
     // items.json gives the authoritative name → WFM slug mapping for every tradeable item.
     let items: Vec<serde_json::Value> = ureq::get(&format!("{}/items.json", PRICING_BASE))
         .call()
         .map_err(|e| format!("items.json: {e}"))?
         .into_json()
         .map_err(|e| format!("items.json: {e}"))?;
-    let name_to_slug: HashMap<String, String> = items
-        .into_iter()
-        .filter_map(|v| {
-            let name = v["i18n"]["en"]["name"].as_str()?.to_lowercase();
-            let slug = v["slug"].as_str()?.to_string();
-            Some((name, slug))
-        })
-        .collect();
 
     let price_json: serde_json::Value =
         ureq::get(&format!("{}/price_history_latest.json", PRICING_BASE))
@@ -8717,6 +8720,24 @@ fn fetch_relics_run_data(_etag: Option<&str>) -> Result<cache::Fetched<BulkPrice
             .map_err(|e| format!("price_history_latest.json: {e}"))?
             .into_json()
             .map_err(|e| format!("price_history_latest.json: {e}"))?;
+
+    Ok(cache::Fetched::New(bulk_prices_from_pricing_repo(&items, &price_json)?, None))
+}
+
+/// The pricing mirror's items.json + price_history_latest.json, folded into the
+/// same two maps the snapshot produces.
+fn bulk_prices_from_pricing_repo(
+    items: &[serde_json::Value],
+    price_json: &serde_json::Value,
+) -> Result<BulkPrices, String> {
+    let name_to_slug: HashMap<String, String> = items
+        .iter()
+        .filter_map(|v| {
+            let name = v["i18n"]["en"]["name"].as_str()?.to_lowercase();
+            let slug = v["slug"].as_str()?.to_string();
+            Some((name, slug))
+        })
+        .collect();
 
     let mut prices = BulkPrices::default();
 
@@ -8742,7 +8763,67 @@ fn fetch_relics_run_data(_etag: Option<&str>) -> Result<cache::Fetched<BulkPrice
     if prices.by_name.is_empty() {
         return Err("price history carried no closed-order medians".to_string());
     }
-    Ok(cache::Fetched::New(prices, None))
+    Ok(prices)
+}
+
+/// The worker's snapshot document: every slug it has priced so far.
+#[derive(serde::Deserialize)]
+struct PriceSnapshot {
+    /// Unix seconds of the last prewarm write, and `None` until prewarm has run
+    /// once — a snapshot with no generation carries no prices either.
+    generation: Option<u64>,
+    items: HashMap<String, SnapshotEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct SnapshotEntry {
+    /// `None` for an item warframe.market knows but nobody trades.
+    plat: Option<u32>,
+}
+
+#[derive(serde::Deserialize)]
+struct WfmCatalog {
+    items: Vec<WfmCatalogItem>,
+}
+
+#[derive(serde::Deserialize)]
+struct WfmCatalogItem {
+    slug: String,
+    name: String,
+}
+
+/// Fold the snapshot and the worker's item catalog into the two maps the app
+/// prices from. `None` — a missing body, an unusable one, or a snapshot the
+/// worker has not filled yet — means the caller must price from the mirror
+/// instead.
+///
+/// A slug the snapshot has not reached carries no verdict, so it is left out
+/// entirely and the per-item price queue asks about it as it always has. An
+/// entry priced at nothing is left out for the same reason: `BulkPrices` can
+/// only say "this costs N".
+fn bulk_prices_from_snapshot(snapshot: Option<&[u8]>, catalog: Option<&[u8]>) -> Option<BulkPrices> {
+    fn parse<T: serde::de::DeserializeOwned>(what: &str, bytes: Option<&[u8]>) -> Option<T> {
+        serde_json::from_slice(bytes?)
+            .inspect_err(|e| tracing::debug!(error = %e, "cache worker {what} unusable"))
+            .ok()
+    }
+    let snapshot: PriceSnapshot = parse("snapshot", snapshot)?;
+    let catalog: WfmCatalog = parse("item catalog", catalog)?;
+    snapshot.generation?;
+
+    let mut prices = BulkPrices::default();
+    for item in catalog.items {
+        let Some(plat) = snapshot.items.get(&item.slug).and_then(|entry| entry.plat) else {
+            continue;
+        };
+        prices.by_name.insert(item.name.to_lowercase(), plat);
+        prices.by_slug.insert(item.slug, plat);
+    }
+
+    if prices.by_name.is_empty() {
+        return None;
+    }
+    Some(prices)
 }
 
 /// Remove known duplicate entries caused by the game listing the same warframe under
@@ -10052,6 +10133,72 @@ mod walk_policy_tests {
     #[test]
     fn the_first_walk_is_never_delayed() {
         assert!(walk_is_due(&ScanOutcome::CacheMiss, false, false, Duration::MAX));
+    }
+}
+
+#[cfg(test)]
+mod bulk_price_tests {
+    use super::{bulk_prices_from_pricing_repo, bulk_prices_from_snapshot, BulkPrices};
+
+    const CATALOG: &str = r#"{"items":[
+        {"slug":"mirage_prime_set","name":"Mirage Prime Set","id":"a"},
+        {"slug":"nikana_prime_set","name":"Nikana Prime Set","id":"b"},
+        {"slug":"ash_prime_set","name":"Ash Prime Set","id":"c"}
+    ]}"#;
+
+    /// One item priced, one traded at nothing, one the prewarm has not reached.
+    const SNAPSHOT: &str = r#"{"generation":1756713600,"items":{
+        "mirage_prime_set":{"plat":120,"at":1756713600},
+        "nikana_prime_set":{"plat":null,"at":1756695300}
+    }}"#;
+
+    fn snapshot_prices(snapshot: &str) -> Option<BulkPrices> {
+        bulk_prices_from_snapshot(Some(snapshot.as_bytes()), Some(CATALOG.as_bytes()))
+    }
+
+    #[test]
+    fn the_snapshot_prices_the_items_it_carries() {
+        let prices = snapshot_prices(SNAPSHOT).expect("a filled snapshot prices something");
+        assert_eq!(prices.by_slug.get("mirage_prime_set"), Some(&120));
+        assert_eq!(prices.by_name.get("mirage prime set"), Some(&120));
+    }
+
+    /// An item the snapshot lacks must stay unpriced rather than be recorded as
+    /// worthless: leaving it out is what sends the per-item queue after it.
+    #[test]
+    fn an_item_the_snapshot_lacks_is_left_for_the_per_item_queue() {
+        let prices = snapshot_prices(SNAPSHOT).expect("a filled snapshot prices something");
+        assert!(!prices.by_slug.contains_key("ash_prime_set"));
+        assert!(!prices.by_name.contains_key("ash prime set"));
+        assert!(!prices.by_slug.contains_key("nikana_prime_set"));
+    }
+
+    #[test]
+    fn a_snapshot_the_worker_has_never_filled_is_no_answer() {
+        assert!(snapshot_prices(r#"{"generation":null,"items":{}}"#).is_none());
+        assert!(snapshot_prices("not json").is_none());
+    }
+
+    /// With the worker unreachable the seam answers `None`, and the pricing
+    /// mirror produces exactly what it produced before the snapshot existed.
+    #[test]
+    fn a_worker_that_did_not_answer_leaves_the_pricing_mirror_in_charge() {
+        assert!(bulk_prices_from_snapshot(None, Some(CATALOG.as_bytes())).is_none());
+        assert!(bulk_prices_from_snapshot(Some(SNAPSHOT.as_bytes()), None).is_none());
+
+        let items: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"slug":"mirage_prime_set","i18n":{"en":{"name":"Mirage Prime Set"}}}]"#,
+        )
+        .expect("test fixture is valid JSON");
+        let history: serde_json::Value = serde_json::from_str(
+            r#"{"Mirage Prime Set":[{"order_type":"closed","median":119.6}]}"#,
+        )
+        .expect("test fixture is valid JSON");
+
+        let prices =
+            bulk_prices_from_pricing_repo(&items, &history).expect("the mirror carries a median");
+        assert_eq!(prices.by_slug.get("mirage_prime_set"), Some(&120));
+        assert_eq!(prices.by_name.get("mirage prime set"), Some(&120));
     }
 }
 

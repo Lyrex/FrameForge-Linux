@@ -34,13 +34,18 @@ const FAULT_BACKOFF: Duration = Duration::from_secs(60);
 const UNAVAILABLE_HEADER: &str = "X-FrameForge-Worker";
 const UNAVAILABLE_VALUE: &str = "unavailable";
 
-/// Bodies under `/v1/` are the upstream's own, so a caller parses exactly what
-/// it would parse talking to the upstream direct.
+/// Read-through bodies under `/v1/` are the upstream's own, so a caller parses
+/// exactly what it would parse talking to the upstream direct. The worker-native
+/// routes are the exception and carry shapes only the worker serves.
 pub enum Route<'a> {
     WfmStatistics(&'a str),
     WfmOrders(&'a str),
     Worldstate,
     CatalogDrops,
+    /// Worker-native: every tradeable item's price in one document, and the
+    /// slug → name catalog that gives those prices their display names.
+    Snapshot,
+    WfmItems,
 }
 
 impl Route<'_> {
@@ -50,6 +55,8 @@ impl Route<'_> {
             Route::WfmOrders(slug) => format!("/v1/wfm/items/{slug}/orders"),
             Route::Worldstate => "/v1/worldstate".to_string(),
             Route::CatalogDrops => "/v1/catalog/drops".to_string(),
+            Route::Snapshot => "/v1/snapshot".to_string(),
+            Route::WfmItems => "/v1/wfm-items".to_string(),
         }
     }
 }
@@ -295,6 +302,8 @@ mod tests {
             Route::WfmOrders("mirage_prime_set").path(),
             Route::Worldstate.path(),
             Route::CatalogDrops.path(),
+            Route::Snapshot.path(),
+            Route::WfmItems.path(),
         ];
         for account in ACCOUNT_PATHS {
             assert!(
