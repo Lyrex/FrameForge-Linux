@@ -27,13 +27,17 @@ if [ "$cargo_version" != "$package_version" ] || [ "$cargo_version" != "$tauri_v
 fi
 
 # Agreement alone would bless three files agreeing on garbage.
-scheme='[0-9]+\.[0-9]+\.[0-9]+-linux\.[0-9]+'
+scheme='[0-9]+\.[0-9]+\.[0-9]+'
 if [[ ! "$cargo_version" =~ ^${scheme}$ ]]; then
-    echo "::error::'$cargo_version' does not look like <upstream>-linux.<n>"
+    # The updater compares versions as semver, where a prerelease suffix sorts
+    # below the bare version. Naming a platform there would make each platform's
+    # release a downgrade of a bare version nothing ever publishes; platforms
+    # are per-platform artifacts of one version instead.
+    echo "::error::'$cargo_version' is not plain semver — a platform suffix such as '-linux.1' is not a version"
     exit 1
 fi
 
-readme_version=$(grep -m1 -oE "$scheme" "$root/README.md" || true)
+readme_version=$(grep -m1 -oE "Companion \`v$scheme\`" "$root/README.md" | grep -oE "$scheme" || true)
 if [ "$readme_version" != "$cargo_version" ]; then
     echo "::error::README says '$readme_version' but the tree is at $cargo_version"
     exit 1

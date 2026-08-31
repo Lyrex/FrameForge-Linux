@@ -35,6 +35,7 @@ mod overlay_linux;
 mod paths;
 mod refresh;
 mod resolver;
+mod updater;
 mod wfcd;
 mod wfm;
 
@@ -8444,16 +8445,6 @@ async fn credential_store_available() -> bool {
 }
 
 #[tauri::command]
-async fn check_for_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    use tauri_plugin_updater::UpdaterExt;
-    let updater = app.updater_builder().build().map_err(|e| e.to_string())?;
-    match updater.check().await.map_err(|e| e.to_string())? {
-        Some(update) => Ok(Some(update.version)),
-        None => Ok(None),
-    }
-}
-
-#[tauri::command]
 async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
     let updater = app.updater_builder().build().map_err(|e| e.to_string())?;
@@ -9972,8 +9963,7 @@ pub fn run() {
             // TTL costs a disk read.
             refresh::spawn(app.handle().clone());
 
-            // Start the background refresh loop (worldstate, bulk prices, catalogue, etc.)
-            refresh::spawn(app.handle().clone());
+            updater::spawn_launch_check(app.handle().clone());
 
             Ok(())
         })
@@ -10003,6 +9993,7 @@ pub fn run() {
             set_api_log,
             get_app_version,
             set_app_version,
+            updater::check_for_update,
             force_quit,
             get_weapon_catalog,
             get_craftable_items,
@@ -10021,7 +10012,6 @@ pub fn run() {
             get_wfm_top_items,
             get_item_price,
             refresh_bulk_prices,
-            check_for_update,
             install_update,
             factory_reset,
             refresh_all_caches,

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { checkForUpdate } from "./updater";
 import { usePlatformCapabilities } from "./platform";
 import EeLogSettings from "./EeLogSettings";
 import { applyScale, overlayScale } from "./uiScale";
@@ -1319,8 +1320,8 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
   // ── Auto-update check ─────────────────────────────────────────────────────
   useEffect(() => {
-    invoke<string | null>("check_for_update")
-      .then(v => { if (v) setPendingUpdate(v); })
+    checkForUpdate()
+      .then(u => { if (u) setPendingUpdate(u.version); })
       .catch(() => {});
   }, []); // eslint-disable-line
 

@@ -1,4 +1,4 @@
-# FrameForge — Warframe Companion `v4.0.0-linux.1`
+# FrameForge — Warframe Companion `v4.0.0`
 
 A desktop companion for Warframe — live inventory, market prices, trading, timers, relic overlay, and riven analysis. Read-only, no game modification.
 
@@ -10,9 +10,9 @@ A desktop companion for Warframe — live inventory, market prices, trading, tim
 
 ## About this fork
 
-This is the Linux fork of [WyrmStudios/FrameForge](https://github.com/WyrmStudios/FrameForge). It exists because the Linux port was declined upstream, not because of a disagreement: upstream is the project, this is its platform branch, and fixes that are not Linux-specific are still sent upstream as individual pull requests. The app, its name and its bundle identifier are unchanged from upstream, so the version string is what separates the two: `2.9.0-linux.1` is built on upstream's 2.9.0, and `-linux.<n>` counts the Linux-only releases cut on that base.
+This is the Linux fork of [WyrmStudios/FrameForge](https://github.com/WyrmStudios/FrameForge). It exists because the Linux port was declined upstream, not because of a disagreement: upstream is the project, this is its platform branch, and fixes that are not Linux-specific are still sent upstream as individual pull requests. The app, its name and its bundle identifier are unchanged from upstream. Versions here are plain semver and count this repository's own releases; they do not track upstream's numbering.
 
-Releases here are Linux only: `.deb`, `.rpm` and `.AppImage`. **Windows users want [upstream's releases](https://github.com/WyrmStudios/FrameForge/releases)**, not this repository.
+Releases carry `.deb`, `.rpm` and `.AppImage` for Linux and an NSIS installer for Windows, all built from one version. **Upstream's Windows builds live at [upstream's releases](https://github.com/WyrmStudios/FrameForge/releases)**.
 
 The overlay stack, the `EE.log` discovery and several cross-platform fixes started from [xamionex/FrameForge-Linux](https://github.com/xamionex/FrameForge-Linux). That material was reworked here rather than taken as-is, so defects in it are ours and belong in this repository's issues, not theirs.
 
