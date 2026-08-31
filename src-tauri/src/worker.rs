@@ -20,7 +20,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// `workerBaseUrl` setting, which is how a local `wrangler dev` on
 /// `http://127.0.0.1:8787` gets used instead. An empty value turns the worker
 /// off and leaves every fetch on its direct upstream.
-const DEFAULT_BASE_URL: &str = "https://frameforge-cache.frameforge.workers.dev";
+const DEFAULT_BASE_URL: &str = "https://frameforge-cache.lyrex.workers.dev";
 
 /// Short enough that a hung worker costs less than the upstream fetch that
 /// follows it.
