@@ -12,12 +12,18 @@ export const TTL = {
   statistics: 300,
   worldstate: 45,
   catalog: 21_600,
+  // The snapshot only changes when a prewarm tick writes it, so a client
+  // holding one for a few minutes is never far behind.
+  snapshot: 300,
 } as const;
 
 // A body stays in the edge cache long past its freshness so it is still there
 // to serve when an upstream is down. Bounded so an upstream that dies
 // permanently eventually stops being answered from a fossil.
 const STALE_WINDOW_SECONDS = 86_400;
+
+// Cache keys are built against this fixed origin. It is never fetched.
+export const CACHE_ORIGIN = "https://frameforge.cache";
 
 const FRESH_UNTIL_HEADER = "X-FrameForge-Fresh-Until";
 const CACHE_STATUS_HEADER = "X-FrameForge-Cache";
@@ -30,9 +36,10 @@ export async function readThrough(
   ttlSeconds: number,
 ): Promise<Response> {
   const cache = caches.default;
-  // Keyed on the worker-side URL alone: no request header takes part, so two
-  // users asking for the same thing always collapse into one entry.
-  const key = new Request(new URL(request.url).toString(), { method: "GET" });
+  // Keyed on the path alone: no request header and no hostname take part, so
+  // two users asking for the same thing — and the cron prewarm asking for it
+  // off any hostname at all — always collapse into one entry.
+  const key = new Request(new URL(new URL(request.url).pathname, CACHE_ORIGIN), { method: "GET" });
 
   const cached = await cache.match(key);
   if (cached && Date.now() < Number(cached.headers.get(FRESH_UNTIL_HEADER) ?? 0)) {

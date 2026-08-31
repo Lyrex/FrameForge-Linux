@@ -3,5 +3,21 @@
   "name": "frameforge-cache",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+
+  // Holds the price snapshot and the prewarm cursor. Both are public,
+  // item-keyed data: nothing here is per user.
+  // TODO: `id` is a placeholder until the namespace is created against the
+  // Cloudflare account (`wrangler kv namespace create snapshot`).
+  "kv_namespaces": [{ "binding": "SNAPSHOT", "id": "00000000000000000000000000000000" }],
+
+  "triggers": { "crons": ["*/5 * * * *"] },
+
+  "vars": {
+    // Items refreshed per cron tick. 60 every 5 minutes is one upstream request
+    // every 5 seconds — well under what warframe.market tolerates — and walks a
+    // ~4000-item catalog end to end in about five hours, which is how stale the
+    // oldest price in the snapshot can be.
+    "PREWARM_BATCH_SIZE": 60
+  }
 }

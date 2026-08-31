@@ -12,7 +12,10 @@ export const UPSTREAM_TIMEOUT_MS = 10_000;
 
 const WFM_API = "https://api.warframe.market";
 
-export const wfmStatistics = (slug: string) => `${WFM_API}/v1/items/${slug}/statistics`;
+// v2 is the only item list warframe.market still serves; v1 /items 404s.
+export const WFM_ITEMS = `${WFM_API}/v2/items`;
+
+export const wfmStatistics =(slug: string) => `${WFM_API}/v1/items/${slug}/statistics`;
 
 export const wfmOrders = (slug: string) => `${WFM_API}/v2/orders/item/${slug}`;
 
