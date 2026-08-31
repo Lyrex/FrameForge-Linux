@@ -72,6 +72,15 @@ pub fn get(route: Route<'_>) -> Option<Body> {
     client().get(route)
 }
 
+/// `get`, deserialized. A body that does not parse answers `None` like a body
+/// that never arrived: the caller's upstream path fetches the same document,
+/// and its answer is the one worth failing on.
+pub fn get_json<T: serde::de::DeserializeOwned>(route: Route<'_>) -> Option<T> {
+    serde_json::from_slice(&get(route)?.bytes)
+        .inspect_err(|e| tracing::debug!(error = %e, "cache worker body unusable"))
+        .ok()
+}
+
 // ==============================================================================
 // The client
 // ==============================================================================
@@ -155,6 +164,10 @@ fn client() -> &'static Client {
 /// worker that has already said no.
 fn until_daily_reset() -> Duration {
     const DAY: u64 = 24 * 60 * 60;
+    // A clock reading before the epoch says nothing about how far into the day
+    // the reset is, and the whole day is the safe guess: the signal already
+    // means the budget is spent, so every ask before it resets is a wasted
+    // round trip.
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     Duration::from_secs(DAY - now % DAY)
 }

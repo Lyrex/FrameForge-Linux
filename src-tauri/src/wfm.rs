@@ -679,8 +679,8 @@ impl Wfm {
         let json = self.memoized(&format!("orders:{url_name}"), || {
             // The order book is public, so the cache worker's copy is the same
             // data — minus the session the direct call may attach.
-            if let Some(body) = worker::get(worker::Route::WfmOrders(url_name)) {
-                return serde_json::from_slice(&body.bytes).map_err(|e| format!("parse: {}", e));
+            if let Some(json) = worker::get_json(worker::Route::WfmOrders(url_name)) {
+                return Ok(json);
             }
             let auth = self.auth_opt();
             self.wait();
@@ -737,8 +737,8 @@ impl Wfm {
     #[tracing::instrument(level = "debug", skip_all, fields(slug = %url_name))]
     pub fn item_statistics(&self, url_name: &str) -> Result<serde_json::Value, String> {
         self.memoized(&format!("stats:{url_name}"), || {
-            let json: serde_json::Value = match worker::get(worker::Route::WfmStatistics(url_name)) {
-                Some(body) => serde_json::from_slice(&body.bytes).map_err(|e| format!("parse: {}", e))?,
+            let json: serde_json::Value = match worker::get_json(worker::Route::WfmStatistics(url_name)) {
+                Some(json) => json,
                 None => {
                     let auth = self.auth_opt();
                     self.wait();
@@ -1109,9 +1109,7 @@ impl Wfm {
     /// VWAP when there are ≥3 recent trades, else falls back to the 90-day window.
     #[tracing::instrument(level = "debug", skip_all, fields(slug = %slug))]
     pub fn price_for_slug(&self, slug: &str) -> Result<Option<u32>, String> {
-        if let Some(body) = worker::get(worker::Route::WfmStatistics(slug)) {
-            let json: serde_json::Value =
-                serde_json::from_slice(&body.bytes).map_err(|e| format!("wfm price parse: {}", e))?;
+        if let Some(json) = worker::get_json::<serde_json::Value>(worker::Route::WfmStatistics(slug)) {
             return Ok(median_from_statistics(&json));
         }
         self.wait();
@@ -1145,8 +1143,8 @@ impl Wfm {
 
     /// 7-day price + average daily volume for a slug, or None if unlisted / stale.
     pub fn stats_7day(&self, slug: &str) -> Option<(u32, f64)> {
-        let json: serde_json::Value = match worker::get(worker::Route::WfmStatistics(slug)) {
-            Some(body) => serde_json::from_slice(&body.bytes).ok()?,
+        let json: serde_json::Value = match worker::get_json(worker::Route::WfmStatistics(slug)) {
+            Some(json) => json,
             None => {
                 self.wait();
                 let url = format!("{}/v1/items/{}/statistics", API_BASE, slug);
@@ -1448,6 +1446,24 @@ mod tests {
         // Too few points to trim → plain median.
         assert_eq!(trimmed_median_from_stats(&[bucket(5.0), bucket(7.0)]), Some(6));
         assert_eq!(trimmed_median_from_stats(&[]), None);
+    }
+
+    /// The cache worker prices its snapshot with a copy of this rule, and a
+    /// snapshot price is meant to be the price a direct lookup would have given.
+    /// Both sides pin the same fixture: 48-hour volume of 1 is under the
+    /// three-trade floor, so the 90-day window decides, where a 15 % trim of six
+    /// prices cuts none and the median of 40 and 42 is 41.
+    #[test]
+    fn the_snapshot_and_a_direct_lookup_price_an_item_alike() {
+        let stats: serde_json::Value = serde_json::from_str(
+            r#"{"payload":{"statistics_closed":{
+                "48hours":[{"median":40,"volume":1}],
+                "90days":[{"median":10,"volume":5},{"median":38,"volume":5},{"median":40,"volume":5},
+                          {"median":42,"volume":5},{"median":44,"volume":5},{"median":300,"volume":5}]
+            }}}"#,
+        )
+        .expect("test fixture is valid JSON");
+        assert_eq!(median_from_statistics(&stats), Some(41));
     }
 
     #[test]

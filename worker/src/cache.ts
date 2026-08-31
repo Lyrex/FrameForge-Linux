@@ -43,11 +43,13 @@ export async function readThrough(
 
   const cached = await cache.match(key);
   if (cached && Date.now() < Number(cached.headers.get(FRESH_UNTIL_HEADER) ?? 0)) {
-    return clientResponse(cached, "hit", ttlSeconds);
+    return clientResponse(request, cached, "hit", ttlSeconds);
   }
 
   // Only the headers we choose reach the upstream — nothing from the client is
-  // relayed, so an Authorization or Cookie header sent to us dies here.
+  // relayed, so an Authorization or Cookie header sent to us dies here. The
+  // client's own If-None-Match is read (see `clientResponse`) but never
+  // forwarded: the validator sent upstream is always the one this cache holds.
   const headers: Record<string, string> = { "User-Agent": USER_AGENT, Accept: "application/json" };
   const etag = cached?.headers.get("ETag");
   if (etag) headers["If-None-Match"] = etag;
@@ -59,17 +61,18 @@ export async function readThrough(
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
   } catch {
-    if (cached) return clientResponse(cached, "stale", ttlSeconds);
+    if (cached) return clientResponse(request, cached, "stale", ttlSeconds);
     return jsonError(502, "upstream_unreachable");
   }
 
   if (upstream.status === 304 && cached) {
     const refreshed = await store(cache, key, cached, ttlSeconds, cached.headers.get("ETag"));
-    return clientResponse(refreshed, "revalidated", ttlSeconds);
+    return clientResponse(request, refreshed, "revalidated", ttlSeconds);
   }
 
   if (!upstream.ok) {
-    if (upstream.status >= 500 && cached) return clientResponse(cached, "stale", ttlSeconds);
+    if (upstream.status >= 500 && cached)
+      return clientResponse(request, cached, "stale", ttlSeconds);
     // A 4xx is the upstream's answer about this item, not a failure to reach
     // it — the client needs to see it. It is deliberately not cached.
     return new Response(upstream.body, {
@@ -79,7 +82,7 @@ export async function readThrough(
   }
 
   const stored = await store(cache, key, upstream, ttlSeconds, upstream.headers.get("ETag"));
-  return clientResponse(stored, "miss", ttlSeconds);
+  return clientResponse(request, stored, "miss", ttlSeconds);
 }
 
 async function store(
@@ -104,14 +107,29 @@ async function store(
   return entry;
 }
 
-function clientResponse(source: Response, status: CacheStatus, ttlSeconds: number): Response {
-  return new Response(source.body, {
-    headers: {
-      "Content-Type": contentTypeOf(source),
-      "Cache-Control": `public, max-age=${ttlSeconds}`,
-      [CACHE_STATUS_HEADER]: status,
-    },
+// The stored ETag is handed to the client so it can skip a body it already
+// holds. `If-None-Match` is the one client header the worker reads: a validator
+// says which bytes the caller has, not who the caller is, so it identifies
+// nobody. It is still never forwarded — the validator the upstream sees is
+// always this cache's own.
+function clientResponse(
+  request: Request,
+  source: Response,
+  status: CacheStatus,
+  ttlSeconds: number,
+): Response {
+  const etag = source.headers.get("ETag");
+  const headers = new Headers({
+    "Content-Type": contentTypeOf(source),
+    "Cache-Control": `public, max-age=${ttlSeconds}`,
+    [CACHE_STATUS_HEADER]: status,
   });
+  if (etag) headers.set("ETag", etag);
+
+  if (etag && request.headers.get("If-None-Match") === etag) {
+    return new Response(null, { status: 304, headers });
+  }
+  return new Response(source.body, { headers });
 }
 
 function contentTypeOf(response: Response): string {

@@ -39,6 +39,12 @@ function route(path: string, handle: Handler) {
 
 const HEALTH_PATH = "/v1/health";
 
+// Logged in place of the path whenever no route pattern matched. The path is
+// then arbitrary client text — `/v1/wfm/items/<slug>/orders/` misses on the
+// trailing slash alone — and writing it out would record the lookup that the
+// pattern logging exists to keep out of the logs.
+const UNMATCHED_ROUTE = "unmatched";
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const started = Date.now();
@@ -52,7 +58,7 @@ export default {
     }
 
     if (request.method !== "GET" && request.method !== "HEAD") {
-      return log(request, path, started, jsonError(405, "method_not_allowed"));
+      return log(request, UNMATCHED_ROUTE, started, jsonError(405, "method_not_allowed"));
     }
 
     const match = routes
@@ -60,10 +66,10 @@ export default {
       .find((attempt) => attempt.result);
 
     if (await overBudget(env)) {
-      return log(request, match?.candidate.path ?? path, started, workerUnavailable());
+      return log(request, match?.candidate.path ?? UNMATCHED_ROUTE, started, workerUnavailable());
     }
 
-    if (!match) return log(request, path, started, jsonError(404, "not_found"));
+    if (!match) return log(request, UNMATCHED_ROUTE, started, jsonError(404, "not_found"));
 
     return log(
       request,

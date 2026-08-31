@@ -12,7 +12,7 @@ import { UNAVAILABLE_HEADER, workerUnavailable } from "../src/unavailable";
 
 const WORKER = "https://worker.test";
 
-type UpstreamReply = { status?: number; body?: unknown; throws?: boolean };
+type UpstreamReply = { status?: number; body?: unknown; throws?: boolean; etag?: string };
 
 // Stands in for every upstream. Each entry is consumed by one call, so a
 // request the worker was not supposed to make runs the queue dry and fails
@@ -32,7 +32,10 @@ function upstream(...replies: UpstreamReply[]) {
     if (reply.throws) throw new Error("upstream unreachable");
     return new Response(JSON.stringify(reply.body ?? {}), {
       status: reply.status ?? 200,
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(reply.etag ? { ETag: reply.etag } : {}),
+      },
     });
   });
 
@@ -67,25 +70,30 @@ const get = (path: string, headers: HeadersInit = {}) =>
   worker.fetch(new Request(`${WORKER}${path}`, { headers }), env);
 
 // Each cache class is exercised through its own route, so the TTL that route
-// was given is the one under test.
+// was given is the one under test. `ttl` is repeated from the source rather
+// than imported: a test that read the same constant as the code would agree
+// with any value the code was changed to.
 const CLASSES = [
   {
     name: "order books",
     route: "/v1/wfm/items/mirage_prime_set/orders",
     upstream: "https://api.warframe.market/v2/orders/item/mirage_prime_set",
     body: { data: [{ platinum: 120, order_type: "sell" }] },
+    ttl: 30,
   },
   {
     name: "prices and statistics",
     route: "/v1/wfm/items/mirage_prime_set/statistics",
     upstream: "https://api.warframe.market/v1/items/mirage_prime_set/statistics",
     body: { payload: { statistics_closed: { "48hours": [{ avg_price: 118 }] } } },
+    ttl: 300,
   },
   {
     name: "worldstate",
     route: "/v1/worldstate",
     upstream: "https://api.warframe.com/cdn/worldState.php",
     body: { WorldSeed: "seed", ActiveMissions: [] },
+    ttl: 45,
   },
   {
     name: "static catalog",
@@ -93,6 +101,7 @@ const CLASSES = [
     upstream:
       "https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data/all.json",
     body: { missionRewards: {} },
+    ttl: 21_600,
   },
 ];
 
@@ -110,6 +119,28 @@ describe.each(CLASSES)("$name", (dataClass) => {
     await expect(hit.json()).resolves.toEqual(dataClass.body);
 
     expect(mock.calls).toEqual([dataClass.upstream]);
+  });
+
+  it("still serves the cached body one second inside its own TTL", async () => {
+    const mock = upstream({ body: dataClass.body });
+    await get(dataClass.route);
+
+    advance(dataClass.ttl - 1);
+    const hit = await get(dataClass.route);
+
+    expect(hit.headers.get("X-FrameForge-Cache")).toBe("hit");
+    expect(mock.calls).toEqual([dataClass.upstream]);
+  });
+
+  it("fetches again one second past its own TTL", async () => {
+    const mock = upstream({ body: dataClass.body }, { body: dataClass.body });
+    await get(dataClass.route);
+
+    advance(dataClass.ttl + 1);
+    const refetched = await get(dataClass.route);
+
+    expect(refetched.headers.get("X-FrameForge-Cache")).toBe("miss");
+    expect(mock.calls).toEqual([dataClass.upstream, dataClass.upstream]);
   });
 });
 
@@ -147,6 +178,38 @@ describe("stale-if-error", () => {
 
     expect(response.status).toBe(500);
     expect(response.headers.get("X-FrameForge-Cache")).toBeNull();
+  });
+});
+
+// The drop catalog is the one that makes this worth having: ~30 MB a client
+// otherwise re-downloads on every refresh.
+describe("client revalidation", () => {
+  const route = "/v1/catalog/drops";
+  const dropData =
+    "https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data/all.json";
+  const body = { missionRewards: { Earth: {} } };
+
+  it("answers 304 with no body when the client holds the ETag it was given", async () => {
+    const mock = upstream({ body, etag: '"drops-v2"' });
+
+    const first = await get(route);
+    expect(first.headers.get("ETag")).toBe('"drops-v2"');
+
+    const revalidated = await get(route, { "If-None-Match": '"drops-v2"' });
+
+    expect(revalidated.status).toBe(304);
+    await expect(revalidated.text()).resolves.toBe("");
+    expect(mock.calls).toEqual([dropData]);
+  });
+
+  it("serves the body when the client's validator is stale", async () => {
+    upstream({ body, etag: '"drops-v2"' });
+    await get(route);
+
+    const response = await get(route, { "If-None-Match": '"drops-v1"' });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(body);
   });
 });
 
@@ -235,7 +298,7 @@ describe("item catalog", () => {
     const miss = await get("/v1/wfm-items");
     expect(miss.status).toBe(200);
     await expect(miss.json()).resolves.toEqual({
-      items: [{ slug: "mirage_prime_set", name: "MIRAGE_PRIME_SET", id: "id_mirage_prime_set" }],
+      items: [{ slug: "mirage_prime_set", name: "MIRAGE_PRIME_SET" }],
     });
 
     const hit = await get("/v1/wfm-items");
@@ -263,6 +326,39 @@ describe("price snapshot", () => {
 
     expect(body.generation).toBe(Math.floor(clock / 1000));
     expect(body.items["ash_prime_set"]).toEqual({ plat: 120, at: Math.floor(clock / 1000) });
+  });
+
+  // Pins the price the app must agree with, since the same trimmed median is
+  // implemented twice. The 48-hour window holds one sale, under the three it
+  // takes to be trusted, so the 90-day window decides: 15% of six prices trims
+  // nothing, and the median of 40 and 42 is 41 — the 10 and the 300 pull it
+  // nowhere.
+  it("derives the app's price from the 90-day window when the recent one is thin", async () => {
+    upstream(
+      { body: catalogBody("nova_prime_set") },
+      {
+        body: {
+          payload: {
+            statistics_closed: {
+              "48hours": [{ median: 40, volume: 1 }],
+              "90days": [
+                { median: 10, volume: 5 },
+                { median: 38, volume: 5 },
+                { median: 40, volume: 5 },
+                { median: 42, volume: 5 },
+                { median: 44, volume: 5 },
+                { median: 300, volume: 5 },
+              ],
+            },
+          },
+        },
+      },
+    );
+    await runPrewarm(1);
+
+    const body = await readSnapshot();
+
+    expect(body.items["nova_prime_set"]?.plat).toBe(41);
   });
 
   it("costs no upstream call to serve", async () => {
@@ -424,5 +520,21 @@ describe("request log", () => {
     expect(entry.route).toBe("/v1/wfm/items/:slug/orders");
     expect(lines.join("")).not.toContain("mirage_prime_set");
     expect(entry).toMatchObject({ method: "GET", status: 200, version: "3.9.0" });
+  });
+
+  it("keeps the slug out of the log when the path matches no route", async () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line: string) => {
+      lines.push(line);
+    });
+
+    // A trailing slash is enough to miss every pattern, and the path is then
+    // client text that would otherwise be written out verbatim.
+    const response = await get("/v1/wfm/items/mirage_prime_set/orders/");
+    spy.mockRestore();
+
+    expect(response.status).toBe(404);
+    expect(lines.join("")).not.toContain("mirage_prime_set");
+    expect(JSON.parse(lines.at(-1)!).route).toBe("unmatched");
   });
 });

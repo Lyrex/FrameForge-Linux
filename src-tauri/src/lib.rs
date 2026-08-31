@@ -7734,10 +7734,8 @@ async fn fetch_worldstate(state: State<'_, AppState>) -> Result<serde_json::Valu
 
 /// Pull the raw worldstate and the Steam news that goes with it.
 fn fetch_worldstate_upstream() -> Result<(serde_json::Value, serde_json::Value), String> {
-    let raw = match worker::get(worker::Route::Worldstate) {
-        Some(body) => {
-            serde_json::from_slice(&body.bytes).map_err(|e| format!("worldstate parse failed: {}", e))?
-        }
+    let raw = match worker::get_json(worker::Route::Worldstate) {
+        Some(raw) => raw,
         None => ureq::get("https://api.warframe.com/cdn/worldState.php")
             .set("User-Agent", "FrameForge/3.2.0")
             .timeout(std::time::Duration::from_secs(20))

@@ -33,7 +33,7 @@ and address an item. Search itself stays client-side.
 ```json
 {
   "items": [
-    { "slug": "mirage_prime_set", "name": "Mirage Prime Set", "id": "54a73e65e779893a797f0f0f" }
+    { "slug": "mirage_prime_set", "name": "Mirage Prime Set" }
   ]
 }
 ```
@@ -83,7 +83,14 @@ counts.
 `:slug` is a warframe.market slug — lowercase, digits and underscores. Anything
 else is `400 {"error":"invalid_slug"}`.
 
-Every response carries `X-FrameForge-Cache: hit | miss | stale | revalidated`.
+Every response carries `X-FrameForge-Cache: hit | miss | stale | revalidated`,
+and one carries the upstream's `ETag` whenever the upstream gave one. A client
+that sends that value back as `If-None-Match` gets `304` with no body — worth
+~30 MB a refresh on the drop catalog.
+
+`If-None-Match` is the one request header the worker reads: a validator says
+which bytes the caller already has, not who the caller is. It is not relayed
+either — the validator sent upstream is always the worker's own cached one.
 
 Clients identify their release with `X-FrameForge-Version`. That is the only
 client-identifying header the contract has; no route requires it, and no
@@ -162,7 +169,9 @@ One line per request, and only these fields:
 ```
 
 `route` is the pattern, never the path: a line naming the slug someone asked
-for is a record of what that person was looking up. `version` is the client's
+for is a record of what that person was looking up. A request that matched no
+pattern — a stray trailing slash is enough — logs `"unmatched"` rather than the
+path it asked for. `version` is the client's
 `X-FrameForge-Version`, or `null`. Nothing else is logged — no address, no user
 agent, no query, no body — and a test asserts the exact key set, so a sixth
 field fails the suite.

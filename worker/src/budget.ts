@@ -18,6 +18,12 @@ import { DurableObject } from "cloudflare:workers";
 const DAY_MS = 86_400_000;
 
 // One object, so every edge location counts into the same total.
+//
+// TODO: that also serializes every request through a single object, whose
+// storage write rate caps the whole worker at roughly a few hundred requests a
+// second no matter how many edge locations serve them. Shard the counter over N
+// objects and sum them at the read, or batch the writes so a request counts
+// against an in-memory total that is flushed periodically.
 const SINGLETON = "daily";
 
 export class DailyBudget extends DurableObject {

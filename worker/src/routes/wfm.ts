@@ -17,14 +17,13 @@ export function orders(request: Request, slug: string): Promise<Response> | Resp
   return readThrough(request, wfmOrders(slug), TTL.orders);
 }
 
-export type CatalogItem = { slug: string; name: string; id: string };
+export type CatalogItem = { slug: string; name: string };
 
-type UpstreamItems = { data?: { slug?: string; id?: string; i18n?: { en?: { name?: string } } }[] };
+type UpstreamItems = { data?: { slug?: string; i18n?: { en?: { name?: string } } }[] };
 
 // The catalog every client downloads to search by name locally. Upstream sends
 // every localisation and a pile of per-item detail; a client needs the slug to
-// address the item, the English name to search on, and the id that trade chat
-// messages carry.
+// address the item and the English name to search on.
 export async function items(request: Request): Promise<Response> {
   const upstream = await readThrough(request, WFM_ITEMS, TTL.catalog);
   if (!upstream.ok) return upstream;
@@ -35,7 +34,7 @@ export async function items(request: Request): Promise<Response> {
     const name = item.i18n?.en?.name;
     // An item with no slug or no English name cannot be addressed or searched,
     // so it is dropped rather than carried as a hole in the catalog.
-    if (item.slug && name) catalog.push({ slug: item.slug, name, id: item.id ?? "" });
+    if (item.slug && name) catalog.push({ slug: item.slug, name });
   }
 
   return new Response(JSON.stringify({ items: catalog }), {
