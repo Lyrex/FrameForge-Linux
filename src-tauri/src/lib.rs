@@ -8445,20 +8445,6 @@ async fn credential_store_available() -> bool {
 }
 
 #[tauri::command]
-async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri_plugin_updater::UpdaterExt;
-    let updater = app.updater_builder().build().map_err(|e| e.to_string())?;
-    if let Some(update) = updater.check().await.map_err(|e| e.to_string())? {
-        update
-            .download_and_install(|_, _| {}, || {})
-            .await
-            .map_err(|e| e.to_string())?;
-        app.restart();
-    }
-    Ok(())
-}
-
-#[tauri::command]
 fn open_debug_folder(state: State<AppState>, which: String) -> Result<(), String> {
     let path: std::path::PathBuf = match which.as_str() {
         "blobs"           => state.blob_log_dir.clone(),
@@ -9994,6 +9980,7 @@ pub fn run() {
             get_app_version,
             set_app_version,
             updater::check_for_update,
+            updater::restart_app,
             force_quit,
             get_weapon_catalog,
             get_craftable_items,
@@ -10012,7 +9999,6 @@ pub fn run() {
             get_wfm_top_items,
             get_item_price,
             refresh_bulk_prices,
-            install_update,
             factory_reset,
             refresh_all_caches,
             get_cache_statuses,

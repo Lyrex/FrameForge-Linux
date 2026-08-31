@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { checkForUpdate } from "./updater";
 import { usePlatformCapabilities } from "./platform";
 import EeLogSettings from "./EeLogSettings";
 import { applyScale, overlayScale } from "./uiScale";
@@ -84,6 +83,9 @@ import Weapons from "./Weapons";
 import Overlay from "./Overlay";
 import ModularWindow from "./ModularWindow";
 import { HelpTip } from "./HelpTip";
+import UpdateDialog from "./UpdateDialog";
+import UpdateCheckRow from "./UpdateCheck";
+import { onUpdateAvailable, type UpdateAvailable } from "./updater";
 import "./App.css";
 
 const _winLabel = getCurrentWindow().label;
@@ -797,8 +799,6 @@ export default function App() {
   const [autoDiagEnabled, setAutoDiagEnabled] = useState(false);
   const [diagFolderSize, setDiagFolderSize] = useState<number>(0);
   const [overlayLogCopied, setOverlayLogCopied] = useState(false);
-  const [pendingUpdate, setPendingUpdate] = useState<string | null>(null);
-  const [updateInstalling, setUpdateInstalling] = useState(false);
   const [companionApiEnabled] = useState(false);
   const [memoryScannerEnabled, setMemoryScannerEnabled] = useState(false);
 const [blobLogEnabled, setBlobLogEnabled] = useState(false);
@@ -875,6 +875,8 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [relicPickLines,      setRelicPickLines]      = useState<"all" | "best" | "estimated">("all");
   const [clearMsg, setClearMsg] = useState("");
   const [appVersion, setAppVersion] = useState("");
+  const [updateAvailable, setUpdateAvailable] = useState<UpdateAvailable | null>(null);
+  const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [blobLogSize,    setBlobLogSize]    = useState(0);
   const [apiLogSize,     setApiLogSize]     = useState(0);
   const [rawScanSize,    setRawScanSize]    = useState(0);
@@ -1128,9 +1130,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
       setRecipeCount(s.recipe_count);
     });
 
-    getVersion().then(v => {
-      setAppVersion(v);
-    }).catch(() => {});
+    getVersion().then(setAppVersion).catch(() => {});
 
     // Auto-start monitor on launch — only if memory scanner is explicitly enabled
     invoke<boolean>("get_monitor_status").then(active => {
@@ -1261,6 +1261,17 @@ if (typeof s.autoDiagEnabled === "boolean") {
     return () => { unlisten.then(fn => fn()); };
   }, []);
 
+  // The launch check fires at most once, so opening the dialog here cannot nag:
+  // dismissing it leaves only the header badge until the next launch or a
+  // manual check.
+  useEffect(() => {
+    const unlisten = onUpdateAvailable(u => {
+      setUpdateAvailable(u);
+      setShowUpdateDialog(true);
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
+
   // ── Player name (immediate, from EE.log "Logged in NAME") ───────────────
   useEffect(() => {
     const unlisten = listen<string>("player-name", e => {
@@ -1316,13 +1327,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
       unlistenMove.then(fn => fn());
       unlistenResize.then(fn => fn());
     };
-  }, []); // eslint-disable-line
-
-  // ── Auto-update check ─────────────────────────────────────────────────────
-  useEffect(() => {
-    checkForUpdate()
-      .then(u => { if (u) setPendingUpdate(u.version); })
-      .catch(() => {});
   }, []); // eslint-disable-line
 
   const toggleTracked = useCallback((id: string) => {
@@ -2124,6 +2128,13 @@ if (typeof s.autoDiagEnabled === "boolean") {
       {/* ── Header ── */}
       <header className="header">
         <span className="header-title">FrameForge</span>
+          {updateAvailable && (
+            <a
+              className="update-badge"
+              title={`v${updateAvailable.version} available — click to install`}
+              onClick={() => setShowUpdateDialog(true)}
+            >⬆ v{updateAvailable.version}</a>
+          )}
         {masteryRank !== null && (
           <span className="mastery-badge" title="Mastery Rank">MR {masteryRank}</span>
         )}
@@ -2265,6 +2276,10 @@ if (typeof s.autoDiagEnabled === "boolean") {
       </header>
 
       {/* ── Settings modal ── */}
+      {showUpdateDialog && updateAvailable && (
+        <UpdateDialog update={updateAvailable} onDismiss={() => setShowUpdateDialog(false)} />
+      )}
+
       {showSettings && (
         <div className="settings-overlay" onClick={() => setShowSettings(false)}>
           <div className="settings-modal" onClick={e => e.stopPropagation()}>
@@ -3045,6 +3060,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                       <span className="settings-row-desc">Version <strong>{appVersion}</strong></span>
                     </div>
                   </div>
+                  <UpdateCheckRow onUpdateFound={u => { setUpdateAvailable(u); setShowUpdateDialog(true); }} />
                 </div>
 
               </div>{/* end settings-body */}
@@ -3054,32 +3070,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
       )}
 
       <div className="body">
-
-        {/* ── Update banner ── */}
-        {pendingUpdate && (
-          <div style={{
-            display: "flex", alignItems: "center", justifyContent: "center", gap: 12,
-            background: "var(--accent)", color: "#fff", fontSize: 13, padding: "6px 16px",
-            flexShrink: 0,
-          }}>
-            <span>FrameForge v{pendingUpdate} is available</span>
-            <button
-              style={{
-                background: "rgba(0,0,0,0.25)", border: "none", borderRadius: 4,
-                color: "#fff", padding: "2px 10px", cursor: "pointer", fontSize: 12,
-              }}
-              disabled={updateInstalling}
-              onClick={() => {
-                setUpdateInstalling(true);
-                invoke("install_update").catch(() => setUpdateInstalling(false));
-              }}
-            >{updateInstalling ? "Installing…" : "Update now"}</button>
-            <button
-              style={{ background: "none", border: "none", color: "rgba(255,255,255,0.7)", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 0 }}
-              onClick={() => setPendingUpdate(null)}
-            >×</button>
-          </div>
-        )}
 
         {/* ── Module navigation ── */}
         <nav className="module-nav">

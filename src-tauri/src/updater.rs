@@ -42,3 +42,11 @@ pub fn spawn_launch_check(app: AppHandle) {
         }
     });
 }
+
+/// The Linux install path leaves the old binary running until the user says to
+/// restart; the Windows installer restarts the app itself, so this is never
+/// reached there.
+#[tauri::command]
+pub fn restart_app(app: AppHandle) {
+    app.restart();
+}
