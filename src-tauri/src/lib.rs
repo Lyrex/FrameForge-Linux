@@ -1749,9 +1749,9 @@ async fn get_wfm_top_items(state: State<'_, AppState>) -> Result<Vec<WfmTopItem>
             });
         }
         cache::set_status(WFM_TOP_CACHE, cache::CacheStatus {
-            source:       cache::Source::Stale,
+            source:       cache::Source::Refreshing,
             last_updated: Some(cached.retrieved_at_unix),
-            warning:      Some("warframe.market top items: rescan in progress".to_string()),
+            warning:      None,
         });
         return Ok(cached.data);
     }

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-type Source = "fresh" | "refreshed" | "stale" | "fallback";
+type Source = "fresh" | "refreshed" | "refreshing" | "stale" | "fallback";
 type CacheStatus = { source: Source; last_updated: number | null; warning: string | null };
 type Statuses = Record<string, CacheStatus>;
 
@@ -39,9 +39,13 @@ export default function CacheStatusChip() {
   const chipRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    invoke<Statuses>("get_cache_statuses").then(setStatuses).catch(() => {});
+    // The backend only pushes after a refresh finishes, so a running one is
+    // invisible without polling.
+    const poll = () => invoke<Statuses>("get_cache_statuses").then(setStatuses).catch(() => {});
+    poll();
+    const timer = setInterval(poll, 5000);
     const unsub = listen<Statuses>("cache-status", (e) => setStatuses(e.payload));
-    return () => { unsub.then((f) => f()); };
+    return () => { clearInterval(timer); unsub.then((f) => f()); };
   }, []);
 
   useEffect(() => {
@@ -96,6 +100,7 @@ export default function CacheStatusChip() {
                 <span style={{
                   color: s.source === "fresh" || s.source === "refreshed"
                     ? "#3fb950"
+                    : s.source === "refreshing" ? "#58a6ff"
                     : s.source === "stale" ? "#d29922" : "#6e7681",
                   fontVariantNumeric: "tabular-nums",
                   fontSize: 11,

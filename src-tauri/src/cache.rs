@@ -84,6 +84,8 @@ pub enum Source {
     /// Cache was inside its TTL, or the server confirmed it with a 304.
     Fresh,
     Refreshed,
+    /// Cache is past its TTL and the refetch is still running.
+    Refreshing,
     /// Cache is past its TTL and the refetch failed.
     Stale,
     /// Nothing on disk and the fetch failed. The caller has to invent something.
@@ -203,6 +205,14 @@ where
         );
     }
 
+    set_status(
+        name,
+        CacheStatus {
+            source: Source::Refreshing,
+            last_updated: cached.as_ref().map(|c| c.retrieved_at_unix),
+            warning: None,
+        },
+    );
     let result = fetch(cached.as_ref().and_then(|c| c.etag.as_deref()));
     match result {
         Ok(Fetched::New(data, etag)) => {
@@ -350,6 +360,19 @@ mod tests {
         assert_eq!(data.as_deref(), Some("cached"));
         assert_eq!(source, Source::Fresh);
         assert!(warning.is_none());
+    }
+
+    #[test]
+    fn status_reads_refreshing_while_the_fetch_runs() {
+        let name = scratch("refreshing");
+        store(&name, None, &"old".to_string()).unwrap();
+
+        let (_, source, _) = get_or_refresh(&name, Duration::ZERO, |_| {
+            assert_eq!(statuses()[&name].source, Source::Refreshing);
+            Ok(Fetched::New("new".to_string(), None))
+        });
+
+        assert_eq!(source, Source::Refreshed);
     }
 
     #[test]
