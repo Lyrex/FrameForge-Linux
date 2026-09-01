@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "worker:dev": "npm --prefix worker run dev",
-    "worker:test": "npm --prefix worker run test"
+    "worker:test": "npm --prefix worker run test",
+    "worker:deploy": "npm --prefix worker run deploy"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
