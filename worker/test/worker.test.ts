@@ -24,6 +24,7 @@ function upstream(...replies: UpstreamReply[]) {
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     calls.push(url);
+    notePath(url);
     const headers = new Headers(init?.headers ?? {});
     seenHeaders.push(headers);
 
@@ -44,18 +45,41 @@ function upstream(...replies: UpstreamReply[]) {
 
 let seenHeaders: Headers[] = [];
 
-// The edge cache and KV outlive a single test, so every test starts a week
-// after the one before it: nothing a previous test cached is still fresh.
+// KV outlives a single test, so every test starts a week after the one before
+// it and nothing it stored reads as recent.
 let clock = Date.now();
+
+// The edge cache outlives a test too, and it expires entries on the real clock
+// rather than the fake one — so a body a previous test cached would be handed
+// to this one as a stale hit instead of being refetched. Every path a test
+// reaches through the worker is dropped before the next test runs.
+const cached = new Set<string>();
+
+// The worker path a given upstream URL is cached under. Only the per-item
+// statistics entry needs the translation: a prewarm tick warms it without any
+// test having asked for that path.
+function notePath(url: string) {
+  const statistics = /api\.warframe\.market\/v1\/items\/([a-z0-9_]+)\/statistics$/.exec(url);
+  if (statistics) cached.add(`/v1/wfm/items/${statistics[1]}/statistics`);
+}
+
+async function clearCache() {
+  for (const path of cached) {
+    await caches.default.delete(new Request(new URL(path, "https://frameforge.cache")));
+  }
+  cached.clear();
+}
 
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   advance(7 * 24 * 60 * 60);
-  // The stored snapshot and cursor outlive a test too.
+  await clearCache();
+  // The stored snapshot and cursors outlive a test too.
   for (const key of (await env.SNAPSHOT.list()).keys) await env.SNAPSHOT.delete(key.name);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await settle();
   vi.unstubAllGlobals();
   vi.useRealTimers();
   seenHeaders = [];
@@ -66,8 +90,21 @@ function advance(seconds: number) {
   vi.setSystemTime(clock);
 }
 
-const get = (path: string, headers: HeadersInit = {}) =>
-  worker.fetch(new Request(`${WORKER}${path}`, { headers }), env);
+// Every request gets its own execution context, and `settle` waits for the work
+// each one deferred past its response — which is where a background refresh
+// runs, so a test can tell "answered without waiting" from "refreshed".
+const contexts: ExecutionContext[] = [];
+
+const get = (path: string, headers: HeadersInit = {}) => {
+  cached.add(path);
+  const ctx = createExecutionContext();
+  contexts.push(ctx);
+  return worker.fetch(new Request(`${WORKER}${path}`, { headers }), env, ctx);
+};
+
+async function settle() {
+  for (const ctx of contexts.splice(0)) await waitOnExecutionContext(ctx);
+}
 
 type LogLine = Record<string, unknown>;
 
@@ -102,13 +139,15 @@ const CLASSES = [
     upstream: "https://api.warframe.market/v2/orders/item/mirage_prime_set",
     body: { data: [{ platinum: 120, order_type: "sell" }] },
     ttl: 30,
+    servesStale: false,
   },
   {
     name: "prices and statistics",
     route: "/v1/wfm/items/mirage_prime_set/statistics",
     upstream: "https://api.warframe.market/v1/items/mirage_prime_set/statistics",
     body: { payload: { statistics_closed: { "48hours": [{ avg_price: 118 }] } } },
-    ttl: 300,
+    ttl: 3600,
+    servesStale: true,
   },
   {
     name: "worldstate",
@@ -116,6 +155,7 @@ const CLASSES = [
     upstream: "https://api.warframe.com/cdn/worldState.php",
     body: { WorldSeed: "seed", ActiveMissions: [] },
     ttl: 45,
+    servesStale: false,
   },
   {
     name: "static catalog",
@@ -124,6 +164,7 @@ const CLASSES = [
       "https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data/all.json",
     body: { missionRewards: {} },
     ttl: 21_600,
+    servesStale: true,
   },
 ];
 
@@ -154,21 +195,26 @@ describe.each(CLASSES)("$name", (dataClass) => {
     expect(mock.calls).toEqual([dataClass.upstream]);
   });
 
-  it("fetches again one second past its own TTL", async () => {
+  it("goes back to the upstream one second past its own TTL", async () => {
     const mock = upstream({ body: dataClass.body }, { body: dataClass.body });
     await get(dataClass.route);
 
     advance(dataClass.ttl + 1);
     const refetched = await get(dataClass.route);
+    await settle();
 
-    expect(refetched.headers.get("X-FrameForge-Cache")).toBe("miss");
+    expect(refetched.headers.get("X-FrameForge-Cache")).toBe(
+      dataClass.servesStale ? "revalidating" : "miss",
+    );
     expect(mock.calls).toEqual([dataClass.upstream, dataClass.upstream]);
   });
 });
 
+// The order book is the class that still blocks, so a failure there is the one
+// that has to fall back to the last body rather than to a background refresh.
 describe("stale-if-error", () => {
-  const route = "/v1/wfm/items/nikana_prime_set/statistics";
-  const body = { payload: { statistics_closed: { "48hours": [{ avg_price: 200 }] } } };
+  const route = "/v1/wfm/items/nikana_prime_set/orders";
+  const body = { data: [{ platinum: 200, order_type: "sell" }] };
 
   it("serves the last cached body when the upstream 5xxes", async () => {
     upstream({ body }, { status: 503, body: { error: "upstream down" } });
@@ -191,6 +237,22 @@ describe("stale-if-error", () => {
 
     expect(stale.status).toBe(200);
     await expect(stale.json()).resolves.toEqual(body);
+  });
+
+  it("keeps serving the last body when a background refresh fails", async () => {
+    upstream({ body: priced(70) }, { status: 503, body: { error: "down" } });
+    const statistics = "/v1/wfm/items/nikana_prime_set/statistics";
+    await get(statistics);
+
+    expireCache();
+    await get(statistics);
+    await settle();
+
+    upstream({ status: 503, body: { error: "down" } });
+    const again = await get(statistics);
+
+    expect(again.status).toBe(200);
+    await expect(again.json()).resolves.toEqual(priced(70));
   });
 
   it("passes the upstream error through when nothing is cached", async () => {
@@ -239,6 +301,66 @@ describe("client revalidation", () => {
 function expireCache() {
   advance(24 * 60 * 60);
 }
+
+describe("stale-while-revalidate", () => {
+  const route = "/v1/wfm/items/octavia_prime_set/statistics";
+
+  // One second past the hour a statistics body stays fresh.
+  const expire = () => advance(3601);
+
+  it("answers a stale price from cache and refreshes behind the response", async () => {
+    const mock = upstream({ body: priced(100) }, { body: priced(140) });
+    await get(route);
+
+    expire();
+    const stale = await get(route);
+
+    // The caller got the body we already held, not the one the upstream is
+    // about to give: nothing waited on warframe.market.
+    expect(stale.headers.get("X-FrameForge-Cache")).toBe("revalidating");
+    await expect(stale.json()).resolves.toEqual(priced(100));
+
+    await settle();
+    expect(mock.calls.length).toBe(2);
+
+    const next = await get(route);
+    expect(next.headers.get("X-FrameForge-Cache")).toBe("hit");
+    await expect(next.json()).resolves.toEqual(priced(140));
+  });
+
+  it("refreshes once for a crowd of callers on the same stale price", async () => {
+    // Deliberately more replies than the test expects to be used, so a second
+    // refresh shows up as a count rather than as a queue that ran dry.
+    const mock = upstream({ body: priced(100) }, ...Array(6).fill({ body: priced(140) }));
+    await get(route);
+
+    expire();
+    const crowd = await Promise.all(Array.from({ length: 5 }, () => get(route)));
+
+    // Every one of them was answered out of the cache — the crowd arriving on
+    // an expired price is exactly when nobody should be waiting on an upstream.
+    for (const response of crowd) {
+      expect(response.headers.get("X-FrameForge-Cache")).not.toBe("miss");
+    }
+
+    await settle();
+    expect(mock.calls.length).toBe(2);
+  });
+
+  it("makes an expired order book wait for the current one", async () => {
+    const book = (platinum: number) => ({ data: [{ platinum, order_type: "sell" }] });
+    const mock = upstream({ body: book(120) }, { body: book(95) });
+    const orders = "/v1/wfm/items/octavia_prime_set/orders";
+    await get(orders);
+
+    advance(31);
+    const response = await get(orders);
+
+    expect(response.headers.get("X-FrameForge-Cache")).toBe("miss");
+    await expect(response.json()).resolves.toEqual(book(95));
+    expect(mock.calls.length).toBe(2);
+  });
+});
 
 describe("contract", () => {
   it("answers an unknown route with a JSON error", async () => {
@@ -304,12 +426,72 @@ const priced = (platinum: number) => ({
   },
 });
 
-const runPrewarm = async (batchSize: number) => {
+// A tick's batch, split and ceiling are bindings on the deployed worker, so a
+// test sets them the same way. The hot lane is off unless a test asks for it:
+// most of these are about the walk over the whole catalog.
+type TickConfig = {
+  PREWARM_HOT_BATCH_SIZE?: number;
+  PREWARM_HOT_SIZE?: number;
+  PREWARM_SUBREQUEST_CEILING?: number;
+};
+
+// Sales over the last two days are what ranks an item, so this one varies the
+// volume and holds the price still.
+const traded = (volume: number) => ({
+  payload: {
+    statistics_closed: {
+      "48hours": [{ median: 50, volume }],
+      "90days": [{ median: 50, volume }],
+    },
+  },
+});
+
+const runPrewarm = async (batchSize: number, config: TickConfig = {}) => {
+  // The tick reads the item catalog through the same cache a request would.
+  cached.add("/v1/wfm-items");
   const ctx = createExecutionContext();
-  const tickEnv = { ...env, PREWARM_BATCH_SIZE: batchSize } as unknown as Env;
+  const tickEnv = {
+    ...env,
+    PREWARM_BATCH_SIZE: batchSize,
+    PREWARM_HOT_BATCH_SIZE: 0,
+    PREWARM_HOT_SIZE: 0,
+    PREWARM_SUBREQUEST_CEILING: 1000,
+    ...config,
+  } as unknown as Env;
   await worker.scheduled?.(createScheduledController(), tickEnv, ctx);
   await waitOnExecutionContext(ctx);
 };
+
+// Answers by URL instead of in order. A tick's walk is about which items were
+// fetched and how often, which an ordered queue cannot express.
+function upstreamByUrl(bodies: Record<string, unknown>) {
+  const calls: string[] = [];
+
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    calls.push(url);
+    notePath(url);
+
+    const body = bodies[url];
+    if (body === undefined) throw new Error(`unexpected upstream call: ${url}`);
+    return new Response(JSON.stringify(body), {
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+
+  return { calls, countOf: (url: string) => calls.filter((call) => call === url).length };
+}
+
+// A catalog of items with the trade volumes that decide which of them are hot.
+function tradedCatalog(volumes: Record<string, number>) {
+  const bodies: Record<string, unknown> = {
+    [CATALOG_UPSTREAM]: catalogBody(...Object.keys(volumes)),
+  };
+  for (const [slug, volume] of Object.entries(volumes)) {
+    bodies[statisticsUpstream(slug)] = traded(volume);
+  }
+  return upstreamByUrl(bodies);
+}
 
 const readSnapshot = async (): Promise<Snapshot> => (await get("/v1/snapshot")).json();
 
@@ -347,7 +529,11 @@ describe("price snapshot", () => {
     const body = await readSnapshot();
 
     expect(body.generation).toBe(Math.floor(clock / 1000));
-    expect(body.items["ash_prime_set"]).toEqual({ plat: 120, at: Math.floor(clock / 1000) });
+    expect(body.items["ash_prime_set"]).toEqual({
+      plat: 120,
+      at: Math.floor(clock / 1000),
+      vol: 3,
+    });
   });
 
   // Pins the price the app must agree with, since the same trimmed median is
@@ -409,7 +595,7 @@ describe("prewarm", () => {
     for (let tick = 0; tick < 3; tick++) {
       await runPrewarm(2);
       // Past the statistics freshness, so the next tick's fetches are real ones.
-      advance(400);
+      advance(3601);
     }
 
     expect(mock.calls).toEqual([
@@ -431,15 +617,109 @@ describe("prewarm", () => {
     );
 
     await runPrewarm(1);
-    advance(400);
+    advance(3601);
     await runPrewarm(1);
-    advance(400);
+    advance(3601);
     // Back round to the first item, which now fails.
     await runPrewarm(1);
 
     const body = await readSnapshot();
     expect(body.items["saryn_prime_set"]?.plat).toBe(150);
     expect(body.items["trinity_prime_set"]?.plat).toBe(60);
+  });
+});
+
+describe("hot set", () => {
+  // Descending volume, so the ranking is the order they are written in.
+  const VOLUMES = { a_prime_set: 100, b_prime_set: 50, c_prime_set: 10, d_prime_set: 1 };
+  const slugs = Object.keys(VOLUMES);
+
+  // Volume has to be measured before it can rank anything, so every test here
+  // starts from a pass that has priced the whole catalog once.
+  const seed = () => runPrewarm(slugs.length);
+
+  it("records each item's recent trade volume", async () => {
+    tradedCatalog(VOLUMES);
+    await seed();
+
+    const body = await readSnapshot();
+
+    expect(Object.fromEntries(slugs.map((slug) => [slug, body.items[slug]?.vol]))).toEqual(VOLUMES);
+  });
+
+  it("refreshes a busy item far more often than a quiet one", async () => {
+    const mock = tradedCatalog(VOLUMES);
+    await seed();
+
+    // One hot item and one cold item a tick, with only the busiest counted hot.
+    for (let tick = 0; tick < 6; tick++) {
+      advance(3601);
+      await runPrewarm(2, { PREWARM_HOT_BATCH_SIZE: 1, PREWARM_HOT_SIZE: 1 });
+    }
+
+    const busiest = mock.countOf(statisticsUpstream("a_prime_set"));
+    const quietest = mock.countOf(statisticsUpstream("d_prime_set"));
+
+    expect(busiest).toBeGreaterThanOrEqual(7);
+    expect(busiest).toBeGreaterThan(quietest * 3);
+  });
+
+  it("still reaches an item the hot lane never touches", async () => {
+    const mock = tradedCatalog(VOLUMES);
+    await seed();
+    const seeded = mock.countOf(statisticsUpstream("d_prime_set"));
+
+    for (let tick = 0; tick < 6; tick++) {
+      advance(3601);
+      await runPrewarm(2, { PREWARM_HOT_BATCH_SIZE: 1, PREWARM_HOT_SIZE: 1 });
+    }
+
+    expect(mock.countOf(statisticsUpstream("d_prime_set"))).toBeGreaterThan(seeded);
+  });
+
+  it("keeps an item nobody has priced yet out of the hot lane", async () => {
+    const mock = tradedCatalog(VOLUMES);
+    // One item measured, the rest of the catalog still unknown.
+    await runPrewarm(1);
+
+    const before = mock.calls.length;
+    advance(3601);
+    await runPrewarm(1, { PREWARM_HOT_BATCH_SIZE: 1, PREWARM_HOT_SIZE: 4 });
+
+    // The hot lane has exactly one candidate, so the tick's one hot fetch goes
+    // to it rather than to an item whose volume nothing has measured.
+    expect(mock.calls.slice(before)).toEqual([statisticsUpstream("a_prime_set")]);
+  });
+});
+
+describe("subrequest ceiling", () => {
+  const VOLUMES = { a_prime_set: 5, b_prime_set: 4, c_prime_set: 3, d_prime_set: 2 };
+
+  // Four items asked for, and a ceiling that pays for two of them.
+  const truncated = () => runPrewarm(4, { PREWARM_SUBREQUEST_CEILING: 10 });
+
+  it("keeps what a cut-short tick managed and starts the next one after it", async () => {
+    tradedCatalog(VOLUMES);
+
+    await truncated();
+    expect(Object.keys((await readSnapshot()).items)).toEqual(["a_prime_set", "b_prime_set"]);
+
+    advance(3601);
+    await truncated();
+    expect(Object.keys((await readSnapshot()).items).sort()).toEqual(Object.keys(VOLUMES));
+  });
+
+  it("counts the batch it never got to rather than reporting a clean tick", async () => {
+    tradedCatalog(VOLUMES);
+
+    const lines = await logsOf(truncated);
+
+    expect(eventLines(lines, "prewarm")[0]).toMatchObject({
+      attempted: 4,
+      refreshed: 2,
+      failed: 0,
+      skipped: 2,
+    });
   });
 });
 
@@ -463,8 +743,11 @@ describe("daily budget", () => {
   // takes it: a binding, not a constant in the code.
   const capped = (limit: number) => ({ ...env, DAILY_REQUEST_BUDGET: limit }) as unknown as Env;
 
-  const getCapped = (path: string, limit: number) =>
-    worker.fetch(new Request(`${WORKER}${path}`), capped(limit));
+  const getCapped = (path: string, limit: number) => {
+    const ctx = createExecutionContext();
+    contexts.push(ctx);
+    return worker.fetch(new Request(`${WORKER}${path}`), capped(limit), ctx);
+  };
 
   it("serves normally under budget", async () => {
     upstream({ body });
@@ -584,7 +867,7 @@ describe("request log", () => {
 });
 
 describe("operator log", () => {
-  it("reports the prewarm tick's counts, cursor and snapshot size", async () => {
+  it("reports the prewarm tick's counts, both cursors and snapshot size", async () => {
     upstream(
       { body: catalogBody("ember_prime_set", "frost_prime_set") },
       { body: priced(90) },
@@ -599,12 +882,38 @@ describe("operator log", () => {
         attempted: 2,
         refreshed: 1,
         failed: 1,
-        cursor: 0,
+        skipped: 0,
+        hot_attempted: 0,
+        hot_refreshed: 0,
+        hot_cursor: 0,
+        hot_size: 0,
+        cold_attempted: 2,
+        cold_refreshed: 1,
+        cold_cursor: 0,
         catalog_size: 2,
         entries: 1,
         duration_ms: expect.any(Number),
       },
     ]);
+  });
+
+  it("tells a hot tick's progress apart from the cold walk's", async () => {
+    tradedCatalog({ a_prime_set: 9, b_prime_set: 8, c_prime_set: 7 });
+    await runPrewarm(3);
+
+    const lines = await logsOf(() =>
+      runPrewarm(2, { PREWARM_HOT_BATCH_SIZE: 1, PREWARM_HOT_SIZE: 2 }),
+    );
+
+    expect(eventLines(lines, "prewarm")[0]).toMatchObject({
+      hot_attempted: 1,
+      hot_refreshed: 1,
+      hot_cursor: 0,
+      hot_size: 2,
+      cold_attempted: 1,
+      cold_refreshed: 1,
+      cold_cursor: 0,
+    });
   });
 
   it("reports a tick that found no catalog to walk", async () => {
@@ -618,7 +927,14 @@ describe("operator log", () => {
         attempted: 0,
         refreshed: 0,
         failed: 0,
-        cursor: 0,
+        skipped: 0,
+        hot_attempted: 0,
+        hot_refreshed: 0,
+        hot_cursor: 0,
+        hot_size: 0,
+        cold_attempted: 0,
+        cold_refreshed: 0,
+        cold_cursor: 0,
         catalog_size: 0,
         entries: 0,
         duration_ms: expect.any(Number),
@@ -627,8 +943,8 @@ describe("operator log", () => {
   });
 
   it("names the upstream and what the caller got when a stale body is served", async () => {
-    const route = "/v1/wfm/items/rhino_prime_set/statistics";
-    upstream({ body: priced(70) }, { status: 503, body: { error: "down" } });
+    const route = "/v1/wfm/items/rhino_prime_set/orders";
+    upstream({ body: { data: [] } }, { status: 503, body: { error: "down" } });
     await get(route);
     expireCache();
 
@@ -664,7 +980,11 @@ describe("operator log", () => {
   it("marks the budget crossing once, not on every request after it", async () => {
     upstream({ body: { WorldSeed: "seed" } });
     const capped = { ...env, DAILY_REQUEST_BUDGET: 1 } as unknown as Env;
-    const request = () => worker.fetch(new Request(`${WORKER}/v1/worldstate`), capped);
+    const request = () => {
+      const ctx = createExecutionContext();
+      contexts.push(ctx);
+      return worker.fetch(new Request(`${WORKER}/v1/worldstate`), capped, ctx);
+    };
 
     const under = await logsOf(request);
     const crossing = await logsOf(request);

@@ -2,19 +2,23 @@
 // client parses exactly what it would parse talking to warframe.market
 // directly; the item catalog is the one worker-native shape here.
 
-import { readThrough, TTL } from "../cache";
+import { readThrough } from "../cache";
 import { jsonError } from "../unavailable";
 import { isValidSlug, WFM_ITEMS, wfmOrders, wfmStatistics } from "../upstream";
 
 // Prices and statistics are one upstream document, so one route serves both.
-export function statistics(request: Request, slug: string): Promise<Response> | Response {
+export function statistics(
+  request: Request,
+  slug: string,
+  ctx?: ExecutionContext,
+): Promise<Response> | Response {
   if (!isValidSlug(slug)) return jsonError(400, "invalid_slug");
-  return readThrough(request, wfmStatistics(slug), TTL.statistics);
+  return readThrough(request, wfmStatistics(slug), "statistics", ctx);
 }
 
 export function orders(request: Request, slug: string): Promise<Response> | Response {
   if (!isValidSlug(slug)) return jsonError(400, "invalid_slug");
-  return readThrough(request, wfmOrders(slug), TTL.orders);
+  return readThrough(request, wfmOrders(slug), "orders");
 }
 
 export type CatalogItem = { slug: string; name: string };
@@ -24,8 +28,8 @@ type UpstreamItems = { data?: { slug?: string; i18n?: { en?: { name?: string } }
 // The catalog every client downloads to search by name locally. Upstream sends
 // every localisation and a pile of per-item detail; a client needs the slug to
 // address the item and the English name to search on.
-export async function items(request: Request): Promise<Response> {
-  const upstream = await readThrough(request, WFM_ITEMS, TTL.catalog);
+export async function items(request: Request, ctx?: ExecutionContext): Promise<Response> {
+  const upstream = await readThrough(request, WFM_ITEMS, "catalog", ctx);
   if (!upstream.ok) return upstream;
 
   const body = (await upstream.json()) as UpstreamItems;

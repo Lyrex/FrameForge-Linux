@@ -17,19 +17,43 @@
   "durable_objects": { "bindings": [{ "name": "BUDGET", "class_name": "DailyBudget" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DailyBudget"] }],
 
+  // Twelve ticks an hour, which is what lets 42 hot items a tick carry the
+  // 500-item hot set round inside the hour a price stays fresh. Every
+  // invocation gets its own subrequest allowance, so ticking more often would
+  // raise throughput further — but the batch below is already limited by what
+  // warframe.market should be asked for, not by the allowance.
   "triggers": { "crons": ["*/5 * * * *"] },
 
   "vars": {
     // Requests served per UTC day before the worker stands down and clients go
-    // back to the upstreams direct. The free plan's own daily ceiling, so the
-    // brake trips before the platform does and the fallback is a deliberate
+    // back to the upstreams direct. Well inside what the plan allows, so this
+    // is a spend ceiling rather than a platform one: it bounds what a bug or an
+    // abusive caller can cost, and the fallback that follows is a deliberate
     // one rather than a wall of platform errors.
     "DAILY_REQUEST_BUDGET": 100000,
 
-    // Items refreshed per cron tick. 60 every 5 minutes is one upstream request
-    // every 5 seconds — well under what warframe.market tolerates — and walks a
-    // ~4000-item catalog end to end in about five hours, which is how stale the
-    // oldest price in the snapshot can be.
-    "PREWARM_BATCH_SIZE": 60
+    // Subrequests one invocation may make: 1000 on the paid plan, 50 on free.
+    // Every fetch and every Cache API match or put counts against it, and the
+    // runtime throws on the one past the limit rather than waiting, so a tick
+    // stops itself short of the ceiling and says so in its log line. Dropping to
+    // the free plan means dropping this to 50 and the batch to about 15.
+    "PREWARM_SUBREQUEST_CEILING": 1000,
+
+    // Items refreshed per cron tick, and how many of those go to the hot lane.
+    // A price costs three subrequests, so 240 spends 724 of the 1000 and leaves
+    // a quarter of the allowance for a catalog fetch and a slow item rather than
+    // running the tick up against the ceiling.
+    //
+    // 42 hot every five minutes laps a 500-item hot set in ~59 minutes, inside
+    // the hour a statistics body stays fresh; the remaining 198 lap a ~3840-item
+    // catalog in about an hour and 40. Together that is one request to
+    // warframe.market every 1.25 seconds across the tick.
+    "PREWARM_BATCH_SIZE": 240,
+    "PREWARM_HOT_BATCH_SIZE": 42,
+
+    // How many of the busiest items count as hot. Large enough to hold
+    // everything anybody trades in volume, small enough to lap within the
+    // statistics freshness.
+    "PREWARM_HOT_SIZE": 500
   }
 }

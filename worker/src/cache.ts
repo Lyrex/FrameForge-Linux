@@ -9,13 +9,38 @@ import { USER_AGENT, UPSTREAM_TIMEOUT_MS } from "./upstream";
 // of game updates.
 export const TTL = {
   orders: 30,
-  statistics: 300,
+  // An hour of price history moves by rounding error, and past the hour the
+  // stale-while-revalidate path answers instantly anyway, so the TTL costs a
+  // caller nothing and buys the prewarm a hot lap it can finish inside.
+  statistics: 3600,
   worldstate: 45,
   catalog: 21_600,
   // The snapshot only changes when a prewarm tick writes it, so a client
   // holding one for a few minutes is never far behind.
   snapshot: 300,
 } as const;
+
+type CacheClass = keyof typeof TTL;
+
+// Classes whose past-TTL body may be served straight away while the refresh
+// runs behind the response.
+//
+// `orders` is deliberately not one of them. A trader acts on an order book, and
+// handing them a book from a minute ago is worse than making them wait for the
+// current one, so an expired book always blocks on the upstream. Nothing
+// prewarms order books either, for the same reason.
+//
+// `worldstate` is out too: every entry in it is a window that expires, nothing
+// refreshes it in the background, and the first request after a quiet spell
+// would be answered with whatever fossil the edge still held.
+const STALE_WHILE_REVALIDATE: ReadonlySet<CacheClass> = new Set(["statistics", "catalog"]);
+
+// Keys with a background refresh already running. Without it every caller that
+// arrives while a body is stale starts a refresh of its own, so the moment a
+// popular key expires it takes one upstream call per caller — the herd this
+// exists to stop. It is per isolate, so two edge locations can still refresh the
+// same key at once: two calls, not hundreds.
+const refreshing = new Set<string>();
 
 // A body stays in the edge cache long past its freshness so it is still there
 // to serve when an upstream is down. Bounded so an upstream that dies
@@ -28,13 +53,19 @@ export const CACHE_ORIGIN = "https://frameforge.cache";
 const FRESH_UNTIL_HEADER = "X-FrameForge-Fresh-Until";
 export const CACHE_STATUS_HEADER = "X-FrameForge-Cache";
 
-type CacheStatus = "hit" | "miss" | "stale" | "revalidated";
+type CacheStatus = "hit" | "miss" | "stale" | "revalidated" | "revalidating";
 
+// `ctx` is what makes a background refresh possible, so a caller that has one —
+// every route, since it comes from `fetch` — never waits on an upstream for a
+// body the edge already holds. A caller without one, which is the prewarm
+// talking to itself, refreshes in the foreground rather than dropping the work.
 export async function readThrough(
   request: Request,
   upstreamUrl: string,
-  ttlSeconds: number,
+  dataClass: CacheClass,
+  ctx?: ExecutionContext,
 ): Promise<Response> {
+  const ttlSeconds = TTL[dataClass];
   const cache = caches.default;
   // Keyed on the path alone: no request header and no hostname take part, so
   // two users asking for the same thing — and the cron prewarm asking for it
@@ -42,10 +73,41 @@ export async function readThrough(
   const key = new Request(new URL(new URL(request.url).pathname, CACHE_ORIGIN), { method: "GET" });
 
   const cached = await cache.match(key);
-  if (cached && Date.now() < Number(cached.headers.get(FRESH_UNTIL_HEADER) ?? 0)) {
-    return clientResponse(request, cached, "hit", ttlSeconds);
+  if (cached) {
+    if (Date.now() < Number(cached.headers.get(FRESH_UNTIL_HEADER) ?? 0)) {
+      return clientResponse(request, cached, "hit", ttlSeconds);
+    }
+
+    if (ctx && STALE_WHILE_REVALIDATE.has(dataClass)) {
+      if (!refreshing.has(key.url)) {
+        refreshing.add(key.url);
+        // The refresh reads the body the caller is being handed, so it gets its
+        // own copy: a response body can only be consumed once.
+        const behind = cached.clone();
+        ctx.waitUntil(
+          fetchThrough(new Request(key.url), upstreamUrl, ttlSeconds, cache, key, behind)
+            .finally(() => refreshing.delete(key.url))
+            // A refresh that fails leaves the body we are already serving in
+            // place, which is the outcome either way — it must not surface as a
+            // failed invocation of a request that succeeded.
+            .catch(() => undefined),
+        );
+      }
+      return clientResponse(request, cached, "revalidating", ttlSeconds);
+    }
   }
 
+  return fetchThrough(request, upstreamUrl, ttlSeconds, cache, key, cached);
+}
+
+async function fetchThrough(
+  request: Request,
+  upstreamUrl: string,
+  ttlSeconds: number,
+  cache: Cache,
+  key: Request,
+  cached: Response | undefined,
+): Promise<Response> {
   // Only the headers we choose reach the upstream — nothing from the client is
   // relayed, so an Authorization or Cookie header sent to us dies here. The
   // client's own If-None-Match is read (see `clientResponse`) but never

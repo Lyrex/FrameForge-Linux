@@ -17,20 +17,23 @@ import { jsonError, workerUnavailable } from "./unavailable";
 
 export { DailyBudget } from "./budget";
 
+// `ctx` is carried down to the cache so a route can hand back a body it already
+// holds and refresh it after the response has gone.
 type Handler = (
   request: Request,
   groups: Record<string, string | undefined>,
   env: Env,
+  ctx: ExecutionContext,
 ) => Response | Promise<Response>;
 
 const routes: { path: string; pattern: URLPattern; handle: Handler }[] = [
-  route("/v1/wfm/items/:slug/statistics", (request, groups) =>
-    statistics(request, groups.slug ?? ""),
+  route("/v1/wfm/items/:slug/statistics", (request, groups, _env, ctx) =>
+    statistics(request, groups.slug ?? "", ctx),
   ),
   route("/v1/wfm/items/:slug/orders", (request, groups) => orders(request, groups.slug ?? "")),
   route("/v1/worldstate", (request) => worldstate(request)),
-  route("/v1/catalog/drops", (request) => drops(request)),
-  route("/v1/wfm-items", (request) => items(request)),
+  route("/v1/catalog/drops", (request, _groups, _env, ctx) => drops(request, ctx)),
+  route("/v1/wfm-items", (request, _groups, _env, ctx) => items(request, ctx)),
   route("/v1/snapshot", (_request, _groups, env) => snapshot(env)),
 ];
 
@@ -47,7 +50,7 @@ const HEALTH_PATH = "/v1/health";
 const UNMATCHED_ROUTE = "unmatched";
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const started = Date.now();
     const path = new URL(request.url).pathname;
 
@@ -76,7 +79,7 @@ export default {
       request,
       match.candidate.path,
       started,
-      await match.candidate.handle(request, match.result!.pathname.groups, env),
+      await match.candidate.handle(request, match.result!.pathname.groups, env, ctx),
     );
   },
 
@@ -120,7 +123,7 @@ function log(request: Request, route: string, started: number, response: Respons
   return response;
 }
 
-// `hit | miss | stale | revalidated` as `readThrough` decided it, and null for a
+// The `X-FrameForge-Cache` outcome as `readThrough` decided it, and null for a
 // route that never consults the edge cache. A 304 is its own outcome: the body
 // was served from neither, because the caller already held it.
 function cacheOutcome(response: Response): string | null {
