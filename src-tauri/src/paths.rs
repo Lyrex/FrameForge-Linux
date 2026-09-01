@@ -66,7 +66,6 @@ pub fn data_dir() -> PathBuf {
 }
 
 /// Logs, session transcripts, screenshot dumps.
-#[allow(dead_code)]
 pub fn state_dir() -> PathBuf {
     ensure(match ROOT_OVERRIDE.get() {
         Some(root) => root.join("state"),

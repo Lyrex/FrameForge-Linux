@@ -1563,27 +1563,30 @@ fn fetch_drop_data(etag: Option<&str>) -> Result<crate::cache::Fetched<serde_jso
     }
 }
 
+/// `force` ignores the cached copy's age but still sends its ETag, so an
+/// unchanged file costs one empty response.
+fn load_drop_data(force: bool) -> (Option<serde_json::Value>, Option<String>) {
+    let ttl = if force { std::time::Duration::ZERO } else { DROP_DATA_TTL };
+    let (data, _, warning) = crate::cache::get_or_refresh(DROP_DATA_CACHE, ttl, fetch_drop_data);
+    (data, warning)
+}
+
+/// The WFCD drop tables, verbatim. The relic view picks what it needs out of the
+/// payload, so parsing it here would only mean maintaining the same shape twice.
 #[tauri::command]
 pub async fn get_drop_data(force: Option<bool>) -> Result<serde_json::Value, String> {
     let force = force.unwrap_or(false);
-    let (data, _source, warning) = crate::cache::get_or_refresh(
-        DROP_DATA_CACHE,
-        if force { std::time::Duration::ZERO } else { DROP_DATA_TTL },
-        fetch_drop_data,
-    );
-    if let Some(w) = warning {
-        tracing::warn!("{w}");
-    }
-    data.ok_or_else(|| "drop data unavailable".to_string())
+    let (data, warning) = tauri::async_runtime::spawn_blocking(move || load_drop_data(force))
+        .await
+        .map_err(|e| e.to_string())?;
+    data.ok_or_else(|| warning.unwrap_or_else(|| "drop data unavailable".into()))
 }
 
 pub fn refresh_drop_data(_app: &tauri::AppHandle, force: bool) -> Result<(), String> {
-    let ttl = if force { std::time::Duration::ZERO } else { DROP_DATA_TTL };
-    let (_, _source, warning) = crate::cache::get_or_refresh(DROP_DATA_CACHE, ttl, fetch_drop_data);
-    if let Some(w) = warning {
-        tracing::warn!("{w}");
+    match load_drop_data(force) {
+        (Some(_), None) => Ok(()),
+        (_, warning) => Err(warning.unwrap_or_else(|| "drop data unavailable".into())),
     }
-    Ok(())
 }
 
 #[cfg(test)]
