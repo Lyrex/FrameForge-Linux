@@ -1,8 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Mutex;
 use std::io::{Cursor, Read};
-use tracing::warn;
+use tracing::{info, warn};
 
-#[derive(Clone, Debug)]
+use crate::cache::{self, Fetched};
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WfcdItem {
     pub name: String,
     pub unique_name: String,
@@ -60,6 +63,7 @@ pub struct SyndicateOffer {
     pub result_unique: Option<String>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct FetchResult {
     pub items: Vec<WfcdItem>,
     /// parent unique_name → list of components needed to craft it
@@ -172,8 +176,341 @@ fn fetch_wiki_reward_names() -> HashSet<String> {
     names
 }
 
-pub fn fetch_items() -> Result<FetchResult, String> {
-    fetch_from_wfcd()
+// ==============================================================================
+// Upstream sources
+// ==============================================================================
+
+/// warframe-items stopped publishing the combined `All.json` once it outgrew
+/// what the repository would carry, so the catalogue is rebuilt from the
+/// per-category files that file used to be a concatenation of.
+///
+/// `Enemy`, `Node` and `Quests` are deliberately left out: nothing in them can
+/// be owned, and node entries are discarded downstream in any case.
+const CATEGORY_BASE: &str = "https://raw.githubusercontent.com/WFCD/warframe-items/master/data/json/";
+const CATEGORIES: [&str; 21] = [
+    "Arcanes",
+    "Arch-Gun",
+    "Arch-Melee",
+    "Archwing",
+    "Fish",
+    "Gear",
+    "Glyphs",
+    "Melee",
+    "Misc",
+    "Mods",
+    "Pets",
+    "Primary",
+    "Railjack",
+    "Relics",
+    "Resources",
+    "Secondary",
+    "Sentinels",
+    "SentinelWeapons",
+    "Sigils",
+    "Skins",
+    "Warframes",
+];
+const RECIPES_URLS: [&str; 2] = [
+    "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/master/ExportRecipes.json",
+    "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/HEAD/ExportRecipes.json",
+];
+const SYNDICATES_URL: &str =
+    "https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data/syndicates.json";
+
+/// One upstream file, and what its absence costs.
+struct SourceSpec {
+    /// Names both the stored body and the stored ETag.
+    name: String,
+    /// Mirrors, tried in order.
+    urls: Vec<String>,
+    /// A category the catalogue cannot be built without. The extras degrade to
+    /// their empty defaults so a syndicate outage does not cost a new user the
+    /// item list.
+    required: bool,
+}
+
+fn source_specs() -> Vec<SourceSpec> {
+    let mut specs: Vec<SourceSpec> = CATEGORIES
+        .iter()
+        .map(|name| SourceSpec {
+            name: (*name).to_string(),
+            urls: vec![format!("{CATEGORY_BASE}{name}.json")],
+            // Arcanes.json occasionally returns HTTP 400 from the upstream repo;
+            // don't let one optional category abort the whole catalogue build.
+            required: *name != "Arcanes",
+        })
+        .collect();
+    specs.push(SourceSpec {
+        name: "ExportRecipes".to_string(),
+        urls: RECIPES_URLS.iter().map(|u| u.to_string()).collect(),
+        required: false,
+    });
+    specs.push(SourceSpec {
+        name: "syndicates".to_string(),
+        urls: vec![SYNDICATES_URL.to_string()],
+        required: false,
+    });
+    specs
+}
+
+/// Where the raw upstream bodies live between builds.
+///
+/// Keeping them means an upstream commit to one file re-downloads that file
+/// rather than all twenty-three.
+trait BodyStore: Sync {
+    fn read(&self, name: &str) -> Option<String>;
+    fn write(&self, name: &str, body: &str);
+}
+
+struct DiskStore;
+
+impl DiskStore {
+    fn dir() -> std::path::PathBuf {
+        let dir = crate::paths::cache_dir().join("catalogue");
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+}
+
+impl BodyStore for DiskStore {
+    fn read(&self, name: &str) -> Option<String> {
+        std::fs::read_to_string(Self::dir().join(format!("{name}.json"))).ok()
+    }
+
+    fn write(&self, name: &str, body: &str) {
+        let path = Self::dir().join(format!("{name}.json"));
+        if let Err(e) = cache::atomic_write(&path, body.as_bytes()) {
+            warn!("cannot store {name}: {e}");
+        }
+    }
+}
+
+/// A conditional GET, injected so the resolution table below can be tested
+/// without a network.
+type FetchFn<'a> = dyn Fn(&str, Option<&str>) -> Result<Fetched<String>, String> + Sync + 'a;
+
+/// What the server said when asked about one source.
+enum Probe {
+    Unchanged,
+    /// The body as it arrived, kept unparsed so it reaches the store byte for
+    /// byte and is only turned into a tree once.
+    Body(String, Option<String>),
+    /// Every mirror failed, or answered with something that would not parse.
+    Failed(String),
+}
+
+/// Ask about one source, taking the first mirror that answers with usable JSON.
+#[tracing::instrument(level = "debug", skip_all, fields(source = %spec.name, answer, bytes))]
+fn probe_source(spec: &SourceSpec, etag: Option<&str>, force: bool, fetch: &FetchFn<'_>) -> Probe {
+    let span = tracing::Span::current();
+    let sent = if force { None } else { etag };
+    let mut last = format!("{} unavailable", spec.name);
+    for url in &spec.urls {
+        match fetch(url, sent) {
+            Ok(Fetched::NotModified) => {
+                span.record("answer", "unchanged");
+                return Probe::Unchanged;
+            }
+            // Validated but not kept: a mirror that answers with something
+            // unparseable should fall through to the next one, and the tree is
+            // only wanted once, in `resolve_source`.
+            Ok(Fetched::New(body, new_etag)) => match serde_json::from_str::<serde::de::IgnoredAny>(&body) {
+                Ok(_) => {
+                    span.record("answer", "body");
+                    span.record("bytes", body.len());
+                    return Probe::Body(body, new_etag);
+                }
+                Err(e) => {
+                    warn!("{url}: {e}");
+                    last = e.to_string();
+                }
+            },
+            Err(e) => {
+                warn!("{url}: {e}");
+                last = e;
+            }
+        }
+    }
+    span.record("answer", "failed");
+    Probe::Failed(last)
+}
+
+/// One source's contribution to this build.
+struct Resolved {
+    json: Option<serde_json::Value>,
+    etag: Option<String>,
+}
+
+/// Turn a probe into a body, reaching for the stored copy where the server did
+/// not supply one.
+#[tracing::instrument(level = "debug", skip_all, fields(source = %spec.name, origin))]
+fn resolve_source(
+    spec: &SourceSpec,
+    etag: Option<&str>,
+    probe: Probe,
+    fetch: &FetchFn<'_>,
+    store: &dyn BodyStore,
+) -> Resolved {
+    let span = tracing::Span::current();
+    let kept = || etag.map(str::to_string);
+    match probe {
+        Probe::Body(body, new_etag) => {
+            span.record("origin", "network");
+            store.write(&spec.name, &body);
+            Resolved { json: serde_json::from_str(&body).ok(), etag: new_etag }
+        }
+        Probe::Unchanged => match store.read(&spec.name).and_then(|b| serde_json::from_str(&b).ok())
+        {
+            Some(json) => {
+                span.record("origin", "store");
+                Resolved { json: Some(json), etag: kept() }
+            }
+            // The ETag outlived the body it described. Ask again without it.
+            None => match probe_source(spec, None, true, fetch) {
+                Probe::Body(body, new_etag) => {
+                    span.record("origin", "refetched");
+                    warn!("{}: the stored body was gone; fetched it again", spec.name);
+                    store.write(&spec.name, &body);
+                    Resolved { json: serde_json::from_str(&body).ok(), etag: new_etag }
+                }
+                _ => {
+                    span.record("origin", "missing");
+                    Resolved { json: None, etag: None }
+                }
+            },
+        },
+        Probe::Failed(e) => {
+            match store.read(&spec.name).and_then(|b| serde_json::from_str(&b).ok()) {
+                Some(json) => {
+                    span.record("origin", "stale");
+                    warn!("{}: {e}, building from the stored copy", spec.name);
+                    Resolved { json: Some(json), etag: kept() }
+                }
+                None => {
+                    span.record("origin", "missing");
+                    Resolved { json: None, etag: None }
+                }
+            }
+        }
+    }
+}
+
+/// Probe every source, four at a time.
+///
+/// The bodies are megabytes each over one connection apiece, so this is waiting
+/// on the network rather than on a CPU.
+#[tracing::instrument(level = "debug", skip_all, fields(sources = specs.len(), force))]
+fn probe_all(specs: &[SourceSpec], etags: &BTreeMap<String, String>, force: bool, fetch: &FetchFn<'_>) -> Vec<Probe> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let out: Mutex<Vec<(usize, Probe)>> = Mutex::new(Vec::with_capacity(specs.len()));
+
+    std::thread::scope(|scope| {
+        for _ in 0..4.min(specs.len()) {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(spec) = specs.get(i) else { return };
+                let probe = probe_source(spec, etags.get(&spec.name).map(String::as_str), force, fetch);
+                out.lock().unwrap_or_else(|e| e.into_inner()).push((i, probe));
+            });
+        }
+    });
+
+    let mut probes = out.into_inner().unwrap_or_else(|e| e.into_inner());
+    probes.sort_by_key(|(i, _)| *i);
+    probes.into_iter().map(|(_, p)| p).collect()
+}
+
+/// Rebuild the catalogue unless every source says nothing has moved.
+///
+/// `prev_etags` is what the last successful build stored; `force` asks for the
+/// bodies regardless of it, and still uses it to tell an outage apart from a
+/// source that was never there.
+pub fn fetch_items(prev_etags: Option<&str>, force: bool) -> Result<Fetched<FetchResult>, String> {
+    // Only one build runs at a time. A second caller (e.g. the frontend calling
+    // fetch_item_list while the background refresh is already running) waits here
+    // and then finds the catalogue already fresh, so it returns NotModified quickly
+    // rather than spawning a redundant set of HTTP requests and racing on the same
+    // on-disk temp files.
+    static FETCH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = FETCH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    fetch_items_with(prev_etags, force, &|url, etag| cache::get_conditional(url, etag), &DiskStore)
+}
+
+#[tracing::instrument(level = "info", skip_all, fields(force))]
+fn fetch_items_with(
+    prev_etags: Option<&str>,
+    force: bool,
+    fetch: &FetchFn<'_>,
+    store: &dyn BodyStore,
+) -> Result<Fetched<FetchResult>, String> {
+    let prev: BTreeMap<String, String> =
+        prev_etags.and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+    let specs = source_specs();
+
+    let probes = probe_all(&specs, &prev, force, fetch);
+    let unchanged = probes.iter().filter(|p| matches!(p, Probe::Unchanged)).count();
+    let failed = probes.iter().filter(|p| matches!(p, Probe::Failed(_))).count();
+    info!(
+        sources = specs.len(),
+        unchanged,
+        downloaded = specs.len() - unchanged - failed,
+        failed,
+        "catalogue sources probed"
+    );
+    if unchanged == probes.len() {
+        return Ok(Fetched::NotModified);
+    }
+
+    let mut etags: BTreeMap<String, String> = BTreeMap::new();
+    let mut bodies: HashMap<&str, serde_json::Value> = HashMap::with_capacity(specs.len());
+    for (spec, probe) in specs.iter().zip(probes) {
+        let etag = prev.get(&spec.name).map(String::as_str);
+        let resolved = resolve_source(spec, etag, probe, fetch, store);
+        // A required source that answered on the last build and cannot be
+        // reached now would rebuild the catalogue without its recipes or relic
+        // rewards, and that hollowed-out payload would then be cached over the
+        // good one for a day. Failing instead leaves the ladder to serve the
+        // previous copy. Non-required sources (Arcanes) are skipped on failure
+        // regardless of whether we hold a cached ETag for them.
+        let Some(json) = resolved.json else {
+            if spec.required {
+                return Err(format!("{} unavailable", spec.name));
+            }
+            continue;
+        };
+        if let Some(tag) = resolved.etag {
+            etags.insert(spec.name.clone(), tag);
+        }
+        bodies.insert(spec.name.as_str(), json);
+    }
+
+    // The upstream All.json was these same files concatenated, so the catalogue
+    // builder still sees one flat item list. Order within it does not matter:
+    // no uniqueName appears in two files, and the builder regroups by category.
+    let arrays: Vec<&Vec<serde_json::Value>> =
+        CATEGORIES.iter().filter_map(|c| bodies.get(c)?.as_array()).collect();
+    let mut all_items: Vec<&serde_json::Value> =
+        Vec::with_capacity(arrays.iter().map(|a| a.len()).sum());
+    for arr in arrays {
+        all_items.extend(arr.iter());
+    }
+
+    let relics_json = bodies.get("Relics");
+    let recipes_json = bodies.get("ExportRecipes");
+    let syndicates_json = bodies.get("syndicates");
+
+    info!(raw_items = all_items.len(), "catalogue sources assembled");
+    let result = fetch_from_wfcd(&all_items, recipes_json, syndicates_json, relics_json)?;
+    info!(
+        items = result.items.len(),
+        recipes = result.recipes.len(),
+        relic_rewards = result.relic_rewards.len(),
+        syndicates = result.syndicate_catalog.len(),
+        dispositions = result.weapon_dispositions.len(),
+        "catalogue rebuilt"
+    );
+
+    Ok(Fetched::New(result, serde_json::to_string(&etags).ok()))
 }
 
 fn strip_tags(s: &str) -> &str {
@@ -218,25 +555,14 @@ struct ExportRecipe {
     result_count: u32,
 }
 
-/// Fetch ExportRecipes from warframe-public-export-plus (stable URL, pre-processed, always current).
-/// Returns a map from resultType (= what gets crafted) → ExportRecipe.
+/// Read DE's recipe export, keyed by resultType (= what gets crafted).
 #[tracing::instrument(level = "debug", skip_all)]
-fn fetch_export_recipes() -> Result<HashMap<String, ExportRecipe>, String> {
-    // Try two URLs: the warframe-public-export-plus repo (pre-processed) and a fallback
-    let urls = [
-        "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/master/ExportRecipes.json",
-        "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/HEAD/ExportRecipes.json",
-    ];
-    let url = urls[0]; // primary
-
-    let json: serde_json::Value = ureq::get(url)
-        .set("User-Agent", "FrameForge/3.1.0")
-        .call()
-        .map_err(|e| format!("ExportRecipes fetch: {}", e))?
-        .into_json()
-        .map_err(|e| format!("ExportRecipes parse: {}", e))?;
-
+fn parse_export_recipes(json: Option<&serde_json::Value>) -> HashMap<String, ExportRecipe> {
     let mut map: HashMap<String, ExportRecipe> = HashMap::new();
+    let json = match json {
+        Some(j) => j,
+        None => return map,
+    };
 
     // warframe-public-export-plus format:
     //   { "/Lotus/Types/Recipes/...Blueprint": { "resultType": "...", "num": 1, "ingredients": [...] } }
@@ -266,26 +592,21 @@ fn fetch_export_recipes() -> Result<HashMap<String, ExportRecipe>, String> {
             }
         }
     }
-    Ok(map)
+    map
 }
 
-/// Fetch complete syndicate store catalog from warframe-drop-data/syndicates.json.
+/// Read the syndicate store catalog from warframe-drop-data/syndicates.json.
 /// This covers all vendor-purchased items: sigils, specters, health restores,
 /// weapon blueprints, augment mods — items that WFCD's `drops` field mostly omits.
 #[tracing::instrument(level = "debug", skip_all)]
-fn fetch_syndicate_store_catalog(items: &[WfcdItem]) -> HashMap<String, Vec<SyndicateOffer>> {
-    const URL: &str =
-        "https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data/syndicates.json";
-
-    let json: serde_json::Value = match ureq::get(URL)
-        .set("User-Agent", "FrameForge/3.1.0")
-        .call()
-        .ok()
-        .and_then(|r| r.into_json().ok())
-    {
+fn parse_syndicate_store_catalog(
+    json: Option<&serde_json::Value>,
+    items: &[WfcdItem],
+) -> HashMap<String, Vec<SyndicateOffer>> {
+    let json = match json {
         Some(v) => v,
         None => {
-            warn!("failed to fetch syndicates.json");
+            warn!("no syndicates.json available");
             return HashMap::new();
         }
     };
@@ -552,21 +873,18 @@ fn wfcd_category_to_display(wfcd_cat: &str) -> &'static str {
     }
 }
 
-/// Fetch relic → reward mappings from WFCD Relics.json.
+/// Read relic → reward mappings from WFCD Relics.json.
 /// Each entry is one specific refinement (Bronze/Silver/Gold/Platinum) with a
 /// uniqueName that matches the EE.log path exactly — no normalization needed.
 #[tracing::instrument(level = "debug", skip_all)]
-fn fetch_relics_rewards(image_by_name: &HashMap<String, String>) -> HashMap<String, Vec<RelicReward>> {
-    const URL: &str =
-        "https://raw.githubusercontent.com/WFCD/warframe-items/master/data/json/Relics.json";
-
-    let json: serde_json::Value = match ureq::get(URL)
-        .set("User-Agent", "FrameForge/3.1.0")
-        .call().ok().and_then(|r| r.into_json().ok())
-    {
+fn parse_relics_rewards(
+    json: Option<&serde_json::Value>,
+    image_by_name: &HashMap<String, String>,
+) -> HashMap<String, Vec<RelicReward>> {
+    let json = match json {
         Some(v) => v,
         None => {
-            warn!("failed to fetch Relics.json");
+            warn!("no Relics.json available");
             return HashMap::new();
         }
     };
@@ -628,36 +946,28 @@ fn fetch_relics_rewards(image_by_name: &HashMap<String, String>) -> HashMap<Stri
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
-fn fetch_from_wfcd() -> Result<FetchResult, String> {
+fn fetch_from_wfcd(
+    all_items_raw: &[&serde_json::Value],
+    recipes_json: Option<&serde_json::Value>,
+    syndicates_json: Option<&serde_json::Value>,
+    relics_json: Option<&serde_json::Value>,
+) -> Result<FetchResult, String> {
     let mut items: Vec<WfcdItem> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    let mut raw_craftable: Vec<(String, serde_json::Value)> = Vec::new();
+    let mut raw_craftable: Vec<(String, &serde_json::Value)> = Vec::new();
     // relic_path → Vec<(item_unique, item_name, rarity)>
-    // Built by inverting each item's drops[] array (All.json stores item→relics).
+    // Built by inverting each item's drops[] array (item→relics stored per-item).
     // WFCD canonicalizes all refinements under the Bronze path — dedup at build time.
     let mut raw_drop_entries: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
 
-    // Single All.json request replaces 20 sequential per-category fetches.
-    let all_json: serde_json::Value = ureq::get(
-        "https://raw.githubusercontent.com/WFCD/warframe-items/master/data/json/All.json"
-    )
-    .set("User-Agent", "FrameForge/3.1.0")
-    .call()
-    .map_err(|e| format!("All.json fetch: {}", e))?
-    .into_json()
-    .map_err(|e| format!("All.json parse: {}", e))?;
-
-    let all_items_raw = all_json.as_array()
-        .ok_or_else(|| "All.json: expected top-level array".to_string())?;
-
     // Group items by display category to preserve the two-pass structure below.
-    let mut category_map: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+    let mut category_map: HashMap<String, Vec<&serde_json::Value>> = HashMap::new();
     for item in all_items_raw.iter() {
         let wfcd_cat = item.get("category").and_then(|v| v.as_str()).unwrap_or("");
         let display_cat = wfcd_category_to_display(wfcd_cat).to_string();
-        category_map.entry(display_cat).or_default().push(item.clone());
+        category_map.entry(display_cat).or_default().push(item);
     }
-    let mut all_files: Vec<(String, Vec<serde_json::Value>)> = category_map.into_iter().collect();
+    let mut all_files: Vec<(String, Vec<&serde_json::Value>)> = category_map.into_iter().collect();
     all_files.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Pass 1: record all top-level unique_names before processing components.
@@ -703,16 +1013,16 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
             // `category` (display category from wfcd_category_to_display) groups similar WFCD
             // categories together (e.g. "Sentinels"+"SentinelWeapons"+"Pets" → "Companions").
             // `wfcd_item_cat` is the raw WFCD category on the item itself; used to preserve
-            // fine-grained categories like "Emotes", "Ephemera" that would otherwise fall into "Misc".
+            // fine-grained categories that would otherwise fall into "Misc".
             let wfcd_item_cat = item.get("category").and_then(|v| v.as_str()).unwrap_or("");
 
             // Correct category before inserting:
             // • Blueprint items always go to "Blueprints"
-            // • Fine-grained categories (Sigils, Emotes, Ephemera, Skins) → keep as-is
+            // • Fine-grained categories (Sigils, Skins) → keep as-is
             // • Non-relic items that WFCD groups under Relics (segments, etc.) → "Misc"
             let corrected_cat = if name.contains("Blueprint") {
                 "Blueprints".to_string()
-            } else if matches!(wfcd_item_cat, "Sigils" | "Emotes" | "Skins" | "Ephemera") {
+            } else if matches!(wfcd_item_cat, "Sigils" | "Skins") {
                 wfcd_item_cat.to_string()
             } else if category == "Relics" {
                 let n = name.to_lowercase();
@@ -741,7 +1051,7 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
 
             if let Some(comps) = item.get("components").and_then(|v| v.as_array()) {
                 if !comps.is_empty() {
-                    raw_craftable.push((unique_name.clone(), item.clone()));
+                    raw_craftable.push((unique_name.clone(), *item));
                 }
             }
 
@@ -872,7 +1182,7 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
     }
 
     if items.is_empty() {
-        return Err("All.json returned no usable items".to_string());
+        return Err("upstream categories held no usable items".to_string());
     }
 
     let display_names: HashMap<String, String> = items
@@ -880,16 +1190,16 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
         .map(|i| (i.unique_name.clone(), i.name.clone()))
         .collect();
 
-    // Fetch DE's authoritative recipe data (best-effort; fall back to WFCD-only if it fails)
-    let export_recipes = fetch_export_recipes().unwrap_or_default();
+    // Use DE's authoritative recipe data (best-effort; fall back to WFCD-only if absent)
+    let export_recipes = parse_export_recipes(recipes_json);
 
     // Reverse map: blueprint unique_name → result item unique_name
     let bp_to_result: HashMap<String, String> = export_recipes.iter()
         .map(|(result, recipe)| (recipe.blueprint_unique.clone(), result.clone()))
         .collect();
 
-    // Fetch complete syndicate store catalog from warframe-drop-data (sigils, specters, etc.)
-    let mut syndicate_catalog = fetch_syndicate_store_catalog(&items);
+    // Build syndicate store catalog from pre-fetched JSON
+    let mut syndicate_catalog = parse_syndicate_store_catalog(syndicates_json, &items);
 
     // Fill result_unique on blueprint offers so the frontend can show crafted-item status
     for offers in syndicate_catalog.values_mut() {
@@ -1135,9 +1445,8 @@ fn fetch_from_wfcd() -> Result<FetchResult, String> {
         }
     }
 
-    // Build relic_rewards from Relics.json — each entry is one specific refinement
-    // (Bronze/Silver/Gold/Platinum) with its own uniqueName matching EE.log paths exactly.
-    let relic_rewards = fetch_relics_rewards(&image_by_name);
+    // Build relic_rewards from pre-fetched Relics.json.
+    let relic_rewards = parse_relics_rewards(relics_json, &image_by_name);
 
     // Build blueprint_names: blueprint_path → (display_name, ducats)
     // Lets the frontend create virtual catalog entries for component blueprints that
@@ -1234,4 +1543,137 @@ pub fn fallback_items() -> Vec<WfcdItem> {
         image_name: None, vaulted: None, ducats: None, mastery_req: None, omega_attenuation: None, fusion_limit: None, max_level_cap: None,
     })
     .collect()
+}
+
+// ─── Drop data ───────────────────────────────────────────────────────────────
+
+const DROP_DATA_URL: &str =
+    "https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data/all.json";
+const DROP_DATA_CACHE: &str = "drop-data-v1.json";
+const DROP_DATA_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+fn fetch_drop_data(etag: Option<&str>) -> Result<crate::cache::Fetched<serde_json::Value>, String> {
+    match crate::cache::get_conditional(DROP_DATA_URL, etag)? {
+        crate::cache::Fetched::NotModified => Ok(crate::cache::Fetched::NotModified),
+        crate::cache::Fetched::New(body, new_etag) => {
+            let value: serde_json::Value = serde_json::from_str(&body)
+                .map_err(|e| format!("drop-data parse: {e}"))?;
+            Ok(crate::cache::Fetched::New(value, new_etag))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn get_drop_data(force: Option<bool>) -> Result<serde_json::Value, String> {
+    let force = force.unwrap_or(false);
+    let (data, _source, warning) = crate::cache::get_or_refresh(
+        DROP_DATA_CACHE,
+        if force { std::time::Duration::ZERO } else { DROP_DATA_TTL },
+        fetch_drop_data,
+    );
+    if let Some(w) = warning {
+        tracing::warn!("{w}");
+    }
+    data.ok_or_else(|| "drop data unavailable".to_string())
+}
+
+pub fn refresh_drop_data(_app: &tauri::AppHandle, force: bool) -> Result<(), String> {
+    let ttl = if force { std::time::Duration::ZERO } else { DROP_DATA_TTL };
+    let (_, _source, warning) = crate::cache::get_or_refresh(DROP_DATA_CACHE, ttl, fetch_drop_data);
+    if let Some(w) = warning {
+        tracing::warn!("{w}");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct MemStore(Mutex<HashMap<String, String>>);
+
+    impl MemStore {
+        fn with(name: &str, body: &str) -> Self {
+            let store = Self::default();
+            store.write(name, body);
+            store
+        }
+    }
+
+    impl BodyStore for MemStore {
+        fn read(&self, name: &str) -> Option<String> {
+            self.0.lock().expect("no test panics while holding this").get(name).cloned()
+        }
+
+        fn write(&self, name: &str, body: &str) {
+            self.0
+                .lock()
+                .expect("no test panics while holding this")
+                .insert(name.to_string(), body.to_string());
+        }
+    }
+
+    fn spec() -> SourceSpec {
+        SourceSpec { name: "Mods".into(), urls: vec!["https://example/Mods.json".into()], required: true }
+    }
+
+    fn never(_: &str, _: Option<&str>) -> Result<Fetched<String>, String> {
+        panic!("no request expected")
+    }
+
+    #[test]
+    fn fresh_body_is_used_and_stored() {
+        let store = MemStore::default();
+        let probe = Probe::Body("[1]".to_string(), Some("new".into()));
+        let out = resolve_source(&spec(), Some("old"), probe, &never, &store);
+
+        assert_eq!(out.json, Some(serde_json::json!([1])));
+        assert_eq!(out.etag.as_deref(), Some("new"));
+        assert_eq!(store.read("Mods").as_deref(), Some("[1]"));
+    }
+
+    #[test]
+    fn confirmed_body_comes_back_from_the_store() {
+        let store = MemStore::with("Mods", "[2]");
+        let out = resolve_source(&spec(), Some("old"), Probe::Unchanged, &never, &store);
+
+        assert_eq!(out.json, Some(serde_json::json!([2])));
+        assert_eq!(out.etag.as_deref(), Some("old"));
+    }
+
+    #[test]
+    fn confirmation_without_a_stored_body_refetches_unconditionally() {
+        let store = MemStore::default();
+        let sent: Mutex<Vec<Option<String>>> = Mutex::new(Vec::new());
+        let fetch = |_: &str, etag: Option<&str>| {
+            sent.lock().expect("no panic in this closure").push(etag.map(str::to_string));
+            Ok(Fetched::New("[3]".to_string(), Some("fetched".into())))
+        };
+
+        let out = resolve_source(&spec(), Some("old"), Probe::Unchanged, &fetch, &store);
+
+        assert_eq!(out.json, Some(serde_json::json!([3])));
+        assert_eq!(out.etag.as_deref(), Some("fetched"));
+        assert_eq!(sent.into_inner().expect("no panic in this closure"), vec![None]);
+    }
+
+    #[test]
+    fn a_failed_source_falls_back_to_the_stored_body() {
+        let store = MemStore::with("Mods", "[4]");
+        let out =
+            resolve_source(&spec(), Some("old"), Probe::Failed("timed out".into()), &never, &store);
+
+        assert_eq!(out.json, Some(serde_json::json!([4])));
+        assert_eq!(out.etag.as_deref(), Some("old"));
+    }
+
+    #[test]
+    fn a_failed_source_with_nothing_stored_yields_no_body() {
+        let store = MemStore::default();
+        let out = resolve_source(&spec(), None, Probe::Failed("timed out".into()), &never, &store);
+
+        assert!(out.json.is_none());
+        assert!(out.etag.is_none());
+    }
 }
