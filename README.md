@@ -1,4 +1,4 @@
-# FrameForge — Warframe Companion `v3.9.0`
+# FrameForge — Warframe Companion `v4.0.0`
 
 A desktop companion for Warframe — live inventory, market prices, trading, timers, relic overlay, and riven analysis. Read-only, no game modification.
 
@@ -165,7 +165,7 @@ pnpm tauri build    # installer → src-tauri/target/release/bundle/
 
 - No account required for most features
 - No telemetry — no FrameForge server
-- All data stored locally at `%LOCALAPPDATA%\warframe-companion\`
+- All data stored locally — settings/database at `%APPDATA%\frameforge\`, caches at `%LOCALAPPDATA%\frameforge\`
 - WFM session token stored in Windows Credential Manager if "Stay logged in" is enabled
 
 ---

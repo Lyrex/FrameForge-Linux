@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { applyScale, overlayScale } from "./uiScale";
 
 // ── Riven overlay — module-level window management ────────────────────────────
 // Stored OUTSIDE React so StrictMode remounts don't destroy/recreate the window.
@@ -11,6 +12,16 @@ let _rivenRollCount = 0;
 let _rivenLastTriggerMs = 0;
 let _rivenManualTrigger: (() => void) | null = null;
 export function checkRivenNow() { _rivenManualTrigger?.(); }
+
+async function resizeRivenForScale() {
+  const win = _rivenWin;
+  if (!win) return;
+  try {
+    const factor = await win.scaleFactor();
+    const cur = (await win.innerSize()).toLogical(factor);
+    await win.setSize(new LogicalSize(Math.round(300 * overlayScale()), cur.height));
+  } catch {}
+}
 
 function rivenWinHide(reason = "rivenWinHide") {
   const win = _rivenWin;
@@ -41,7 +52,7 @@ async function ensureRivenWindow(wx: number, wy: number, wh: number): Promise<{ 
       alwaysOnTop: true, skipTaskbar: true,
       resizable: false, focus: false,
       x: wx + 10, y: wy + Math.round(wh * 0.20),
-      width: 300, height: Math.round(wh * 0.60),
+      width: Math.round(300 * overlayScale()), height: Math.round(wh * 0.60),
     });
     _rivenWin.once("tauri://destroyed", () => { _rivenWin = null; });
     return { win: _rivenWin, fresh: true };
@@ -50,10 +61,11 @@ async function ensureRivenWindow(wx: number, wy: number, wh: number): Promise<{ 
     return null;
   }
 }
-import { getCurrentWindow, availableMonitors } from "@tauri-apps/api/window";
+import { getCurrentWindow, availableMonitors, LogicalSize } from "@tauri-apps/api/window";
 
 import { ImgCacheDirContext } from "./ImgCacheDir";
 import Foundry, { FoundryFilters, FOUNDRY_FILTERS_DEFAULT } from "./Foundry";
+import CacheStatusChip from "./CacheStatusChip";
 import MarketHelper, { MARKET_FILTERS_DEFAULT } from "./MarketHelper";
 import RelicHelper, { RELIC_FILTERS_DEFAULT } from "./RelicHelper";
 import RivenAnalyzer from "./RivenAnalyzer";
@@ -81,6 +93,12 @@ const IS_MODULAR       = _params.has("modular")      || _hash === "#modular"    
 const IS_RIVEN_OVERLAY      = _params.has("rivenoverlay")      || _hash === "#rivenoverlay"      || _winLabel === "riven-overlay";
 const IS_RELIC_PICK_OVERLAY = _params.has("relicpickoverlay") || _hash === "#relicpickoverlay" || _winLabel === "relic-pick-overlay";
 const IS_OVERLAY_TEST       = _params.has("overlaytest")       || _hash === "#overlaytest"       || _winLabel === "overlay-test";
+const IS_ANY_OVERLAY = IS_OVERLAY || IS_MODULAR || IS_RIVEN_OVERLAY || IS_RELIC_PICK_OVERLAY;
+
+// Overlay windows return from the router before any hook can run, which rules
+// out applying the scale from an effect.
+applyScale(IS_ANY_OVERLAY);
+listen("settings-updated", () => applyScale(IS_ANY_OVERLAY));
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { err: string | null }> {
   constructor(props: any) { super(props); this.state = { err: null }; }
@@ -695,6 +713,30 @@ function OverlayTestPage() {
   );
 }
 
+function FactoryResetButton() {
+  const [confirm, setConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  if (!confirm) {
+    return (
+      <button className="btn-danger" onClick={() => setConfirm(true)}>
+        Factory Reset
+      </button>
+    );
+  }
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <span style={{ fontSize: 12, color: "var(--red)" }}>Are you sure? This cannot be undone.</span>
+      <button
+        className="btn-danger"
+        disabled={resetting}
+        onClick={() => { setResetting(true); invoke("factory_reset").catch(() => setResetting(false)); }}
+      >{resetting ? "Resetting…" : "Yes, reset"}</button>
+      <button className="btn-secondary" onClick={() => setConfirm(false)}>Cancel</button>
+    </div>
+  );
+}
+
 function BulkPriceRefreshButton() {
   const [state, setState] = useState<'idle' | 'loading' | 'ok' | 'err'>('idle');
   const label = state === 'loading' ? 'Fetching…' : state === 'ok' ? 'Done!' : state === 'err' ? 'Failed' : 'Refresh Now';
@@ -738,6 +780,7 @@ export default function App() {
   const [memoryProbing, setMemoryProbing] = useState(false);
   const [poking, setPoking] = useState(false);
   const [rawScanning, setRawScanning] = useState(false);
+  const [memRelicDebugRunning, setMemRelicDebugRunning] = useState(false);
   const [diagCapturing, setDiagCapturing] = useState(false);
   const [notifyTestResult, setNotifyTestResult] = useState("");
   const [relicPickOcrTesting, setRelicPickOcrTesting] = useState(false);
@@ -749,6 +792,8 @@ export default function App() {
   const [autoDiagEnabled, setAutoDiagEnabled] = useState(false);
   const [diagFolderSize, setDiagFolderSize] = useState<number>(0);
   const [overlayLogCopied, setOverlayLogCopied] = useState(false);
+  const [pendingUpdate, setPendingUpdate] = useState<string | null>(null);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
   const [companionApiEnabled] = useState(false);
   const [memoryScannerEnabled, setMemoryScannerEnabled] = useState(false);
 const [blobLogEnabled, setBlobLogEnabled] = useState(false);
@@ -820,7 +865,6 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [relicPickLines,      setRelicPickLines]      = useState<"all" | "best" | "estimated">("all");
   const [clearMsg, setClearMsg] = useState("");
   const [appVersion, setAppVersion] = useState("");
-  const [updateAvailable, setUpdateAvailable] = useState<string | null>(null);
   const [blobLogSize,    setBlobLogSize]    = useState(0);
   const [apiLogSize,     setApiLogSize]     = useState(0);
   const [rawScanSize,    setRawScanSize]    = useState(0);
@@ -1074,25 +1118,8 @@ if (typeof s.autoDiagEnabled === "boolean") {
       setRecipeCount(s.recipe_count);
     });
 
-    // Check for updates from GitHub on launch and every hour
-    const semverGt = (a: string, b: string) => {
-      const [ma, mi, pa] = a.split(".").map(Number);
-      const [mb, mii, pb] = b.split(".").map(Number);
-      if (ma !== mb) return ma > mb;
-      if (mi !== mii) return mi > mii;
-      return pa > pb;
-    };
-    const checkForUpdate = (v: string) =>
-      fetch("https://api.github.com/repos/WyrmStudios/FrameForge/releases/latest")
-        .then(r => r.json())
-        .then(d => { const latest = (d.tag_name ?? "").replace(/^v/, ""); if (latest && semverGt(latest, v)) setUpdateAvailable(latest); })
-        .catch(() => {});
-
     getVersion().then(v => {
       setAppVersion(v);
-      checkForUpdate(v);
-      const interval = setInterval(() => checkForUpdate(v), 60 * 60 * 1000);
-      return () => clearInterval(interval);
     }).catch(() => {});
 
     // Auto-start monitor on launch — only if memory scanner is explicitly enabled
@@ -1250,6 +1277,9 @@ if (typeof s.autoDiagEnabled === "boolean") {
             setModularSectionOrder(s.modularSectionOrder);
         } catch {}
       }).catch(() => {});
+      // The app creates the riven window once and caches it, so a scale change
+      // must resize it in place. Its height follows the game window, not the scale.
+      resizeRivenForScale();
     });
     return () => { unlisten.then(fn => fn()); };
   }, []); // eslint-disable-line
@@ -1278,6 +1308,13 @@ if (typeof s.autoDiagEnabled === "boolean") {
     };
   }, []); // eslint-disable-line
 
+  // ── Auto-update check ─────────────────────────────────────────────────────
+  useEffect(() => {
+    invoke<string | null>("check_for_update")
+      .then(v => { if (v) setPendingUpdate(v); })
+      .catch(() => {});
+  }, []); // eslint-disable-line
+
   const toggleTracked = useCallback((id: string) => {
     setTracked(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
   }, []);
@@ -1298,7 +1335,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
       setMonitoring(false);
     }
     try {
-      const count = await invoke<number>("fetch_item_list");
+      const count = await invoke<number>("fetch_item_list", { force: true });
       setItemCount(count);
       const items = await invoke<CatalogItem[]>("get_all_items");
       setCatalog(items);
@@ -1776,8 +1813,13 @@ if (typeof s.autoDiagEnabled === "boolean") {
       wx: number, wy: number, ww: number, wh: number,
       yFrac: number, hFrac: number,
     ): Promise<boolean> => {
-      const stripY = wy + Math.round(wh * yFrac);
-      const stripH = Math.round(wh * hFrac);
+      // The strip's top edge aligns with the reward row in the game, so the scale
+      // may only extend the strip downwards. Moving that edge would break the
+      // alignment. The space below it is the limit, and past that the content is
+      // clipped.
+      const offsetY = Math.round(wh * yFrac);
+      const stripH  = Math.min(Math.round(wh * hFrac * overlayScale()), wh - offsetY);
+      const stripY  = wy + offsetY;
       try {
         await invoke("show_overlay_window", { x: wx, y: stripY, w: ww, h: stripH });
         overlayVisible = true;
@@ -2059,13 +2101,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
       {/* ── Header ── */}
       <header className="header">
         <span className="header-title">FrameForge</span>
-          {updateAvailable && (
-            <a
-              className="update-badge"
-              title={`v${updateAvailable} available — click to download`}
-              onClick={() => invoke("plugin:opener|open_url", { url: "https://github.com/WyrmStudios/FrameForge/releases/latest" }).catch(() => {})}
-            >⬆ v{updateAvailable}</a>
-          )}
         {masteryRank !== null && (
           <span className="mastery-badge" title="Mastery Rank">MR {masteryRank}</span>
         )}
@@ -2168,6 +2203,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                     <span className="conn-detail">{overlayStatus}</span>
                   </span>
                 )}
+                <CacheStatusChip />
               </>
             );
           })()}
@@ -2659,6 +2695,16 @@ if (typeof s.autoDiagEnabled === "boolean") {
                     </div>
                     {clearMsg && <div className="settings-msg">{clearMsg}</div>}
                   </div>
+                  <div className="settings-section" style={{ borderColor: "rgba(224,82,82,.3)" }}>
+                    <div className="settings-section-title" style={{ color: "var(--red)" }}>Factory Reset</div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">Reset Everything</span>
+                        <span className="settings-row-desc">Delete all app data — settings, inventory cache, trade log, market prices, WFM login — and restart. Cannot be undone.</span>
+                      </div>
+                      <FactoryResetButton />
+                    </div>
+                  </div>
                 </>}
 
                 {/* ════════════ DEBUGGING ════════════ */}
@@ -2827,6 +2873,27 @@ if (typeof s.autoDiagEnabled === "boolean") {
                         onClick={async () => { await invoke("clear_debug_data", { which: "raw_scan" }); setRawScanSize(0); }}
                       >{rawScanSize > 0 ? `Clear (${fmtBytes(rawScanSize)})` : "Clear"}</button>
 
+                      {/* Memory Relic Debug */}
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">Memory Relic Debug</span>
+                        <span className="settings-row-desc">{memRelicDebugRunning ? "Running — tailing EE.log and scanning Warframe memory. Log at %TEMP%\\frameforge_mem_relic_debug.log." : "Tails EE.log and scans Warframe memory for relic reward patterns. Writes everything to a log file."}</span>
+                      </div>
+                      <div />{/* no folder button */}
+                      <button className={memRelicDebugRunning ? "btn-danger" : "btn-secondary"}
+                        onClick={async () => {
+                          if (memRelicDebugRunning) {
+                            await invoke("stop_memory_relic_debug").catch(() => {});
+                            setMemRelicDebugRunning(false);
+                          } else {
+                            try {
+                              const path = await invoke<string>("start_memory_relic_debug");
+                              setMemRelicDebugRunning(true);
+                              alert(`Memory relic debug started.\nLog: ${path}`);
+                            } catch (e) { alert("Error: " + String(e)); }
+                          }
+                        }}>{memRelicDebugRunning ? "End" : "Start"}</button>
+                      <div />{/* no clear button */}
+
                     </div>
                   </div>
 
@@ -2951,6 +3018,32 @@ if (typeof s.autoDiagEnabled === "boolean") {
       )}
 
       <div className="body">
+
+        {/* ── Update banner ── */}
+        {pendingUpdate && (
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 12,
+            background: "var(--accent)", color: "#fff", fontSize: 13, padding: "6px 16px",
+            flexShrink: 0,
+          }}>
+            <span>FrameForge v{pendingUpdate} is available</span>
+            <button
+              style={{
+                background: "rgba(0,0,0,0.25)", border: "none", borderRadius: 4,
+                color: "#fff", padding: "2px 10px", cursor: "pointer", fontSize: 12,
+              }}
+              disabled={updateInstalling}
+              onClick={() => {
+                setUpdateInstalling(true);
+                invoke("install_update").catch(() => setUpdateInstalling(false));
+              }}
+            >{updateInstalling ? "Installing…" : "Update now"}</button>
+            <button
+              style={{ background: "none", border: "none", color: "rgba(255,255,255,0.7)", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 0 }}
+              onClick={() => setPendingUpdate(null)}
+            >×</button>
+          </div>
+        )}
 
         {/* ── Module navigation ── */}
         <nav className="module-nav">

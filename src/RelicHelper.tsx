@@ -66,9 +66,6 @@ function chanceToRarity(chance: number): string {
   return "Rare";
 }
 
-const DROP_URL       = "https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data/all.json";
-const DROP_CACHE_KEY = "ff-drop-data-v7";
-const DROP_CACHE_TTL = 24 * 60 * 60 * 1000;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -715,15 +712,13 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
   const { search, tiers, ownership, vault, completion, sortMode, ignoreFormaKuva } = filters;
   const set = <K extends keyof RelicFilters>(k: K, v: RelicFilters[K]) => onFiltersChange({ ...filters, [k]: v });
 
-  const loadDrops = useCallback(() => {
+  const loadDrops = useCallback((force = false) => {
     setDropLoading(true);
     setDropError(false);
-    fetch(DROP_URL)
-      .then(r => r.json())
+    invoke<unknown>("get_drop_data", { force })
       .then(d => {
         const result = parseDropData(d);
         setDrops(result);
-        try { localStorage.setItem(DROP_CACHE_KEY, JSON.stringify({ data: result, ts: Date.now() })); } catch {}
       })
       .catch(() => setDropError(true))
       .finally(() => setDropLoading(false));
@@ -734,16 +729,6 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
   }, [refreshKey]);
 
   useEffect(() => {
-    try {
-      const cached = localStorage.getItem(DROP_CACHE_KEY);
-      if (cached) {
-        const { data, ts } = JSON.parse(cached);
-        if (typeof ts === "number" && Date.now() - ts < DROP_CACHE_TTL && Array.isArray(data)) {
-          setDrops(data);
-          return;
-        }
-      }
-    } catch {}
     loadDrops();
   }, [loadDrops]);
 
@@ -895,7 +880,7 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
           <button className={`fchip ${sortMode === "za"     ? "fchip-on" : ""}`} onClick={() => set("sortMode", "za")}>Z–A</button>
           <span className="fbar-sep"/>
           <button className="fchip fchip-reset" onClick={() => onFiltersChange(RELIC_FILTERS_DEFAULT)}>Show All</button>
-          {dropError && <button className="btn-secondary" style={{ marginLeft: 4 }} onClick={loadDrops}>↺ Retry</button>}
+          {dropError && <button className="btn-secondary" style={{ marginLeft: 4 }} onClick={() => loadDrops(true)}>↺ Retry</button>}
           <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>
             {dropLoading ? "Loading…" : `${visibleDrops.length} relics · ${ownedCount} owned`}
           </span>
