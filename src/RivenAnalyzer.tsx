@@ -5,7 +5,8 @@ import { checkRivenNow } from "./App";
 import RivenOwned from "./RivenOwned";
 import RivenSearch from "./RivenSearch";
 import { RivenSellModal, type BlobRivenEntry } from "./MarketHelper";
-import type { GradedRiven } from "./rivenTypes";
+import { ALL_STATS, verdictColor } from "./rivenTypes";
+import type { GradedRiven, StatUnit } from "./rivenTypes";
 import "./RivenAnalyzer.css";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -46,27 +47,6 @@ function verdictColor2(v: string) {
   return "var(--red)";
 }
 
-// All riven stats in one list — sign (+/-) is set per-roll by the user
-const ALL_STATS = [
-  "Critical Damage", "Critical Chance", "Multishot", "Base Damage",
-  "Fire Rate", "Status Chance", "Toxicity", "Heat", "Electricity",
-  "Cold", "Punch Through", "Reload Speed", "Magazine Size",
-  "Projectile Flight Speed", "Status Duration",
-  "Damage to Infested", "Damage to Grineer", "Damage to Corpus",
-  "Attack Speed", "Range", "Combo Count Chance", "Initial Combo",
-  "Heavy Attack Efficiency", "Slide Critical Chance",
-  "Zoom", "Recoil", "Puncture", "Impact", "Slash", "Ammo Maximum",
-];
-
-
-// ── Verdict colour helper ─────────────────────────────────────────────────────
-
-function verdictColor(verdict: string): string {
-  if (verdict.startsWith("GREAT"))    return "var(--green)";
-  if (verdict.startsWith("GOOD"))     return "#a8d8a8";
-  if (verdict.startsWith("MEDIOCRE")) return "#f0c040";
-  return "var(--red)";
-}
 
 // ── Stat score bar ────────────────────────────────────────────────────────────
 
@@ -184,12 +164,14 @@ export default function RivenAnalyzer() {
   useEffect(() => { loadSavedRivens(); }, [loadSavedRivens]);
 
   // Posting an auction needs a warframe.market session; App.tsx loads the JWT on
-  // startup, so this answers even before the Trading tab has been opened.
+  // startup, so this answers even before the Trading tab has been opened. There
+  // is no login event to subscribe to, so re-asking on every tab switch is what
+  // picks up a login that happened after this component first rendered.
   useEffect(() => {
     invoke<[string, string] | null>("wfm_get_session")
       .then(session => setCanSell(!!session))
       .catch(() => setCanSell(false));
-  }, []);
+  }, [tab]);
 
   const saveCurrentRoll = async () => {
     if (!selectedWeapon) return;
@@ -316,14 +298,29 @@ export default function RivenAnalyzer() {
   // are dropped — the analyzer has no way to score them.
   const openInAnalyzer = (riven: GradedRiven) => {
     const weapon = (riven.analysis?.weapon ?? riven.weapon_name ?? "").toLowerCase();
-    const stats: StatEntry[] = [...riven.buffs, ...riven.curses]
-      .filter(s => s.analyzer_name)
-      .map(s => ({
-        name: s.analyzer_name as string,
-        value: s.unit === "x" ? (1 + s.value).toFixed(2) : (s.value * 100).toFixed(1),
+    // The form's rows carry the sign in their own +/- button, so the value goes
+    // in unsigned; a curse's value arrives negative.
+    const formatValue = (unit: StatUnit, value: number) => {
+      const magnitude = Math.abs(value);
+      switch (unit) {
+        case "x": return (1 + magnitude).toFixed(2);
+        case "%": return (magnitude * 100).toFixed(1);
+        case "n": return Math.round(magnitude).toString();
+        default:  return magnitude.toFixed(1); // metres, seconds
+      }
+    };
+    // Two melee tags share the "Combo Count Chance" name, and rows are keyed by
+    // name — the second would shadow the first and toggle with it.
+    const stats: StatEntry[] = [];
+    for (const s of [...riven.buffs, ...riven.curses]) {
+      if (!s.analyzer_name || stats.some(e => e.name === s.analyzer_name)) continue;
+      stats.push({
+        name: s.analyzer_name,
+        value: formatValue(s.unit, s.value),
         positive: s.positive,
         useMultiplier: s.unit === "x",
-      }));
+      });
+    }
     setSelectedWeapon(weapon);
     setWeaponInput(weapon.charAt(0).toUpperCase() + weapon.slice(1));
     setFiltered([]);

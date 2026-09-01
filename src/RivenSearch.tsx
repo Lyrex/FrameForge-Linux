@@ -1,30 +1,11 @@
 import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { ALL_STATS, verdictColor } from "./rivenTypes";
 import type { AuctionQuery, GradedAuction, GradedStat } from "./rivenTypes";
 import "./RivenSearch.css";
 
-// Sign (+/-) is per-roll, so the same list serves both the wanted-positives and
-// the wanted-negative pickers.
-const ALL_STATS = [
-  "Critical Damage", "Critical Chance", "Multishot", "Base Damage",
-  "Fire Rate", "Status Chance", "Toxicity", "Heat", "Electricity",
-  "Cold", "Punch Through", "Reload Speed", "Magazine Size",
-  "Projectile Flight Speed", "Status Duration",
-  "Damage to Infested", "Damage to Grineer", "Damage to Corpus",
-  "Attack Speed", "Range", "Combo Count Chance", "Initial Combo",
-  "Heavy Attack Efficiency", "Slide Critical Chance",
-  "Zoom", "Recoil", "Puncture", "Impact", "Slash", "Ammo Maximum",
-];
-
 const POLARITIES = ["madurai", "vazarin", "naramon"];
-
-function verdictColor(verdict: string): string {
-  if (verdict.startsWith("GREAT"))    return "var(--green)";
-  if (verdict.startsWith("GOOD"))     return "#a8d8a8";
-  if (verdict.startsWith("MEDIOCRE")) return "#f0c040";
-  return "var(--red)";
-}
 
 function PlatIcon({ size = 12 }: { size?: number }) {
   return <img src="/platinum.webp" alt="plat" width={size} height={size} style={{ objectFit: "contain", flexShrink: 0 }} />;
@@ -36,7 +17,7 @@ function StatRow({ stat }: { stat: GradedStat }) {
       <span className="rs-stat-label">{stat.label}</span>
       <span className="rs-stat-value">{stat.display}</span>
       <span className="rs-stat-range">
-        <span className="rs-stat-range-fill" style={{ width: `${Math.round(stat.position * 100)}%` }} />
+        <span className="rs-stat-range-fill" style={{ width: `${Math.min(100, Math.round(stat.position * 100))}%` }} />
       </span>
     </div>
   );
@@ -209,8 +190,7 @@ export default function RivenSearch() {
                 <div key={a.auction_id} className="riven-card">
                   <div className="riven-card-header">
                     <span className="riven-weapon">
-                      {a.riven.weapon_name ?? a.riven.mod_name}
-                      <span className="riven-mod-name"> {a.riven.mod_name}</span>
+                      {a.riven.weapon_name ? <>{a.riven.weapon_name}<span className="riven-mod-name"> {a.riven.mod_name}</span></> : a.riven.mod_name}
                     </span>
                     {analysis
                       ? <span className="rs-verdict" style={{ color: verdictColor(analysis.verdict) }}>

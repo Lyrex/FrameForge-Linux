@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { verdictColor } from "./rivenTypes";
 import type { GradedRiven, GradedStat } from "./rivenTypes";
 import { formatChallengeName } from "./MarketHelper";
 import polMadurai  from "./assets/polarity/madurai.svg";
@@ -22,13 +23,6 @@ const POLARITY_DISPLAY: Record<string, { icon: string; name: string }> = {
   AP_PRECEPT: { icon: polPenjaga,  name: "Penjaga"  },
 };
 
-function verdictColor(verdict: string): string {
-  if (verdict.startsWith("GREAT"))    return "var(--green)";
-  if (verdict.startsWith("GOOD"))     return "#a8d8a8";
-  if (verdict.startsWith("MEDIOCRE")) return "#f0c040";
-  return "var(--red)";
-}
-
 // The analyzer's verdicts read "GREAT ROLL — Consider keeping"; the leading word
 // is what filters and badges work with.
 const VERDICT_KEYS = ["GREAT", "GOOD", "MEDIOCRE", "BAD"];
@@ -44,7 +38,7 @@ const REROLL_BUCKETS: { label: string; test: (n: number) => boolean }[] = [
 ];
 
 function StatRow({ stat }: { stat: GradedStat }) {
-  const pct = Math.round(stat.position * 100);
+  const pct = Math.min(100, Math.round(stat.position * 100));
   return (
     <div className="rown-stat">
       <span className={`riven-stat ${stat.positive ? "riven-buff" : "riven-curse"}`}>

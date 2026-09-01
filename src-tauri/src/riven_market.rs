@@ -236,7 +236,15 @@ fn roll_for_value(tag: &str, positive: bool, ctx: RollContext, published: f64) -
     if span == 0.0 {
         return 0;
     }
-    let position = ((value - range.min) / span).clamp(0.0, 1.0);
+    // A capped stat cannot roll outside its range, so a published value that does
+    // is bad data. An uncapped one has no range to be outside of — clamping there
+    // would turn every value above the sentinel maximum into a flat +100%.
+    let position = (value - range.min) / span;
+    let position = if riven_stats::has_cap(tag, ctx.category) {
+        position.clamp(0.0, 1.0)
+    } else {
+        position.max(0.0)
+    };
     (position * ROLL_MAX).round() as i64
 }
 
@@ -253,11 +261,14 @@ fn stats_from_attributes(
     let mut curses = Vec::new();
     for attr in attributes {
         let Some(url_name) = attr["url_name"].as_str() else { continue };
+        // A missing value would grade as the weakest possible roll, which looks
+        // like a real roll rather than bad data, so the attribute is dropped.
+        let Some(published) = attr["value"].as_f64() else { continue };
         let positive = attr["positive"].as_bool().unwrap_or(true);
         let tag = tag_for_attr(url_name, category).unwrap_or(url_name);
         let stat = BlobRivenStat {
             tag: tag.to_string(),
-            value: roll_for_value(tag, positive, ctx, attr["value"].as_f64().unwrap_or(0.0)),
+            value: roll_for_value(tag, positive, ctx, published),
         };
         if positive {
             buffs.push(stat);
@@ -288,7 +299,13 @@ fn normalize(
         .and_then(|w| dispositions.get(&w.unique_name).copied())
         .unwrap_or(1.0);
 
-    let attributes = item["attributes"].as_array().cloned().unwrap_or_default();
+    // Nameless and valueless attributes are dropped here as well as in
+    // `stats_from_attributes`, so the buff and curse counts the ranges scale by
+    // match the counts the grader later recomputes from the stats themselves.
+    let attributes: Vec<serde_json::Value> = item["attributes"]
+        .as_array()
+        .map(|a| a.iter().filter(|attr| attr["url_name"].is_string() && attr["value"].is_number()).cloned().collect())
+        .unwrap_or_default();
     let num_curses = attributes.iter().filter(|a| a["positive"].as_bool() == Some(false)).count();
     let mod_rank = item["mod_rank"].as_u64().unwrap_or(0) as u8;
     let category = riven_stats::riven_category(item_type);
@@ -610,9 +627,48 @@ mod tests {
         assert_eq!(results[0].seller_name, "");
         assert_eq!(results[0].seller_status, "offline");
         assert_eq!(results[0].starting_price, None);
-        // A string where a number belongs reads as absent, not as a wrong roll.
+        // A string where a number belongs reads as absent, not as a wrong roll,
+        // and a stat with no readable value is not graded at all.
         assert_eq!(results[0].riven.mod_rank, 0);
-        assert_eq!(results[0].riven.buffs.len(), 1);
+        assert!(results[0].riven.buffs.is_empty());
         assert_eq!(results[1].riven.buffs.len(), 0);
+    }
+
+    #[test]
+    fn an_attribute_with_no_name_is_left_out_of_the_count_the_other_stats_scale_by() {
+        let body = r#"{ "payload": { "auctions": [
+          { "id": "aaa", "item": {
+              "weapon_url_name": "braton_prime",
+              "mod_rank": 8,
+              "attributes": [
+                { "positive": true, "value": 10 },
+                { "url_name": "critical_damage", "positive": true, "value": 180.0 }
+              ]
+          }}
+        ]}}"#;
+        let riven = &normalized(body)[0].riven;
+
+        // The nameless attribute cannot be read as a stat, so it must not be
+        // counted as one either: read as a two-buff riven this value falls
+        // outside the range and clamps to its end instead of round-tripping.
+        assert_eq!(riven.buffs.len(), 1);
+        assert_eq!(riven.buffs[0].display, "+180.0%");
+    }
+
+    #[test]
+    fn an_attribute_the_tag_table_does_not_know_keeps_the_value_the_market_published() {
+        let body = r#"{ "payload": { "auctions": [
+          { "id": "aaa", "item": {
+              "weapon_url_name": "braton_prime",
+              "attributes": [
+                { "url_name": "some_stat_added_after_this_release", "positive": true, "value": 150.0 }
+              ]
+          }}
+        ]}}"#;
+        let results = normalized(body);
+
+        // Without a cap there is no range to clamp into, and clamping anyway
+        // would report every value above the sentinel maximum as a flat +100%.
+        assert_eq!(results[0].riven.buffs[0].display, "+150.0%");
     }
 }

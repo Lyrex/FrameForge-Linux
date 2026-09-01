@@ -125,9 +125,19 @@ pub fn stat_def(tag: &str) -> Option<&'static StatDef> {
     RIVEN_STATS.iter().find(|(t, _)| *t == tag).map(|(_, d)| d)
 }
 
+/// Whether the tag has a cap on this weapon category. Without one a value is a
+/// roll position rather than a physical quantity, so it has no scale to clamp to.
+pub fn has_cap(tag: &str, category: &str) -> bool {
+    stat_def(tag).and_then(|d| d.cap(riven_type(category))).is_some()
+}
+
 /// The weapon category a riven's item type belongs to, as the UI names it.
 pub fn riven_category(item_type: &str) -> &'static str {
-    if item_type.contains("Melee") {
+    // The zaw type is `LotusModularMeleeZawRandomModRare`, so it has to win
+    // over the plain melee check.
+    if item_type.contains("Zaw") {
+        "Zaw"
+    } else if item_type.contains("Melee") {
         "Melee"
     } else if item_type.contains("Rifle") {
         "Rifle"
@@ -137,8 +147,6 @@ pub fn riven_category(item_type: &str) -> &'static str {
         "Shotgun"
     } else if item_type.contains("Archgun") || item_type.contains("Archwing") {
         "Arch-gun"
-    } else if item_type.contains("Zaw") {
-        "Zaw"
     } else {
         "Riven"
     }
@@ -363,6 +371,7 @@ mod tests {
     #[test]
     fn categories_follow_the_riven_item_type() {
         assert_eq!(riven_category("/Lotus/Upgrades/Mods/Randomized/LotusMeleeRandomModRare"), "Melee");
+        assert_eq!(riven_category("/Lotus/Upgrades/Mods/Randomized/LotusModularMeleeZawRandomModRare"), "Zaw");
         assert_eq!(riven_category("/Lotus/Upgrades/Mods/Randomized/LotusRifleRandomModRare"), "Rifle");
         assert_eq!(riven_category("/Lotus/Upgrades/Mods/Randomized/LotusModularPistolRandomModRare"), "Pistol");
         assert_eq!(riven_category("/Lotus/Upgrades/Mods/Randomized/LotusArchgunRandomModRare"), "Arch-gun");

@@ -132,3 +132,23 @@ export interface GradedAuction {
   seller_reputation: number;
   riven: GradedRiven;
 }
+
+// Sign (+/-) is per-roll, so one list serves both the wanted-positives and
+// the wanted-negative pickers.
+export const ALL_STATS = [
+  "Critical Damage", "Critical Chance", "Multishot", "Base Damage",
+  "Fire Rate", "Status Chance", "Toxicity", "Heat", "Electricity",
+  "Cold", "Punch Through", "Reload Speed", "Magazine Size",
+  "Projectile Flight Speed", "Status Duration",
+  "Damage to Infested", "Damage to Grineer", "Damage to Corpus",
+  "Attack Speed", "Range", "Combo Count Chance", "Initial Combo",
+  "Heavy Attack Efficiency", "Slide Critical Chance",
+  "Zoom", "Recoil", "Puncture", "Impact", "Slash", "Ammo Maximum",
+];
+
+export function verdictColor(verdict: string): string {
+  if (verdict.startsWith("GREAT"))    return "var(--green)";
+  if (verdict.startsWith("GOOD"))     return "#a8d8a8";
+  if (verdict.startsWith("MEDIOCRE")) return "#f0c040";
+  return "var(--red)";
+}

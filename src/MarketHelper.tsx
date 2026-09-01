@@ -6,6 +6,7 @@ import { HelpTip } from "./HelpTip";
 import WfmTrading from "./WfmTrading";
 import ItemMarketPopup from "./ItemMarketPopup";
 import type { InventoryItem } from "./App";
+import { verdictColor } from "./rivenTypes";
 import type { GradedRiven } from "./rivenTypes";
 import polMadurai  from "./assets/polarity/madurai.svg";
 import polVazarin  from "./assets/polarity/vazarin.svg";
@@ -1495,13 +1496,6 @@ function VeiledSellModal({ category, count, onClose, onSuccess }: VeiledSellModa
 }
 
 
-function verdictColor(verdict: string): string {
-  if (verdict.startsWith("GREAT"))    return "var(--green)";
-  if (verdict.startsWith("GOOD"))     return "#a8d8a8";
-  if (verdict.startsWith("MEDIOCRE")) return "#f0c040";
-  return "var(--red)";
-}
-
 const RivensTab = memo(function RivensTab({ rivens, allItems, wfmUsername, onAuctionPosted }: {
   rivens: BlobRivenEntry[];
   allItems: CatalogItem[];
@@ -1523,9 +1517,16 @@ const RivensTab = memo(function RivensTab({ rivens, allItems, wfmUsername, onAuc
   // back. When the call fails the cards stay unbadged rather than the selling
   // view breaking.
   useEffect(() => {
-    invoke<GradedRiven[]>("grade_owned_rivens")
-      .then(graded => setGrades(Object.fromEntries(graded.map(g => [g.item_id, g.analysis]))))
-      .catch(() => {});
+    const load = () => {
+      invoke<GradedRiven[]>("grade_owned_rivens")
+        .then(graded => setGrades(Object.fromEntries(graded.map(g => [g.item_id, g.analysis]))))
+        .catch(() => {});
+    };
+    load();
+    // A reroll changes a riven's stats without changing which rivens exist, so
+    // the badges have to be recomputed whenever the blob is read again.
+    const unlisten = listen("inventory-update", load);
+    return () => { unlisten.then(f => f()); };
   }, []);
 
   const pathToName = useMemo(() => {
