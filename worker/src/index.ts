@@ -7,7 +7,7 @@
 // Clients identify their release with X-FrameForge-Version. That is the only
 // client-identifying header the contract has, and no route requires it.
 
-import { overBudget } from "./budget";
+import { overBudget, overBudgetNow } from "./budget";
 import { CACHE_STATUS_HEADER } from "./cache";
 import { drops } from "./routes/catalog";
 import { items, orders, statistics } from "./routes/wfm";
@@ -69,7 +69,7 @@ export default {
       .map((candidate) => ({ candidate, result: candidate.pattern.exec(request.url) }))
       .find((attempt) => attempt.result);
 
-    if (await overBudget(env)) {
+    if (overBudget(env, ctx)) {
       return log(request, match?.candidate.path ?? UNMATCHED_ROUTE, started, workerUnavailable());
     }
 
@@ -88,7 +88,7 @@ export default {
       (async () => {
         // The prewarm is by far the worker's heaviest upstream consumer, so
         // over budget it does nothing at all rather than a smaller batch.
-        if (await overBudget(env)) return;
+        if (await overBudgetNow(env)) return;
         await prewarm(env);
       })(),
     );

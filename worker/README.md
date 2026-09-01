@@ -199,6 +199,20 @@ brake exists to stop. If that object is unreachable the request is served
 anyway: an outage of the brake is not evidence the budget was spent, and
 locking every client out is the worse failure.
 
+No request waits on that object. The object sits in one location worldwide, so
+a request that asked it before answering would pay a round trip across the
+globe before serving a body the edge beside it already held. Instead each
+isolate answers from the verdict it last heard and counts what it has served
+since, reporting the batch behind the response every few seconds. The brake is
+therefore eventually consistent: it can overshoot by one interval of traffic at
+the crossing, and an isolate that has never reported serves while its first
+report is in flight. That is the right trade for a spend ceiling — it bounds
+cost, it is not a correctness gate.
+
+The cron tick is the exception. It has nobody waiting on it, it runs every five
+minutes, and it is by far the heaviest upstream consumer, so it asks the object
+directly and waits for the answer before deciding whether to prewarm.
+
 `/v1/health` is outside all of this — neither counted nor blocked.
 
 The default is 100,000/day, the free plan's own ceiling, so the brake trips
@@ -238,7 +252,7 @@ Three more lines are operator events rather than requests, each tagged with
 ```json
 { "event": "prewarm", "attempted": 240, "refreshed": 238, "failed": 2, "skipped": 0, "hot_attempted": 42, "hot_refreshed": 42, "hot_cursor": 168, "hot_size": 500, "cold_attempted": 198, "cold_refreshed": 196, "cold_cursor": 1740, "catalog_size": 4012, "entries": 3894, "duration_ms": 7213 }
 { "event": "upstream_down", "upstream": "api.warframe.market", "status": 503, "served": "stale" }
-{ "event": "budget_exceeded", "threshold": 100000, "count": 100001 }
+{ "event": "budget_exceeded", "threshold": 100000, "count": 100014 }
 ```
 
 A `prewarm` line lands on every cron tick, including one that found no catalog
@@ -258,9 +272,10 @@ the fetch never got one — a timeout or a refused connection. `served` is what
 the caller got instead: `stale` for the last cached body, `unreachable` for
 `502`, `passthrough` when the upstream's own 5xx went to the client.
 
-`budget_exceeded` is logged once, on the request that crosses the threshold,
-not on the ones that follow it. It is the moment every install worldwide starts
-going to the upstreams direct.
+`budget_exceeded` is logged once, on the report that carries the total past the
+threshold, not on the ones that follow it. It is the moment every install
+worldwide starts going to the upstreams direct. `count` is the total that report
+left behind, which a batch can carry some way past the threshold in one step.
 
 ### Reading them
 

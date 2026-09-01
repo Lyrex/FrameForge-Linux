@@ -6,6 +6,7 @@ import {
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { resetBudgetState } from "../src/budget";
 import worker from "../src/index";
 import type { Snapshot } from "../src/snapshot";
 import { UNAVAILABLE_HEADER, workerUnavailable } from "../src/unavailable";
@@ -74,6 +75,9 @@ beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   advance(7 * 24 * 60 * 60);
   await clearCache();
+  // The isolate's cached budget verdict and its uncounted requests outlive a
+  // test, and either would decide the next one.
+  resetBudgetState();
   // The stored snapshot and cursors outlive a test too.
   for (const key of (await env.SNAPSHOT.list()).keys) await env.SNAPSHOT.delete(key.name);
 });
@@ -739,15 +743,51 @@ describe("daily budget", () => {
   const route = "/v1/worldstate";
   const body = { WorldSeed: "seed" };
 
+  // A path no route matches: counted against the budget like any other request,
+  // and answered without an upstream call, so a test can run the counter up
+  // without also having to feed the upstream queue.
+  const counted = "/v1/nonsense";
+
   // Small enough that a test can cross it, given the way the deployed worker
   // takes it: a binding, not a constant in the code.
   const capped = (limit: number) => ({ ...env, DAILY_REQUEST_BUDGET: limit }) as unknown as Env;
 
-  const getCapped = (path: string, limit: number) => {
+  const getCapped = (path: string, limit: number, budgetEnv = capped(limit)) => {
     const ctx = createExecutionContext();
     contexts.push(ctx);
-    return worker.fetch(new Request(`${WORKER}${path}`), capped(limit), ctx);
+    return worker.fetch(new Request(`${WORKER}${path}`), budgetEnv, ctx);
   };
+
+  // Requests are counted in the isolate and reported behind the response, at
+  // most once every few seconds. So a test drives the brake by letting the
+  // interval elapse and then making the requests: the first of them carries
+  // everything counted since the last report, and the object's answer is in
+  // place by the time `settle` returns.
+  const FLUSH_SECONDS = 5;
+  async function report(limit: number, requests = 1) {
+    advance(FLUSH_SECONDS);
+    for (let i = 0; i < requests; i++) await getCapped(counted, limit);
+    await settle();
+  }
+
+  // Wraps the binding so a test can see how many times the object was actually
+  // written to, and with what batch each time.
+  function countingBudget(limit: number) {
+    const batches: number[] = [];
+    const BUDGET = {
+      idFromName: (name: string) => env.BUDGET.idFromName(name),
+      get: (id: DurableObjectId) => {
+        const stub = env.BUDGET.get(id);
+        return {
+          spend: (threshold: number, requests: number) => {
+            batches.push(requests);
+            return stub.spend(threshold, requests);
+          },
+        };
+      },
+    };
+    return { budgetEnv: { ...capped(limit), BUDGET } as unknown as Env, batches };
+  }
 
   it("serves normally under budget", async () => {
     upstream({ body });
@@ -758,9 +798,36 @@ describe("daily budget", () => {
     expect(response.headers.get(UNAVAILABLE_HEADER)).toBeNull();
   });
 
+  it("answers without waiting for the durable object to hear about the request", async () => {
+    upstream({ body });
+
+    // A budget of zero: the object will call this request over the threshold,
+    // and it is still served, because the report goes out behind the response.
+    const response = await getCapped(route, 0);
+    expect(response.status).toBe(200);
+
+    await settle();
+    expect((await getCapped(counted, 0)).status).toBe(503);
+  });
+
+  it("reports a run of requests as one write rather than one per request", async () => {
+    const { budgetEnv, batches } = countingBudget(100);
+
+    for (let i = 0; i < 3; i++) await getCapped(counted, 100, budgetEnv);
+    await settle();
+    advance(FLUSH_SECONDS);
+    await getCapped(counted, 100, budgetEnv);
+    await settle();
+
+    // Four requests, two writes: the first opens the interval carrying itself,
+    // the second carries everything counted since.
+    expect(batches).toEqual([1, 3]);
+  });
+
   it("flips every route to the unavailable signal once the threshold is crossed", async () => {
-    const mock = upstream({ body });
-    await getCapped(route, 1);
+    const mock = upstream();
+    await report(1);
+    await report(1);
 
     for (const path of ["/v1/worldstate", "/v1/snapshot", "/v1/wfm-items", "/v1/nonsense"]) {
       const response = await getCapped(path, 1);
@@ -774,7 +841,7 @@ describe("daily budget", () => {
 
   it("keeps answering health while standing down", async () => {
     upstream();
-    await getCapped(route, 0);
+    await report(0);
 
     const response = await getCapped("/v1/health", 0);
 
@@ -782,13 +849,61 @@ describe("daily budget", () => {
   });
 
   it("restores service at the daily reset", async () => {
-    upstream({ body }, { body });
-    await getCapped(route, 1);
-    expect((await getCapped(route, 1)).status).toBe(503);
+    upstream({ body });
+    const limit = 2;
+    for (let i = 0; i <= limit; i++) await report(limit);
+    expect((await getCapped(route, limit)).status).toBe(503);
 
     advance(24 * 60 * 60);
+    // The first request of the new day is what carries the report that finds
+    // the counter reset; the one after it is served.
+    await report(limit);
 
-    expect((await getCapped(route, 1)).status).toBe(200);
+    expect((await getCapped(route, limit)).status).toBe(200);
+  });
+
+  it("marks the crossing once, however far past the threshold the batch carried it", async () => {
+    upstream();
+    const limit = 3;
+
+    const under = await logsOf(() => report(limit));
+    // Three more counted while the isolate held its last verdict, so the report
+    // that follows steps the total from 2 straight to 5.
+    const crossing = await logsOf(async () => {
+      await report(limit, 3);
+      await report(limit);
+    });
+    const after = await logsOf(() => report(limit));
+
+    expect(eventLines(under, "budget_exceeded")).toEqual([]);
+    expect(eventLines(crossing, "budget_exceeded")).toEqual([
+      { event: "budget_exceeded", threshold: limit, count: 5 },
+    ]);
+    expect(eventLines(after, "budget_exceeded")).toEqual([]);
+  });
+
+  it("keeps the last verdict when the durable object cannot be reached", async () => {
+    upstream({ body });
+    const broken = {
+      ...capped(1),
+      BUDGET: {
+        idFromName: () => {
+          throw new Error("durable object unreachable");
+        },
+      },
+    } as unknown as Env;
+
+    // Nothing known yet, so the request is served: an unreachable counter is an
+    // outage of the brake, not evidence the budget was spent.
+    expect((await getCapped(route, 1, broken)).status).toBe(200);
+    await settle();
+
+    await report(1);
+    await report(1);
+    advance(FLUSH_SECONDS);
+
+    // And once the brake is on, an unreachable object does not lift it.
+    expect((await getCapped(counted, 1, broken)).status).toBe(503);
   });
 
   it("skips the cron prewarm over budget", async () => {
@@ -796,6 +911,23 @@ describe("daily budget", () => {
     const ctx = createExecutionContext();
 
     await worker.scheduled?.(createScheduledController(), capped(0), ctx);
+    await waitOnExecutionContext(ctx);
+
+    expect(mock.calls).toEqual([]);
+  });
+
+  it("asks the object itself on a cron tick rather than trusting a stale verdict", async () => {
+    const mock = upstream();
+    const limit = 5;
+    await report(limit);
+
+    // Spent elsewhere — another isolate, in the deployed worker. This one still
+    // believes it is under budget.
+    await env.BUDGET.get(env.BUDGET.idFromName("daily")).spend(limit, 10);
+    expect((await getCapped(counted, limit)).status).toBe(404);
+
+    const ctx = createExecutionContext();
+    await worker.scheduled?.(createScheduledController(), capped(limit), ctx);
     await waitOnExecutionContext(ctx);
 
     expect(mock.calls).toEqual([]);
@@ -975,25 +1107,5 @@ describe("operator log", () => {
         served: "unreachable",
       },
     ]);
-  });
-
-  it("marks the budget crossing once, not on every request after it", async () => {
-    upstream({ body: { WorldSeed: "seed" } });
-    const capped = { ...env, DAILY_REQUEST_BUDGET: 1 } as unknown as Env;
-    const request = () => {
-      const ctx = createExecutionContext();
-      contexts.push(ctx);
-      return worker.fetch(new Request(`${WORKER}/v1/worldstate`), capped, ctx);
-    };
-
-    const under = await logsOf(request);
-    const crossing = await logsOf(request);
-    const after = await logsOf(request);
-
-    expect(eventLines(under, "budget_exceeded")).toEqual([]);
-    expect(eventLines(crossing, "budget_exceeded")).toEqual([
-      { event: "budget_exceeded", threshold: 1, count: 2 },
-    ]);
-    expect(eventLines(after, "budget_exceeded")).toEqual([]);
   });
 });
