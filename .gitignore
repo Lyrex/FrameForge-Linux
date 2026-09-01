@@ -16,8 +16,9 @@ dist-ssr
 .claude/
 CLAUDE.md
 
-# Release tooling — internal script, not needed by contributors
+# Release tooling and personal scripts — internal, not for contributors
 build-and-release.bat
+backup-memory.bat
 
 # Tauri build output
 src-tauri/target/
