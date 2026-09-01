@@ -104,7 +104,7 @@
       "endpoints": [
         "https://github.com/Lyrex/FrameForge-Linux/releases/latest/download/latest.json"
       ],
-      "pubkey": "PLACEHOLDER-RUN-scripts/setup-updater-signing.sh",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU2MDc5N0JGQTU1M0RCOTAKUldTUTIxT2x2NWNINW5nMHRqQngzeEdQNTVwdjNxd1lXRFg4MVhlR3Mwc1hKZTNkUXNFQ3V4ZkkK",
       "windows": {
         "installMode": "passive"
       }
