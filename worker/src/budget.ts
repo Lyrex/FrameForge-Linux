@@ -99,12 +99,22 @@ async function flush(env: Env): Promise<void> {
   try {
     const stub = env.BUDGET.get(env.BUDGET.idFromName(SINGLETON));
     verdict = await stub.spend(Number(env.DAILY_REQUEST_BUDGET), requests);
-  } catch {
+  } catch (error) {
     // Losing the counter must not lock everybody out: an unreachable object is
     // an outage of the brake, not evidence that the budget was spent, so the
     // last verdict stands. The batch it was carrying is lost with it, which
     // undercounts by one interval. The cost ceiling this gives up is bounded by
     // the platform's own limits.
+    //
+    // It still gets a line: the platform's own error for a failed object call
+    // says nothing about which worker made it or what it was carrying.
+    console.log(
+      JSON.stringify({
+        event: "budget_flush_failed",
+        requests,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
   }
 }
 
