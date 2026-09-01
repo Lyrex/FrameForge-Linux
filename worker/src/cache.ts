@@ -134,12 +134,20 @@ async function fetchThrough(
   }
 
   if (!upstream.ok) {
-    if (upstream.status >= 500) {
+    // 401, 403 and 429 are about the caller rather than the item: an upstream
+    // that rates or blocks by IP is answering the worker's shared egress
+    // address, which carries traffic the worker never sent. Relaying that to
+    // the client reports a block on an item that is not blocked, so it counts
+    // as a failure to reach the upstream and the client goes direct — from an
+    // address of its own, which is not the one being refused.
+    const refusedTheWorker = upstream.status === 401 || upstream.status === 403 || upstream.status === 429;
+    if (upstream.status >= 500 || refusedTheWorker) {
       logUpstreamDown(upstreamUrl, upstream.status, cached ? "stale" : "passthrough");
       if (cached) return clientResponse(request, cached, "stale", ttlSeconds);
+      if (refusedTheWorker) return jsonError(502, "upstream_unreachable");
     }
-    // A 4xx is the upstream's answer about this item, not a failure to reach
-    // it — the client needs to see it. It is deliberately not cached.
+    // Any other 4xx is the upstream's answer about this item, not a failure to
+    // reach it — the client needs to see it. It is deliberately not cached.
     return new Response(upstream.body, {
       status: upstream.status,
       headers: { "Content-Type": contentTypeOf(upstream) },

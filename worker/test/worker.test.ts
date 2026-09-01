@@ -267,6 +267,38 @@ describe("stale-if-error", () => {
     expect(response.status).toBe(500);
     expect(response.headers.get("X-FrameForge-Cache")).toBeNull();
   });
+
+  // Captured against api.warframe.com, which refuses the worker's egress
+  // address while answering the same request from a client's own address.
+  it("treats an upstream that blocks the worker as unreachable, not as an answer", async () => {
+    upstream({ status: 403, body: { error: "forbidden" } });
+
+    const response = await get("/v1/worldstate");
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({ error: "upstream_unreachable" });
+  });
+
+  it("serves the last worldstate when the upstream starts blocking the worker", async () => {
+    const worldstate = { WorldSeed: "abc" };
+    upstream({ body: worldstate }, { status: 403, body: { error: "forbidden" } });
+    await get("/v1/worldstate");
+
+    expireCache();
+    const stale = await get("/v1/worldstate");
+
+    expect(stale.status).toBe(200);
+    expect(stale.headers.get("X-FrameForge-Cache")).toBe("stale");
+    await expect(stale.json()).resolves.toEqual(worldstate);
+  });
+
+  it("still relays a 404, which is the upstream's answer about the item", async () => {
+    upstream({ status: 404, body: { error: "not_found" } });
+
+    const response = await get("/v1/wfm/items/not_a_real_item/statistics");
+
+    expect(response.status).toBe(404);
+  });
 });
 
 // The drop catalog is the one that makes this worth having: ~30 MB a client
