@@ -6,7 +6,16 @@
   // Every invocation is kept. Sampling below 1 would make the hit rate and the
   // prewarm failure count estimates rather than counts, and at this request
   // volume the whole stream fits inside the plan's included ingest.
-  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  //
+  // `invocation_logs` stays on despite each request already writing a line of
+  // its own: the runtime's own line is what carries an uncaught exception and
+  // its stack, which is how a tick dying inside the prewarm becomes visible at
+  // all.
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "head_sampling_rate": 1, "invocation_logs": true }
+  },
 
   // Holds the price snapshot and the prewarm cursor. Both are public,
   // item-keyed data: nothing here is per user.
