@@ -6,6 +6,7 @@ import { HelpTip } from "./HelpTip";
 import WfmTrading from "./WfmTrading";
 import ItemMarketPopup from "./ItemMarketPopup";
 import type { InventoryItem } from "./App";
+import type { GradedRiven } from "./rivenTypes";
 import polMadurai  from "./assets/polarity/madurai.svg";
 import polVazarin  from "./assets/polarity/vazarin.svg";
 import polNaramon  from "./assets/polarity/naramon.svg";
@@ -51,8 +52,8 @@ interface RecipeComponent {
   components: RecipeComponent[];
 }
 
-interface BlobRivenStat { tag: string; value: number; }
-interface BlobRivenEntry {
+export interface BlobRivenStat { tag: string; value: number; }
+export interface BlobRivenEntry {
   item_id:   string;
   item_type: string;
   mod_name:  string;   // pre-computed by Rust, persisted in cache
@@ -1008,7 +1009,7 @@ const RIVEN_COMPLICATION: Record<string, string> = {
   "/Lotus/Types/Challenges/Complications/ResetOnNewDay":            "in one day",
 };
 
-function formatChallengeName(type: string | null, complication: string | null): string {
+export function formatChallengeName(type: string | null, complication: string | null): string {
   const challenge = type
     ? (RIVEN_CHALLENGE[type] ?? (type.split("/").pop()?.replace(/([A-Z])/g, " $1").trim() ?? "Unknown challenge"))
     : "Unknown challenge";
@@ -1250,7 +1251,7 @@ interface SellModalProps {
   onSuccess:  () => void;
 }
 
-function RivenSellModal({ riven, weaponName, disposition, category, onClose, onSuccess }: SellModalProps) {
+export function RivenSellModal({ riven, weaponName, disposition, category, onClose, onSuccess }: SellModalProps) {
   const [saleType,    setSaleType]    = useState<"auction" | "direct">("auction");
   const [startPrice,  setStartPrice]  = useState("100");
   const [buyoutPrice, setBuyoutPrice] = useState("");
@@ -1494,6 +1495,13 @@ function VeiledSellModal({ category, count, onClose, onSuccess }: VeiledSellModa
 }
 
 
+function verdictColor(verdict: string): string {
+  if (verdict.startsWith("GREAT"))    return "var(--green)";
+  if (verdict.startsWith("GOOD"))     return "#a8d8a8";
+  if (verdict.startsWith("MEDIOCRE")) return "#f0c040";
+  return "var(--red)";
+}
+
 const RivensTab = memo(function RivensTab({ rivens, allItems, wfmUsername, onAuctionPosted }: {
   rivens: BlobRivenEntry[];
   allItems: CatalogItem[];
@@ -1503,10 +1511,20 @@ const RivensTab = memo(function RivensTab({ rivens, allItems, wfmUsername, onAuc
   const [dispositions, setDispositions] = useState<Record<string, number>>({});
   const [sellTarget,   setSellTarget]   = useState<BlobRivenEntry | null>(null);
   const [sellVeiled,   setSellVeiled]   = useState<BlobRivenEntry | null>(null);
+  const [grades,       setGrades]       = useState<Record<string, GradedRiven["analysis"]>>({});
 
   useEffect(() => {
     invoke<Record<string, number>>("get_weapon_dispositions")
       .then(setDispositions)
+      .catch(() => {});
+  }, []);
+
+  // Grading belongs to the backend; this tab only shows the verdict it hands
+  // back. When the call fails the cards stay unbadged rather than the selling
+  // view breaking.
+  useEffect(() => {
+    invoke<GradedRiven[]>("grade_owned_rivens")
+      .then(graded => setGrades(Object.fromEntries(graded.map(g => [g.item_id, g.analysis]))))
       .catch(() => {});
   }, []);
 
@@ -1550,6 +1568,17 @@ const RivensTab = memo(function RivensTab({ rivens, allItems, wfmUsername, onAuc
                 <div key={r.item_id || i} className="riven-card">
                   <div className="riven-card-header">
                     <span className="riven-weapon">{weaponName}{(() => { const mn = (r.mod_name || rivenModName(r)); return mn ? <> <span className="riven-mod-name">{mn.replace(/^./, c => c.toUpperCase())}</span></> : null; })()}</span>
+                    {(() => {
+                      const analysis = grades[r.item_id];
+                      if (!analysis) return null;
+                      // Only the leading word fits a card header; the full verdict stays in the tooltip.
+                      return (
+                        <span className="riven-verdict-badge" style={{ color: verdictColor(analysis.verdict) }}
+                          title={`${analysis.verdict} (${Math.round(analysis.score * 100)}%)`}>
+                          {analysis.verdict.split("—")[0].trim()}
+                        </span>
+                      );
+                    })()}
                     <button className="riven-sell-btn" title={wfmUsername ? "Post auction on warframe.market" : "Login to WFM to sell"}
                       onClick={() => { if (wfmUsername) setSellTarget(r); else alert("Log in to warframe.market first (Market → Trading tab)."); }}>
                       Sell ↗

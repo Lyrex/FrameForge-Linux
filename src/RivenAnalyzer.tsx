@@ -2,6 +2,10 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { checkRivenNow } from "./App";
+import RivenOwned from "./RivenOwned";
+import RivenSearch from "./RivenSearch";
+import { RivenSellModal, type BlobRivenEntry } from "./MarketHelper";
+import type { GradedRiven } from "./rivenTypes";
 import "./RivenAnalyzer.css";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -77,6 +81,40 @@ function ScoreBar({ score }: { score: number }) {
   );
 }
 
+// ── Selling an owned riven ────────────────────────────────────────────────────
+
+/// Hands a graded riven to the Market Helper's posting flow. That flow works from
+/// the scanner's own shape and recomputes each stat from its raw roll, so the
+/// graded stats are unwound back into it rather than posted as displayed values.
+function RivenSellHandoff({ riven, onClose }: { riven: GradedRiven; onClose: () => void }) {
+  const entry: BlobRivenEntry = {
+    item_id:   riven.item_id,
+    item_type: riven.item_type,
+    mod_name:  riven.mod_name,
+    riven_state: riven.state,
+    compat:    riven.compat,
+    challenge_type: riven.challenge,
+    challenge_complication: riven.complication,
+    lvl_req:   riven.mastery_level,
+    polarity:  riven.polarity,
+    buffs:     riven.buffs.map(s => ({ tag: s.tag, value: s.raw })),
+    curses:    riven.curses.map(s => ({ tag: s.tag, value: s.raw })),
+    mod_rank:  riven.mod_rank,
+    count:     riven.count,
+    rerolls:   riven.rerolls,
+  };
+  return (
+    <RivenSellModal
+      riven={entry}
+      weaponName={riven.weapon_name ?? ""}
+      disposition={riven.disposition}
+      category={riven.category}
+      onClose={onClose}
+      onSuccess={onClose}
+    />
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function RivenAnalyzer() {
@@ -86,6 +124,9 @@ export default function RivenAnalyzer() {
   const [selectedWeapon, setSelectedWeapon] = useState("");
   const [analysis, setAnalysis]       = useState<RivenAnalysis | null>(null);
   const [_rollCount, setRollCount]     = useState(0);
+  const [tab, setTab]                 = useState<"analyzer" | "owned" | "search">("analyzer");
+  const [sellTarget, setSellTarget]   = useState<GradedRiven | null>(null);
+  const [canSell, setCanSell]         = useState(false);
 
   // Unified stat builder: each stat has a name, value, sign, and format
   const [builtStats, setBuiltStats]   = useState<StatEntry[]>([]);
@@ -141,6 +182,14 @@ export default function RivenAnalyzer() {
   }, []);
 
   useEffect(() => { loadSavedRivens(); }, [loadSavedRivens]);
+
+  // Posting an auction needs a warframe.market session; App.tsx loads the JWT on
+  // startup, so this answers even before the Trading tab has been opened.
+  useEffect(() => {
+    invoke<[string, string] | null>("wfm_get_session")
+      .then(session => setCanSell(!!session))
+      .catch(() => setCanSell(false));
+  }, []);
 
   const saveCurrentRoll = async () => {
     if (!selectedWeapon) return;
@@ -261,6 +310,29 @@ export default function RivenAnalyzer() {
     setEditingId(null);
   };
 
+  // Carry an owned riven into the analyzer form. The weapon has to come from the
+  // grade when there is one: that name is the wanted-stats database's own
+  // spelling, and the lookup is by name. Stats whose tag has no analyzer name
+  // are dropped — the analyzer has no way to score them.
+  const openInAnalyzer = (riven: GradedRiven) => {
+    const weapon = (riven.analysis?.weapon ?? riven.weapon_name ?? "").toLowerCase();
+    const stats: StatEntry[] = [...riven.buffs, ...riven.curses]
+      .filter(s => s.analyzer_name)
+      .map(s => ({
+        name: s.analyzer_name as string,
+        value: s.unit === "x" ? (1 + s.value).toFixed(2) : (s.value * 100).toFixed(1),
+        positive: s.positive,
+        useMultiplier: s.unit === "x",
+      }));
+    setSelectedWeapon(weapon);
+    setWeaponInput(weapon.charAt(0).toUpperCase() + weapon.slice(1));
+    setFiltered([]);
+    setEditingId(null);
+    setRollCount(0);
+    setBuiltStats(stats);
+    setTab("analyzer");
+  };
+
   const runAnalysis = useCallback(async () => {
     if (!selectedWeapon || builtStats.length === 0) { setAnalysis(null); return; }
     const result = await invoke<RivenAnalysis | null>("analyze_riven", {
@@ -316,6 +388,16 @@ export default function RivenAnalyzer() {
         }}>📋</button>
       </div>
 
+      <div className="market-tab-strip">
+        <button className={tab === "analyzer" ? "active" : ""} onClick={() => setTab("analyzer")}>Analyzer</button>
+        <button className={tab === "owned" ? "active" : ""} onClick={() => setTab("owned")}>Owned</button>
+        <button className={tab === "search" ? "active" : ""} onClick={() => setTab("search")}>Search</button>
+      </div>
+
+      {tab === "owned"  && <RivenOwned onOpenInAnalyzer={openInAnalyzer} onSell={setSellTarget} canSell={canSell} />}
+      {tab === "search" && <RivenSearch />}
+
+      {tab === "analyzer" && <>
       {/* Weapon search */}
       <div className="riven-weapon-wrap">
         <input
@@ -566,6 +648,11 @@ export default function RivenAnalyzer() {
             </div>
           )}
         </div>
+      )}
+      </>}
+
+      {sellTarget && (
+        <RivenSellHandoff riven={sellTarget} onClose={() => setSellTarget(null)} />
       )}
     </div>
   );

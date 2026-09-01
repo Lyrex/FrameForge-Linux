@@ -896,6 +896,35 @@ impl Wfm {
         Ok(list)
     }
 
+    /// Search public riven auctions. `params` are the v1 query pairs; the caller
+    /// builds them and reads the `payload.auctions` array back out.
+    ///
+    /// Deliberately session-free: browsing the market must work logged out. The
+    /// memo is keyed on the whole query, so re-running a search after tweaking
+    /// and undoing one filter costs nothing.
+    pub fn search_riven_auctions(&self, params: &[(String, String)]) -> Result<serde_json::Value, String> {
+        let key = params
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("&");
+        self.memoized(&format!("auctions/search?{key}"), || {
+            self.auction_wait();
+            let mut req = ureq::get(&format!("{}/v1/auctions/search", API_BASE))
+                .header("language", "en")
+                .header("platform", "pc")
+                .header("User-Agent", USER_AGENT);
+            for (k, v) in params {
+                req = req.query(k, v);
+            }
+            req.call()
+                .map_err(|e| format!("Search auctions: {}", e))?
+                .body_mut()
+                .read_json()
+                .map_err(|e| format!("Parse: {}", e))
+        })
+    }
+
     /// Post a revealed riven as an auction. Returns the full response JSON; the
     /// caller extracts the new auction id for its own bookkeeping.
     #[allow(clippy::too_many_arguments)]

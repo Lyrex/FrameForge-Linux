@@ -25,6 +25,9 @@ mod overlay_linux;
 mod paths;
 mod refresh;
 mod resolver;
+mod riven_grade;
+mod riven_market;
+mod riven_stats;
 mod updater;
 mod wfcd;
 mod wfm;
@@ -9277,6 +9280,8 @@ pub fn run() {
             get_riven_weapons,
             reload_riven_database,
             analyze_riven,
+            riven_grade::grade_owned_rivens,
+            riven_market::search_riven_auctions,
             ocr_riven_screen,
             get_riven_session_log,
             wfm_debug_dump,
