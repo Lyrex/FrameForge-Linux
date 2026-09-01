@@ -73,7 +73,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYxMEVGNDAzRkY2MzE1MEQKUldRTkZXUC9BL1FPWWU1dUFMRGVSdGpmQmJwMjgvd21MYzZ6RzVxcVdkSi9RalRKdmRPK3JqV1UK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM4MURFOTcyNDY0REI4MEIKUldRTHVFMUdjdWtkeU5EU2Z2c0FNSWNGUmRIdG53b3BETVYxaFBIeG9ENFVHYnV1MVQ5MHJHY3oK",
       "endpoints": [
         "https://github.com/WyrmStudios/FrameForge/releases/latest/download/latest.json"
       ]
