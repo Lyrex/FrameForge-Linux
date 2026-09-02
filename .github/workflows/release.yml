@@ -112,58 +112,6 @@ jobs:
             src-tauri/target/release/bundle/appimage/*.AppImage.zsync
             src-tauri/target/release/bundle/appimage/*.AppImage.sig
 
-  windows:
-    if: github.event_name == 'push'
-    # The release action can only add to a draft it can already see, so run
-    # after Linux rather than racing it to create one for the same tag.
-    needs: linux
-    runs-on: windows-latest
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
-
-      - name: Check the tag matches the configured version
-        shell: bash
-        run: bash scripts/check-version.sh "${GITHUB_REF#refs/tags/v}"
-
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # tag=v6.0.9
-        with:
-          version: 11
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # tag=v7.0.0
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Install rust stable
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # branch=master
-        with:
-          toolchain: stable
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # tag=v2.9.1
-        with:
-          workspaces: src-tauri
-
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
-
-      # One Windows installer, because the manifest names one artifact per
-      # platform and a second would only be a coin toss.
-      - name: Build the installer
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm tauri build --bundles nsis
-
-      - name: Add to the drafted release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # tag=v3.0.2
-        with:
-          draft: true
-          name: ${{ github.ref_name }}
-          files: |
-            src-tauri/target/release/bundle/nsis/*-setup.exe
-            src-tauri/target/release/bundle/nsis/*-setup.exe.sig
-
   manifest:
     if: github.event_name == 'release'
     runs-on: ubuntu-latest

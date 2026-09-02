@@ -26,10 +26,9 @@ for sig in "$sig_dir"/*.sig; do
     [ -e "$sig" ] || continue
     asset=$(basename "${sig%.sig}")
     case "$asset" in
-        # x86_64 only: nothing else is built, and a key for an architecture
+        # Linux x86_64 only: nothing else is built, and a key for a platform
         # with no artifact would offer an update the updater cannot download.
         *.AppImage) key='linux-x86_64' ;;
-        *-setup.exe) key='windows-x86_64' ;;
         *) continue ;;
     esac
     platforms=$(jq -n \
@@ -40,14 +39,11 @@ for sig in "$sig_dir"/*.sig; do
         '$acc + {($key): {url: $url, signature: $signature}}')
 done
 
-# A one-platform manifest would tell the missing platform's users that they
-# are up to date.
-for key in linux-x86_64 windows-x86_64; do
-    if [ "$(jq --arg key "$key" 'has($key)' <<<"$platforms")" != true ]; then
-        echo "::error::no updater signature for $key in $sig_dir" >&2
-        exit 1
-    fi
-done
+# An empty manifest would tell every user that they are up to date.
+if [ "$(jq 'has("linux-x86_64")' <<<"$platforms")" != true ]; then
+    echo "::error::no updater signature for linux-x86_64 in $sig_dir" >&2
+    exit 1
+fi
 
 jq -n \
     --arg version "$version" \
