@@ -36,6 +36,7 @@ jobs:
           filters: |
             rust:
               - 'src-tauri/**'
+              - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
               - '.github/actions/linux-build-deps/**'
               - 'scripts/fetch-tessdata.sh'
@@ -70,14 +71,14 @@ jobs:
 
       - uses: ./.github/actions/linux-build-deps
 
-      - name: Install rust stable
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # branch=master
-        with:
-          toolchain: stable
-
+      # Release profile so the release workflow can restore this cache. Only
+      # main saves: a cache saved on a tag is unreadable from any other ref,
+      # and per-PR entries at ~1 GB each evicted main's under the 10 GB limit.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # tag=v2.9.2
         with:
           workspaces: src-tauri
+          shared-key: linux-release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The script pins the model by checksum, so hashing the script identifies
       # the model, and the 23 MB download happens once per model change.
@@ -94,15 +95,10 @@ jobs:
       - name: Stand in for the frontend build
         run: mkdir -p dist
 
-      - name: cargo build --locked
-        run: cargo build --manifest-path src-tauri/Cargo.toml --locked
-
+      # `tauri build` adds the custom-protocol feature, so it is passed here too
+      # or tauri and everything above it would miss the cache.
       - name: cargo test --locked
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
-
-      # https://github.com/rust-lang/cargo/issues/6669
-      - name: cargo test --doc
-        run: cargo test --doc --manifest-path src-tauri/Cargo.toml --locked
+        run: cargo test --manifest-path src-tauri/Cargo.toml --profile release --features tauri/custom-protocol --locked
 
   frontend:
     needs: changes

@@ -7,7 +7,9 @@ edition = "2021"
 
 [lib]
 name = "warframe_companion_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Tauri's template adds staticlib and cdylib for the mobile runtimes; each is
+# another full link per build.
+crate-type = ["lib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -23,8 +25,7 @@ regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 ureq = { version = "2", features = ["json"] }
-tungstenite = { version = "0.26", features = ["native-tls"] }
-native-tls = "0.2"
+tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 whirlpool = "0.10"
 lzma-rs = "0.3"
 memchr = "2"
@@ -37,9 +38,19 @@ tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2.7.3"
 tauri-plugin-updater = "2"
 
+# Incremental codegen units follow modules, and lib.rs is one 10k-line module:
+# an edit anywhere in it rebuilds in 16 s at opt-level 1, 4 s at 0. Deps stay
+# at 1 so scans and OCR remain usable in dev.
 [profile.dev]
+opt-level = 0
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
 opt-level = 1
-incremental = false
+
+# 8 % less compile CPU than the default 3; nothing here is profiled to need 3.
+[profile.release]
+opt-level = 2
 
 [target.'cfg(windows)'.dependencies]
 # ── BEGIN ocrs fallback ─────────────────────────────────────────────────────

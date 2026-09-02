@@ -590,7 +590,7 @@ impl Wfm {
         let token = self.access_token()?;
         let status_for_ws = status.to_string();
 
-        use tungstenite::{client::IntoClientRequest, stream::MaybeTlsStream, Message};
+        use tungstenite::{client::IntoClientRequest, Message};
         use std::net::TcpStream;
 
         const HOST: &str = "ws.warframe.market:443";
@@ -614,16 +614,6 @@ impl Wfm {
             .into_client_request()
             .map_err(|e| format!("WS request: {}", e))?;
         let (mut ws, _) = tungstenite::client_tls(req, tcp).map_err(|e| format!("WS connect: {}", e))?;
-
-        match ws.get_ref() {
-            MaybeTlsStream::Plain(s) => {
-                let _ = s.set_read_timeout(Some(RW_TIMEOUT));
-            }
-            MaybeTlsStream::NativeTls(s) => {
-                let _ = s.get_ref().set_read_timeout(Some(RW_TIMEOUT));
-            }
-            _ => {}
-        }
 
         let send = |ws: &mut tungstenite::WebSocket<_>, route: &str, payload: serde_json::Value| {
             let msg = serde_json::json!({ "route": route, "payload": payload, "id": route }).to_string();

@@ -1,0 +1,4 @@
+# Pinned so a new stable does not silently invalidate every CI cache and turn
+# the next release into a cold build.
+[toolchain]
+channel = "1.98.0"
