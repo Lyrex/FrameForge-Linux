@@ -9935,7 +9935,7 @@ pub fn run() {
         .setup(|app| {
             use tauri::Manager;
 
-            logging::init(app.handle());
+            logging::init();
 
             // Every Linux bundle carries its own Tesseract language model. Point
             // the OCR engine at it before anything can call it.

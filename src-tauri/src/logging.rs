@@ -3,7 +3,6 @@
 
 use std::sync::OnceLock;
 
-use tauri::Manager;
 use tracing_subscriber::{
     EnvFilter, fmt,
     layer::{Layer, SubscriberExt},
@@ -17,15 +16,12 @@ static FILE_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceL
 
 /// Installs the global subscriber, log-crate bridge and panic hook. Safe to
 /// call more than once; later calls do nothing.
-pub fn init(app: &tauri::AppHandle) {
+pub fn init() {
     if FILE_GUARD.get().is_some() {
         return;
     }
 
-    let log_dir = app
-        .path()
-        .app_log_dir()
-        .expect("Tauri always resolves a log dir on supported platforms");
+    let log_dir = crate::paths::state_dir().join("logs");
     let _ = std::fs::create_dir_all(&log_dir);
 
     let appender = tracing_appender::rolling::Builder::new()
