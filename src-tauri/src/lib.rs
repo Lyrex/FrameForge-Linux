@@ -1272,13 +1272,23 @@ fn save_api_inventory(
         .and_then(|json| atomic_write(&path, json.as_bytes()).map_err(|e| e.to_string()))
 }
 
+fn whirlpool_hex(password: &str) -> String {
+    use std::fmt::Write as _;
+    use whirlpool::{Digest, Whirlpool};
+    Whirlpool::digest(password.as_bytes())
+        .iter()
+        .fold(String::with_capacity(128), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
 /// Login to Warframe API with email + password (same flow as mobile companion app).
 /// Password is hashed with Whirlpool before sending — never sent in plaintext.
 /// Returns (accountId, nonce) for subsequent API calls.
 #[tauri::command]
 async fn warframe_login(email: String, password: String) -> Result<(String, String), String> {
-    use whirlpool::{Whirlpool, Digest};
-    let hash = format!("{:x}", Whirlpool::digest(password.as_bytes()));
+    let hash = whirlpool_hex(&password);
     let now = cache::now_unix();
 
     // Try multiple endpoint + body format variants.
@@ -1302,15 +1312,23 @@ async fn warframe_login(email: String, password: String) -> Result<(String, Stri
 
     let mut errors: Vec<String> = Vec::new();
     for (url, ct, body) in candidates {
-        let result = ureq::post(url)
-            .set("X-Titanium-Id", "9bbd1ddd-f7f2-402d-9777-873f458cb50c")
-            .set("X-Requested-With", "XMLHttpRequest")
-            .set("Content-Type", ct)
-            .set("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 8.1.0)")
-            .send_string(body);
+        let result = ureq::post(*url)
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .header("X-Titanium-Id", "9bbd1ddd-f7f2-402d-9777-873f458cb50c")
+            .header("X-Requested-With", "XMLHttpRequest")
+            .header("Content-Type", *ct)
+            .header("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 8.1.0)")
+            .send(*body);
         match result {
-            Ok(resp) => {
-                let text = resp.into_string().unwrap_or_default();
+            Ok(mut resp) => {
+                let code = resp.status().as_u16();
+                let text = resp.body_mut().read_to_string().unwrap_or_default();
+                if !(200..300).contains(&code) {
+                    errors.push(format!("{}: HTTP {}: {}", url, code, truncate_chars(&text, 200)));
+                    continue;
+                }
                 let json: serde_json::Value = match serde_json::from_str(&text) {
                     Ok(v) => v,
                     Err(_) => { errors.push(format!("{}: non-JSON: {}", url, truncate_chars(&text, 200))); continue; }
@@ -1321,10 +1339,6 @@ async fn warframe_login(email: String, password: String) -> Result<(String, Stri
                     return Ok((id, nonce));
                 }
                 errors.push(format!("{}: rejected: {}", url, truncate_chars(&text, 300)));
-            }
-            Err(ureq::Error::Status(code, resp)) => {
-                let body = resp.into_string().unwrap_or_default();
-                errors.push(format!("{}: HTTP {}: {}", url, code, truncate_chars(&body, 200)));
             }
             Err(e) => { errors.push(format!("{}: {}", url, e)); }
         }
@@ -1365,12 +1379,15 @@ async fn fetch_warframe_inventory(account_id: String, nonce: String, steam_id: S
 
     let mut last_err = String::new();
     for url in &endpoints {
-        let mut req = ureq::post(url);
-        for (k, v) in &headers { req = req.set(k, v); }
-        match req.send_string(&body) {
-            Ok(resp) => {
-                let status = resp.status();
-                let text = resp.into_string().unwrap_or_default();
+        let mut req = ureq::post(*url)
+            .config()
+            .http_status_as_error(false)
+            .build();
+        for (k, v) in &headers { req = req.header(*k, *v); }
+        match req.send(&body) {
+            Ok(mut resp) => {
+                let status = resp.status().as_u16();
+                let text = resp.body_mut().read_to_string().unwrap_or_default();
                 if log_enabled {
                     let endpoint_name = url.split('/').last().unwrap_or("response");
                     let ts   = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
@@ -2642,9 +2659,9 @@ fn load_riven_csv_from_url() -> Result<HashMap<String, RivenEntry>, String> {
             RIVEN_SHEET_ID, gid
         );
         match ureq::get(&url)
-            .set("User-Agent", "FrameForge/3.2.0")
+            .header("User-Agent", "FrameForge/3.2.0")
             .call().map_err(|e| e.to_string())
-            .and_then(|r| r.into_string().map_err(|e| e.to_string()))
+            .and_then(|mut r| r.body_mut().read_to_string().map_err(|e| e.to_string()))
         {
             Ok(csv) => { combined.extend(parse_riven_csv(&csv)); }
             Err(e) => { warn!(gid, error = %e, "failed to load riven sheet tab"); }
@@ -6798,7 +6815,7 @@ fn get_lang() -> &'static std::collections::HashMap<String, String> {
         ureq::get("https://raw.githubusercontent.com/WFCD/warframe-worldstate-data/master/data/languages.json")
             .call()
             .ok()
-            .and_then(|r| r.into_json::<serde_json::Value>().ok())
+            .and_then(|mut r| r.body_mut().read_json::<serde_json::Value>().ok())
             .and_then(|v| v.as_object().map(|obj| {
                 obj.iter().filter_map(|(k, val)| {
                     let text = val.get("value")?.as_str()?;
@@ -6834,7 +6851,7 @@ fn get_sol_nodes() -> &'static std::collections::HashMap<String, SolNode> {
         ureq::get("https://raw.githubusercontent.com/WFCD/warframe-worldstate-data/master/data/solNodes.json")
             .call()
             .ok()
-            .and_then(|r| r.into_json::<serde_json::Value>().ok())
+            .and_then(|mut r| r.body_mut().read_json::<serde_json::Value>().ok())
             .and_then(|v| v.as_object().map(|obj| {
                 obj.iter().filter_map(|(k, val)| {
                     let display = val.get("value")?.as_str()?.to_string();
@@ -7901,11 +7918,14 @@ async fn fetch_worldstate(state: State<'_, AppState>) -> Result<serde_json::Valu
 /// Pull the raw worldstate and the Steam news that goes with it.
 fn fetch_worldstate_upstream() -> Result<(serde_json::Value, serde_json::Value), String> {
     let raw = ureq::get("https://api.warframe.com/cdn/worldState.php")
-        .set("User-Agent", "FrameForge/3.2.0")
-        .timeout(std::time::Duration::from_secs(20))
+        .header("User-Agent", "FrameForge/3.2.0")
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(20)))
+        .build()
         .call()
         .map_err(|e| format!("worldstate fetch failed: {}", e))?
-        .into_json::<serde_json::Value>()
+        .body_mut()
+        .read_json::<serde_json::Value>()
         .map_err(|e| format!("worldstate parse failed: {}", e))?;
 
     // Official Warframe community announcements only — warframestat.us/pc/news
@@ -7913,11 +7933,13 @@ fn fetch_worldstate_upstream() -> Result<(serde_json::Value, serde_json::Value),
     let news: Vec<serde_json::Value> = ureq::get(
         "https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?appid=230410&count=10&maxlength=500&format=json"
     )
-        .set("User-Agent", "FrameForge/3.2.0")
-        .timeout(std::time::Duration::from_secs(10))
+        .header("User-Agent", "FrameForge/3.2.0")
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .build()
         .call()
         .ok()
-        .and_then(|r| r.into_json::<serde_json::Value>().ok())
+        .and_then(|mut r| r.body_mut().read_json::<serde_json::Value>().ok())
         .and_then(|v| v["appnews"]["newsitems"].as_array().cloned())
         .unwrap_or_default()
         .into_iter()
@@ -8464,7 +8486,7 @@ async fn prewarm_image_cache(state: tauri::State<'_, AppState>) -> Result<(), St
                     let url = format!("https://cdn.warframestat.us/img/{}", name);
                     if let Ok(resp) = ureq::get(&url).call() {
                         let mut buf = Vec::new();
-                        if resp.into_reader().read_to_end(&mut buf).is_ok() && looks_like_image(&buf) {
+                        if resp.into_body().into_reader().read_to_end(&mut buf).is_ok() && looks_like_image(&buf) {
                             let _ = std::fs::write(dir.join(&name), buf);
                         }
                     }
@@ -8897,7 +8919,10 @@ fn fetch_relics_run_data(_etag: Option<&str>) -> Result<cache::Fetched<BulkPrice
     let items: Vec<serde_json::Value> = ureq::get(&format!("{}/items.json", PRICING_BASE))
         .call()
         .map_err(|e| format!("items.json: {e}"))?
-        .into_json()
+        .body_mut()
+        .with_config()
+        .limit(cache::BULK_JSON_BYTES)
+        .read_json()
         .map_err(|e| format!("items.json: {e}"))?;
     let name_to_slug: HashMap<String, String> = items
         .into_iter()
@@ -8912,7 +8937,10 @@ fn fetch_relics_run_data(_etag: Option<&str>) -> Result<cache::Fetched<BulkPrice
         ureq::get(&format!("{}/price_history_latest.json", PRICING_BASE))
             .call()
             .map_err(|e| format!("price_history_latest.json: {e}"))?
-            .into_json()
+            .body_mut()
+            .with_config()
+            .limit(cache::BULK_JSON_BYTES)
+            .read_json()
             .map_err(|e| format!("price_history_latest.json: {e}"))?;
 
     let mut prices = BulkPrices::default();
@@ -10321,6 +10349,15 @@ mod tests {
         assert_eq!(truncate_chars("éé", 3), "éé");
         assert_eq!(truncate_chars("éé", 1), "é");
         assert_eq!(truncate_chars("abc", 2), "ab");
+    }
+
+    #[test]
+    fn whirlpool_hex_matches_reference_vector() {
+        assert_eq!(
+            whirlpool_hex(""),
+            "19fa61d75522a4669b44e39c1d2e1726c530232130d407f89afee0964997f7a7\
+             3e83be698b288febcf88e3e03c4f0757ea8964e59b63d93708b138cc42a66eb3"
+        );
     }
 
     /// Verbatim OCR for the right-hand card of a reroll comparison screen (Kuva

@@ -22,6 +22,8 @@ use tracing::{debug, info, warn};
 const API_BASE: &str = "https://api.warframe.market";
 const USER_AGENT: &str = "FrameForge/3.2.0";
 
+type Response = ureq::http::Response<ureq::Body>;
+
 // ==============================================================================
 // Wire types
 // ==============================================================================
@@ -155,6 +157,7 @@ pub struct Wfm {
     /// once instead of racing. Entries are never removed: the map holds only
     /// a few keys for each item the user opens.
     memo_flights: Mutex<std::collections::HashMap<String, std::sync::Arc<Mutex<()>>>>,
+    agent: ureq::Agent,
 }
 
 impl Default for Wfm {
@@ -168,6 +171,10 @@ impl Default for Wfm {
             memo_flights: Mutex::new(std::collections::HashMap::new()),
             top_cache: Mutex::new(None),
             prime_sets_cache: Mutex::new(None),
+            agent: ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .build()
+                .new_agent(),
         }
     }
 }
@@ -263,26 +270,37 @@ impl Wfm {
 
     // ── Request building (internal) ───────────────────────────────────────────
 
-    fn request(&self, method: &str, path: &str, auth_header: &str) -> ureq::Request {
-        let url = format!("{}{}", API_BASE, path);
-        let req = match method {
-            "POST" => ureq::post(&url),
-            "PUT" => ureq::put(&url),
-            "PATCH" => ureq::patch(&url),
-            "DELETE" => ureq::delete(&url),
-            _ => ureq::get(&url),
-        };
-        req.set("Authorization", auth_header)
-            .set("Content-Type", "application/json")
-            .set("Accept", "application/json")
-            .set("language", "en")
-            .set("platform", "pc")
-            .set("User-Agent", USER_AGENT)
+    fn request(&self, method: &str, path: &str, auth_header: &str) -> ureq::http::request::Builder {
+        ureq::http::Request::builder()
+            .method(method)
+            .uri(format!("{}{}", API_BASE, path))
+            .header("Authorization", auth_header)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("language", "en")
+            .header("platform", "pc")
+            .header("User-Agent", USER_AGENT)
+    }
+
+    /// A non-2xx reply becomes `Err("HTTP <code>: <body>")`: WFM explains a
+    /// rejection in the body, which ureq's own status error discards.
+    fn run(&self, req: ureq::http::Request<impl ureq::AsSendBody>) -> Result<Response, String> {
+        let mut resp = self.agent.run(req).map_err(|e| e.to_string())?;
+        if resp.status().is_success() {
+            return Ok(resp);
+        }
+        let code = resp.status().as_u16();
+        let body = resp.body_mut().read_to_string().unwrap_or_default();
+        Err(format!("HTTP {code}: {body}"))
     }
 
     #[tracing::instrument(level = "debug", skip_all, fields(method = %method, path = %path))]
-    fn call(&self, method: &str, path: &str, auth_header: &str) -> Result<ureq::Response, ureq::Error> {
-        self.request(method, path, auth_header).call()
+    fn call(&self, method: &str, path: &str, auth_header: &str) -> Result<Response, String> {
+        let req = self
+            .request(method, path, auth_header)
+            .body(())
+            .map_err(|e| e.to_string())?;
+        self.run(req)
     }
 
     #[tracing::instrument(level = "debug", skip_all, fields(method = %method, path = %path))]
@@ -292,8 +310,13 @@ impl Wfm {
         path: &str,
         auth_header: &str,
         body: impl serde::Serialize,
-    ) -> Result<ureq::Response, ureq::Error> {
-        self.request(method, path, auth_header).send_json(body)
+    ) -> Result<Response, String> {
+        let body = serde_json::to_vec(&body).map_err(|e| e.to_string())?;
+        let req = self
+            .request(method, path, auth_header)
+            .body(body)
+            .map_err(|e| e.to_string())?;
+        self.run(req)
     }
 
     // ── Auth derivation (internal) ────────────────────────────────────────────
@@ -390,13 +413,14 @@ impl Wfm {
     fn me(&self, access_token: &str, err_ctx: &str) -> Result<serde_json::Value, String> {
         self.wait();
         ureq::get(&format!("{}/v2/me", API_BASE))
-            .set("Authorization", &format!("Bearer {}", access_token))
-            .set("language", "en")
-            .set("platform", "pc")
-            .set("User-Agent", USER_AGENT)
+            .header("Authorization", &format!("Bearer {}", access_token))
+            .header("language", "en")
+            .header("platform", "pc")
+            .header("User-Agent", USER_AGENT)
             .call()
             .map_err(|e| format!("{}: {}", err_ctx, e))?
-            .into_json()
+            .body_mut()
+            .read_json()
             .map_err(|e| format!("Parse: {}", e))
     }
 
@@ -476,21 +500,23 @@ impl Wfm {
     pub fn login(&self, email: &str, password: &str) -> Result<String, String> {
         let body = serde_json::json!({ "email": email, "password": password });
         self.wait();
-        let resp = ureq::post(&format!("{}/v1/auth/signin", API_BASE))
-            .set("Content-Type", "application/json")
-            .set("Authorization", "JWT")
-            .set("User-Agent", USER_AGENT)
-            .send_string(&body.to_string())
+        let mut resp = ureq::post(&format!("{}/v1/auth/signin", API_BASE))
+            .header("Content-Type", "application/json")
+            .header("Authorization", "JWT")
+            .header("User-Agent", USER_AGENT)
+            .send(&body.to_string())
             .map_err(|e| format!("Login failed: {}", e))?;
 
         let token = resp
-            .header("set-cookie")
+            .headers()
+            .get("set-cookie")
+            .and_then(|h| h.to_str().ok())
             .and_then(|h| h.split(';').next())
             .and_then(|s| s.strip_prefix("JWT="))
             .map(|s| s.to_string())
             .ok_or("No JWT token in response cookies")?;
 
-        let json: serde_json::Value = resp.into_json().map_err(|e| format!("Parse: {}", e))?;
+        let json: serde_json::Value = resp.body_mut().read_json().map_err(|e| format!("Parse: {}", e))?;
         let username = json["payload"]["user"]["ingame_name"].as_str().unwrap_or("Tenno").to_string();
         let status = json["payload"]["user"]["status"].as_str().unwrap_or("offline").to_string();
 
@@ -525,11 +551,12 @@ impl Wfm {
         });
         self.wait();
         let json: serde_json::Value = ureq::post(&format!("{}/auth/refresh", API_BASE))
-            .set("Content-Type", "application/json")
-            .set("User-Agent", USER_AGENT)
-            .send_string(&body.to_string())
+            .header("Content-Type", "application/json")
+            .header("User-Agent", USER_AGENT)
+            .send(&body.to_string())
             .map_err(|e| format!("Refresh: {}", e))?
-            .into_json()
+            .body_mut()
+            .read_json()
             .map_err(|e| format!("Parse: {}", e))?;
         let new_access = json["data"]["accessToken"].as_str().ok_or("No accessToken")?.to_string();
         let new_refresh = json["data"]["refreshToken"].as_str().unwrap_or(&refresh_token).to_string();
@@ -550,14 +577,14 @@ impl Wfm {
             return None;
         }
         let resp = ureq::get("https://warframe.market/")
-            .set("Cookie", &format!("JWT={}", jwt))
-            .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("Cookie", &format!("JWT={}", jwt))
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
             .call();
         let html = match resp {
-            Ok(r) => {
+            Ok(mut r) => {
                 debug!("site fetch status=200");
-                r.into_string().ok()?
+                r.body_mut().read_to_string().ok()?
             }
             Err(e) => {
                 warn!(error = %e, "site fetch failed, trying JWT payload fallback");
@@ -667,15 +694,16 @@ impl Wfm {
             let auth = self.auth_opt();
             self.wait();
             let mut req = ureq::get(&format!("{}/v2/orders/item/{}", API_BASE, url_name))
-                .set("language", "en")
-                .set("platform", "pc")
-                .set("User-Agent", USER_AGENT);
+                .header("language", "en")
+                .header("platform", "pc")
+                .header("User-Agent", USER_AGENT);
             if let Some(ref h) = auth {
-                req = req.set("Authorization", h);
+                req = req.header("Authorization", h);
             }
             req.call()
                 .map_err(|e| format!("orders: {}", e))?
-                .into_json()
+                .body_mut()
+                .read_json()
                 .map_err(|e| format!("parse: {}", e))
         })?;
 
@@ -722,16 +750,17 @@ impl Wfm {
             let auth = self.auth_opt();
             self.wait();
             let mut req = ureq::get(&format!("{}/v1/items/{}/statistics", API_BASE, url_name))
-                .set("language", "en")
-                .set("platform", "pc")
-                .set("User-Agent", USER_AGENT);
+                .header("language", "en")
+                .header("platform", "pc")
+                .header("User-Agent", USER_AGENT);
             if let Some(ref h) = auth {
-                req = req.set("Authorization", h);
+                req = req.header("Authorization", h);
             }
             let json: serde_json::Value = req
                 .call()
                 .map_err(|e| format!("stats: {}", e))?
-                .into_json()
+                .body_mut()
+                .read_json()
                 .map_err(|e| format!("parse: {}", e))?;
             Ok(json["payload"]["statistics_closed"]["90days"].clone())
         })
@@ -746,7 +775,8 @@ impl Wfm {
             self.wait();
             self.call("GET", &format!("/v2/items/{}", url_name), &auth)
                 .map_err(|e| format!("Item info: {}", e))?
-                .into_json::<serde_json::Value>()
+                .body_mut()
+                .read_json::<serde_json::Value>()
                 .map_err(|e| format!("Parse: {}", e))
                 .map(|j| j["data"].clone())
         })
@@ -759,7 +789,8 @@ impl Wfm {
         let json: serde_json::Value = self
             .call("GET", "/v2/orders/my", &auth)
             .map_err(|e| format!("Get orders: {}", e))?
-            .into_json()
+            .body_mut()
+            .read_json()
             .map_err(|e| format!("Parse: {}", e))?;
         Ok(json["data"].clone())
     }
@@ -771,7 +802,8 @@ impl Wfm {
         let json: serde_json::Value = self
             .call("GET", path, &auth)
             .map_err(|e| format!("Dump: {}", e))?
-            .into_json()
+            .body_mut()
+            .read_json()
             .map_err(|e| format!("Parse: {}", e))?;
         serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
     }
@@ -797,7 +829,8 @@ impl Wfm {
         self.wait();
         self.send_json("POST", "/v2/order", &auth, &body)
             .map_err(|e| format!("Create order: {}", e))?
-            .into_json::<serde_json::Value>()
+            .body_mut()
+            .read_json::<serde_json::Value>()
             .map_err(|e| format!("Parse: {}", e))
             .map(|j| j["data"].clone())
     }
@@ -815,7 +848,8 @@ impl Wfm {
         self.wait();
         self.send_json("PATCH", &format!("/v2/order/{}", order_id), &auth, &body)
             .map_err(|e| format!("Update order: {}", e))?
-            .into_json::<serde_json::Value>()
+            .body_mut()
+            .read_json::<serde_json::Value>()
             .map_err(|e| format!("Parse: {}", e))
             .map(|j| j["data"].clone())
     }
@@ -837,12 +871,13 @@ impl Wfm {
         self.auction_wait();
         let json: serde_json::Value = ureq::get(&format!("{}/v1/auctions/search", API_BASE))
             .query("type", "riven")
-            .set("language", "en")
-            .set("platform", "pc")
-            .set("User-Agent", USER_AGENT)
+            .header("language", "en")
+            .header("platform", "pc")
+            .header("User-Agent", USER_AGENT)
             .call()
             .map_err(|e| format!("Search: {}", e))?
-            .into_json()
+            .body_mut()
+            .read_json()
             .map_err(|e| format!("Parse: {}", e))?;
         let mut seen = std::collections::HashSet::new();
         if let Some(auctions) = json["payload"]["auctions"].as_array() {
@@ -905,10 +940,10 @@ impl Wfm {
         // WFM v1 requires buyout_price to be present (null = no buyout).
         payload["buyout_price"] = serde_json::json!(buyout_price);
         self.auction_wait();
-        let resp = self
+        let mut resp = self
             .send_json("POST", "/v1/auctions/create", &auth, payload)
             .map_err(auction_error("Create riven auction"))?;
-        resp.into_json().map_err(|e| format!("Parse auction response: {}", e))
+        resp.body_mut().read_json().map_err(|e| format!("Parse auction response: {}", e))
     }
 
     /// Switch an auction between Auction and Direct Sale by close-and-recreate
@@ -930,7 +965,8 @@ impl Wfm {
         let entry: serde_json::Value = self
             .call("GET", &format!("/v1/auctions/entry/{}", auction_id), &auth)
             .map_err(auction_error("Fetch auction"))?
-            .into_json()
+            .body_mut()
+            .read_json()
             .map_err(|e| format!("Parse auction entry: {}", e))?;
 
         let auction = &entry["payload"]["auction"];
@@ -965,10 +1001,10 @@ impl Wfm {
         payload["buyout_price"] = serde_json::json!(buyout_price);
 
         self.auction_wait();
-        let resp = self
+        let mut resp = self
             .send_json("POST", "/v1/auctions/create", &auth, payload)
             .map_err(auction_error("Create riven auction"))?;
-        resp.into_json().map_err(|e| format!("Parse auction response: {}", e))
+        resp.body_mut().read_json().map_err(|e| format!("Parse auction response: {}", e))
     }
 
     /// Close (delete) a riven auction.
@@ -1026,7 +1062,8 @@ impl Wfm {
         let profile_resp: serde_json::Value = self
             .call("GET", &format!("/v1/profile/{}/auctions", username), &v1_auth)
             .map_err(|e| format!("Fetch auctions: {}", e))?
-            .into_json()
+            .body_mut()
+            .read_json()
             .map_err(|e| format!("Parse auctions: {}", e))?;
 
         let mut auctions: Vec<serde_json::Value> =
@@ -1040,7 +1077,7 @@ impl Wfm {
             }
             self.auction_wait();
             let entry: serde_json::Value = match self.call("GET", &format!("/v1/auctions/entry/{}", id), &v1_auth) {
-                Ok(r) => match r.into_json() {
+                Ok(mut r) => match r.body_mut().read_json() {
                     Ok(j) => j,
                     Err(_) => continue,
                 },
@@ -1064,7 +1101,10 @@ impl Wfm {
         let json: serde_json::Value = ureq::get(&format!("{}/v2/items", API_BASE))
             .call()
             .map_err(|e| format!("wfm items: {}", e))?
-            .into_json()
+            .body_mut()
+            .with_config()
+            .limit(crate::cache::BULK_JSON_BYTES)
+            .read_json()
             .map_err(|e| format!("wfm items parse: {}", e))?;
         let items = json["data"]
             .as_array()
@@ -1091,8 +1131,8 @@ impl Wfm {
         self.wait();
         let url = format!("{}/v1/items/{}/statistics", API_BASE, slug);
         match ureq::get(&url).call() {
-            Ok(resp) => {
-                let json: serde_json::Value = resp.into_json().map_err(|e| format!("wfm price parse: {}", e))?;
+            Ok(mut resp) => {
+                let json: serde_json::Value = resp.body_mut().read_json().map_err(|e| format!("wfm price parse: {}", e))?;
                 let h48 = json["payload"]["statistics_closed"]["48hours"].as_array();
                 let d90 = json["payload"]["statistics_closed"]["90days"].as_array();
                 let vol_48: f64 =
@@ -1105,7 +1145,7 @@ impl Wfm {
                 Ok(p.or_else(|| d90.and_then(|arr| trimmed_median_from_stats(arr))))
             }
             // 404 = item not on WFM, not a transient error — treat as unlisted.
-            Err(ureq::Error::Status(404, _)) => Ok(None),
+            Err(ureq::Error::StatusCode(404)) => Ok(None),
             Err(e) => Err(format!("wfm price fetch: {e}")),
         }
     }
@@ -1130,10 +1170,13 @@ impl Wfm {
         self.wait();
         let url = format!("{}/v1/items/{}/statistics", API_BASE, slug);
         let json: serde_json::Value = ureq::get(&url)
-            .timeout(Duration::from_secs(10))
+            .config()
+            .timeout_global(Some(Duration::from_secs(10)))
+            .build()
             .call()
             .ok()?
-            .into_json()
+            .body_mut()
+            .read_json()
             .ok()?;
         let days = json["payload"]["statistics_closed"]["90days"].as_array()?;
         if days.is_empty() {
@@ -1165,11 +1208,18 @@ impl Wfm {
     fn fetch_prime_sets(&self) -> Vec<(String, String)> {
         self.wait();
         let resp = ureq::get(&format!("{}/v2/items", API_BASE))
-            .set("User-Agent", USER_AGENT)
-            .timeout(Duration::from_secs(15))
+            .header("User-Agent", USER_AGENT)
+            .config()
+            .timeout_global(Some(Duration::from_secs(15)))
+            .build()
             .call();
         let json: serde_json::Value = match resp {
-            Ok(r) => match r.into_json() {
+            Ok(mut r) => match r
+                .body_mut()
+                .with_config()
+                .limit(crate::cache::BULK_JSON_BYTES)
+                .read_json()
+            {
                 Ok(v) => v,
                 Err(_) => return Vec::new(),
             },
@@ -1351,16 +1401,8 @@ fn trimmed_median_from_stats(arr: &[serde_json::Value]) -> Option<u32> {
     Some(median.round() as u32)
 }
 
-/// Map a ureq auction error to the "<action>: HTTP <code>: <body>" message the
-/// v1 auction commands all report, reading the response body for the reason.
-fn auction_error(action: &'static str) -> impl Fn(ureq::Error) -> String {
-    move |e| match e {
-        ureq::Error::Status(code, r) => {
-            let body = r.into_string().unwrap_or_default();
-            format!("{}: HTTP {}: {}", action, code, body)
-        }
-        other => format!("{}: {}", action, other),
-    }
+fn auction_error(action: &'static str) -> impl Fn(String) -> String {
+    move |e| format!("{}: {}", action, e)
 }
 
 // ==============================================================================
