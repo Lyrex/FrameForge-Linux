@@ -5351,6 +5351,9 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     let all_keys: std::collections::HashSet<&String> =
                         prev_all.keys().chain(emit_qty.keys()).collect();
                     for key in all_keys {
+                        // Ignored paths are absent from the startup cache but present
+                        // in every blob, so without this each start logs them as new.
+                        if ignored_paths.contains(key.as_str()) { continue; }
                         let old_qty = *prev_all.get(key).unwrap_or(&0);
                         let new_qty = *emit_qty.get(key).unwrap_or(&0);
                         if old_qty == new_qty { continue; }
@@ -9866,6 +9869,13 @@ pub fn run() {
         })
         .collect();
     let corrections = load_corrections(&config_dir.join("corrections.json"));
+    // Before any command can read the log: rows recorded for a path before it
+    // was ignored would otherwise show until the seven-day prune.
+    for (path, c) in &corrections {
+        if c.category.as_deref() == Some("Ignored") {
+            let _ = conn.execute("DELETE FROM quantity_changes WHERE unique_name = ?1", [path]);
+        }
+    }
 
     tauri::Builder::default()
         .register_uri_scheme_protocol("ffauth", |ctx, req| console_login::handle_ffauth(ctx.app_handle(), &req)) // [console-login feature]
