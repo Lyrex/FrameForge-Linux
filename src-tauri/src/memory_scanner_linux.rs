@@ -728,8 +728,8 @@ pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
 }
 
 /// Collect context around the request strings the game builds its API calls
-/// from. The Windows equivalent is inlined in the command in `lib.rs`. Here it
-/// shares the region walk with the other probes.
+/// from. The Windows equivalent is inlined in the command in
+/// `companion_api.rs`. Here it shares the region walk with the other probes.
 pub fn scan_api_url_strings() -> Result<Vec<String>, String> {
     const NEEDLES: &[&[u8]] = &[
         b"/API/PHP/",

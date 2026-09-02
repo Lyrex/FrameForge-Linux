@@ -40,17 +40,17 @@ const TASKS: &[Task] = &[
     Task {
         name: "worldstate",
         interval: Duration::from_secs(55),
-        run: crate::refresh_worldstate,
+        run: crate::worldstate::refresh_worldstate,
     },
     Task {
         name: "bulk-prices",
         interval: Duration::from_secs(3600),
-        run: crate::refresh_bulk_prices_task,
+        run: crate::pricing::refresh_bulk_prices_task,
     },
     Task {
         name: "catalogue",
         interval: Duration::from_secs(24 * 3600),
-        run: crate::refresh_catalogue,
+        run: crate::catalogue::refresh_catalogue,
     },
     Task {
         name: "drop-data",
@@ -60,12 +60,12 @@ const TASKS: &[Task] = &[
     Task {
         name: "riven-db",
         interval: Duration::from_secs(24 * 3600),
-        run: crate::refresh_riven_db_task,
+        run: crate::rivens::refresh_riven_db_task,
     },
     Task {
         name: "wfm-top",
         interval: Duration::from_secs(3 * 3600),
-        run: crate::refresh_wfm_top,
+        run: crate::wfm_top::refresh_wfm_top,
     },
 ];
 

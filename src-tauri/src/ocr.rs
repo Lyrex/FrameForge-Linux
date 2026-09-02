@@ -284,8 +284,8 @@ pub fn ocr_pixels_rect_raw(
 // mean rewriting a function upstream actively develops, and `ocr.rs` is one of
 // the files upstream churns hardest; a duplicated crop loop costs us nothing on
 // a sync, while an edit to upstream's version costs a conflict on every one.
-// The signatures are deliberately identical to upstream's so that call sites in
-// `lib.rs` stay platform-agnostic and keep speaking upstream's 7-argument form.
+// The signatures are deliberately identical to upstream's so that call sites
+// stay platform-agnostic and keep speaking upstream's 7-argument form.
 
 /// Crop a BGRA rectangle out of a full frame. Fractions, as above.
 ///
@@ -320,7 +320,7 @@ fn crop_bgra(
 ///
 /// The hint is derived from the rectangle rather than passed in, because passing
 /// it in means adding an argument to a signature upstream owns, at every call
-/// site in `lib.rs`. Full width means the caller handed us a whole game frame —
+/// site. Full width means the caller handed us a whole game frame —
 /// the only case that wants sparse mode. Every cropped region is a panel.
 ///
 /// ponytail: heuristic stands in for an explicit parameter. It holds while
@@ -2041,7 +2041,7 @@ fn match_reward_items(
         catalog.iter().find(|(u,_)| u == s).map(|(_,n)| n.as_str()).unwrap_or(s.as_str())
     }).collect();
     // is_complete = true means "found all cards expected for this squad size".
-    // lib.rs uses this to decide when to stop retrying OCR.
+    // The caller uses this to decide when to stop retrying OCR.
     // Only confirmed catalog matches count toward completion — "?:" unknowns are
     // noise or garbled text and must not trigger an early lock-in.
     let n_confirmed = items.iter().filter(|s| !s.starts_with("?:")).count();
