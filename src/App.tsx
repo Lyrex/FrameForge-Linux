@@ -1545,14 +1545,16 @@ if (typeof s.autoDiagEnabled === "boolean") {
     const prev = prevApiQtyRef.current;
     if (Object.keys(prev).length > 0) {
       const allKeys = new Set([...Object.keys(prev), ...Object.keys(apiQty)]);
+      // The catalog already omits paths the corrections mark Ignored.
+      const catalogByPath = new Map(catalogRef.current.map(i => [i.unique_name, i]));
       const changes: QuantityChange[] = [];
       for (const key of allKeys) {
+        const item = catalogByPath.get(key);
+        if (!item) continue;
         const oldQty = prev[key] ?? 0;
         const newQty = apiQty[key] ?? 0;
         if (oldQty !== newQty) {
-          const item = catalogRef.current.find(i => i.unique_name === key);
-          const name = item?.name ?? key.split("/").pop() ?? key;
-          changes.push({ id: 0, unique_name: key, item_name: name, old_qty: oldQty, new_qty: newQty, delta: newQty - oldQty, timestamp: now });
+          changes.push({ id: 0, unique_name: key, item_name: item.name, old_qty: oldQty, new_qty: newQty, delta: newQty - oldQty, timestamp: now });
         }
       }
       if (changes.length > 0) {
