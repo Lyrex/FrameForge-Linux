@@ -105,7 +105,7 @@ fn entry(start: u64, end: u64, node_id: &str) -> ScheduleEntry {
     // carries it in parentheses ("Hyf (Deimos)"). An id the data does not
     // know resolves to itself, which is the whole fallback: the hour still
     // shows, with blank region, type and faction.
-    let display = crate::resolve_node(node_id);
+    let display = crate::worldstate::resolve_node(node_id);
     let (node, region) = display
         .rsplit_once(" (")
         .map(|(n, r)| (n.to_string(), r.trim_end_matches(')').to_string()))
@@ -116,8 +116,8 @@ fn entry(start: u64, end: u64, node_id: &str) -> ScheduleEntry {
         node_id: node_id.to_string(),
         node,
         region,
-        mission_type: crate::node_mission_type(node_id),
-        faction: crate::node_enemy(node_id),
+        mission_type: crate::worldstate::node_mission_type(node_id),
+        faction: crate::worldstate::node_enemy(node_id),
         tier: tier(node_id),
     }
 }

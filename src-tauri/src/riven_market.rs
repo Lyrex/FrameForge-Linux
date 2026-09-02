@@ -32,7 +32,7 @@ use crate::memory_scanner::{BlobRivenEntry, BlobRivenStat, RivenState};
 use crate::riven_grade::{grade_riven, GradedRiven};
 use crate::riven_stats::{self, AnalyzerName, RollContext, Unit, RIVEN_STATS, ROLL_MAX};
 use crate::wfm;
-use crate::AppState;
+use crate::app_state::AppState;
 
 // ==============================================================================
 // Stat name bridging
@@ -410,7 +410,7 @@ mod tests {
     /// first use. Seeding it keeps the tests off the network and their verdicts
     /// independent of what the sheet currently says.
     fn seed_riven_db() {
-        let entry = crate::RivenEntry {
+        let entry = crate::rivens::RivenEntry {
             weapon: "Braton Prime".into(),
             stat_alternatives: vec![vec![vec!["Critical Damage".into()], vec!["Multishot".into()]]],
             stat_groups: vec![vec!["Critical Damage".into()], vec!["Multishot".into()]],
@@ -419,7 +419,7 @@ mod tests {
         };
         let mut db = std::collections::HashMap::new();
         db.insert("braton prime".to_string(), entry);
-        *crate::RIVEN_DB.write().unwrap_or_else(|e| e.into_inner()) = Some(db);
+        *crate::rivens::RIVEN_DB.write().unwrap_or_else(|e| e.into_inner()) = Some(db);
     }
 
     fn weapons() -> HashMap<String, Weapon> {

@@ -817,9 +817,9 @@ struct MatchParams<'a> {
 /// 5. Full-frame fallback if bar detection fails.
 #[tracing::instrument(level = "info", skip_all)]
 pub fn extract_reward_items_twophase(
-    params: super::OcrParams<'_>,
+    params: crate::monitor::OcrParams<'_>,
 ) -> (bool, bool, Vec<String>, Vec<f32>, String) {
-    let super::OcrParams { pixels, pix_w, pix_h, game_h: _game_h, catalog, capture_info, hint_squad_size, player_names } = params;
+    let crate::monitor::OcrParams { pixels, pix_w, pix_h, game_h: _game_h, catalog, capture_info, hint_squad_size, player_names } = params;
 
     // ── 1. Raw OCR ────────────────────────────────────────────────────────────
     let engine_output = run_ocr(pixels, pix_w, pix_h, OcrLayout::Scattered);
@@ -2138,7 +2138,7 @@ mod tesseract_tests {
             // The squad size is what the live path gets from EE.log; the corpus
             // has no player names to filter out.
             let hint_squad = spec["reward_count"].as_u64().map(|n| n as usize);
-            let (_, _, items, _, diag) = extract_reward_items_twophase(crate::OcrParams {
+            let (_, _, items, _, diag) = extract_reward_items_twophase(crate::monitor::OcrParams {
                 pixels: &bgra, pix_w: width, pix_h: cap_h, game_h: full_h,
                 catalog: &catalog, capture_info: file, hint_squad_size: hint_squad, player_names: &[],
             });
