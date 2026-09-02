@@ -31,7 +31,7 @@ jobs:
 
       - uses: ./.github/actions/linux-build-deps
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # tag=v6.0.9
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # tag=v6.0.10
         with:
           version: 11
 
@@ -45,7 +45,7 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # tag=v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # tag=v2.9.2
         with:
           workspaces: src-tauri
 
@@ -101,7 +101,7 @@ jobs:
       # is derivable from the tree, which is also why the release is drafted
       # rather than published.
       - name: Draft the release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # tag=v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # tag=v3.0.3
         with:
           draft: true
           name: ${{ github.ref_name }}
