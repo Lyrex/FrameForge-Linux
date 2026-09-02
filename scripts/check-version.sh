@@ -28,14 +28,11 @@ if [ "$cargo_version" != "$package_version" ] || [ "$cargo_version" != "$tauri_v
     exit 1
 fi
 
-# Agreement alone would bless three files agreeing on garbage.
-scheme='[0-9]+\.[0-9]+\.[0-9]+'
+# Full SemVer 2.0.0 POSIX ERE-compatible regex
+scheme='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)*(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(\+([0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*))?'
+
 if [[ ! "$cargo_version" =~ ^${scheme}$ ]]; then
-    # The updater compares versions as semver, where a prerelease suffix sorts
-    # below the bare version. Naming a platform there would make each platform's
-    # release a downgrade of a bare version nothing ever publishes; platforms
-    # are per-platform artifacts of one version instead.
-    echo "::error::'$cargo_version' is not plain semver — a platform suffix such as '-linux.1' is not a version"
+    echo "::error::'$cargo_version' is not a valid SemVer 2.0.0 version"
     exit 1
 fi
 
