@@ -52,42 +52,6 @@ opt-level = 1
 [profile.release]
 opt-level = 2
 
-[target.'cfg(windows)'.dependencies]
-# ── BEGIN ocrs fallback ─────────────────────────────────────────────────────
-# Pure-Rust neural-net OCR; used when Windows.Media.Ocr has no language packs.
-# To remove: delete ocr_fallback.rs, remove `mod ocr_fallback` from lib.rs,
-# remove the fallback block in ocr.rs (search "BEGIN ocrs fallback"), and
-# delete the two lines below.
-ocrs = "0.7"
-rten = "0.9"
-# ── END ocrs fallback ───────────────────────────────────────────────────────
-windows-sys = { version = "0.52", features = [
-    "Win32_Foundation",
-    "Win32_System_Threading",
-    "Win32_System_Diagnostics_Debug",
-    "Win32_System_Diagnostics_ToolHelp",
-    "Win32_System_Memory",
-    "Win32_System_ProcessStatus",
-    "Win32_System_Com",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_Graphics_Gdi",
-    "Win32_Security",
-    "Win32_Security_Credentials",
-    "Win32_Storage_FileSystem",
-    "Win32_Globalization",
-] }
-windows = { version = "0.58", features = [
-    "Media_Ocr",
-    "Graphics_Imaging",
-    "Storage_Streams",
-    "Foundation_Collections",
-    "Globalization",
-    "Win32_Graphics_Dxgi",
-    "Win32_Graphics_Dxgi_Common",
-    "Win32_Graphics_Direct3D",
-    "Win32_Graphics_Direct3D11",
-] }
-
 [target.'cfg(target_os = "linux")'.dependencies]
 raw-window-handle = "0.6"
 # async-io rather than tokio: the blocking API is called from inside
