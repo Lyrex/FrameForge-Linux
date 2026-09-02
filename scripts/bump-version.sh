@@ -13,10 +13,11 @@ if [ $# -ne 1 ]; then
 fi
 new="$1"
 
-# A regex rather than a case glob: globs would wave through trailing garbage
-# like 3.10.0junk.
-if [[ ! "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "version must be plain semver, e.g. 3.10.0" >&2
+# Official SemVer 2.0.0 specification regex (POSIX Extended Regular Expression compatible)
+semver_regex='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(|-((0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)*(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(\+([0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*))?$'
+
+if [[ ! "$new" =~ $semver_regex ]]; then
+  echo "version must be valid semver" >&2
   exit 1
 fi
 
