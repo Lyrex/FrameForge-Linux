@@ -1272,13 +1272,23 @@ fn save_api_inventory(
         .and_then(|json| atomic_write(&path, json.as_bytes()).map_err(|e| e.to_string()))
 }
 
+fn whirlpool_hex(password: &str) -> String {
+    use std::fmt::Write as _;
+    use whirlpool::{Digest, Whirlpool};
+    Whirlpool::digest(password.as_bytes())
+        .iter()
+        .fold(String::with_capacity(128), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
 /// Login to Warframe API with email + password (same flow as mobile companion app).
 /// Password is hashed with Whirlpool before sending — never sent in plaintext.
 /// Returns (accountId, nonce) for subsequent API calls.
 #[tauri::command]
 async fn warframe_login(email: String, password: String) -> Result<(String, String), String> {
-    use whirlpool::{Whirlpool, Digest};
-    let hash = format!("{:x}", Whirlpool::digest(password.as_bytes()));
+    let hash = whirlpool_hex(&password);
     let now = cache::now_unix();
 
     // Try multiple endpoint + body format variants.
@@ -10321,6 +10331,15 @@ mod tests {
         assert_eq!(truncate_chars("éé", 3), "éé");
         assert_eq!(truncate_chars("éé", 1), "é");
         assert_eq!(truncate_chars("abc", 2), "ab");
+    }
+
+    #[test]
+    fn whirlpool_hex_matches_reference_vector() {
+        assert_eq!(
+            whirlpool_hex(""),
+            "19fa61d75522a4669b44e39c1d2e1726c530232130d407f89afee0964997f7a7\
+             3e83be698b288febcf88e3e03c4f0757ea8964e59b63d93708b138cc42a66eb3"
+        );
     }
 
     /// Verbatim OCR for the right-hand card of a reroll comparison screen (Kuva
