@@ -1349,7 +1349,7 @@ pub(crate) fn stitch_blobs(
                     );
                     LAST_BLOB_REGION.store(scan.seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                     if save {
-                        let name = format!("Actual_inventory_FULL_ACCOUNT_{}_{:02}.txt", ts, saved + 1);
+                        let name = format!("Actual_inventory_FULL_ACCOUNT_{}_{:02}.json", ts, saved + 1);
                         let path = blob_dir.join(&name);
                         if let Some(json) = extract_blob_json(&scan.data) {
                             if std::fs::write(&path, &json).is_ok() { saved += 1; }
@@ -1492,7 +1492,7 @@ pub(crate) fn stitch_blobs(
                         );
                         LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                         if save {
-                            let name = format!("Actual_inventory_FULL_ACCOUNT_{}_{:02}.txt", ts, saved + 1);
+                            let name = format!("Actual_inventory_FULL_ACCOUNT_{}_{:02}.json", ts, saved + 1);
                             if let Some(json) = extract_blob_json(&seed) {
                                 if std::fs::write(blob_dir.join(&name), &json).is_ok() { saved += 1; }
                             }
