@@ -52,3 +52,11 @@ The warframe.market login state, carried as a token bundle rather than as the
 credentials that produced it. The email and password are typed once at login and
 never stored; the session is what outlives the app being closed.
 _Avoid_: credentials, password (when the token is meant)
+
+### Updates
+
+**Release notes**:
+The text published with a FrameForge release, shown when a newer version is
+offered. Distinct from the Change log, which lists inventory changes the app
+observed in the game.
+_Avoid_: changelog, notes (when the release text is meant)

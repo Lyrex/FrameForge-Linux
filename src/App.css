@@ -1791,6 +1791,20 @@ svg.item-img-fallback { background: transparent; border: none; padding: 0; }
 /* ── Riven sell modal ── */
 .riven-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 200; }
 .riven-modal { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; width: 360px; max-width: calc(100vw - 32px); display: flex; flex-direction: column; gap: 12px; }
+.ff-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 200; }
+.ff-modal { outline: none; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; width: 520px; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); display: flex; flex-direction: column; gap: 12px; }
+.release-notes { font-size: 12px; line-height: 1.5; color: var(--text); overflow: auto; min-height: 0; overflow-wrap: anywhere; padding: 10px 12px; background: rgba(0,0,0,.25); border: 1px solid var(--border); border-radius: 6px; }
+.release-notes > :first-child { margin-top: 0; }
+.release-notes > :last-child { margin-bottom: 0; }
+.release-notes h1, .release-notes h2, .release-notes h3 { font-size: 12px; font-weight: 700; margin: 12px 0 4px; }
+.release-notes p { margin: 6px 0; }
+.release-notes ul, .release-notes ol { margin: 4px 0; padding-left: 18px; }
+.release-notes li { margin: 2px 0; }
+.release-notes a { color: var(--accent); text-decoration: none; }
+.release-notes a:hover { text-decoration: underline; }
+.release-notes pre { white-space: pre-wrap; }
+.release-notes code { font-size: 11px; background: rgba(255,255,255,.06); padding: 1px 4px; border-radius: 3px; }
+.ff-modal progress { width: 100%; height: 6px; accent-color: var(--accent); }
 .riven-modal-title { font-size: 14px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px; }
 .riven-modal-close { background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; margin-left: auto; padding: 0 2px; transition: color .1s; }
 .riven-modal-close:hover { color: var(--text); }

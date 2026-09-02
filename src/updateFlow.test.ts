@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkMessage, errorText, runCheck } from "./updateFlow.ts";
+import { advance, checkMessage, errorText, noProgress, runCheck } from "./updateFlow.ts";
 
 test("a found update is named by version", () => {
   const update = { version: "3.10.0", currentVersion: "3.9.1", notes: null };
@@ -32,4 +32,22 @@ test("no update is only reported once the check succeeded", async () => {
 test("both rejection shapes yield readable text", () => {
   assert.equal(errorText(new Error("signature mismatch")), "signature mismatch");
   assert.equal(errorText("signature mismatch"), "signature mismatch");
+});
+
+test("download progress is measured against the announced length", () => {
+  let p = advance(noProgress, { event: "Started", data: { contentLength: 100 } });
+  p = advance(p, { event: "Progress", data: { chunkLength: 30 } });
+  p = advance(p, { event: "Progress", data: { chunkLength: 30 } });
+  assert.deepEqual(p, { received: 60, total: 100, finished: false });
+});
+
+test("a download of unknown length stays indeterminate", () => {
+  let p = advance(noProgress, { event: "Started", data: {} });
+  p = advance(p, { event: "Progress", data: { chunkLength: 30 } });
+  assert.equal(p.total, null);
+});
+
+test("finishing the download marks the install step, not completion", () => {
+  const p = advance(noProgress, { event: "Finished" });
+  assert.equal(p.finished, true);
 });
