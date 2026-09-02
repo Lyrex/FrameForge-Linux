@@ -141,8 +141,8 @@ pub struct Wfm {
     limiter: Mutex<RateLimiter>,
     /// Contract limit: ≤10 requests/minute for /v1/auctions/... (rivens, liches, sisters).
     auction_limiter: Mutex<RateLimiter>,
-    /// slug → median sell price (None = not listed). Shared with the prefetch thread.
-    price_cache: Mutex<std::collections::HashMap<String, Option<u32>>>,
+    /// slug → (price, fetched_at). None price = unlisted. Shared with the prefetch thread.
+    price_cache: Mutex<std::collections::HashMap<String, (Option<u32>, Instant)>>,
     /// Top-items-by-volume result, cached in memory for the session.
     top_cache: Mutex<Option<(Instant, Vec<WfmTopItem>)>>,
     /// Prime-set (name, slug) pairs, fetched once per session.
@@ -1020,6 +1020,7 @@ impl Wfm {
 
     /// 48-hour median sell price for a slug, or None if unlisted. Uses the 48h
     /// VWAP when there are ≥3 recent trades, else falls back to the 90-day window.
+    /// Returns Err only for network/parse failures, not for "item not listed" (Ok(None)).
     #[tracing::instrument(level = "debug", skip_all, fields(slug = %slug))]
     pub fn price_for_slug(&self, slug: &str) -> Result<Option<u32>, String> {
         self.wait();
@@ -1038,20 +1039,25 @@ impl Wfm {
                 };
                 Ok(p.or_else(|| d90.and_then(|arr| trimmed_median_from_stats(arr))))
             }
-            Err(_) => Ok(None),
+            // 404 = item not on WFM, not a transient error — treat as unlisted.
+            Err(ureq::Error::Status(404, _)) => Ok(None),
+            Err(e) => Err(format!("wfm price fetch: {e}")),
         }
     }
 
     /// Price for a slug, retrying the blueprint-suffix variant — WFM is
     /// inconsistent about whether component blueprints keep the "_blueprint" suffix.
-    pub fn price_with_fallback(&self, slug: &str) -> Option<u32> {
-        self.price_for_slug(slug).unwrap_or(None).or_else(|| {
-            if let Some(stripped) = slug.strip_suffix("_blueprint") {
-                self.price_for_slug(stripped).unwrap_or(None)
-            } else {
-                self.price_for_slug(&format!("{}_blueprint", slug)).unwrap_or(None)
+    pub fn price_with_fallback(&self, slug: &str) -> Result<Option<u32>, String> {
+        match self.price_for_slug(slug)? {
+            Some(p) => Ok(Some(p)),
+            None => {
+                if let Some(stripped) = slug.strip_suffix("_blueprint") {
+                    self.price_for_slug(stripped)
+                } else {
+                    self.price_for_slug(&format!("{}_blueprint", slug))
+                }
             }
-        })
+        }
     }
 
     /// 7-day price + average daily volume for a slug, or None if unlisted / stale.
@@ -1125,28 +1131,45 @@ impl Wfm {
 
     // ── Price cache ───────────────────────────────────────────────────────────
 
-    /// The cached price for a slug: `Some(price_opt)` when the slug was fetched
-    /// (`price_opt` distinguishes "listed at N" from "not listed"), `None` when
-    /// it has never been fetched.
+    /// How long a "not listed" entry stays cached before we re-check.
+    const NEGATIVE_PRICE_TTL: Duration = Duration::from_secs(60 * 60);
+    /// How long a priced entry stays cached before we re-check.
+    const POSITIVE_PRICE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+
+    fn price_entry_live(price: Option<u32>, fetched_at: Instant) -> bool {
+        let ttl = if price.is_some() { Self::POSITIVE_PRICE_TTL } else { Self::NEGATIVE_PRICE_TTL };
+        fetched_at.elapsed() < ttl
+    }
+
+    /// The cached price for a slug when the entry is still live: `Some(price_opt)`
+    /// when the slug was fetched recently, `None` when never fetched or TTL expired.
     pub fn cached_price(&self, slug: &str) -> Option<Option<u32>> {
-        self.price_cache.lock().unwrap_or_else(|e| e.into_inner()).get(slug).copied()
+        let guard = self.price_cache.lock().unwrap_or_else(|e| e.into_inner());
+        guard.get(slug).and_then(|&(price, ts)| {
+            if Self::price_entry_live(price, ts) { Some(price) } else { None }
+        })
     }
 
     pub fn is_price_cached(&self, slug: &str) -> bool {
-        self.price_cache.lock().unwrap_or_else(|e| e.into_inner()).contains_key(slug)
+        self.cached_price(slug).is_some()
     }
 
     pub fn cache_price(&self, slug: String, price: Option<u32>) {
-        self.price_cache.lock().unwrap_or_else(|e| e.into_inner()).insert(slug, price);
+        self.price_cache.lock().unwrap_or_else(|e| e.into_inner()).insert(slug, (price, Instant::now()));
     }
 
     pub fn uncache_price(&self, slug: &str) {
         self.price_cache.lock().unwrap_or_else(|e| e.into_inner()).remove(slug);
     }
 
-    /// A clone of the whole slug → price cache.
+    /// A clone of the whole slug → price cache (live entries only).
     pub fn cached_prices(&self) -> std::collections::HashMap<String, Option<u32>> {
-        self.price_cache.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.price_cache.lock().unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter_map(|(slug, &(price, ts))| {
+                if Self::price_entry_live(price, ts) { Some((slug.clone(), price)) } else { None }
+            })
+            .collect()
     }
 
     // ── Top items cache ───────────────────────────────────────────────────────

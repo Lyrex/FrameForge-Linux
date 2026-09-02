@@ -8,15 +8,15 @@
 set -euo pipefail
 
 if [ $# -ne 1 ]; then
-  echo "usage: $0 <version>   e.g. $0 2.8.0-linux.2" >&2
+  echo "usage: $0 <version>   e.g. $0 3.10.0" >&2
   exit 1
 fi
 new="$1"
 
 # A regex rather than a case glob: globs would wave through trailing garbage
-# like 2.9.0-linux.1junk.
-if [[ ! "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+-linux\.[0-9]+$ ]]; then
-  echo "version must look like <upstream>-linux.<n>, e.g. 2.8.0-linux.2" >&2
+# like 3.10.0junk.
+if [[ ! "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "version must be plain semver, e.g. 3.10.0" >&2
   exit 1
 fi
 

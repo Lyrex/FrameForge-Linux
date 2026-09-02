@@ -1,7 +1,7 @@
 {
   "name": "warframe-companion",
   "private": true,
-  "version": "3.9.0-linux.1",
+  "version": "4.0.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,8 +11,9 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
-    "@tauri-apps/plugin-notification": "^2.3.3",
-    "@tauri-apps/plugin-opener": "^2.5.4",
+    "@tauri-apps/plugin-notification": "^2.4.0",
+    "@tauri-apps/plugin-opener": "^2.5.5",
+    "@tauri-apps/plugin-updater": "^2.11.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
@@ -21,7 +22,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^5.2.0",
-    "terser": "^5.50.0",
+    "terser": "^5.51.2",
     "typescript": "~6.0.3",
     "vite": "^7.3.6"
   }

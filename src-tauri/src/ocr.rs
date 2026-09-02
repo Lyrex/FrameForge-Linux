@@ -30,26 +30,31 @@ pub fn capture_warframe_reward_area() -> Option<(Vec<u8>, u32, u32, u32, String)
     // ── Path A: PrintWindow (Windowed / Borderless Windowed) ──────────────────
     if let Some((pixels, w, cap_h, full_h)) = capture_printwindow() {
         let avg = avg_brightness(&pixels);
-        if avg >= 50 {
+        // Threshold 20: Warframe's dark-themed reward screen gives avg≈40 in Borderless
+        // Windowed — that is valid content, not a failed capture. Only values near zero
+        // (avg < 20) indicate Fullscreen Exclusive mode where GDI can't reach the DX buffer.
+        if avg >= 20 {
             let info = format!("PrintWindow  {}×{}px (top 80%, cap {}px)  avg_brightness={}", w, full_h, cap_h, avg);
             return Some((pixels, w, cap_h, full_h, info));
         }
-        // Dark frame — Fullscreen Exclusive, or GPU bypassing GDI surface (some Borderless configs).
-        // Fall through to DXGI.
-        let _ = avg;
+        // Truly dark PrintWindow — Fullscreen Exclusive or GPU bypassing GDI.
+        // Try DXGI, but only use it if it's at least as bright as PrintWindow, so a
+        // black DXGI frame (DXGI Desktop Duplication returning no update) doesn't win
+        // over a PrintWindow frame that actually has content.
         if let Some((px2, w2, cap_h2, full_h2)) = capture_dxgi(0.85) {
             let avg2 = avg_brightness(&px2);
-            let info = format!(
-                "DXGI  {}×{}px (top 80%, cap {}px)  avg_brightness={} \
-                 (PrintWindow was dark: avg={})",
-                w2, full_h2, cap_h2, avg2, avg
-            );
-            return Some((px2, w2, cap_h2, full_h2, info));
+            if avg2 >= avg {
+                let info = format!(
+                    "DXGI  {}×{}px (top 80%, cap {}px)  avg_brightness={} \
+                     (PrintWindow was dark: avg={})",
+                    w2, full_h2, cap_h2, avg2, avg
+                );
+                return Some((px2, w2, cap_h2, full_h2, info));
+            }
         }
-        // Both paths failed — return the dark PrintWindow result so the caller
-        // can classify it as dark-frame and log it properly.
+        // DXGI was darker or unavailable — return PrintWindow so the caller can log it.
         let info = format!(
-            "PrintWindow  {}×{}px (top 80%, cap {}px)  avg_brightness={} [DARK — DXGI also failed]",
+            "PrintWindow  {}×{}px (top 80%, cap {}px)  avg_brightness={} [DARK — DXGI also dark/failed]",
             w, full_h, cap_h, avg
         );
         return Some((pixels, w, cap_h, full_h, info));

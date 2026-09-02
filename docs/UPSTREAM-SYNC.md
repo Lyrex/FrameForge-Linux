@@ -11,22 +11,23 @@ absorbed.
   Upstream arrives as a merge commit.
 - **Merge upstream release tags only, never `upstream/main`.** Upstream tags
   whatever their tip happens to be, so the tip routinely runs ahead of the
-  newest tag. Our version string (`<upstream-version>-linux.<n>`) claims an
-  exact upstream base; merging an untagged tip would make it a lie.
+  newest tag. A release states the exact upstream base it was cut from;
+  merging an untagged tip would make that unstatable.
 - **Sync when we intend to cut a fork release**, not on every upstream
   release. The fork's value can only be verified in a manual session against
   the live game, and that session happens at release time; a synced-but-
   unverified `main` is a branch nobody has run. Sync early only when upstream
   ships something we specifically want, or when one of our fixes lands
   upstream.
-- **Version scheme:** `<upstream-version>-linux.<n>`. `n` counts fork releases
-  on the same upstream base and resets to 1 on each sync. A semver prerelease
-  rather than build metadata, which the fork used up to `2.9.0+linux.2`: semver
-  ignores build metadata in precedence, so `+linux.2` and `+linux.3` compare
-  equal and no updater could tell them apart, and the `+` arrives URL-encoded
-  in release asset links. A prerelease does sort below the bare upstream
-  version, which costs nothing here because this repo never publishes a
-  bare-version artifact to compare against.
+- **Version scheme:** plain semver, counting this repository's own releases.
+  The fork previously encoded its platform in the version, first as build
+  metadata (`2.9.0+linux.2`) and then as a prerelease tag (`2.9.0-linux.2`).
+  Both break the in-app updater, which compares semver: build metadata is
+  ignored in precedence, so `+linux.2` and `+linux.3` compare equal, and a
+  prerelease sorts *below* the bare version, so every release would look like
+  a downgrade of one that is never published. Platforms are per-platform
+  artifacts of one version instead. The upstream release a version is based
+  on belongs in the release notes, not in the version.
 
 ## Procedure
 
@@ -40,7 +41,7 @@ git status --porcelain              # must be empty
 # 1. fetch upstream, pick the newest RELEASE TAG (never main)
 git fetch upstream --tags
 git tag --sort=-v:refname --merged upstream/main | head -1
-# -> TAG, e.g. v2.8.0. --merged excludes our own v*-linux.* tags,
+# -> TAG, e.g. v2.8.0. --merged excludes our own release tags,
 #    which are not ancestors of upstream/main.
 
 # 2. read the delta before touching anything
@@ -58,8 +59,8 @@ Resolve conflicts by this playbook:
 
 - **Version files** (`package.json`, `src-tauri/Cargo.toml`,
   `src-tauri/tauri.conf.json`): guaranteed to conflict — upstream bumps the
-  same three lines every release. Never take either side. Recompute:
-  `<TAG version>-linux.1`.
+  same three lines every release. Never take either side. Recompute: the
+  fork's own next plain-semver version, via `scripts/bump-version.sh`.
 - **`Cargo.lock`:** regenerate, never hand-merge. `git checkout TAG --
   src-tauri/Cargo.lock`, then `cargo check` (which re-adds our dependencies
   and stamps the fork version), then stage it. Note upstream has shipped this
@@ -97,9 +98,13 @@ Two known silent hazards to check by hand — neither reliably *conflicts*:
 # dismiss), riven overlay buttons clickable. Nothing below runs until this
 # passes.
 git push origin main
-git tag v<TAG-version>-linux.1
-git push origin v<TAG-version>-linux.1     # triggers the release workflow
+git tag v<version>
+git push origin v<version>     # triggers the release workflow
 ```
+
+The workflow drafts a release from both platforms' bundles. Publishing that
+draft is what writes `latest.json`, so an update only reaches installed copies
+once the notes are written and the draft goes live.
 
 ## Delta classification
 
