@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v7.0.1
 
       # First, so a tree whose version disagrees with the tag costs a second
-      # rather than a ~10 minute build and an upload.
+      # rather than a full build and an upload.
       - name: Check the tag matches the configured version
         run: bash scripts/check-version.sh "${GITHUB_REF#refs/tags/v}"
 
@@ -40,14 +40,13 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - name: Install rust stable
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # branch=master
-        with:
-          toolchain: stable
-
+      # Only useful while CI tests in the same profile as this build. Saving
+      # is off: a cache saved on a tag is unreadable from any other ref.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # tag=v2.9.2
         with:
           workspaces: src-tauri
+          shared-key: linux-release
+          save-if: false
 
       - name: Cache the Tesseract model
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # tag=v6.1.0

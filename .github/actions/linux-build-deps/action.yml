@@ -19,7 +19,6 @@ runs:
           librsvg2-dev \
           patchelf \
           libxdo-dev \
-          libssl-dev \
           build-essential \
           curl wget file \
           libtesseract-dev \
