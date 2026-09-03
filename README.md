@@ -113,7 +113,7 @@ One feature touches a EULA grey area and is **off by default** with an explicit 
 
 - **Memory Scanner** — `ReadProcessMemory` for live inventory. Read-only, same API as Overwolf.
 
-The **Warframe Companion API** (`api.warframe.com/api/inventory.php`) has been **temporarily suspended**. DE confirmed third-party tools run at your own risk but could not clarify whether this specific undocumented endpoint is permitted. The feature is disabled until clearer guidance is received.
+FrameForge never contacts the official Warframe account or inventory API. Account state comes from the running game only, so console and cross-platform players are out of scope.
 
 Everything else (Foundry, Market, Relics, Timers, Statistics) runs on public data only.
 

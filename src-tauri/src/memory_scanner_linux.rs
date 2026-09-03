@@ -17,7 +17,7 @@ use tracing::{debug, error, info, warn};
 use crate::mem_regions::RegionSource;
 use crate::memory_scanner::{
     cold_log_search_due, looks_like_log_buffer, newest_sync_timestamp, probe_outcome,
-    scan_auth_credentials, scan_cached_blob, scan_steam_id, stitch_blobs, sync_marker_is_new,
+    scan_cached_blob, stitch_blobs, sync_marker_is_new,
     BlobInventory, ScanOutcome, LAST_LOG_REGION, LOG_LINE_MARKER,
     LOG_SEARCH_BACKOFF, LOG_SEARCH_BACKOFF_PROBES, MAX_LOG_REGION, MAX_SCAN,
 };
@@ -533,57 +533,6 @@ fn linux_newest_sync_timestamp(process: &LinuxProcess, regions: &[LinuxRegion]) 
 }
 
 // ==============================================================================
-// Credentials
-// ==============================================================================
-
-#[tracing::instrument(level = "info", skip_all)]
-pub fn scan_warframe_credentials_process() -> Result<(String, String, String), String> {
-    let pid = find_warframe_pid().ok_or("Warframe is not running")?;
-    let process = LinuxProcess::open(pid)?;
-    let regions = linux_process_regions(pid)?;
-
-    scan_linux_credential_regions(&process, regions).ok_or_else(|| {
-        "Credentials not found in memory. Make sure you are in the orbiter (not loading screen) \
-         and Warframe has been running for a few minutes."
-            .into()
-    })
-}
-
-/// Walk readable data mappings looking for the login response the game keeps in
-/// memory. Split from the command above so it can be exercised against the test
-/// process, where the mappings and the expected bytes are both known.
-fn scan_linux_credential_regions(
-    process: &LinuxProcess,
-    regions: impl IntoIterator<Item = LinuxRegion>,
-) -> Option<(String, String, String)> {
-    // Per-region ceiling: anything larger is a texture or heap arena, not the
-    // small JSON blob we are after, and reading it would cost hundreds of
-    // megabytes of copies per scan.
-    const MAX_REGION: usize = 128 * 1024 * 1024;
-
-    // Deliberately not routed through `walk_regions`: that chunks at 64 MiB,
-    // which would split the 64–128 MiB mappings this accepts into two reads and
-    // hand `scan_auth_credentials` and `scan_steam_id` a boundary they could
-    // lose a match across. Reading each accepted region whole is the point here.
-    let mut buffer = Vec::new();
-    for region in regions {
-        if region.executable || region.len > MAX_REGION {
-            continue;
-        }
-        buffer.resize(region.len, 0);
-        let read = match process.read(region.start, &mut buffer) {
-            Ok(read) if read > 0 => read,
-            Ok(_) | Err(_) => continue,
-        };
-        let data = &buffer[..read];
-        if let Some((id, nonce)) = scan_auth_credentials(data) {
-            return Some((id, nonce, scan_steam_id(data).unwrap_or_default()));
-        }
-    }
-    None
-}
-
-// ==============================================================================
 // Diagnostic probes
 // ==============================================================================
 //
@@ -720,50 +669,6 @@ pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
         results.push("No matches found".to_string());
     }
     results
-}
-
-/// Collect context around the request strings the game builds its API calls
-/// from. Shares the region walk with the other probes.
-pub fn scan_api_url_strings() -> Result<Vec<String>, String> {
-    const NEEDLES: &[&[u8]] = &[
-        b"/API/PHP/",
-        b"inventory.php",
-        b"login.php",
-        b"warframe.com/A",
-        b"Nonce",
-        b"accountId",
-    ];
-    const MAX_RESULTS: usize = 40;
-
-    let pid = find_warframe_pid().ok_or("Warframe not running")?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut found: Vec<String> = Vec::new();
-
-    walk_linux_regions(pid, |region| !region.executable, deadline, |_, data| {
-        for needle in NEEDLES {
-            for position in memmem::find_iter(data, needle) {
-                let start = position.saturating_sub(30);
-                let end = (position + 100).min(data.len());
-                let context: String = data[start..end]
-                    .iter()
-                    .map(|&byte| if (0x20..0x7f).contains(&byte) { byte as char } else { ' ' })
-                    .collect();
-                let trimmed = context.split_whitespace().collect::<Vec<_>>().join(" ");
-                // Near-identical strings appear in thousands of copies, so the
-                // first 30 characters act as the deduplication key.
-                let key = &trimmed[..trimmed.len().min(30)];
-                if !found.iter().any(|seen| seen.contains(key)) {
-                    found.push(format!("[{}] {}", String::from_utf8_lossy(needle), trimmed));
-                }
-                if found.len() >= MAX_RESULTS {
-                    return false;
-                }
-            }
-        }
-        true
-    })?;
-
-    Ok(found)
 }
 
 #[tracing::instrument(level = "info", skip_all)]
@@ -1280,29 +1185,6 @@ mod tests {
         }
 
         reset_last_blob_region();
-    }
-
-    #[test]
-    fn linux_credential_scan_skips_executable_and_reads_data_regions() {
-        let login = br#"{"id":"594144e63ade7f2f2091c48e","Nonce":123456789,"steamId=76561198000000000"}"#;
-        let code = login.to_vec();
-        let data = login.to_vec();
-        let regions = vec![
-            LinuxRegion { executable: true, ..region(&code) },
-            region(&data),
-        ];
-        let process = this_process();
-
-        let found = scan_linux_credential_regions(&process, regions);
-
-        assert_eq!(
-            found,
-            Some((
-                "594144e63ade7f2f2091c48e".to_string(),
-                "123456789".to_string(),
-                "76561198000000000".to_string(),
-            ))
-        );
     }
 
     #[test]

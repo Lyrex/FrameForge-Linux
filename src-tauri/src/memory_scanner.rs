@@ -153,12 +153,6 @@ pub struct BlobPendingRecipe {
     pub completion_ms: i64,
 }
 
-fn digits_end(data: &[u8], start: usize) -> usize {
-    let mut i = start;
-    while i < data.len() && data[i].is_ascii_digit() { i += 1; }
-    i
-}
-
 /// Convert raw affinity XP to item rank.
 /// Formula from Warframe wiki: cumulative XP to reach rank N is 1000×N² for
 /// Warframes/Sentinels/companions, 500×N² for all weapon types.
@@ -172,84 +166,6 @@ pub fn xp_to_rank(xp: i64, path: &str) -> u32 {
         || path.contains("/Types/Game/CatbrowPet/")
     { 1000.0f64 } else { 500.0f64 };
     (xp as f64 / base).sqrt().floor() as u32
-}
-
-// ─── Auth credentials scan ───────────────────────────────────────────────────
-//
-// When Warframe is running and logged in, the game stores the session credentials
-// in memory as URL-encoded strings: accountId=<id>&nonce=<nonce>
-// We scan for these to authenticate with the Warframe companion API.
-
-pub fn scan_auth_credentials(data: &[u8]) -> Option<(String, String)> {
-    // The Warframe game receives a login response JSON from DE's servers containing:
-    //   {"id":"<24-char-hex-accountId>","Nonce":<large-integer>,...}
-    // We search for this pattern. The Nonce is typically 9-13 digits.
-    // We also try URL-encoded form: accountId=<id>&nonce=<nonce>
-    //
-    // Key insight from devtools: accountId=594144e63ade7f2f2091c48e (24ch), nonce len=9
-    // The 24-char hex accountId is a MongoDB ObjectId — correct format.
-    // The 9-digit nonce IS valid — it's a server-issued integer session token.
-
-    // Search for "id":"<24hexchars>" near "Nonce":<digits>
-    let id_key = b"\"id\":\"";
-    let nonce_key = b"\"Nonce\":";
-    for next in memmem::find_iter(data, id_key) {
-        let id_start = next + id_key.len();
-        // accountId is exactly 24 lowercase hex chars
-        let id_slice = &data[id_start..id_start.saturating_add(26).min(data.len())];
-        let close = id_slice.iter().position(|&b| b == b'"').unwrap_or(0);
-        if close != 24 { continue; }
-        let id_bytes = &id_slice[..24];
-        if !id_bytes.iter().all(|&b| b.is_ascii_hexdigit()) { continue; }
-        let account_id = std::str::from_utf8(id_bytes).unwrap_or("").to_string();
-
-        let nonce_search_end = (id_start + 2048).min(data.len());
-        if let Some(rel) = memmem::find(&data[id_start..nonce_search_end], nonce_key) {
-            let ns = id_start + rel + nonce_key.len();
-            let ne = digits_end(data, ns);
-            if ne > ns && ne - ns >= 5 {
-                if let Ok(nonce) = std::str::from_utf8(&data[ns..ne]) {
-                    return Some((account_id, nonce.to_string()));
-                }
-            }
-        }
-    }
-
-    // URL-encoded: accountId=<24hexchars>&nonce=<10digits>&ct=STM
-    let ak = b"accountId=";
-    let nk = b"nonce=";
-    for next in memmem::find_iter(data, ak) {
-        let id_start = next + ak.len();
-        let id_end = data[id_start..].iter().position(|&b| !b.is_ascii_hexdigit()).map(|p| id_start + p).unwrap_or(data.len());
-        if id_end - id_start != 24 { continue; }
-        let account_id = std::str::from_utf8(&data[id_start..id_end]).unwrap_or("").to_string();
-        let nonce_search_end = (id_end + 512).min(data.len());
-        if let Some(rel) = memmem::find(&data[id_end..nonce_search_end], nk) {
-            let ns = id_end + rel + nk.len();
-            let ne = digits_end(data, ns);
-            if ne > ns && ne - ns >= 5 {
-                if let Ok(nonce) = std::str::from_utf8(&data[ns..ne]) {
-                    return Some((account_id, nonce.to_string()));
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Also extract steamId from memory (found near accountId/nonce in URL params).
-pub fn scan_steam_id(data: &[u8]) -> Option<String> {
-    let key = b"steamId=";
-    for next in memmem::find_iter(data, key) {
-        let id_start = next + key.len();
-        let id_end = data[id_start..].iter().position(|&b| !b.is_ascii_digit()).map(|p| id_start + p).unwrap_or(data.len());
-        if id_end - id_start >= 15 && id_end - id_start <= 20 {
-            if let Ok(sid) = std::str::from_utf8(&data[id_start..id_end]) {
-                return Some(sid.to_string());
-            }
-        }
-    }
-    None
 }
 
 // ─── Public helpers ──────────────────────────────────────────────────────────
@@ -1776,47 +1692,6 @@ mod sync_marker_tests {
         assert!(sync_marker_is_new(Some(9821.400)), "a marker from the previous client");
         reset_log_region();
         assert!(sync_marker_is_new(Some(13.036)), "the new client's login sync must report");
-    }
-}
-
-#[cfg(test)]
-mod credential_scan_tests {
-    use super::{scan_auth_credentials, scan_steam_id};
-
-    #[test]
-    fn auth_credentials_finds_json_form() {
-        let buf = br#"{"id":"594144e63ade7f2f2091c48e","Nonce":123456789}"#;
-        let (account_id, nonce) = scan_auth_credentials(buf).expect("should find credentials");
-        assert_eq!(account_id, "594144e63ade7f2f2091c48e");
-        assert_eq!(nonce, "123456789");
-    }
-
-    #[test]
-    fn auth_credentials_finds_url_encoded_form() {
-        let buf = b"accountId=594144e63ade7f2f2091c48e&nonce=123456789&ct=STM";
-        let (account_id, nonce) = scan_auth_credentials(buf).expect("should find credentials");
-        assert_eq!(account_id, "594144e63ade7f2f2091c48e");
-        assert_eq!(nonce, "123456789");
-    }
-
-    #[test]
-    fn auth_credentials_none_on_no_match() {
-        let buf = b"nothing interesting in here at all";
-        assert_eq!(scan_auth_credentials(buf), None);
-    }
-
-    #[test]
-    fn steam_id_finds_value_past_false_starts() {
-        // Leading 's' bytes are false starts for the old byte-at-a-time scanner.
-        let buf = b"ssssssssteamId=steamId=76561198012345678";
-        let sid = scan_steam_id(buf).expect("should find steam id");
-        assert_eq!(sid, "76561198012345678");
-    }
-
-    #[test]
-    fn steam_id_none_on_no_match() {
-        let buf = b"steamId=short";
-        assert_eq!(scan_steam_id(buf), None);
     }
 }
 
