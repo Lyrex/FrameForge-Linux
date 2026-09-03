@@ -231,7 +231,7 @@ hidden rather than offered.
 
 ## License
 
-GPLv3 — see [LICENSE](LICENSE).
+GPLv3 — see [LICENSE](LICENSE). Reimplemented third-party components are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ---
 

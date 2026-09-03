@@ -9,6 +9,7 @@ fn truncate_chars(s: &str, n: usize) -> String {
 }
 use tauri::{Emitter, Manager, State};
 
+pub mod arbitration;
 mod cache;
 mod db;
 // EE.log lives at a different path per platform (Proton prefix on Linux), so
