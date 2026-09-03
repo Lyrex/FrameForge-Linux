@@ -896,6 +896,35 @@ impl Wfm {
         Ok(list)
     }
 
+    /// Search public riven auctions. `params` are the v1 query pairs; the caller
+    /// builds them and reads the `payload.auctions` array back out.
+    ///
+    /// Deliberately session-free: browsing the market must work logged out. The
+    /// memo is keyed on the whole query, so re-running a search after tweaking
+    /// and undoing one filter costs nothing.
+    pub fn search_riven_auctions(&self, params: &[(String, String)]) -> Result<serde_json::Value, String> {
+        let key = params
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("&");
+        self.memoized(&format!("auctions/search?{key}"), || {
+            self.auction_wait();
+            let mut req = ureq::get(&format!("{}/v1/auctions/search", API_BASE))
+                .header("language", "en")
+                .header("platform", "pc")
+                .header("User-Agent", USER_AGENT);
+            for (k, v) in params {
+                req = req.query(k, v);
+            }
+            req.call()
+                .map_err(|e| format!("Search auctions: {}", e))?
+                .body_mut()
+                .read_json()
+                .map_err(|e| format!("Parse: {}", e))
+        })
+    }
+
     /// Post a revealed riven as an auction. Returns the full response JSON; the
     /// caller extracts the new auction id for its own bookkeeping.
     #[allow(clippy::too_many_arguments)]
@@ -1311,12 +1340,22 @@ impl Wfm {
 
 /// Convert a display name to a warframe.market URL slug.
 /// E.g. "Ash Prime Neuroptics Blueprint" → "ash_prime_neuroptics_blueprint"
+///
+/// The market spells "&" out rather than dropping it, so "Ack & Brunt" is
+/// `ack_and_brunt`.
 pub fn to_wfm_slug(name: &str) -> String {
-    name.to_lowercase()
-        .chars()
-        .map(|c| if c == ' ' { '_' } else { c })
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .collect()
+    let spelled = name.to_lowercase().replace('&', "and");
+    let mut slug = String::with_capacity(spelled.len());
+    for c in spelled.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+        } else if c == '\'' || c == '\u{2019}' {
+            continue;
+        } else if !slug.ends_with('_') {
+            slug.push('_');
+        }
+    }
+    slug.trim_matches('_').to_string()
 }
 
 /// Extract the `<meta name="csrf-token" content="...">` value from page HTML.
@@ -1416,9 +1455,9 @@ mod tests {
     #[test]
     fn slug_lowercases_spaces_and_strips_punctuation() {
         assert_eq!(to_wfm_slug("Ash Prime Neuroptics Blueprint"), "ash_prime_neuroptics_blueprint");
-        // Apostrophes and other punctuation are dropped, not replaced.
         assert_eq!(to_wfm_slug("Vay Hek's Frequency"), "vay_heks_frequency");
         assert_eq!(to_wfm_slug("Já Prime"), "j_prime"); // non-ascii dropped
+        assert_eq!(to_wfm_slug("Ack & Brunt"), "ack_and_brunt");
     }
 
     #[test]

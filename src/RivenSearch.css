@@ -1,0 +1,45 @@
+.rs-tab { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+.rs-weapon-wrap { position: relative; }
+.rs-suggestions {
+  position: absolute; z-index: 20; left: 8px; right: 8px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  max-height: 200px; overflow-y: auto;
+}
+.rs-suggestion { padding: 4px 8px; font-size: 12px; color: var(--text); cursor: pointer; }
+.rs-suggestion:hover { background: rgba(56,139,253,.15); }
+
+/* The stat pickers list every riven stat, so they need their own scroll rather
+   than pushing the results off-screen. */
+.rs-filters { max-height: 76px; overflow-y: auto; }
+
+.rs-num {
+  width: 48px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 4px; color: var(--text); font-size: 11px; padding: 1px 4px; outline: none;
+}
+.rs-num:focus { border-color: var(--accent); }
+
+.rs-results { flex: 1; overflow-y: auto; padding: 10px; min-height: 0; }
+
+.rs-message {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 40px 20px; text-align: center; font-size: 12px; color: var(--muted);
+}
+.rs-message strong { font-size: 13px; color: var(--text); }
+.rs-message-error strong { color: var(--red); }
+
+.rs-verdict { font-size: 11px; font-weight: 600; }
+.rs-no-grade { color: var(--muted); font-weight: 400; font-style: italic; }
+
+.rs-price { display: inline-flex; align-items: center; gap: 3px; color: var(--text); }
+
+.rs-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 3px; background: var(--muted); }
+.rs-dot-ingame { background: var(--green); }
+.rs-dot-online { background: #f0c040; }
+
+.rs-stats { flex-direction: column; gap: 2px; }
+.rs-stat { display: flex; align-items: center; gap: 6px; font-size: 11px; border-radius: 3px; padding: 1px 6px; }
+.rs-stat-label { flex: 1; }
+.rs-stat-value { font-variant-numeric: tabular-nums; }
+.rs-stat-range { width: 60px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.12); flex-shrink: 0; }
+.rs-stat-range-fill { display: block; height: 100%; border-radius: 2px; background: currentColor; }
