@@ -72,7 +72,7 @@ interface BlobRivenEntry {
 
 interface ModCopy {
   uniqueName: string;
-  rank: number | null;
+  rank: number;
   count: number;
 }
 
@@ -818,7 +818,7 @@ function ModsTab({ allItems, inventory, wfmLookup, prices, modCopiesMap, onOpenP
           const copies   = modCopiesMap[item.unique_name];
           // Ranked copies sorted highest-first (null rank = unknown, shown last)
           const rankedCopies = copies
-            ? [...copies].filter(c => c.count > 0).sort((a, b) => (b.rank ?? -1) - (a.rank ?? -1))
+            ? [...copies].filter(c => c.count > 0).sort((a, b) => b.rank - a.rank)
             : [];
           return (
             <div
@@ -846,7 +846,7 @@ function ModsTab({ allItems, inventory, wfmLookup, prices, modCopiesMap, onOpenP
                           onOpenPopup(urlName, item.name, item.image_name ?? undefined, c.rank ?? undefined);
                         }}
                       >
-                        {c.rank !== null ? `R${c.rank}` : "?"} ×{c.count}
+                        R{c.rank} ×{c.count}
                       </span>
                     ))}
                   </div>

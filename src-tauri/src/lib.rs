@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,7 +10,6 @@ fn truncate_chars(s: &str, n: usize) -> String {
 use tauri::{Emitter, Manager, State};
 
 mod cache;
-mod console_login; // [console-login feature] remove this line to drop the feature
 mod db;
 // EE.log lives at a different path per platform (Proton prefix on Linux), so
 // path construction lives here rather than being inlined at each watcher.
@@ -114,9 +112,6 @@ pub struct AppState {
     /// When true, save a timestamped inventory blob to blobs/ on each full scan pass.
     pub blob_log_enabled: Arc<AtomicBool>,
     pub blob_log_dir: PathBuf,
-    /// When true, save the raw DE API response to api_logs/ on each fetch.
-    pub api_log_enabled: Arc<AtomicBool>,
-    pub api_log_dir: PathBuf,
     /// The warframe.market client: session, rate limiters, and the slug → price
     /// cache all live behind this one seam, shared (Arc) with the prefetch thread.
     pub wfm: Arc<Wfm>,
@@ -131,10 +126,6 @@ pub struct AppState {
     /// IDs of riven auctions created via FrameForge — persisted so hidden auctions survive restarts.
     pub auction_ids: Mutex<Vec<String>>,
     pub auction_ids_path: PathBuf,
-    /// Companion API quantities held in memory so the scanner includes them in cache writes.
-    pub api_quantities_cache: Arc<Mutex<HashMap<String, i64>>>,
-    /// Companion API mod copies held in memory so the scanner includes them in cache writes.
-    pub api_mod_copies_cache: Arc<Mutex<Vec<ApiModCopy>>>,
     /// Most recent OCR frame (top ~48% of Warframe window, BGRA, width, height).
     /// Stored by the OCR loop so auto-capture can write it without a second GPU readback.
     pub last_ocr_frame: Arc<Mutex<Option<(Vec<u8>, u32, u32)>>>,
@@ -1052,59 +1043,6 @@ fn get_relic_rewards(state: State<AppState>) -> HashMap<String, Vec<wfcd::RelicR
     state.relic_rewards.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-// ─── Warframe companion API ───────────────────────────────────────────────────
-
-/// Scan all Warframe memory regions for the session credentials (accountId + nonce).
-/// These are placed in memory by the game itself after login — we never handle passwords.
-#[tauri::command]
-async fn scan_warframe_credentials() -> Result<(String, String, String), String> {
-    tauri::async_runtime::spawn_blocking(scan_warframe_credentials_sync)
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-fn scan_warframe_credentials_sync() -> Result<(String, String, String), String> {
-    memory_scanner_linux::scan_warframe_credentials_process()
-}
-
-/// Scan Warframe memory for API request URLs — reveals exact endpoints the game uses.
-#[tauri::command]
-async fn scan_warframe_api_urls() -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(memory_scanner_linux::scan_api_url_strings)
-        .await
-        .map_err(|e| e.to_string())?
-}
-/// Persist mastery data (unique_name → rank 0-30) from the Companion API or any other source.
-/// Merges into each item's entry in inventory_state_cache.json; higher rank always wins.
-#[tauri::command]
-fn save_mastery_data(
-    state: tauri::State<'_, AppState>,
-    data: HashMap<String, u32>,
-) -> Result<(), String> {
-    if data.is_empty() { return Ok(()); }
-    let path = state.inventory_state_cache_path.clone();
-    let mut cache: InventoryStateCache = std::fs::read_to_string(&path).ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-    for (k, v) in &data {
-        let entry = cache.items.entry(k.clone()).or_insert_with(|| CachedItem {
-            unique_name: k.clone(), ..Default::default()
-        });
-        if *v > entry.mastery_rank { entry.mastery_rank = *v; }
-    }
-    serde_json::to_string(&cache).map_err(|e| e.to_string())
-        .and_then(|json| atomic_write(&path, json.as_bytes()).map_err(|e| e.to_string()))
-}
-
-/// Return statement for get_saved_inventory — camelCase so TypeScript receives it without conversion.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SavedInventory {
-    api_quantities: HashMap<String, i64>,
-    api_mod_copies: Vec<ApiModCopy>,
-    consumed_suits: Vec<String>,
-}
-
 /// Returns all owned riven mods (veiled and revealed) from the persisted inventory cache.
 /// Runs in a blocking thread so the large inventory JSON deserialization doesn't stall the UI.
 #[tauri::command]
@@ -1117,195 +1055,11 @@ async fn get_rivens(state: tauri::State<'_, AppState>) -> Result<Vec<memory_scan
     .map_err(|e| e.to_string())
 }
 
-/// Called once on startup so the frontend can restore state without waiting for Warframe to run.
+/// Subsumed warframes from the persisted cache, so the Foundry shows them
+/// before the first scan pass completes.
 #[tauri::command]
-fn get_saved_inventory(state: tauri::State<'_, AppState>) -> SavedInventory {
-    let cache = load_inventory_state_cache(&state.inventory_state_cache_path);
-    SavedInventory {
-        api_quantities: state.api_quantities_cache.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-        api_mod_copies: state.api_mod_copies_cache.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-        consumed_suits: cache.consumed_suits(),
-    }
-}
-
-/// Persist Companion API quantities, mod copies, and subsumed warframes.
-/// Updates AppState in-memory (scanner picks them up on next write) and writes immediately to disk.
-#[tauri::command]
-fn save_api_inventory(
-    state: tauri::State<'_, AppState>,
-    api_quantities: HashMap<String, i64>,
-    api_mod_copies: Vec<ApiModCopy>,
-    consumed_suits: Vec<String>,
-) -> Result<(), String> {
-    // Update in-memory cache so the scan loop picks these up without a file read.
-    *state.api_quantities_cache.lock().unwrap_or_else(|e| e.into_inner()) = api_quantities.clone();
-    *state.api_mod_copies_cache.lock().unwrap_or_else(|e| e.into_inner()) = api_mod_copies.clone();
-
-    let path = state.inventory_state_cache_path.clone();
-    let mut cache: InventoryStateCache = std::fs::read_to_string(&path).ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-    // API quantities: only write items not already present from the scanner.
-    // Scanner data is authoritative — API only fills gaps for items not yet scanned.
-    for (k, qty) in &api_quantities {
-        let entry = cache.items.entry(k.clone()).or_insert_with(|| CachedItem {
-            unique_name: k.clone(), ..Default::default()
-        });
-        if entry.amount == 0 { entry.amount = *qty; }
-    }
-    // API mod copies: same — only fill mods the scanner hasn't recorded.
-    for mc in &api_mod_copies {
-        let entry = cache.items.entry(mc.unique_name.clone()).or_insert_with(|| CachedItem {
-            unique_name: mc.unique_name.clone(), ..Default::default()
-        });
-        if entry.mod_ranks.is_none() {
-            let ranks = entry.mod_ranks.get_or_insert_with(HashMap::new);
-            let rank_key = mc.rank.map(|r| r.to_string()).unwrap_or_else(|| "0".to_string());
-            *ranks.entry(rank_key).or_insert(0) = mc.count;
-            entry.amount = ranks.values().sum();
-        }
-    }
-    for suit in consumed_suits {
-        cache.items.entry(suit.clone()).or_insert_with(|| CachedItem {
-            unique_name: suit.clone(), ..Default::default()
-        }).subsumed = true;
-    }
-    serde_json::to_string(&cache).map_err(|e| e.to_string())
-        .and_then(|json| atomic_write(&path, json.as_bytes()).map_err(|e| e.to_string()))
-}
-
-fn whirlpool_hex(password: &str) -> String {
-    use std::fmt::Write as _;
-    use whirlpool::{Digest, Whirlpool};
-    Whirlpool::digest(password.as_bytes())
-        .iter()
-        .fold(String::with_capacity(128), |mut s, b| {
-            let _ = write!(s, "{b:02x}");
-            s
-        })
-}
-
-/// Login to Warframe API with email + password (same flow as mobile companion app).
-/// Password is hashed with Whirlpool before sending — never sent in plaintext.
-/// Returns (accountId, nonce) for subsequent API calls.
-#[tauri::command]
-async fn warframe_login(email: String, password: String) -> Result<(String, String), String> {
-    let hash = whirlpool_hex(&password);
-    let now = cache::now_unix();
-
-    // Try multiple endpoint + body format variants.
-    // mobile=true prevents clobbering an active game session.
-    // date=9999999999999999 is required by some versions of the API (device-ID placeholder).
-    let form_body = format!(
-        "email={}&password={}&time={}&mobile=true&appVersion=live&date=9999999999999999",
-        urlencoding(&email), hash, now
-    );
-    let json_body = format!(
-        r#"{{"email":"{}","password":"{}","time":{},"date":9999999999999999,"mobile":true,"appVersion":"live"}}"#,
-        email.replace('"', "\\\""), hash, now
-    );
-
-    let candidates: &[(&str, &str, &str)] = &[
-        ("https://api.warframe.com/api/login.php",     "application/json",                  &json_body),
-        ("https://mobile.warframe.com/api/login.php",  "application/json",                  &json_body),
-        ("https://api.warframe.com/api/login.php",     "application/x-www-form-urlencoded", &form_body),
-        ("https://mobile.warframe.com/api/login.php",  "application/x-www-form-urlencoded", &form_body),
-    ];
-
-    let mut errors: Vec<String> = Vec::new();
-    for (url, ct, body) in candidates {
-        let result = ureq::post(*url)
-            .config()
-            .http_status_as_error(false)
-            .build()
-            .header("X-Titanium-Id", "9bbd1ddd-f7f2-402d-9777-873f458cb50c")
-            .header("X-Requested-With", "XMLHttpRequest")
-            .header("Content-Type", *ct)
-            .header("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 8.1.0)")
-            .send(*body);
-        match result {
-            Ok(mut resp) => {
-                let code = resp.status().as_u16();
-                let text = resp.body_mut().read_to_string().unwrap_or_default();
-                if !(200..300).contains(&code) {
-                    errors.push(format!("{}: HTTP {}: {}", url, code, truncate_chars(&text, 200)));
-                    continue;
-                }
-                let json: serde_json::Value = match serde_json::from_str(&text) {
-                    Ok(v) => v,
-                    Err(_) => { errors.push(format!("{}: non-JSON: {}", url, truncate_chars(&text, 200))); continue; }
-                };
-                let id    = json["id"].as_str().unwrap_or("").to_string();
-                let nonce = json["Nonce"].to_string().trim_matches('"').to_string();
-                if !id.is_empty() && nonce != "null" {
-                    return Ok((id, nonce));
-                }
-                errors.push(format!("{}: rejected: {}", url, truncate_chars(&text, 300)));
-            }
-            Err(e) => { errors.push(format!("{}: {}", url, e)); }
-        }
-    }
-    Err(format!("All login endpoints failed:\n{}", errors.join("\n")))
-}
-
-fn urlencoding(s: &str) -> String {
-    s.chars().flat_map(|c| match c {
-        'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => vec![c],
-        '@' => vec!['%', '4', '0'],
-        _ => format!("%{:02X}", c as u8).chars().collect(),
-    }).collect()
-}
-
-/// Fetch the player's full inventory from the Warframe companion API.
-#[tauri::command]
-async fn fetch_warframe_inventory(account_id: String, nonce: String, steam_id: String, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let log_enabled = state.api_log_enabled.load(Ordering::SeqCst);
-    let log_dir     = state.api_log_dir.clone();
-
-    // Base URL uses lowercase /api/ (not /API/PHP/). ct=STM for Steam platform.
-    let endpoints = [
-        "https://api.warframe.com/api/inventory.php",
-        "https://api.warframe.com/api/profile.php",
-    ];
-    let body = format!(
-        "accountId={}&nonce={}&ct=STM{}&SteamOnly=1",
-        account_id, nonce,
-        if !steam_id.is_empty() { format!("&steamId={}", steam_id) } else { String::new() }
-    );
-    let headers = [
-        ("Content-Type", "application/x-www-form-urlencoded"),
-        ("User-Agent", "Mozilla/5.0"),
-        ("Accept", "application/json"),
-        ("Host", "api.warframe.com"),
-    ];
-
-    let mut last_err = String::new();
-    for url in &endpoints {
-        let mut req = ureq::post(*url)
-            .config()
-            .http_status_as_error(false)
-            .build();
-        for (k, v) in &headers { req = req.header(*k, *v); }
-        match req.send(&body) {
-            Ok(mut resp) => {
-                let status = resp.status().as_u16();
-                let text = resp.body_mut().read_to_string().unwrap_or_default();
-                if log_enabled {
-                    let endpoint_name = url.split('/').last().unwrap_or("response");
-                    let ts   = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
-                    let path = log_dir.join(format!("{}_{}.json", ts, endpoint_name));
-                    let _ = std::fs::write(&path, &text);
-                }
-                if status == 200 {
-                    return serde_json::from_str(&text)
-                        .map_err(|e| format!("Parse failed: {} — body: {}", e, truncate_chars(&text, 200)));
-                }
-                last_err = format!("HTTP {} from {}: {}", status, url, truncate_chars(&text, 100));
-            }
-            Err(e) => { last_err = format!("Request to {} failed: {}", url, e); }
-        }
-    }
-    Err(last_err)
+fn get_saved_consumed_suits(state: tauri::State<'_, AppState>) -> Vec<String> {
+    load_inventory_state_cache(&state.inventory_state_cache_path).consumed_suits()
 }
 
 // ─── Warframe.market ──────────────────────────────────────────────────────────
@@ -1811,11 +1565,10 @@ fn finish_wfm_top_scan(wfm: &Wfm, results: Vec<WfmTopItem>) {
 // client reaches every mainstream desktop. Why this client and not libsecret or
 // the `keyring` crate: docs/adr/0001.
 //
-// The commands are async and hand their D-Bus calls to spawn_blocking, matching
-// scan_warframe_credentials above. Unlocking a keyring can put a dialog in front
-// of the user for as long as they take to answer, and Tauri runs a sync command
-// on the main thread, so a sync version would freeze the window behind the very
-// prompt it raised.
+// The commands are async and hand their D-Bus calls to spawn_blocking.
+// Unlocking a keyring can put a dialog in front of the user for as long as
+// they take to answer, and Tauri runs a sync command on the main thread, so a
+// sync version would freeze the window behind the very prompt it raised.
 
 const WFM_SECRET_SERVICE: &str = "FrameForge_WFM";
 const WFM_SECRET_ACCOUNT: &str = "wfm-session";
@@ -4162,26 +3915,6 @@ fn read_scan_log(state: State<AppState>) -> Result<String, String> {
     std::fs::read_to_string(&state.log_path).map_err(|e| e.to_string())
 }
 
-#[derive(serde::Deserialize)]
-pub struct ApiChange {
-    pub item_name: String,
-    pub old_qty: i64,
-    pub new_qty: i64,
-}
-
-#[tauri::command]
-fn log_api_changes(state: State<AppState>, changes: Vec<ApiChange>) -> Result<(), String> {
-    let mut f = std::fs::OpenOptions::new()
-        .create(true).append(true)
-        .open(&state.changes_log_path)
-        .map_err(|e| e.to_string())?;
-    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-    for c in &changes {
-        let _ = writeln!(f, "[{}] Companion API  | {} | {} → {}", ts, c.item_name, c.old_qty, c.new_qty);
-    }
-    Ok(())
-}
-
 #[tauri::command]
 async fn dump_memory_probe(state: State<'_, AppState>) -> Result<String, String> {
     let log_path = state.memory_probe_path.clone();
@@ -4199,11 +3932,6 @@ fn set_blob_log(enabled: bool, state: State<'_, AppState>) {
     state.blob_log_enabled.store(enabled, Ordering::SeqCst);
 }
 
-/// Enable or disable logging of raw DE API responses to api_logs/.
-#[tauri::command]
-fn set_api_log(enabled: bool, state: State<'_, AppState>) {
-    state.api_log_enabled.store(enabled, Ordering::SeqCst);
-}
 
 /// Returns "started" or "stopped" so the frontend can update button state.
 #[tauri::command]
@@ -4266,8 +3994,6 @@ fn clear_cache(state: State<AppState>) -> Result<(), String> {
     state.current_quantities.lock().map_err(|e| e.to_string())?.clear();
     state.unique_quantities.lock().map_err(|e| e.to_string())?.clear();
     state.current_mods.lock().map_err(|e| e.to_string())?.clear();
-    state.api_quantities_cache.lock().map_err(|e| e.to_string())?.clear();
-    state.api_mod_copies_cache.lock().map_err(|e| e.to_string())?.clear();
 
     // Delete cache and hint files so nothing reloads on next start
     let _ = std::fs::remove_file(&state.quantities_cache_path);
@@ -8073,7 +7799,6 @@ async fn credential_store_available() -> bool {
 fn open_debug_folder(state: State<AppState>, which: String) -> Result<(), String> {
     let path: std::path::PathBuf = match which.as_str() {
         "blobs"           => state.blob_log_dir.clone(),
-        "api_logs"        => state.api_log_dir.clone(),
         "raw_scan"        => state.raw_scan_path.parent().ok_or("no parent")?.to_path_buf(),
         "probe"           => state.memory_probe_path.parent().ok_or("no parent")?.to_path_buf(),
         "diag"            => state.auto_capture_dir.clone(),
@@ -8088,7 +7813,7 @@ fn open_debug_folder(state: State<AppState>, which: String) -> Result<(), String
 }
 
 /// Clear debug data for a specific category.
-/// `which`: "blobs" | "api_logs" | "raw_scan" | "probe"
+/// `which`: "blobs" | "raw_scan" | "probe" | "unmatched_paths" | "manual_capture"
 #[tauri::command]
 fn clear_debug_data(state: State<AppState>, which: String) -> Result<(), String> {
     let clear_dir = |dir: &std::path::Path| {
@@ -8100,7 +7825,6 @@ fn clear_debug_data(state: State<AppState>, which: String) -> Result<(), String>
     };
     match which.as_str() {
         "blobs"           => clear_dir(&state.blob_log_dir),
-        "api_logs"        => clear_dir(&state.api_log_dir),
         "raw_scan"        => { let _ = std::fs::remove_file(&state.raw_scan_path); }
         "probe"           => { let _ = std::fs::remove_file(&state.memory_probe_path); }
         "unmatched_paths" => clear_dir(&state.unmatched_paths_dir),
@@ -8119,12 +7843,11 @@ fn clear_debug_data(state: State<AppState>, which: String) -> Result<(), String>
 }
 
 /// Return the byte size of a debug folder or file.
-/// `which`: "blobs" | "api_logs" | "raw_scan" | "probe" | "diag" | "manual_capture" | "unmatched_paths"
+/// `which`: "blobs" | "raw_scan" | "probe" | "diag" | "manual_capture" | "unmatched_paths"
 #[tauri::command]
 fn get_debug_data_size(state: State<AppState>, which: String) -> u64 {
     match which.as_str() {
         "blobs"           => dir_size_bytes(&state.blob_log_dir),
-        "api_logs"        => dir_size_bytes(&state.api_log_dir),
         "raw_scan"        => std::fs::metadata(&state.raw_scan_path).map(|m| m.len()).unwrap_or(0),
         "probe"           => std::fs::metadata(&state.memory_probe_path).map(|m| m.len()).unwrap_or(0),
         "diag"            => dir_size_bytes(&state.auto_capture_dir),
@@ -8475,15 +8198,6 @@ fn dedup_known_aliases(mut items: Vec<WfcdItem>) -> Vec<WfcdItem> {
         }
     }
     items
-}
-
-/// Companion API mod copy entry — camelCase so it round-trips through TypeScript without conversion.
-#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct ApiModCopy {
-    unique_name: String,
-    rank: Option<u32>,
-    count: i64,
 }
 
 /// One resolved modular component (Amp Prism/Scaffold/Brace, Kitgun barrel, etc.)
@@ -8932,7 +8646,6 @@ pub fn run() {
     let changes_log_path = state_dir.join("inventory_changes.txt");
     let debug_root = state_dir.join("Debugging");
     let blob_log_dir = debug_root.join("Inventory Snapshots");
-    let api_log_dir = debug_root.join("Api Responses");
     let auto_capture_dir = debug_root.join("Auto-Capture");
     let manual_capture_dir = debug_root.join("Manual Capture");
     let memory_probe_dir = debug_root.join("Memory Probe");
@@ -8940,7 +8653,7 @@ pub fn run() {
     let unmatched_paths_dir = debug_root.join("Unmatched Paths");
     let raw_scan_path = raw_scan_dir.join("raw_scan.txt");
     let memory_probe_path = memory_probe_dir.join("memory_probe.txt");
-    for dir in &[&blob_log_dir, &api_log_dir, &auto_capture_dir, &manual_capture_dir,
+    for dir in &[&blob_log_dir, &auto_capture_dir, &manual_capture_dir,
                  &memory_probe_dir, &raw_scan_dir, &unmatched_paths_dir] {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -9059,7 +8772,6 @@ pub fn run() {
     }
 
     tauri::Builder::default()
-        .register_uri_scheme_protocol("ffauth", |ctx, req| console_login::handle_ffauth(ctx.app_handle(), &req)) // [console-login feature]
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -9083,8 +8795,6 @@ pub fn run() {
             current_quantities: Arc::new(Mutex::new(initial_quantities)),
             unique_quantities: Arc::new(Mutex::new(initial_unique)),
             current_mods: Arc::new(Mutex::new(initial_mods)),
-            api_quantities_cache: Arc::new(Mutex::new(HashMap::new())),
-            api_mod_copies_cache: Arc::new(Mutex::new(Vec::new())),
             last_ocr_frame: Arc::new(Mutex::new(None)),
             current_crafting: Arc::new(Mutex::new(vec![])),
             monitor_active: Arc::new(AtomicBool::new(false)),
@@ -9093,8 +8803,6 @@ pub fn run() {
             blob_sync_pending: Arc::new(AtomicBool::new(false)),
             blob_log_enabled: Arc::new(AtomicBool::new(false)),
             blob_log_dir,
-            api_log_enabled: Arc::new(AtomicBool::new(false)),
-            api_log_dir,
             wfm: {
                 let w = Arc::new(Wfm::new());
                 for (slug, price) in initial_wfm_prices {
@@ -9233,11 +8941,9 @@ pub fn run() {
             save_settings,
             log_parser::get_ee_log_status,
             read_scan_log,
-            log_api_changes,
             dump_memory_probe,
             toggle_raw_scan,
             set_blob_log,
-            set_api_log,
             get_app_version,
             set_app_version,
             updater::check_for_update,
@@ -9309,15 +9015,9 @@ pub fn run() {
             wfm_delete_auction,
             wfm_update_auction,
             wfm_set_auction_visible,
-            scan_warframe_credentials,
-            scan_warframe_api_urls,
-            warframe_login,
-            fetch_warframe_inventory,
-            save_mastery_data,
-            get_saved_inventory,
+            get_saved_consumed_suits,
             get_rivens,
             get_weapon_dispositions,
-            save_api_inventory,
             get_syndicate_stores,
             get_research_lab_stores,
             fetch_worldstate,
@@ -9350,7 +9050,6 @@ pub fn run() {
             debug_detect_fissure_era,
             test_relic_pick_overlay,
             debug_ee_log_tail,
-            console_login::open_console_login, // [console-login feature]
             wfcd::get_drop_data,
             get_cache_statuses,
             refresh_all_caches,
@@ -9490,14 +9189,6 @@ mod tests {
         assert_eq!(truncate_chars("abc", 2), "ab");
     }
 
-    #[test]
-    fn whirlpool_hex_matches_reference_vector() {
-        assert_eq!(
-            whirlpool_hex(""),
-            "19fa61d75522a4669b44e39c1d2e1726c530232130d407f89afee0964997f7a7\
-             3e83be698b288febcf88e3e03c4f0757ea8964e59b63d93708b138cc42a66eb3"
-        );
-    }
 
     /// Verbatim OCR for the right-hand card of a reroll comparison screen (Kuva
     /// Bramma, 3840×2160), border and rank pips included as punctuation.

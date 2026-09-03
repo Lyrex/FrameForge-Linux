@@ -162,7 +162,7 @@ interface CraftingJob {
 
 interface ModCopy {
   uniqueName: string;
-  rank: number | null; // null = raw (RawUpgrades), number = from Upgrades (0 = installed-unranked)
+  rank: number;
   count: number;
 }
 
@@ -676,12 +676,6 @@ const InvCard = memo(function InvCard({
   return true;
 });
 
-// Feature 3 — api.warframe.com/api/inventory.php
-// DE confirmed third-party tools are used "at your own risk" but could not clarify
-// whether accessing this undocumented endpoint specifically is permitted.
-// Set to false to re-enable once clearer guidance is received.
-const COMPANION_API_SUSPENDED = true;
-
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 // RelicAndRivenTab is kept but now just shows RelicHelper — Rivens moved to own tab
@@ -776,14 +770,11 @@ export default function App() {
 
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [quantities, setQuantities] = useState<Record<string, number>>({});
-  const [apiQuantities, setApiQuantities] = useState<Record<string, number>>({});
-  const [apiModCopies, setApiModCopies] = useState<ModCopy[]>([]);
   const [scannerMods, setScannerMods] = useState<Record<string, { total: number; by_rank: Record<string, number> }>>({});
   const [crafting, setCrafting] = useState<CraftingJob[]>([]);
   const [masteryRank, setMasteryRank] = useState<number | null>(null);
   const [masteryData, setMasteryData] = useState<Record<string, number>>({});
   const [playerName, setPlayerName] = useState<string | null>(null);
-  const [wfConnected, setWfConnected] = useState(false);
   const [memoryProbing, setMemoryProbing] = useState(false);
   const [poking, setPoking] = useState(false);
   const [rawScanning, setRawScanning] = useState(false);
@@ -798,10 +789,8 @@ export default function App() {
   const [autoDiagEnabled, setAutoDiagEnabled] = useState(false);
   const [diagFolderSize, setDiagFolderSize] = useState<number>(0);
   const [overlayLogCopied, setOverlayLogCopied] = useState(false);
-  const [companionApiEnabled] = useState(false);
   const [memoryScannerEnabled, setMemoryScannerEnabled] = useState(false);
 const [blobLogEnabled, setBlobLogEnabled] = useState(false);
-  const [apiLogEnabled,  setApiLogEnabled]  = useState(false);
   const [wfmLoggedIn, setWfmLoggedIn] = useState(false);
   const [wfmInvisibleOnStart,   setWfmInvisibleOnStart]   = useState(false);
   const [wfmInvisibleOnClose,   setWfmInvisibleOnClose]   = useState(false);
@@ -814,15 +803,10 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [subsummedWarframes, setSubsummedWarframes] = useState<Set<string>>(new Set());
   const [archonShards, setArchonShards] = useState<Record<string, {type: string; tauforged: boolean; color: string; boost?: string}[]>>({});
   const [formaData, setFormaData] = useState<Record<string, number>>({});
-  const [lastApiRefresh, setLastApiRefresh] = useState<number | null>(null);
-  const wfConnectedRef = useRef(false);
-  const inventoryRestoredRef = useRef(false);
   const wfmInvisibleOnStartRef  = useRef(false);
   const wfmInvisibleOnCloseRef  = useRef(false);
   const wfmLoggedInRef          = useRef(false);
   const catalogRef = useRef<CatalogItem[]>([]);
-  const prevApiQtyRef = useRef<Record<string, number>>({});
-  const manualCredsRef = useRef<{ accountId: string; nonce: string } | null>(null);
   const [changeLog, setChangeLog] = useState<QuantityChange[]>([]);
   const [category, setCategory] = useState("all");
   const [search, setSearch] = useState("");
@@ -876,7 +860,6 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [updateAvailable, setUpdateAvailable] = useState<UpdateAvailable | null>(null);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [blobLogSize,    setBlobLogSize]    = useState(0);
-  const [apiLogSize,     setApiLogSize]     = useState(0);
   const [rawScanSize,    setRawScanSize]    = useState(0);
   const [probeSize,      setProbeSize]      = useState(0);
   const [debugCatEnabled,    setDebugCatEnabled]    = useState(false);
@@ -918,14 +901,14 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   // Refs so we can read the latest state in the save callback without stale closures
   const settingsLoadedRef = useRef(false);
   const settingsRef = useRef({
-    overlayEnabled: true, overlayPriority: "completion", textScale: 1, colorblindMode: false, clockFormat: "auto" as "auto" | "12h" | "24h", companionApiEnabled: false, memoryScannerEnabled: false, blobLogEnabled: false, apiLogEnabled: false, autoDiagEnabled: false,
+    overlayEnabled: true, overlayPriority: "completion", textScale: 1, colorblindMode: false, clockFormat: "auto" as "auto" | "12h" | "24h", memoryScannerEnabled: false, blobLogEnabled: false, autoDiagEnabled: false,
     tracked: [] as string[], favorites: [] as string[], timerFavorites: [] as string[], fissureWatches: [] as FissureWatch[], fissureNotifications: true, modularWidth: 240,
     modularSectionOrder: ["tracking", "favorites", "timers"] as string[], modularPopout: false,
     wfmInvisibleOnStart: false, wfmInvisibleOnClose: false, wfmAutoInvisible: false, wfmAutoInvisibleMins: 30,
     relicPickEnabled: true, relicPickPriority: "unowned" as "unowned" | "ducat" | "platinum", relicPickRefinement: "radiant" as "intact" | "exceptional" | "flawless" | "radiant", relicPickLines: "all" as "all" | "best" | "estimated",
     foundryPageSize: 30 as 30 | 60 | 100,
   });
-  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, companionApiEnabled, memoryScannerEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize };
+  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize };
 
   const saveAllSettings = useCallback(() => {
     // Until the on-disk settings have been applied, settingsRef still holds
@@ -954,15 +937,9 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     invoke("set_blob_log", { enabled: blobLogEnabled }).catch(() => {});
   }, [blobLogEnabled]); // eslint-disable-line
 
-  // ── API log toggle ────────────────────────────────────────────────────────
-  useEffect(() => {
-    invoke("set_api_log", { enabled: apiLogEnabled }).catch(() => {});
-  }, [apiLogEnabled]); // eslint-disable-line
-
   // ── Debug data sizes — reload when the Debugging settings tab opens ─────────
   const reloadDebugSizes = useCallback(() => {
     invoke<number>("get_debug_data_size", { which: "blobs"           }).then(setBlobLogSize).catch(() => {});
-    invoke<number>("get_debug_data_size", { which: "api_logs"        }).then(setApiLogSize).catch(() => {});
     invoke<number>("get_debug_data_size", { which: "raw_scan"        }).then(setRawScanSize).catch(() => {});
     invoke<number>("get_debug_data_size", { which: "probe"           }).then(setProbeSize).catch(() => {});
     invoke<number>("get_debug_data_size", { which: "unmatched_paths" }).then(setUnmatchedPathsSize).catch(() => {});
@@ -1034,15 +1011,9 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   // ── Bootstrap ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    // Restore all inventory data from the single Rust-side cache file
-    invoke<{ apiQuantities: Record<string, number>; apiModCopies: ModCopy[]; consumedSuits: string[] }>("get_saved_inventory")
-      .then(data => {
-        if (Object.keys(data.apiQuantities).length > 0) setApiQuantities(data.apiQuantities);
-        if (data.apiModCopies.length > 0) setApiModCopies(data.apiModCopies);
-        if (data.consumedSuits.length > 0) setSubsummedWarframes(new Set(data.consumedSuits));
-      })
-      .catch(() => {})
-      .finally(() => { inventoryRestoredRef.current = true; });
+    invoke<string[]>("get_saved_consumed_suits")
+      .then(suits => { if (suits.length > 0) setSubsummedWarframes(new Set(suits)); })
+      .catch(() => {});
 
     // Load user settings from file — survives reinstalls unlike localStorage
     invoke<string>("load_settings").then(json => {
@@ -1050,10 +1021,8 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
       if (!json) { settingsLoadedRef.current = true; return; }
       try {
         const s = JSON.parse(json);
-        // companionApiEnabled intentionally not loaded — feature suspended pending DE clarification
         if (typeof s.memoryScannerEnabled === "boolean") setMemoryScannerEnabled(s.memoryScannerEnabled);
         if (typeof s.blobLogEnabled === "boolean") setBlobLogEnabled(s.blobLogEnabled);
-        if (typeof s.apiLogEnabled  === "boolean") setApiLogEnabled(s.apiLogEnabled);
 if (typeof s.autoDiagEnabled === "boolean") {
           setAutoDiagEnabled(s.autoDiagEnabled);
           localStorage.setItem("ff-auto-diag", String(s.autoDiagEnabled));
@@ -1170,11 +1139,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
       if (p.player_name) setPlayerName(p.player_name);
       if (p.mastery_data && Object.keys(p.mastery_data).length > 0)
         setMasteryData(prev => ({ ...prev, ...p.mastery_data }));
-      // When Warframe restarts (was running → stopped → running again),
-      // clear manual credentials so fresh ones are scanned from the new session
-      if (!p.warframe_running && wfConnectedRef.current) {
-        manualCredsRef.current = null;
-      }
       setWarframeRunning(p.warframe_running);
       if (p.consumed_suits && p.consumed_suits.length > 0) {
         setSubsummedWarframes(prev => {
@@ -1387,200 +1351,9 @@ if (typeof s.autoDiagEnabled === "boolean") {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Warframe API: process inventory response ──────────────────────────────
-
-  const applyInventoryData = useCallback((data: any) => {
-    const apiQty: Record<string, number> = {};
-    const ownedArrayKeys = [
-      "Suits", "LongGuns", "Pistols", "Melee",
-      "Sentinels", "SentinelWeapons",
-      "SpaceSuits", "SpaceGuns", "SpaceMelee",
-      "MechSuits", "KubrowPets",
-      "CrewShipWeapons", "OperatorAmps", "OperatorSuits",
-    ];
-    const masteryUpdate: Record<string, number> = {};
-    for (const key of ownedArrayKeys) {
-      const arr = data[key];
-      if (!Array.isArray(arr)) continue;
-      for (const item of arr) {
-        const t: string = item.ItemType;
-        if (!t) continue;
-        apiQty[t] = (apiQty[t] ?? 0) + 1;
-        // Extract mastery rank from XP field — 30,000 XP per rank, cap at 30
-        if (item.XP != null) {
-          masteryUpdate[t] = Math.min(30, Math.floor(item.XP / 30000));
-        }
-      }
-    }
-    if (Object.keys(masteryUpdate).length > 0)
-      setMasteryData(prev => ({ ...prev, ...masteryUpdate }));
-    for (const r of (Array.isArray(data.Recipes) ? data.Recipes : [])) {
-      const t: string = r.ItemType;
-      if (t) {
-        apiQty[t] = (apiQty[t] ?? 0) + (r.ItemCount ?? 1);
-      }
-    }
-    // MiscItems: pull everything (relics, resources like Carbides/Cubic Diodes, etc.)
-    // so the API is authoritative and mission-pickup counts from the scanner don't override.
-    for (const m of (Array.isArray(data.MiscItems) ? data.MiscItems : [])) {
-      const t: string = m.ItemType;
-      if (t) apiQty[t] = (apiQty[t] ?? 0) + (m.ItemCount ?? 1);
-    }
-    const rawModMap: Record<string, number> = {};
-    for (const r of (Array.isArray(data.RawUpgrades) ? data.RawUpgrades : [])) {
-      if (r.ItemType) rawModMap[r.ItemType] = (rawModMap[r.ItemType] ?? 0) + (r.ItemCount ?? 1);
-    }
-    const rankedModMap: Record<string, Record<number, number>> = {};
-    for (const u of (Array.isArray(data.Upgrades) ? data.Upgrades : [])) {
-      if (!u.ItemType) continue;
-      let rank = 0;
-      try { if (u.UpgradeFingerprint) rank = JSON.parse(u.UpgradeFingerprint)?.lvl ?? 0; } catch { rank = 0; }
-      if (!rankedModMap[u.ItemType]) rankedModMap[u.ItemType] = {};
-      rankedModMap[u.ItemType][rank] = (rankedModMap[u.ItemType][rank] ?? 0) + 1;
-    }
-    const copies: ModCopy[] = [];
-    for (const [t, cnt] of Object.entries(rawModMap)) {
-      copies.push({ uniqueName: t, rank: null, count: cnt });
-      apiQty[t] = (apiQty[t] ?? 0) + cnt;
-    }
-    for (const [t, ranks] of Object.entries(rankedModMap)) {
-      apiQty[t] = (apiQty[t] ?? 0) + Object.values(ranks).reduce((a, b) => a + b, 0);
-      for (const [r, cnt] of Object.entries(ranks)) {
-        copies.push({ uniqueName: t, rank: Number(r), count: cnt });
-      }
-    }
-    setApiModCopies(copies);
-    setApiQuantities(prev => {
-      const changes = Object.entries(apiQty)
-        .filter(([k, v]) => (prev[k] ?? 0) !== v)
-        .map(([k, v]) => ({ item_name: k, old_qty: prev[k] ?? 0, new_qty: v }));
-      if (changes.length > 0)
-        invoke("log_api_changes", { changes }).catch(() => {});
-      return apiQty;
-    });
-    if (data.PlayerLevel != null) setMasteryRank(data.PlayerLevel);
-
-    // Extract Archon Shard data from Suits
-    // API format: suit.ArchonCrystalUpgrades = [{Color: "ACC_YELLOW", UpgradeType: "/Lotus/.../ArchonCrystalUpgradeWarframeAbilityStrength"}, ...]
-    const COLOR_MAP: Record<string, { type: string; color: string; tauColor: string }> = {
-      ACC_RED:     { type: "Crimson",  color: "#e04040", tauColor: "#ff7070" },
-      ACC_BLUE:    { type: "Azure",    color: "#4488ff", tauColor: "#77aaff" },
-      ACC_GREEN:   { type: "Viridian", color: "#44cc66", tauColor: "#66ff99" },
-      ACC_YELLOW:  { type: "Amber",    color: "#ffaa00", tauColor: "#ffcc44" },
-      ACC_PURPLE:  { type: "Violet",   color: "#9944ff", tauColor: "#bb77ff" },
-    };
-    const newShards: Record<string, { type: string; tauforged: boolean; color: string; boost: string }[]> = {};
-    for (const suit of (Array.isArray(data.Suits) ? data.Suits : [])) {
-      const upgrades = suit.ArchonCrystalUpgrades;
-      if (!Array.isArray(upgrades) || upgrades.length === 0) continue;
-      const uniqueName: string = suit.ItemType ?? "";
-      if (!uniqueName) continue;
-      newShards[uniqueName] = upgrades.map((u: any) => {
-        const colorRaw: string = (u.Color ?? "").toUpperCase();
-        const upgradeType: string = u.UpgradeType ?? "";
-        const tauforged = colorRaw.includes("MYTHIC") || colorRaw.includes("TAU") || upgradeType.toLowerCase().includes("tau");
-        // Strip color prefix for map lookup (e.g. "ACC_YELLOW_TAUFORGED" → "ACC_YELLOW")
-        const colorKey = Object.keys(COLOR_MAP).find(k => colorRaw.startsWith(k)) ?? "";
-        const info = COLOR_MAP[colorKey] ?? { type: colorRaw || "Unknown", color: "#b0b0b0", tauColor: "#d0d0d0" };
-        // Extract boost name from UpgradeType path last segment
-        const seg = upgradeType.split("/").pop() ?? "";
-        const boost = seg
-          .replace(/ArchonCrystalUpgrade(Warframe)?/g, "")
-          .replace(/([A-Z])/g, " $1").trim();
-        return { type: info.type, tauforged, color: tauforged ? info.tauColor : info.color, boost };
-      });
-    }
-    if (Object.keys(newShards).length > 0) setArchonShards(prev => ({ ...prev, ...newShards }));
-
-    // Extract subsumed warframes from InfestedFoundry (Helminth)
-    const consumed = data.InfestedFoundry?.ConsumedSuits;
-    if (Array.isArray(consumed)) {
-      const s = new Set<string>(
-        consumed.map((e: any) => (typeof e === "string" ? e : e?.ItemType ?? "")).filter(Boolean)
-      );
-      setSubsummedWarframes(s);
-    }
-
-    // XPInfo from API → fill mastery data for items no longer owned (memory scanner can't see these)
-    if (Array.isArray(data.XPInfo)) {
-      const xpMastery: Record<string, number> = {};
-      for (const x of data.XPInfo) {
-        if (!x.ItemType || x.XP == null) continue;
-        // ~30 000 XP per rank; cap at 30
-        xpMastery[x.ItemType] = Math.min(30, Math.floor(x.XP / 30_000));
-      }
-      // Memory-scanner values win (they read actual rank); XP fills the gaps
-      setMasteryData(prev => ({ ...xpMastery, ...prev }));
-      // Persist so ranks survive restarts without requiring another API call
-      invoke("save_mastery_data", { data: xpMastery }).catch(() => {});
-    }
-
-    // PendingRecipes from API → update crafting state (authoritative, covers cases memory scanner misses)
-    if (Array.isArray(data.PendingRecipes) && data.PendingRecipes.length > 0) {
-      const apiJobs: CraftingJob[] = data.PendingRecipes
-        .filter((r: any) => r.ItemType)
-        .map((r: any) => {
-          const completionMs = r.CompletionDate?.$date?.$numberLong
-            ? Number(r.CompletionDate.$date.$numberLong)
-            : 0;
-          const item = catalogRef.current.find(i => i.unique_name === r.ItemType);
-          const name = item?.name ?? r.ItemType.split("/").pop() ?? r.ItemType;
-          return { unique_name: r.ItemType, item_name: name, completion_ms: completionMs };
-        });
-      setCrafting(prev => {
-        const merged = [...apiJobs];
-        for (const job of prev) {
-          if (!merged.some(c => c.unique_name === job.unique_name)) merged.push(job);
-        }
-        return merged;
-      });
-    }
-    const now = Math.floor(Date.now() / 1000);
-    setLastApiRefresh(now);
-
-    // Diff against previous API quantities to generate change log entries
-    const prev = prevApiQtyRef.current;
-    if (Object.keys(prev).length > 0) {
-      const allKeys = new Set([...Object.keys(prev), ...Object.keys(apiQty)]);
-      // The catalog already omits paths the corrections mark Ignored.
-      const catalogByPath = new Map(catalogRef.current.map(i => [i.unique_name, i]));
-      const changes: QuantityChange[] = [];
-      for (const key of allKeys) {
-        const item = catalogByPath.get(key);
-        if (!item) continue;
-        const oldQty = prev[key] ?? 0;
-        const newQty = apiQty[key] ?? 0;
-        if (oldQty !== newQty) {
-          changes.push({ id: 0, unique_name: key, item_name: item.name, old_qty: oldQty, new_qty: newQty, delta: newQty - oldQty, timestamp: now });
-        }
-      }
-      if (changes.length > 0) {
-        setChangeLog(prev => [...changes, ...prev].slice(0, 200));
-        setLastChanged(prev => {
-          const next = { ...prev };
-          for (const c of changes) next[c.unique_name] = c.timestamp;
-          return next;
-        });
-      }
-    }
-    prevApiQtyRef.current = { ...apiQty };
-  }, []); // eslint-disable-line
-
-  // ── Persist API inventory data to inventory_state_cache.json via Rust ────
-
-  useEffect(() => {
-    if (!inventoryRestoredRef.current) return;
-    if (Object.keys(apiQuantities).length === 0 && apiModCopies.length === 0 && subsummedWarframes.size === 0) return;
-    invoke("save_api_inventory", {
-      apiQuantities,
-      apiModCopies,
-      consumedSuits: [...subsummedWarframes],
-    }).catch(() => {});
-  }, [apiQuantities, apiModCopies, subsummedWarframes]);
-
   useEffect(() => {
     if (settingsLoadedRef.current) saveAllSettings();
-  }, [tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, memoryScannerEnabled, companionApiEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, modularSectionOrder, modularPopout]); // eslint-disable-line
+  }, [tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, modularSectionOrder, modularPopout]); // eslint-disable-line
 
   // ── Watched fissure notifications ──────────────────────────────────────────
   //
@@ -1690,58 +1463,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
       modularWinRef.current = null;
     }
   }, [modularPopout]); // eslint-disable-line
-
-  // ── Auto-refresh API: 8 s while connecting, 30 s once connected ─────────
-
-  useEffect(() => {
-    if (!companionApiEnabled || COMPANION_API_SUSPENDED) {
-      setWfConnected(false);
-      wfConnectedRef.current = false;
-      return;
-    }
-    let cancelled = false;
-    let timeoutId: ReturnType<typeof setTimeout>;
-
-    const doFetch = async () => {
-      if (cancelled) return;
-      let accountId = "", nonce = "", steamId = "";
-      try {
-        [accountId, nonce, steamId] = await invoke<[string, string, string]>("scan_warframe_credentials");
-        // Cache successful auto-scan so fallback works if scan fails next time
-        manualCredsRef.current = { accountId, nonce };
-      } catch {
-        // Scan failed — fall back to last known credentials (auto-scanned or manual)
-        const mc = manualCredsRef.current;
-        if (!mc) { schedule(); return; }
-        accountId = mc.accountId; nonce = mc.nonce; steamId = "";
-      }
-      try {
-        const data = await invoke<any>("fetch_warframe_inventory", { accountId, nonce, steamId });
-        if (!cancelled) {
-          applyInventoryData(data);
-          setWfConnected(true);
-          wfConnectedRef.current = true;
-          setWarframeRunning(true);
-        }
-      } catch {
-        // API rejected the credentials — clear cached creds so next scan starts fresh
-        if (wfConnectedRef.current) {
-          setWfConnected(false);
-          wfConnectedRef.current = false;
-          manualCredsRef.current = null;
-        }
-      }
-      schedule();
-    };
-
-    const schedule = () => {
-      if (cancelled) return;
-      timeoutId = setTimeout(doFetch, wfConnectedRef.current ? 300_000 : 60_000);
-    };
-
-    doFetch();
-    return () => { cancelled = true; clearTimeout(timeoutId); };
-  }, [applyInventoryData, companionApiEnabled]); // eslint-disable-line
 
   // ── Riven overlay ─────────────────────────────────────────────────────────
   // Window state lives in module-level _rivenWin (above) — unaffected by StrictMode.
@@ -1973,7 +1694,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
     const allPaths = new Set([
       ...Object.keys(quantities),
-      ...(companionApiEnabled ? Object.keys(apiQuantities) : []),
       ...Object.keys(masteryData),
       ...Object.keys(archonShards),
       ...Object.keys(scannerMods),
@@ -1986,7 +1706,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
       const name = cat?.name ?? path;
       let qty = quantities[path] ?? 0;
       if (scannerMods[path]) qty = Math.max(qty, scannerMods[path].total);
-      if (companionApiEnabled) qty = Math.max(qty, apiQuantities[path] ?? 0);
       if (subsummedWarframes.has(path)) qty = 0;
 
       const entry: InventoryItem = {
@@ -2007,36 +1726,26 @@ if (typeof s.autoDiagEnabled === "boolean") {
       if (path !== name) inv[path] = entry; // path alias so existing unique_name lookups still work
     }
     return inv;
-  }, [catalog, quantities, apiQuantities, masteryData, archonShards, formaData, subsummedWarframes, companionApiEnabled, scannerMods]);
+  }, [catalog, quantities, masteryData, archonShards, formaData, subsummedWarframes, scannerMods]);
 
   const modCopiesMap = useMemo(() => {
     const map: Record<string, ModCopy[]> = {};
-    for (const c of apiModCopies) {
-      if (!map[c.uniqueName]) map[c.uniqueName] = [];
-      map[c.uniqueName].push(c);
-    }
-    // Fill in rank breakdown from scanner for mods not covered by API data.
     for (const [path, mc] of Object.entries(scannerMods)) {
-      if (!map[path]) {
-        map[path] = Object.entries(mc.by_rank)
-          .map(([rankStr, count]) => ({ uniqueName: path, rank: parseInt(rankStr), count }))
-          .sort((a, b) => (b.rank ?? -1) - (a.rank ?? -1));
-      }
-    }
-    // Sort each entry: highest rank first, then rank-0, then raw (null)
-    for (const copies of Object.values(map)) {
-      copies.sort((a, b) => (b.rank ?? -1) - (a.rank ?? -1));
+      map[path] = Object.entries(mc.by_rank)
+        .map(([rankStr, count]) => ({ uniqueName: path, rank: parseInt(rankStr), count }))
+        .sort((a, b) => b.rank - a.rank);
     }
     return map;
-  }, [apiModCopies, scannerMods]);
+  }, [scannerMods]);
 
   const inventorySynced = Object.keys(quantities).length > 0;
 
   const availableRanks = useMemo(() => {
     const set = new Set<number>();
-    for (const c of apiModCopies) if (c.rank !== null && c.rank > 0) set.add(c.rank);
+    for (const copies of Object.values(modCopiesMap))
+      for (const c of copies) if (c.rank > 0) set.add(c.rank);
     return [...set].sort((a, b) => a - b);
-  }, [apiModCopies]);
+  }, [modCopiesMap]);
 
   // Total counts only depend on the catalog — stable until item list is refreshed.
   const categoryTotals = useMemo(() => {
@@ -2096,7 +1805,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
           const copies = modCopiesMap[i.unique_name];
           if (!copies) continue;
           if (filterRank === "unranked") {
-            if (!copies.some(c => c.rank === null || c.rank === 0)) continue;
+            if (!copies.some(c => c.rank === 0)) continue;
           } else {
             if (!copies.some(c => c.rank === filterRank)) continue;
           }
@@ -2163,33 +1872,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
               : poking              ? "Checking…"
               : "No Game";
 
-            // WF API chip
-            const wfApiState: "online"|"warn"|"offline"|"disabled" =
-              !companionApiEnabled                    ? "disabled"
-              : wfConnected                           ? "online"
-              : warframeRunning                       ? "warn"
-              : "offline";
-            const wfApiDetail =
-              !companionApiEnabled                    ? "OFF"
-              : wfConnected && lastApiRefresh         ? timeStr(lastApiRefresh, clockFormat, systemLocale)
-              : wfConnected                           ? "Connected"
-              : warframeRunning                       ? "Connecting…"
-              : "Waiting";
-            const wfApiClick = (!wfConnected && warframeRunning && companionApiEnabled)
-              ? async () => {
-                  try {
-                    const [accountId, nonce, steamId] = await invoke<[string, string, string]>("scan_warframe_credentials");
-                    const data = await invoke<any>("fetch_warframe_inventory", { accountId, nonce, steamId });
-                    applyInventoryData(data);
-                    setWfConnected(true);
-                    wfConnectedRef.current = true;
-                    manualCredsRef.current = { accountId, nonce };
-                  } catch (e) {
-                    alert(`Credential scan failed:\n${e}\n\nMake sure you are in the Orbiter (not in a mission or loading screen).`);
-                  }
-                }
-              : undefined;
-
             // WFM chip
             const wfmState: "online"|"offline" = wfmLoggedIn ? "online" : "offline";
             const wfmDetail = wfmLoggedIn ? "Online" : "Not logged in";
@@ -2212,16 +1894,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
                   <span className="conn-dot" />
                   <span className="conn-label">Memory</span>
                   <span className="conn-detail">{scanDetail}</span>
-                </span>
-                <span
-                  className={`conn-chip conn-${wfApiState}`}
-                  title={!companionApiEnabled ? "Warframe API disabled — enable in Settings" : wfConnected ? "Warframe API connected — auto-refreshes every 30s" : warframeRunning ? "Click to retry credential scan" : "Waiting for Warframe to start"}
-                  onClick={!companionApiEnabled ? () => setShowSettings(true) : wfApiClick}
-                  style={wfApiClick ? { cursor: "pointer" } : undefined}
-                >
-                  <span className="conn-dot" />
-                  <span className="conn-label">WF API</span>
-                  <span className="conn-detail">{wfApiDetail}</span>
                 </span>
                 <span
                   className={`conn-chip conn-${wfmState}`}
@@ -2355,48 +2027,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
                       >
                         {memoryScannerEnabled ? "Enabled" : "Disabled"}
                       </button>
-                    </div>
-                  </div>
-
-                  {/* Warframe API */}
-                  <div className="settings-section">
-                    <div className="settings-section-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      Warframe API
-                      <span style={{ fontSize: 10, background: "rgba(240,192,64,.15)", color: "#f0c040", border: "1px solid rgba(240,192,64,.35)", borderRadius: 3, padding: "1px 6px", fontWeight: 700 }}>
-                        SUSPENDED
-                      </span>
-                    </div>
-                    <div style={{
-                      fontSize: 11, color: "var(--muted)", lineHeight: 1.6,
-                      background: "rgba(240,192,64,.06)", border: "1px solid rgba(240,192,64,.25)",
-                      borderRadius: 6, padding: "8px 10px",
-                    }}>
-                      <strong style={{ color: "#f0c040" }}>Temporarily unavailable.</strong>
-                      {" "}This feature connects to an undocumented DE endpoint (<code style={{ fontSize: 10 }}>api.warframe.com/api/inventory.php</code>).
-                      {" "}DE confirmed third-party tools run at your own risk but could not clarify whether this specific endpoint is permitted.
-                      {" "}The feature is disabled until we receive clearer guidance.
-                    </div>
-                  </div>
-
-                  {/* Account Login */}
-                  <div className="settings-section">
-                    <div className="settings-section-title">Account Login</div>
-                    <div style={{
-                      fontSize: 11, color: "var(--muted)", lineHeight: 1.6,
-                      background: "rgba(255,100,100,.07)", border: "1px solid rgba(255,100,100,.2)",
-                      borderRadius: 6, padding: "8px 10px",
-                    }}>
-                      <strong style={{ color: "#ff8080" }}>Login is temporarily unavailable.</strong>
-                      {" "}Digital Extremes encrypted their login API in March 2026, which blocked all third-party tools — including FrameForge — from authenticating on your behalf.
-                      {" "}PC players are not affected: inventory is synced automatically while the game is running.
-                    </div>
-                    <div style={{
-                      marginTop: 8, fontSize: 11, color: "var(--muted)", lineHeight: 1.6,
-                      background: "rgba(100,180,255,.06)", border: "1px solid rgba(100,180,255,.18)",
-                      borderRadius: 6, padding: "8px 10px",
-                    }}>
-                      FrameForge is actively exploring ways to restore inventory access for console and non-PC players.
-                      {" "}Follow the project for updates.
                     </div>
                   </div>
 
@@ -2720,17 +2350,12 @@ if (typeof s.autoDiagEnabled === "boolean") {
                           try {
                             await invoke("clear_cache");
                             setQuantities({});
-                            setApiQuantities({});
-                            setApiModCopies([]);
                             setScannerMods({});
                             setMasteryData({});
                             setArchonShards({});
                             setFormaData({});
                             setChangeLog([]);
                             setLastChanged({});
-                            setWfConnected(false);
-                            wfConnectedRef.current = false;
-                            invoke("save_api_inventory", { apiQuantities: {}, apiModCopies: [], consumedSuits: [] }).catch(() => {});
                             setItemsRefreshKey(k => k + 1);
                             setClearMsg("Cache cleared.");
                           } catch (e) { setClearMsg(`Error: ${e}`); }
@@ -2774,22 +2399,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
                         disabled={blobLogSize === 0}
                         onClick={async () => { await invoke("clear_debug_data", { which: "blobs" }); setBlobLogSize(0); }}
                       >{blobLogSize > 0 ? `Clear (${fmtBytes(blobLogSize)})` : "Clear"}</button>
-
-                      {/* API Responses */}
-                      <div className="settings-row-info" style={{ opacity: companionApiEnabled ? 1 : 0.4 }}>
-                        <span className="settings-row-label">API Responses</span>
-                        <span className="settings-row-desc">Records raw DE API responses on each inventory fetch.</span>
-                      </div>
-                      <button className="btn-secondary" style={{ opacity: companionApiEnabled ? 1 : 0.4, pointerEvents: companionApiEnabled ? "auto" : "none" }}
-                        onClick={() => invoke("open_debug_folder", { which: "api_logs" }).catch(() => {})}>Go To Folder</button>
-                      <button className="btn-secondary"
-                        style={{ background: apiLogEnabled ? "rgba(56,139,253,.15)" : undefined, borderColor: apiLogEnabled ? "var(--accent)" : undefined, opacity: companionApiEnabled ? 1 : 0.4, pointerEvents: companionApiEnabled ? "auto" : "none" }}
-                        onClick={() => setApiLogEnabled(v => !v)}>{apiLogEnabled ? "On" : "Off"}</button>
-                      <button className="btn-secondary"
-                        style={{ color: apiLogSize > 0 ? "var(--red)" : undefined, borderColor: apiLogSize > 0 ? "var(--red)" : undefined, opacity: companionApiEnabled ? 1 : 0.4, pointerEvents: companionApiEnabled ? "auto" : "none" }}
-                        disabled={apiLogSize === 0}
-                        onClick={async () => { await invoke("clear_debug_data", { which: "api_logs" }); setApiLogSize(0); }}
-                      >{apiLogSize > 0 ? `Clear (${fmtBytes(apiLogSize)})` : "Clear"}</button>
 
                     </div>
                   </div>
@@ -3165,7 +2774,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                 <button className={`fchip ${filterPrime?"fchip-on":""}`} onClick={()=>setFilterPrime(v=>!v)}>Prime</button>
                 <button className={`fchip ${filterVaulted?"fchip-on":""}`} onClick={()=>setFilterVaulted(v=>!v)}>🔒 Vaulted</button>
                 <button className={`fchip ${filterUnvaulted?"fchip-on":""}`} onClick={()=>setFilterUnvaulted(v=>!v)}>🔓 Unvaulted</button>
-                {apiModCopies.length > 0 && (<>
+                {Object.keys(modCopiesMap).length > 0 && (<>
                   <span className="fbar-sep"/>
                   <span className="fbar-label">Rank:</span>
                   <button className={`fchip ${filterRank==="unranked"?"fchip-on":""}`} onClick={()=>setFilterRank(v=>v==="unranked"?null:"unranked")}>Unranked</button>

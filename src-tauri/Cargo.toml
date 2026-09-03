@@ -26,7 +26,6 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 ureq = { version = "3", features = ["json"] }
 tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
-whirlpool = "0.11"
 lzma-rs = "0.3"
 memchr = "2"
 libc = "0.2"
