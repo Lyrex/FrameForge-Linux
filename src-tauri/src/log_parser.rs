@@ -1,114 +1,12 @@
 use regex::Regex;
-use std::fs::File;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
-
-#[derive(Debug, Clone)]
-pub struct ParsedReward {
-    pub item_name: String,
-    pub quantity: i64,
-    pub raw_line: String,
-}
-
-pub struct LogParser {
-    patterns: Vec<Regex>,
-}
-
-impl LogParser {
-    pub fn new() -> Self {
-        let pattern_strings = vec![
-            // "received ItemName x2"
-            r"(?i)\breceived\s+([A-Za-z][A-Za-z0-9\s'\-]+?)\s+[xX]\s*(\d+)",
-            // "reward: ItemName x2"
-            r"(?i)\brewards?\s*[:\s]+([A-Za-z][A-Za-z0-9\s'\-]+?)\s+[xX]\s*(\d+)",
-            // "Adding item: /path/ItemName x1"
-            r"(?i)adding item.*?/([A-Za-z][A-Za-z0-9\s'\-]+?)\s+[xX]\s*(\d+)",
-            // "ItemName x2" after mission/fissure keyword
-            r"(?i)(?:mission|fissure|syndicate|foundry)[^\n]*?([A-Za-z][A-Za-z0-9\s'\-]{3,40}?)\s+[xX]\s*(\d+)",
-            // "You received: ItemName x1"
-            r"(?i)you received[:\s]+([A-Za-z][A-Za-z0-9\s'\-]+?)\s+[xX]\s*(\d+)",
-        ];
-
-        let patterns = pattern_strings
-            .iter()
-            .filter_map(|p| Regex::new(p).ok())
-            .collect();
-
-        Self { patterns }
-    }
-
-    pub fn parse_line(&self, line: &str) -> Option<ParsedReward> {
-        for pattern in &self.patterns {
-            if let Some(caps) = pattern.captures(line) {
-                if let (Some(name), Some(qty_str)) = (caps.get(1), caps.get(2)) {
-                    let item_name = name.as_str().trim().to_string();
-                    let quantity: i64 = qty_str.as_str().parse().unwrap_or(1);
-
-                    if item_name.len() < 3 || item_name.len() > 80 {
-                        continue;
-                    }
-
-                    return Some(ParsedReward {
-                        item_name,
-                        quantity,
-                        raw_line: line.to_string(),
-                    });
-                }
-            }
-        }
-        None
-    }
-
-    pub fn parse_file_from_offset(&self, path: &Path, offset: u64) -> (Vec<ParsedReward>, u64) {
-        let file = match File::open(path) {
-            Ok(f) => f,
-            Err(_) => return (vec![], offset),
-        };
-
-        let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
-
-        // File was rotated (Warframe restarted) — start from beginning
-        let actual_offset = if offset > file_size { 0 } else { offset };
-
-        let mut reader = BufReader::new(file);
-        if reader.seek(SeekFrom::Start(actual_offset)).is_err() {
-            return (vec![], actual_offset);
-        }
-
-        let mut rewards = vec![];
-        let mut new_offset = actual_offset;
-
-        for line in reader.lines() {
-            match line {
-                Ok(l) => {
-                    new_offset += l.len() as u64 + 1;
-                    if let Some(reward) = self.parse_line(&l) {
-                        rewards.push(reward);
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-
-        (rewards, new_offset)
-    }
-}
 
 /// Where detection says EE.log lives, whether or not Warframe has written it
 /// yet. The player's `eeLogPath` override is not consulted; anything that
 /// actually watches the file must go through [`watched_log_path`] instead.
 pub fn default_log_path() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|data_dir| {
-        #[cfg(target_os = "linux")]
-        {
-            linux_log_path(&data_dir)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            data_dir.join("Warframe").join("EE.log")
-        }
-    })
+    dirs::data_local_dir().map(|data_dir| linux_log_path(&data_dir))
 }
 
 /// Resolved once at startup so the log watcher and the monitor always tail
@@ -170,23 +68,12 @@ pub fn watched_log_path() -> Option<PathBuf> {
 }
 
 pub fn resolve_log_path(settings_path: &Path) -> Option<PathBuf> {
-    #[cfg(target_os = "linux")]
-    {
-        resolve_with_override(
-            log_path_override(settings_path).as_deref(),
-            dirs::data_local_dir(),
-        )
-    }
-    // Windows and macOS put the log in one fixed place, so there is nothing
-    // for an override to rescue.
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = settings_path;
-        default_log_path()
-    }
+    resolve_with_override(
+        log_path_override(settings_path).as_deref(),
+        dirs::data_local_dir(),
+    )
 }
 
-#[cfg(target_os = "linux")]
 fn log_path_override(settings_path: &Path) -> Option<String> {
     // A missing settings file just means first launch; a file that exists but
     // does not parse means the player's override is about to be ignored, which
@@ -276,7 +163,6 @@ fn normalize_override_in(entered: &str, home: Option<PathBuf>) -> PathBuf {
 
 /// An override must win even when there is no data directory to search, so a
 /// missing `data_dir` only matters on the fallback path.
-#[cfg(target_os = "linux")]
 fn resolve_with_override(log_path: Option<&str>, data_dir: Option<PathBuf>) -> Option<PathBuf> {
     match effective_override(log_path) {
         // Deliberately not checked for existence: falling back to a guessed
@@ -308,15 +194,12 @@ fn resolve_with_override(log_path: Option<&str>, data_dir: Option<PathBuf>) -> O
 // is why this is a search and not a `join`.
 
 /// Warframe's Steam application ID, which names its Proton prefix directory.
-#[cfg(target_os = "linux")]
 const WARFRAME_APPID: &str = "230410";
 
 /// The username Proton creates inside a prefix, regardless of the Linux login.
-#[cfg(target_os = "linux")]
 const PROTON_WIN_USER: &str = "steamuser";
 
 /// The Windows-side walk from a prefix's `drive_c` down to the log.
-#[cfg(target_os = "linux")]
 fn log_within_drive_c(drive_c: &Path, win_user: &str) -> PathBuf {
     drive_c
         .join("users")
@@ -327,19 +210,16 @@ fn log_within_drive_c(drive_c: &Path, win_user: &str) -> PathBuf {
 /// Warframe's Proton prefix inside a given Steam library root.
 ///
 /// Steam creates this at install time, before the game has ever run.
-#[cfg(target_os = "linux")]
 fn prefix_within(library: &Path) -> PathBuf {
     library.join("steamapps/compatdata").join(WARFRAME_APPID)
 }
 
 /// Where EE.log sits inside a given Steam library root, for one prefix user.
-#[cfg(target_os = "linux")]
 fn ee_log_within(library: &Path, win_user: &str) -> PathBuf {
     log_within_drive_c(&prefix_within(library).join("pfx/drive_c"), win_user)
 }
 
 /// One place EE.log could be, and how to recognise its install without it.
-#[cfg(target_os = "linux")]
 struct Candidate {
     log: PathBuf,
     /// The Proton prefix this log belongs to, when the candidate is a Steam
@@ -354,7 +234,6 @@ struct Candidate {
 /// `~/.steam/steam` is usually a symlink into the native path and Flatpak's is
 /// genuinely separate; probing all three costs a few `stat` calls and spares us
 /// having to tell which packaging is in use.
-#[cfg(target_os = "linux")]
 fn steam_roots(data_dir: &Path, home: &Path) -> Vec<PathBuf> {
     vec![
         data_dir.join("Steam"),
@@ -368,7 +247,6 @@ fn steam_roots(data_dir: &Path, home: &Path) -> Vec<PathBuf> {
 ///
 /// A missing or unreadable index is not an error — it just means this Steam
 /// root has no extra libraries, or is not the packaging in use on this machine.
-#[cfg(target_os = "linux")]
 fn libraries_under(root: &Path) -> Vec<PathBuf> {
     let mut libraries = vec![root.to_path_buf()];
 
@@ -385,7 +263,6 @@ fn libraries_under(root: &Path) -> Vec<PathBuf> {
 /// name can be trusted; instead, every prefix under `~/Games` is a candidate.
 /// The listing is sorted so the pick is stable when several prefixes hold a
 /// log.
-#[cfg(target_os = "linux")]
 fn wine_prefix_roots(home: &Path) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = std::fs::read_dir(home.join("Games"))
         .into_iter()
@@ -401,7 +278,6 @@ fn wine_prefix_roots(home: &Path) -> Vec<PathBuf> {
 }
 
 /// Every path EE.log could occupy on this machine, best-guess first.
-#[cfg(target_os = "linux")]
 fn ee_log_candidates(data_dir: &Path, home: &Path, win_users: &[String]) -> Vec<Candidate> {
     let mut candidates = Vec::new();
 
@@ -438,7 +314,6 @@ fn ee_log_candidates(data_dir: &Path, home: &Path, win_users: &[String]) -> Vec<
 }
 
 /// The best candidate that something on disk actually corroborates.
-#[cfg(target_os = "linux")]
 fn resolve_candidate(candidates: &[Candidate]) -> Option<PathBuf> {
     candidates
         .iter()
@@ -478,7 +353,6 @@ fn resolve_candidate(candidates: &[Candidate]) -> Option<PathBuf> {
 /// Takes the Linux login name rather than reading the environment itself, so
 /// the "which names are worth trying" rule can be tested without the
 /// process-wide environment mutation that would race other tests.
-#[cfg(target_os = "linux")]
 fn windows_users(login: Option<&str>) -> Vec<String> {
     let mut users = vec![PROTON_WIN_USER.to_string()];
 
@@ -502,7 +376,6 @@ fn windows_users(login: Option<&str>) -> Vec<String> {
 /// TODO: VDF escapes backslashes in Windows-style paths (`\\`). Library paths
 /// written by Steam on Linux are POSIX and contain none, so unescaping is
 /// omitted.
-#[cfg(target_os = "linux")]
 fn library_paths(vdf: &str) -> Vec<PathBuf> {
     let entry = match Regex::new(r#""path"\s*"([^"]+)""#) {
         Ok(regex) => regex,
@@ -518,7 +391,6 @@ fn library_paths(vdf: &str) -> Vec<PathBuf> {
 
 /// The search proper, with its two environment inputs passed in so tests can
 /// point it at a fake layout instead of the machine it runs on.
-#[cfg(target_os = "linux")]
 fn linux_log_path_in(data_dir: &Path, home: &Path, win_users: &[String]) -> PathBuf {
     resolve_candidate(&ee_log_candidates(data_dir, home, win_users))
         // Nothing on disk corroborates any candidate: Warframe is not
@@ -528,7 +400,6 @@ fn linux_log_path_in(data_dir: &Path, home: &Path, win_users: &[String]) -> Path
         .unwrap_or_else(|| ee_log_within(&data_dir.join("Steam"), PROTON_WIN_USER))
 }
 
-#[cfg(target_os = "linux")]
 fn linux_log_path(data_dir: &Path) -> PathBuf {
     // Without a home directory the Flatpak, legacy and Wine candidates are all
     // unreachable; `data_dir` still yields the native Steam root, which is the
@@ -542,7 +413,7 @@ fn linux_log_path(data_dir: &Path) -> PathBuf {
     linux_log_path_in(data_dir, &home, &windows_users(login.as_deref()))
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod linux_tests {
     use super::*;
     use std::fs;

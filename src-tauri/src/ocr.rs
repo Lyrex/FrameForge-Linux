@@ -1,12 +1,8 @@
-/// Screen capture + Windows OCR for Warframe relic reward detection.
-///
-/// Capture strategy (automatic, works for all display modes):
-///   1. PrintWindow (GDI) — fast, window-specific, works for Windowed and Borderless Windowed.
-///      Quick brightness check: if the result is dark (avg < 30) the game is almost certainly
-///      in Fullscreen Exclusive mode and GDI can't reach the DX framebuffer.
-///   2. DXGI Desktop Duplication — captures the display output at hardware level, bypasses DWM.
-///      Works for Fullscreen Exclusive, Borderless Windowed, and Windowed.
-///      The correct monitor is chosen dynamically: whichever monitor the Warframe window is on.
+//! Screen capture + OCR for Warframe relic reward detection.
+//!
+//! Warframe runs under Proton as an X11 client, so capture grabs the window
+//! over `xcb` GetImage (see `capture_warframe_bgra`) and OCR runs Tesseract
+//! with bundled tessdata.
 
 // ─── Screenshot ───────────────────────────────────────────────────────────────
 
@@ -18,195 +14,11 @@ fn avg_brightness(pixels: &[u8]) -> u32 {
     sum / (pixels.len() / 4 / 64).max(1) as u32
 }
 
-/// Main entry point. Tries PrintWindow first, falls back to DXGI if the frame is dark.
-/// Returns (BGRA pixels, width, captured_height, full_height, capture_info).
-/// captured_height covers the top 85% of the full window — reward cards are always in the
-/// upper half of the screen. OCR line filtering (y >= 0.10 of cap_h) removes any HUD text
-/// from the very top of the frame (FPS counters, ping overlays, etc.) without cropping.
-/// capture_info describes which path was used and the pixel brightness, for session logging.
-#[cfg(target_os = "windows")]
-#[tracing::instrument(level = "info", skip_all)]
-pub fn capture_warframe_reward_area() -> Option<(Vec<u8>, u32, u32, u32, String)> {
-    // ── Path A: PrintWindow (Windowed / Borderless Windowed) ──────────────────
-    if let Some((pixels, w, cap_h, full_h)) = capture_printwindow() {
-        let avg = avg_brightness(&pixels);
-        // Threshold 20: Warframe's dark-themed reward screen gives avg≈40 in Borderless
-        // Windowed — that is valid content, not a failed capture. Only values near zero
-        // (avg < 20) indicate Fullscreen Exclusive mode where GDI can't reach the DX buffer.
-        if avg >= 20 {
-            let info = format!("PrintWindow  {}×{}px (top 80%, cap {}px)  avg_brightness={}", w, full_h, cap_h, avg);
-            return Some((pixels, w, cap_h, full_h, info));
-        }
-        // Truly dark PrintWindow — Fullscreen Exclusive or GPU bypassing GDI.
-        // Try DXGI, but only use it if it's at least as bright as PrintWindow, so a
-        // black DXGI frame (DXGI Desktop Duplication returning no update) doesn't win
-        // over a PrintWindow frame that actually has content.
-        if let Some((px2, w2, cap_h2, full_h2)) = capture_dxgi(0.85) {
-            let avg2 = avg_brightness(&px2);
-            if avg2 >= avg {
-                let info = format!(
-                    "DXGI  {}×{}px (top 80%, cap {}px)  avg_brightness={} \
-                     (PrintWindow was dark: avg={})",
-                    w2, full_h2, cap_h2, avg2, avg
-                );
-                return Some((px2, w2, cap_h2, full_h2, info));
-            }
-        }
-        // DXGI was darker or unavailable — return PrintWindow so the caller can log it.
-        let info = format!(
-            "PrintWindow  {}×{}px (top 80%, cap {}px)  avg_brightness={} [DARK — DXGI also dark/failed]",
-            w, full_h, cap_h, avg
-        );
-        return Some((pixels, w, cap_h, full_h, info));
-    }
-
-    // PrintWindow found no window (Warframe not running?) — try DXGI anyway
-    if let Some((pixels, w, cap_h, full_h)) = capture_dxgi(0.85) {
-        let avg = avg_brightness(&pixels);
-        let info = format!(
-            "DXGI  {}×{}px (top 80%, cap {}px)  avg_brightness={} (no Warframe window found)",
-            w, full_h, cap_h, avg
-        );
-        return Some((pixels, w, cap_h, full_h, info));
-    }
-
-    None
-}
-
-/// GDI PrintWindow capture — works for Windowed and Borderless Windowed.
-#[cfg(target_os = "windows")]
-#[tracing::instrument(level = "debug", skip_all)]
-fn capture_printwindow() -> Option<(Vec<u8>, u32, u32, u32)> {
-    use std::mem;
-    use windows_sys::Win32::{
-        Foundation::RECT,
-        Graphics::Gdi::{
-            CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
-            GetDIBits, GetDC, ReleaseDC, SelectObject,
-            BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD,
-        },
-        UI::WindowsAndMessaging::{FindWindowW, GetClientRect},
-    };
-    #[link(name = "user32")]
-    extern "system" { fn PrintWindow(hwnd: isize, hdcblt: isize, nflags: u32) -> i32; }
-    const PW_RENDERFULLCONTENT: u32 = 2;
-
-    unsafe {
-        let title: Vec<u16> = "Warframe\0".encode_utf16().collect();
-        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
-        if hwnd == 0 { return None; }
-
-        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-        GetClientRect(hwnd, &mut rect);
-        let full_w = (rect.right - rect.left) as u32;
-        let full_h = (rect.bottom - rect.top) as u32;
-        if full_w < 100 || full_h < 100 { return None; }
-
-        let cap_h = (full_h as f32 * 0.80) as u32;
-
-        let hdc_win = GetDC(hwnd);
-        let hdc_mem = CreateCompatibleDC(hdc_win);
-        let hbm     = CreateCompatibleBitmap(hdc_win, full_w as i32, full_h as i32);
-        let hbm_old = SelectObject(hdc_mem, hbm);
-
-        PrintWindow(hwnd, hdc_mem, PW_RENDERFULLCONTENT);
-
-        let mut bmi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize:          mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth:         full_w as i32,
-                biHeight:        -(cap_h as i32),
-                biPlanes:        1,
-                biBitCount:      32,
-                biCompression:   BI_RGB,
-                biSizeImage:     0,
-                biXPelsPerMeter: 0,
-                biYPelsPerMeter: 0,
-                biClrUsed:       0,
-                biClrImportant:  0,
-            },
-            bmiColors: [RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 }],
-        };
-        let mut pixels = vec![0u8; (full_w * cap_h * 4) as usize];
-        GetDIBits(hdc_mem, hbm, 0, cap_h, pixels.as_mut_ptr() as *mut _, &mut bmi, DIB_RGB_COLORS);
-
-        SelectObject(hdc_mem, hbm_old);
-        DeleteObject(hbm);
-        DeleteDC(hdc_mem);
-        ReleaseDC(hwnd, hdc_win);
-
-        Some((pixels, full_w, cap_h, full_h))
-    }
-}
-
-/// Capture a vertical slice of the Warframe window and run OCR on it.
-/// y_start / y_end are fractions of the full window height (0.0–1.0).
-/// Returns the raw OCR text.
-/// Capture the Warframe window using PrintWindow and return raw BGRA pixels + dimensions.
-/// Single capture can be reused for multiple OCR regions via `ocr_pixels_rect`.
-#[cfg(target_os = "windows")]
-#[tracing::instrument(level = "info", skip_all)]
-pub fn capture_warframe_pixels() -> Result<(Vec<u8>, u32, u32), String> {
-    use std::mem;
-    use windows_sys::Win32::{
-        Foundation::RECT,
-        Graphics::Gdi::{
-            CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
-            GetDIBits, GetDC, ReleaseDC, SelectObject,
-            BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD,
-        },
-        UI::WindowsAndMessaging::{FindWindowW, GetClientRect},
-    };
-    #[link(name = "user32")]
-    extern "system" { fn PrintWindow(hwnd: isize, hdcblt: isize, nflags: u32) -> i32; }
-    const PW_RENDERFULLCONTENT: u32 = 2;
-
-    unsafe {
-        let title: Vec<u16> = "Warframe\0".encode_utf16().collect();
-        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
-        if hwnd == 0 { return Err("Warframe window not found".into()); }
-
-        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-        GetClientRect(hwnd, &mut rect);
-        let full_w = (rect.right  - rect.left) as u32;
-        let full_h = (rect.bottom - rect.top)  as u32;
-        if full_w < 100 || full_h < 100 { return Err("Window too small".into()); }
-
-        let hdc_win = GetDC(hwnd);
-        let hdc_mem = CreateCompatibleDC(hdc_win);
-        let hbm     = CreateCompatibleBitmap(hdc_win, full_w as i32, full_h as i32);
-        let hbm_old = SelectObject(hdc_mem, hbm);
-        PrintWindow(hwnd, hdc_mem, PW_RENDERFULLCONTENT);
-
-        let mut bmi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: full_w as i32,
-                biHeight: -(full_h as i32),
-                biPlanes: 1, biBitCount: 32, biCompression: BI_RGB,
-                biSizeImage: 0, biXPelsPerMeter: 0, biYPelsPerMeter: 0,
-                biClrUsed: 0, biClrImportant: 0,
-            },
-            bmiColors: [RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 }],
-        };
-        let mut pixels = vec![0u8; (full_w * full_h * 4) as usize];
-        GetDIBits(hdc_mem, hbm, 0, full_h,
-                  pixels.as_mut_ptr() as *mut _, &mut bmi, DIB_RGB_COLORS);
-        SelectObject(hdc_mem, hbm_old);
-        DeleteObject(hbm);
-        DeleteDC(hdc_mem);
-        ReleaseDC(hwnd, hdc_win);
-        Ok((pixels, full_w, full_h))
-    }
-}
-
-/// 2× nearest-neighbour upscale + contrast stretch on BGRA pixels.
-/// WinRT OCR accuracy improves significantly on larger, high-contrast images.
 /// Grayscale + contrast stretch on BGRA pixels.
 /// Converting to grayscale is the key step: element icons (❄ Cold, 🔥 Heat, ☠ Toxin)
-/// are colored glyphs — in the original BGRA image WinRT OCR rejects these lines as
-/// graphics. After grayscale they become neutral-brightness shapes, so OCR reads the
-/// white text on either side of the icon instead of dropping the whole line.
+/// are colored glyphs — OCR rejects these lines as graphics. After grayscale
+/// they become neutral-brightness shapes, so OCR reads the white text on either
+/// side of the icon instead of dropping the whole line.
 fn preprocess_for_ocr(pixels: &[u8], width: u32, height: u32) -> (Vec<u8>, u32, u32) {
     let mut out = pixels.to_vec();
     for px in out.chunks_mut(4) {
@@ -222,76 +34,10 @@ fn preprocess_for_ocr(pixels: &[u8], width: u32, height: u32) -> (Vec<u8>, u32, 
     (out, width, height)
 }
 
-/// OCR a rectangle from a pre-captured pixel buffer. All coordinates are 0.0–1.0 fractions.
-/// Applies a mild contrast stretch before OCR (no upscaling — upscaling distorts numerals).
-#[cfg(target_os = "windows")]
-pub fn ocr_pixels_rect(
-    pixels: &[u8], full_w: u32, full_h: u32,
-    x_start: f32, x_end: f32, y_start: f32, y_end: f32,
-) -> Result<String, String> {
-    let col_s = (full_w as f32 * x_start.clamp(0.0, 1.0)) as usize;
-    let col_e = ((full_w as f32 * x_end.clamp(0.0, 1.0)) as usize).min(full_w as usize);
-    let row_s = (full_h as f32 * y_start.clamp(0.0, 1.0)) as usize;
-    let row_e = ((full_h as f32 * y_end.clamp(0.0, 1.0)) as usize).min(full_h as usize);
-    let rect_w = (col_e - col_s) as u32;
-    let rect_h = (row_e - row_s) as u32;
-    if rect_w < 4 || rect_h < 4 { return Err("Region too small".into()); }
-
-    let src_stride  = full_w as usize * 4;
-    let dst_stride  = rect_w as usize * 4;
-    let mut cropped = vec![0u8; dst_stride * rect_h as usize];
-    for row in 0..rect_h as usize {
-        let src = (row_s + row) * src_stride + col_s * 4;
-        let dst = row * dst_stride;
-        cropped[dst..dst + dst_stride].copy_from_slice(&pixels[src..src + dst_stride]);
-    }
-
-    let (enhanced, ew, eh) = preprocess_for_ocr(&cropped, rect_w, rect_h);
-    let bmp = to_bmp(&enhanced, ew, eh);
-    run_windows_ocr(bmp, ew, eh).map(|(text, _)| text)
-}
-
-/// OCR a rectangle WITHOUT preprocessing — for white-on-dark text that OCRs fine raw.
-#[cfg(target_os = "windows")]
-pub fn ocr_pixels_rect_raw(
-    pixels: &[u8], full_w: u32, full_h: u32,
-    x_start: f32, x_end: f32, y_start: f32, y_end: f32,
-) -> Result<String, String> {
-    let col_s = (full_w as f32 * x_start.clamp(0.0, 1.0)) as usize;
-    let col_e = ((full_w as f32 * x_end.clamp(0.0, 1.0)) as usize).min(full_w as usize);
-    let row_s = (full_h as f32 * y_start.clamp(0.0, 1.0)) as usize;
-    let row_e = ((full_h as f32 * y_end.clamp(0.0, 1.0)) as usize).min(full_h as usize);
-    let rect_w = (col_e - col_s) as u32;
-    let rect_h = (row_e - row_s) as u32;
-    if rect_w < 4 || rect_h < 4 { return Err("Region too small".into()); }
-    let src_stride = full_w as usize * 4;
-    let dst_stride = rect_w as usize * 4;
-    let mut cropped = vec![0u8; dst_stride * rect_h as usize];
-    for row in 0..rect_h as usize {
-        let src = (row_s + row) * src_stride + col_s * 4;
-        let dst = row * dst_stride;
-        cropped[dst..dst + dst_stride].copy_from_slice(&pixels[src..src + dst_stride]);
-    }
-    let bmp = to_bmp(&cropped, rect_w, rect_h);
-    run_windows_ocr(bmp, rect_w, rect_h).map(|(text, _)| text)
-}
-
-// ==============================================================================
-// Linux entry points — the same contract, a different engine
-// ==============================================================================
-//
-// These mirror the two functions above rather than sharing them. Sharing would
-// mean rewriting a function upstream actively develops, and `ocr.rs` is one of
-// the files upstream churns hardest; a duplicated crop loop costs us nothing on
-// a sync, while an edit to upstream's version costs a conflict on every one.
-// The signatures are deliberately identical to upstream's so that call sites in
-// `lib.rs` stay platform-agnostic and keep speaking upstream's 7-argument form.
-
-/// Crop a BGRA rectangle out of a full frame. Fractions, as above.
+/// Crop a BGRA rectangle out of a full frame. All coordinates are 0.0–1.0
+/// fractions.
 ///
-/// Returns `None` when the rectangle is under four pixels on a side, matching
-/// the "Region too small" rejection the Windows path applies.
-#[cfg(target_os = "linux")]
+/// Returns `None` when the rectangle is under four pixels on a side.
 fn crop_bgra(
     pixels: &[u8], full_w: u32, full_h: u32,
     x_start: f32, x_end: f32, y_start: f32, y_end: f32,
@@ -328,7 +74,6 @@ fn crop_bgra(
 /// crops vertically but keeps the full width would read as `Scattered` and get
 /// nothing back; if that case appears, thread the layout through a Linux-only
 /// entry point rather than widening upstream's signature.
-#[cfg(target_os = "linux")]
 fn layout_for(x_start: f32, x_end: f32) -> OcrLayout {
     if x_end - x_start >= 0.99 {
         OcrLayout::Scattered
@@ -337,8 +82,8 @@ fn layout_for(x_start: f32, x_end: f32) -> OcrLayout {
     }
 }
 
-/// Linux twin of the Windows `ocr_pixels_rect`. Same contract, Tesseract behind it.
-#[cfg(target_os = "linux")]
+/// OCR a rectangle from a pre-captured frame, after greyscale plus a mild
+/// contrast stretch. No upscaling: it distorts numerals.
 pub fn ocr_pixels_rect(
     pixels: &[u8], full_w: u32, full_h: u32,
     x_start: f32, x_end: f32, y_start: f32, y_end: f32,
@@ -350,8 +95,7 @@ pub fn ocr_pixels_rect(
     run_ocr(&enhanced, ew, eh, layout_for(x_start, x_end)).map(|(text, _)| text)
 }
 
-/// Linux twin of the Windows `ocr_pixels_rect_raw`.
-#[cfg(target_os = "linux")]
+/// As `ocr_pixels_rect`, but on the untouched colour pixels.
 pub fn ocr_pixels_rect_raw(
     pixels: &[u8], full_w: u32, full_h: u32,
     x_start: f32, x_end: f32, y_start: f32, y_end: f32,
@@ -362,25 +106,9 @@ pub fn ocr_pixels_rect_raw(
     run_ocr(&cropped, rect_w, rect_h, layout_for(x_start, x_end)).map(|(text, _)| text)
 }
 
-/// Convenience: capture + OCR a vertical strip of the window (full width).
-#[allow(dead_code)]
-pub fn capture_and_ocr_region(y_start: f32, y_end: f32) -> Result<String, String> {
-    let (pixels, w, h) = capture_warframe_pixels()?;
-    ocr_pixels_rect(&pixels, w, h, 0.0, 1.0, y_start, y_end)
-}
-
-/// Convenience: capture + OCR a specific rectangle.
-#[allow(dead_code)]
-pub fn capture_rect_and_ocr(x_start: f32, x_end: f32, y_start: f32, y_end: f32) -> Result<String, String> {
-    let (pixels, w, h) = capture_warframe_pixels()?;
-    ocr_pixels_rect(&pixels, w, h, x_start, x_end, y_start, y_end)
-}
-
 /// Detect the void fissure era from the relic selection screen.
 /// The era label ("LITH ERA", "MESO ERA", etc.) is displayed in the top-left quarter
 /// of the screen. Returns the era key ("LITH", "MESO", "NEO", "AXI", "ALL") or None.
-// Upstream gates this to Windows because its capture/OCR primitives are Windows-only;
-// the fork supplies Linux impls of both, so the era detection runs on Linux too.
 pub fn detect_fissure_era() -> Option<String> {
     let (pixels, w, h) = capture_warframe_pixels().ok()?;
     let text = ocr_pixels_rect(&pixels, w, h, 0.0, 0.5, 0.0, 0.25).ok()?;
@@ -406,252 +134,9 @@ pub fn detect_fissure_era() -> Option<String> {
     None
 }
 
-/// Captures the full Warframe window region from the desktop using GDI BitBlt.
-/// Because this reads the composited desktop surface (not the window in isolation),
-/// any Tauri overlay window sitting on top is included in the result.
-#[allow(dead_code)]
-/// Full-resolution capture — kept for future use; manual capture uses the half-res variant.
-/// Full-resolution capture for manual diagnostics.
-/// Falls back to full-monitor DXGI if the frame is dark (fullscreen exclusive mode).
-/// Returns BGRA pixels, width, height.
-#[cfg(target_os = "windows")]
-pub fn capture_screen_for_diagnostics() -> Result<(Vec<u8>, u32, u32), String> {
-    if let Some((pixels, w, h)) = capture_screen_gdi_scaled(1, 1) {
-        if avg_brightness(&pixels) >= 10 {
-            return Ok((pixels, w, h));
-        }
-    }
-    // Dark — fullscreen exclusive. Fall back to full-height DXGI.
-    match capture_dxgi(1.0) {
-        Some((pixels, w, _cap_h, full_h)) => Ok((pixels, w, full_h)),
-        None => Err("Warframe window not found or capture failed".into()),
-    }
-}
-
-/// Half-resolution capture for automatic diagnostics.
-/// StretchBlt writes a smaller destination bitmap so GetDIBits reads 4× less data,
-/// reducing GPU pipeline stalls on high-resolution displays.
-#[cfg(target_os = "windows")]
-pub fn capture_screen_for_diagnostics_half() -> Result<(Vec<u8>, u32, u32), String> {
-    if let Some((pixels, w, h)) = capture_screen_gdi_scaled(1, 2) {
-        if avg_brightness(&pixels) >= 10 {
-            return Ok((pixels, w, h));
-        }
-    }
-    match capture_dxgi(1.0) {
-        Some((pixels, w, _cap_h, full_h)) => Ok((pixels, w, full_h)),
-        None => Err("Warframe window not found or capture failed".into()),
-    }
-}
-
-/// GDI capture of the Warframe window at a fractional scale (num/denom).
-/// Uses StretchBlt so the destination bitmap — and therefore the GetDIBits readback —
-/// is (num/denom)² smaller, which reduces GPU pipeline stall time proportionally.
-/// Pass (1, 1) for full resolution; (1, 2) for half resolution, etc.
-/// DWM composites all windows before BitBlt reads them, so overlay windows are visible.
-#[cfg(target_os = "windows")]
-fn capture_screen_gdi_scaled(num: u32, denom: u32) -> Option<(Vec<u8>, u32, u32)> {
-    use std::mem;
-    use windows_sys::Win32::{
-        Foundation::RECT,
-        Graphics::Gdi::{
-            StretchBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
-            GetDC, GetDIBits, ReleaseDC, SelectObject,
-            BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD,
-            SRCCOPY, HALFTONE, SetStretchBltMode,
-        },
-        UI::WindowsAndMessaging::{FindWindowW, GetWindowRect},
-    };
-    unsafe {
-        let title: Vec<u16> = "Warframe\0".encode_utf16().collect();
-        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
-        if hwnd == 0 { return None; }
-
-        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-        GetWindowRect(hwnd, &mut rect);
-        let src_w = (rect.right  - rect.left) as u32;
-        let src_h = (rect.bottom - rect.top)  as u32;
-        if src_w < 100 || src_h < 100 { return None; }
-
-        // Destination size after scale — at least 1 pixel each dimension.
-        let dst_w = ((src_w * num) / denom).max(1);
-        let dst_h = ((src_h * num) / denom).max(1);
-
-        let hdc_screen = GetDC(0);
-        let hdc_mem    = CreateCompatibleDC(hdc_screen);
-        let hbm        = CreateCompatibleBitmap(hdc_screen, dst_w as i32, dst_h as i32);
-        let hbm_old    = SelectObject(hdc_mem, hbm);
-
-        // HALFTONE gives better quality when downscaling.
-        SetStretchBltMode(hdc_mem, HALFTONE as i32);
-        StretchBlt(
-            hdc_mem,    0, 0, dst_w as i32, dst_h as i32,  // dest
-            hdc_screen, rect.left, rect.top, src_w as i32, src_h as i32, // src
-            SRCCOPY,
-        );
-
-        let mut bmi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize:        mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth:       dst_w as i32,
-                biHeight:      -(dst_h as i32), // negative = top-down row order
-                biPlanes:      1,
-                biBitCount:    32,
-                biCompression: BI_RGB,
-                biSizeImage: 0, biXPelsPerMeter: 0, biYPelsPerMeter: 0,
-                biClrUsed: 0, biClrImportant: 0,
-            },
-            bmiColors: [RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 }],
-        };
-        let mut pixels = vec![0u8; (dst_w * dst_h * 4) as usize];
-        GetDIBits(hdc_mem, hbm, 0, dst_h,
-                  pixels.as_mut_ptr() as *mut _, &mut bmi, DIB_RGB_COLORS);
-
-        SelectObject(hdc_mem, hbm_old);
-        DeleteObject(hbm);
-        DeleteDC(hdc_mem);
-        ReleaseDC(0, hdc_screen);
-        Some((pixels, dst_w, dst_h))
-    }
-}
-
-/// DXGI Desktop Duplication capture — works for Fullscreen Exclusive (and all other modes).
-///
-/// Dynamically determines which monitor the Warframe window is on so this works correctly
-/// for any number of monitors, any primary/secondary arrangement, and any resolution.
-/// Falls back to the primary monitor if the Warframe window can't be found.
-#[cfg(target_os = "windows")]
-#[tracing::instrument(level = "debug", skip_all)]
-fn capture_dxgi(cap_frac: f32) -> Option<(Vec<u8>, u32, u32, u32)> {
-    use windows::core::Interface; // required for .cast() on COM types
-    use windows::Win32::Graphics::{
-        Direct3D::D3D_DRIVER_TYPE_UNKNOWN,
-        Direct3D11::{
-            D3D11CreateDevice, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ,
-            D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
-            ID3D11Resource, ID3D11Texture2D, D3D11_MAPPED_SUBRESOURCE,
-        },
-        Dxgi::{
-            CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory1, IDXGIOutput, IDXGIOutput1,
-            IDXGIResource, DXGI_OUTDUPL_FRAME_INFO,
-        },
-        Dxgi::Common::DXGI_SAMPLE_DESC,
-    };
-
-    // Walk every adapter → every output. We create a D3D device bound to each
-    // specific adapter before calling DuplicateOutput — cross-adapter calls fail
-    // on multi-GPU systems (e.g. Intel iGPU + NVIDIA dGPU) where the game runs
-    // on the discrete GPU. A single device created with D3D_DRIVER_TYPE_HARDWARE
-    // defaults to adapter 0 (often the iGPU), causing DuplicateOutput to succeed
-    // only on the iGPU's outputs and silently miss the game on the dGPU.
-    unsafe {
-        let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
-
-        let mut result: Option<(Vec<u8>, u32, u32, u32)> = None;
-
-        'outer: for ai in 0u32.. {
-            let adapter = match factory.EnumAdapters(ai) { Ok(a) => a, Err(_) => break };
-
-            // Create a D3D device bound to THIS adapter so DuplicateOutput is same-adapter.
-            let adapter_iface: IDXGIAdapter = match adapter.cast() { Ok(a) => a, Err(_) => continue };
-            let mut device = None;
-            let mut ctx    = None;
-            if D3D11CreateDevice(
-                Some(&adapter_iface), D3D_DRIVER_TYPE_UNKNOWN, None,
-                Default::default(), None, 7,
-                Some(&mut device), None, Some(&mut ctx),
-            ).is_err() { continue; }
-            let device = match device { Some(d) => d, None => continue };
-            let ctx    = match ctx    { Some(c) => c, None => continue };
-            let unk: windows::core::IUnknown = match device.cast() { Ok(u) => u, Err(_) => continue };
-
-            for oi in 0u32.. {
-                let output: IDXGIOutput = match adapter.EnumOutputs(oi) { Ok(o) => o, Err(_) => break };
-                let out1: IDXGIOutput1  = match output.cast() { Ok(o) => o, Err(_) => continue };
-
-                let dupl = match out1.DuplicateOutput(&unk) { Ok(d) => d, Err(_) => continue };
-
-                // Acquire current frame (500 ms timeout)
-                let mut fi  = DXGI_OUTDUPL_FRAME_INFO::default();
-                let mut res: Option<IDXGIResource> = None;
-                if dupl.AcquireNextFrame(500, &mut fi, &mut res).is_err() { continue; }
-                let res = match res { Some(r) => r, None => { let _ = dupl.ReleaseFrame(); continue } };
-
-                // Get the desktop texture and read its dimensions
-                let src: ID3D11Texture2D = match res.cast() {
-                    Ok(t) => t,
-                    Err(_) => { let _ = dupl.ReleaseFrame(); continue }
-                };
-                let mut src_desc = D3D11_TEXTURE2D_DESC::default();
-                src.GetDesc(&mut src_desc);
-                let full_w = src_desc.Width;
-                let full_h = src_desc.Height;
-                if full_w < 100 || full_h < 100 { let _ = dupl.ReleaseFrame(); continue; }
-
-                // Create CPU-readable staging texture (full monitor size)
-                let staging_desc = D3D11_TEXTURE2D_DESC {
-                    Width:          full_w,
-                    Height:         full_h,
-                    MipLevels:      1,
-                    ArraySize:      1,
-                    Format:         src_desc.Format,
-                    SampleDesc:     DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-                    Usage:          D3D11_USAGE_STAGING,
-                    BindFlags:      Default::default(),
-                    CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
-                    MiscFlags:      Default::default(),
-                };
-                let mut staging: Option<ID3D11Texture2D> = None;
-                if device.CreateTexture2D(&staging_desc, None, Some(&mut staging)).is_err() {
-                    let _ = dupl.ReleaseFrame(); continue;
-                }
-                let staging = match staging { Some(s) => s, None => { let _ = dupl.ReleaseFrame(); continue } };
-
-                // GPU blit → staging → map to CPU
-                ctx.CopyResource(&staging.cast::<ID3D11Resource>().ok()?,
-                                 &src.cast::<ID3D11Resource>().ok()?);
-
-                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-                if ctx.Map(&staging.cast::<ID3D11Resource>().ok()?, 0, D3D11_MAP_READ, 0, Some(&mut mapped)).is_err() {
-                    let _ = dupl.ReleaseFrame(); continue;
-                }
-
-                let cap_h     = ((full_h as f32 * cap_frac) as u32).max(1);
-                let row_pitch = mapped.RowPitch as usize;
-                let src_ptr   = mapped.pData as *const u8;
-
-                // DXGI is typically BGRA. Swap R↔B if RGBA so OCR pipeline always gets BGRA.
-                use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
-                let swap_rb = src_desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM;
-
-                let mut pixels = Vec::with_capacity((full_w * cap_h * 4) as usize);
-                for row in 0..(cap_h as usize) {
-                    let slice = std::slice::from_raw_parts(
-                        src_ptr.add(row * row_pitch), full_w as usize * 4);
-                    if swap_rb {
-                        for px in slice.chunks_exact(4) {
-                            pixels.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
-                        }
-                    } else {
-                        pixels.extend_from_slice(slice);
-                    }
-                }
-
-                ctx.Unmap(&staging.cast::<ID3D11Resource>().ok()?, 0);
-                let _ = dupl.ReleaseFrame();
-
-                result = Some((pixels, full_w, cap_h, full_h));
-                break 'outer;
-            }
-        }
-
-        result
-    }
-}
-
 // ─── BMP encoding ─────────────────────────────────────────────────────────────
 
-/// Encode BGRA pixels as a 24-bit BGR BMP (no alpha — BitmapDecoder handles it fine).
+/// Encode BGRA pixels as a 24-bit BGR BMP.
 pub fn to_bmp(pixels_bgra: &[u8], width: u32, height: u32) -> Vec<u8> {
     let row_bytes = width * 3;
     let padding   = (4 - row_bytes % 4) % 4;
@@ -688,152 +173,6 @@ pub fn to_bmp(pixels_bgra: &[u8], width: u32, height: u32) -> Vec<u8> {
         for _ in 0..padding { bmp.push(0); }
     }
     bmp
-}
-
-// ─── Windows OCR ──────────────────────────────────────────────────────────────
-
-/// Run Windows.Media.Ocr on a BMP. Returns (full_text, line_positions).
-/// line_positions: Vec<(line_text, x_frac)> — X centre per line from word bounding rects.
-#[cfg(target_os = "windows")]
-#[tracing::instrument(level = "info", skip_all)]
-pub fn run_windows_ocr(bmp: Vec<u8>, img_w: u32, img_h: u32) -> Result<(String, Vec<(String, f32, f32)>), String> {
-    // Ensure COM is initialized for this thread. Tokio spawn_blocking threads
-    // start without a COM apartment; WinRT calls fail or return empty silently.
-    // CoInitializeEx returns S_OK (first init), S_FALSE (already MTA), or
-    // RPC_E_CHANGED_MODE (already STA) — all safe to ignore.
-    unsafe {
-        windows_sys::Win32::System::Com::CoInitializeEx(
-            std::ptr::null(),
-            windows_sys::Win32::System::Com::COINIT_MULTITHREADED.try_into().unwrap_or(0),
-        );
-    }
-
-    use windows::{
-        Foundation::Collections::IVectorView,
-        Globalization::Language,
-        Graphics::Imaging::BitmapDecoder,
-        Media::Ocr::{OcrEngine, OcrLine},
-        Storage::Streams::{DataWriter, InMemoryRandomAccessStream},
-    };
-
-    let winrt_result = (|| -> windows::core::Result<(String, Vec<(String, f32, f32)>)> {
-        let stream = InMemoryRandomAccessStream::new()
-            .map_err(|e| windows::core::Error::new(e.code(), format!("[stream-create] {e}").as_str()))?;
-        let writer = DataWriter::CreateDataWriter(&stream)
-            .map_err(|e| windows::core::Error::new(e.code(), format!("[writer-create] {e}").as_str()))?;
-        writer.WriteBytes(&bmp)
-            .map_err(|e| windows::core::Error::new(e.code(), format!("[write-bytes] {e}").as_str()))?;
-        writer.StoreAsync().map_err(|e| windows::core::Error::new(e.code(), format!("[store-async] {e}").as_str()))?.get()
-            .map_err(|e| windows::core::Error::new(e.code(), format!("[store-get] {e}").as_str()))?;
-        writer.FlushAsync().map_err(|e| windows::core::Error::new(e.code(), format!("[flush-async] {e}").as_str()))?.get()
-            .map_err(|e| windows::core::Error::new(e.code(), format!("[flush-get] {e}").as_str()))?;
-        writer.DetachStream()
-            .map_err(|e| windows::core::Error::new(e.code(), format!("[detach-stream] {e}").as_str()))?;
-        stream.Seek(0)
-            .map_err(|e| windows::core::Error::new(e.code(), format!("[seek] {e}").as_str()))?;
-
-        let decoder = BitmapDecoder::CreateAsync(&stream)
-            .map_err(|e| windows::core::Error::new(e.code(), format!("[decoder-async] {e}").as_str()))?.get()
-            .map_err(|e| windows::core::Error::new(e.code(), format!("[decoder-get] {e}").as_str()))?;
-        let bitmap = decoder.GetSoftwareBitmapAsync()
-            .map_err(|e| windows::core::Error::new(e.code(), format!("[bitmap-async] {e}").as_str()))?.get()
-            .map_err(|e| windows::core::Error::new(e.code(), format!("[bitmap-get] {e}").as_str()))?;
-
-        // Try en-US first, then profile languages, then any available language.
-        // TryCreate* returns Err(Error::empty()) / HRESULT(0) when the language
-        // pack is not installed (Windows-rs wraps the null return as Error::empty()).
-        let engine = (|| -> windows::core::Result<OcrEngine> {
-            if let Ok(lang) = Language::CreateLanguage(&windows::core::HSTRING::from("en-US")) {
-                if let Ok(engine) = OcrEngine::TryCreateFromLanguage(&lang) {
-                    return Ok(engine);
-                }
-            }
-            if let Ok(lang) = Language::CreateLanguage(&windows::core::HSTRING::from("en-GB")) {
-                if let Ok(engine) = OcrEngine::TryCreateFromLanguage(&lang) {
-                    return Ok(engine);
-                }
-            }
-            if let Ok(engine) = OcrEngine::TryCreateFromUserProfileLanguages() {
-                return Ok(engine);
-            }
-            let langs = OcrEngine::AvailableRecognizerLanguages()?;
-            if langs.Size()? > 0 {
-                if let Ok(engine) = OcrEngine::TryCreateFromLanguage(&langs.GetAt(0)?) {
-                    return Ok(engine);
-                }
-            }
-            Err(windows::core::Error::new(
-                windows::core::HRESULT(0x80004005u32 as i32), // E_FAIL
-                "[engine-create] No OCR language packs found. Install English (United States) or English (United Kingdom) in Windows Settings → Time & Language → Language & Region.",
-            ))
-        })().map_err(|e| windows::core::Error::new(e.code(), format!("[engine] {e}").as_str()))?;
-        let result = engine.RecognizeAsync(&bitmap)
-            .map_err(|e| windows::core::Error::new(e.code(), format!("[recognize-async] {e}").as_str()))?.get()
-            .map_err(|e| windows::core::Error::new(e.code(), format!("[recognize-get] {e}").as_str()))?;
-
-        let mut full = String::new();
-        let mut lines_out: Vec<(String, f32, f32)> = Vec::new();
-        let lines: IVectorView<OcrLine> = result.Lines()?;
-        let count = lines.Size()?;
-        // Inter-card gap: reward cards are separated by ~10–12% of image width.
-        // Word gaps within a single item name are ≤ 3%. Splitting at 7% cleanly
-        // divides "Daikyu Prime Upper Limb Nautilus Prime Systems" (which WinRT
-        // merges into one line when both names share the same baseline Y) into the
-        // two separate card entries the column-assignment logic expects.
-        const WORD_GAP: f32 = 0.07;
-        for i in 0..count {
-            let line = lines.GetAt(i)?;
-            let words = line.Words()?;
-            let wc = words.Size()?;
-            if wc == 0 {
-                let text = line.Text()?.to_string();
-                full.push_str(&text); full.push('\n');
-                lines_out.push((text, 0.5, 0.5));
-                continue;
-            }
-            // Walk words left-to-right; flush a sub-line whenever the horizontal
-            // gap to the next word exceeds WORD_GAP.
-            let mut seg_texts: Vec<String> = Vec::new();
-            let mut seg_sx = 0.0f32;
-            let mut seg_sy = 0.0f32;
-            let mut seg_n  = 0u32;
-            let mut prev_right = -1.0f32;
-            for j in 0..wc {
-                let w  = words.GetAt(j)?;
-                let r  = w.BoundingRect()?;
-                let cx = if img_w > 0 { (r.X + r.Width  / 2.0) / img_w as f32 } else { 0.5 };
-                let cy = if img_h > 0 { (r.Y + r.Height / 2.0) / img_h as f32 } else { 0.5 };
-                let xl = if img_w > 0 { r.X / img_w as f32 } else { 0.0 };
-                let xr = if img_w > 0 { (r.X + r.Width) / img_w as f32 } else { 1.0 };
-                if prev_right >= 0.0 && (xl - prev_right) > WORD_GAP && !seg_texts.is_empty() {
-                    let sub = seg_texts.join(" ");
-                    full.push_str(&sub); full.push('\n');
-                    lines_out.push((sub, seg_sx / seg_n as f32, seg_sy / seg_n as f32));
-                    seg_texts.clear(); seg_sx = 0.0; seg_sy = 0.0; seg_n = 0;
-                }
-                seg_texts.push(w.Text()?.to_string());
-                seg_sx += cx; seg_sy += cy; seg_n += 1;
-                prev_right = xr;
-            }
-            if !seg_texts.is_empty() {
-                let sub = seg_texts.join(" ");
-                full.push_str(&sub); full.push('\n');
-                lines_out.push((sub, seg_sx / seg_n as f32, seg_sy / seg_n as f32));
-            }
-        }
-        Ok((full, lines_out))
-    })().map_err(|e| e.to_string());
-
-    // ── BEGIN ocrs fallback ──────────────────────────────────────────────────
-    // Remove this block when deleting ocr_fallback.rs + ocrs/rten from Cargo.toml.
-    if let Err(ref e) = winrt_result {
-        if e.contains("[engine]") {
-            return crate::ocr_fallback::run_ocrs(&bmp, img_w, img_h);
-        }
-    }
-    // ── END ocrs fallback ────────────────────────────────────────────────────
-
-    winrt_result
 }
 
 // ─── Word matching helpers ────────────────────────────────────────────────────
@@ -938,7 +277,7 @@ fn word_found_in_set(
 
 /// Normalise OCR text for catalog matching.
 /// ASCII letters are lowercased. Common diacritics are mapped to their ASCII
-/// base (é→e, ü→u, …) so fuzzy matching still works when Windows OCR returns
+/// base (é→e, ü→u, …) so fuzzy matching still works when OCR returns
 /// accented surrogates instead of plain letters. Everything else → space.
 fn normalise(s: &str) -> String {
     s.chars()
@@ -968,7 +307,6 @@ fn normalise(s: &str) -> String {
 /// band have bar-coloured pixels. Columns that are consistently orange or teal
 /// across many rows score high. This is far more robust than row-by-row detection
 /// because it tolerates thin bars, color gradients, and single-row noise.
-#[cfg(any(target_os = "windows", target_os = "linux"))]
 /// Returns `(Some((centers, bar_y_frac)), diagnostic_string)`.
 /// `centers` are fractions of image width — the diamond icon X per card.
 /// The diagnostic string is always populated for session log inclusion.
@@ -985,7 +323,7 @@ fn find_rarity_bars(pixels: &[u8], pix_w: u32, pix_h: u32) -> (Option<(Vec<f32>,
 
     let scan_w = (x_hi - x_lo) as usize;
 
-    // Rarity colours (BGRA from PrintWindow/DXGI). Permissive — Warframe's UI
+    // Rarity colours (BGRA). Permissive — Warframe's UI
     // background is very dark (avg_brightness often 30–40), so bar pixels can
     // be quite dim. The diamond/arrow icon at each card's centre is near-white.
     //   Orange/bronze : R dominant over B
@@ -1148,11 +486,6 @@ fn find_rarity_bars(pixels: &[u8], pix_w: u32, pix_h: u32) -> (Option<(Vec<f32>,
     (Some((centers, bar_y)), diag)
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-fn find_rarity_bars(_: &[u8], _: u32, _: u32) -> (Option<(Vec<f32>, f32)>, String) {
-    (None, "not supported on non-Windows".into())
-}
-
 // ─── Icon component classifier ────────────────────────────────────────────────
 
 /// What the card icon looks like, used to constrain catalog matching.
@@ -1195,7 +528,6 @@ pub enum IconType {
 ///   ⑧ blade        — low symmetry, moderate aspect (flat asymmetric part)
 ///   ⑨ upper/lower limb — low fill, arc-shaped (bow components)
 ///   Unknown        — ambiguous; fall back to text-only matching
-#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn classify_card_icon(
     pixels: &[u8], pix_w: u32, pix_h: u32,
     x_left: f32, x_right: f32, bar_y: f32,
@@ -1329,11 +661,6 @@ fn classify_card_icon(
         };
     }
 
-    IconType::Unknown
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-fn classify_card_icon(_: &[u8], _: u32, _: u32, _: f32, _: f32, _: f32) -> IconType {
     IconType::Unknown
 }
 
@@ -1476,7 +803,6 @@ fn score_item(display_name: &str, words: &std::collections::HashSet<String>) -> 
 /// 3. Assign each OCR line to the nearest card (by X).
 /// 4. Per-card word set → prefix + fuzzy match against relic catalog.
 /// 5. Full-frame fallback if bar detection fails.
-#[cfg(any(target_os = "windows", target_os = "linux"))]
 #[tracing::instrument(level = "info", skip_all)]
 pub fn extract_reward_items_twophase(
     pixels: &[u8], pix_w: u32, pix_h: u32, _game_h: u32,
@@ -1487,12 +813,6 @@ pub fn extract_reward_items_twophase(
 ) -> (bool, bool, Vec<String>, Vec<f32>, String) {
 
     // ── 1. Raw OCR ────────────────────────────────────────────────────────────
-    // Each platform calls its own engine directly rather than going through a
-    // shared wrapper. Upstream's line is kept verbatim so this hunk stays a pure
-    // addition on their side of the file; the Linux arm sits beside it.
-    #[cfg(target_os = "windows")]
-    let engine_output = run_windows_ocr(to_bmp(pixels, pix_w, pix_h), pix_w, pix_h);
-    #[cfg(target_os = "linux")]
     let engine_output = run_ocr(pixels, pix_w, pix_h, OcrLayout::Scattered);
 
     let (raw_full, ocr_lines) =
@@ -1503,17 +823,15 @@ pub fn extract_reward_items_twophase(
         };
     if raw_full.len() < 4 {
         // Save the captured BMP — open in photo viewer to diagnose:
-        //   Black image  → PrintWindow didn't capture DX content (try borderless windowed mode)
-        //   Game content → OCR engine issue (COM/language)
-        let _ = std::fs::write(
-            std::env::temp_dir().join("frameforge_capture_debug.bmp"),
-            to_bmp(pixels, pix_w, pix_h),
-        );
+        //   Black image  → capture grabbed an unmapped or obscured window
+        //   Game content → OCR engine issue (tessdata missing/language)
+        let debug_bmp = std::env::temp_dir().join("frameforge_capture_debug.bmp");
+        let _ = std::fs::write(&debug_bmp, to_bmp(pixels, pix_w, pix_h));
         let avg = avg_brightness(pixels);
         let kind = if avg < 30 { "dark-frame" } else { "ocr-empty" };
         return (false, false, vec![], vec![], format!(
-            "├─ Capture  : {}\n└─ OCR      : returned no text ({}, avg={})\n   Saved: %TEMP%\\frameforge_capture_debug.bmp",
-            capture_info, kind, avg
+            "├─ Capture  : {}\n└─ OCR      : returned no text ({}, avg={})\n   Saved: {}",
+            capture_info, kind, avg, debug_bmp.display()
         ));
     }
 
@@ -2085,26 +1403,6 @@ fn match_reward_items(
 
 
 
-/// Captures the full desktop for diagnostics so the FrameForge overlay is visible.
-/// Uses GDI BitBlt from the desktop DC — DWM composites all windows (including the
-/// WebView2 overlay) before BitBlt reads them, so the overlay appears in the BMP.
-/// DXGI captures GPU output before DWM overlay compositing and misses WebView2 windows.
-/// Returns (BGRA pixels, width, height) or None on failure.
-#[cfg(target_os = "windows")]
-pub fn capture_desktop_for_diag() -> Option<(Vec<u8>, u32, u32)> {
-    if let Some((pixels, w, h)) = capture_screen_gdi_scaled(1, 1) {
-        if avg_brightness(&pixels) >= 5 {
-            return Some((pixels, w, h));
-        }
-    }
-    // Fallback: DXGI (fullscreen exclusive — overlay not visible there anyway).
-    if let Some((pixels, w, cap_h, _full_h)) = capture_dxgi(1.0) {
-        return Some((pixels, w, cap_h));
-    }
-    None
-}
-
-// ==============================================================================
 // Linux capture and OCR
 // ==============================================================================
 //
@@ -2119,18 +1417,14 @@ pub fn capture_desktop_for_diag() -> Option<(Vec<u8>, u32, u32)> {
 // never takes, and that stack does not currently compile against a recent
 // PipeWire. The three X11 requests below are all that is actually needed.
 //
-// Two platform primitives carry every Linux difference:
-//   • `capture_warframe_bgra` — the window grab, in the BGRA byte order the
-//     shared pipeline (`to_bmp`, `preprocess_for_ocr`, `find_rarity_bars`,
-//     `classify_card_icon`) assumes.
-//   • `run_windows_ocr`       — Tesseract in place of WinRT OCR, reporting the
-//     same (text, per-word position) shape.
-// Everything above them — cropping, preprocessing, rarity bars, icon
-// classification, catalog matching — is shared with Windows unchanged.
+// Capture is one primitive — `capture_warframe_bgra`, the window grab, in the
+// BGRA byte order the shared pipeline (`to_bmp`, `preprocess_for_ocr`,
+// `find_rarity_bars`, `classify_card_icon`) assumes. Everything above it —
+// cropping, preprocessing, rarity bars, icon classification, catalog
+// matching — feeds `run_ocr` (Tesseract) for the raw text.
 
 /// The game's X11 window title. Warframe uses this exact string under Proton,
 /// with no version suffix, which is why an equality test is safe here.
-#[cfg(target_os = "linux")]
 const WARFRAME_WINDOW_TITLE: &str = "Warframe";
 
 /// Connect to the X server named by `DISPLAY`.
@@ -2139,7 +1433,6 @@ const WARFRAME_WINDOW_TITLE: &str = "Warframe";
 /// a few times a second, the handshake is local-socket cheap, and a cached
 /// connection would have to be re-established anyway whenever the X server or
 /// XWayland restarts.
-#[cfg(target_os = "linux")]
 pub(crate) fn x11_connect() -> Result<xcb::Connection, String> {
     xcb::Connection::connect(None)
         .map(|(conn, _screen)| conn)
@@ -2147,7 +1440,6 @@ pub(crate) fn x11_connect() -> Result<xcb::Connection, String> {
 }
 
 /// Look up an atom by name.
-#[cfg(target_os = "linux")]
 fn x11_atom(conn: &xcb::Connection, name: &str) -> Result<xcb::x::Atom, String> {
     let cookie = conn.send_request(&xcb::x::InternAtom {
         only_if_exists: true,
@@ -2160,7 +1452,6 @@ fn x11_atom(conn: &xcb::Connection, name: &str) -> Result<xcb::x::Atom, String> 
 
 /// Read a window's title, preferring the EWMH `_NET_WM_NAME` (UTF-8) over the
 /// legacy `WM_NAME` (Latin-1). Wine sets both; other clients may set only one.
-#[cfg(target_os = "linux")]
 fn x11_window_title(conn: &xcb::Connection, window: xcb::x::Window) -> Option<String> {
     let read = |property: xcb::x::Atom, r#type: xcb::x::Atom| -> Option<String> {
         let cookie = conn.send_request(&xcb::x::GetProperty {
@@ -2186,7 +1477,6 @@ fn x11_window_title(conn: &xcb::Connection, window: xcb::x::Window) -> Option<St
 
 /// Check if an X11 window is mapped and managed (viewable and not override-redirect).
 /// Used during QueryTree fallback to filter out unmapped helper windows, popups, and tooltips.
-#[cfg(target_os = "linux")]
 fn x11_window_viewable(conn: &xcb::Connection, window: xcb::x::Window) -> bool {
     let cookie = conn.send_request(&xcb::x::GetWindowAttributes { window });
     conn.wait_for_reply(cookie).is_ok_and(|reply| {
@@ -2204,7 +1494,6 @@ fn x11_window_viewable(conn: &xcb::Connection, window: xcb::x::Window) -> bool {
 ///
 /// Window tree traversal via QueryTree is used as a fallback for window managers
 /// and compositors (like Niri) that do not publish EWMH client lists.
-#[cfg(target_os = "linux")]
 fn warframe_window(conn: &xcb::Connection) -> Result<xcb::x::Window, String> {
     let client_list = x11_atom(conn, "_NET_CLIENT_LIST_STACKING")?;
     if client_list != xcb::x::ATOM_NONE {
@@ -2252,7 +1541,6 @@ fn warframe_window(conn: &xcb::Connection) -> Result<xcb::x::Window, String> {
 /// reparenting window manager, is the decoration frame rather than the desktop.
 /// Translating the window's own `(x, y)` into root space and subtracting it back
 /// out yields the origin of the window content itself.
-#[cfg(target_os = "linux")]
 fn x11_window_rect(
     conn: &xcb::Connection,
     window: xcb::x::Window,
@@ -2290,14 +1578,13 @@ fn x11_window_rect(
 /// byte needs filling, because `to_bmp` ignores it but `avg_brightness` and the
 /// bar detector read whole pixels and an undefined alpha makes captures
 /// non-reproducible.
-#[cfg(target_os = "linux")]
 #[tracing::instrument(level = "debug", skip_all)]
 fn capture_warframe_bgra() -> Result<(Vec<u8>, u32, u32), String> {
     let conn = x11_connect()?;
     let window = warframe_window(&conn)?;
     let (_x, _y, width, height) = x11_window_rect(&conn, window)?;
-    // Same floor the Windows path uses: a window this small is either minimised
-    // or mid-creation, and OCR on it would only waste a frame.
+    // A window this small is either minimised or mid-creation, and OCR on it
+    // would only waste a frame.
     if width < 100 || height < 100 {
         return Err(format!("Window too small ({width}×{height})"));
     }
@@ -2346,7 +1633,6 @@ fn capture_warframe_bgra() -> Result<(Vec<u8>, u32, u32), String> {
 /// The overlay is positioned from this, so it must describe the same area the
 /// capture covers — for an X11 window the capture is the whole window, and
 /// Warframe under Proton is borderless, so window rect == client rect.
-#[cfg(target_os = "linux")]
 pub fn warframe_window_rect() -> Result<[i32; 4], String> {
     let conn = x11_connect()?;
     let window = warframe_window(&conn)?;
@@ -2354,23 +1640,13 @@ pub fn warframe_window_rect() -> Result<[i32; 4], String> {
     Ok([x, y, width as i32, height as i32])
 }
 
-#[cfg(target_os = "linux")]
 pub fn capture_warframe_pixels() -> Result<(Vec<u8>, u32, u32), String> {
-    capture_warframe_bgra()
-}
-
-/// Full-resolution capture for manual diagnostics; kept to match the Windows
-/// entry point, which the manual capture button no longer calls.
-#[allow(dead_code)]
-#[cfg(target_os = "linux")]
-pub fn capture_screen_for_diagnostics() -> Result<(Vec<u8>, u32, u32), String> {
     capture_warframe_bgra()
 }
 
 /// Half-resolution capture for automatic diagnostics: a 2×2 box average, which
 /// keeps small UI text legible in the saved BMP where dropping every other pixel
-/// would alias it away. Windows gets the equivalent from StretchBlt/HALFTONE.
-#[cfg(target_os = "linux")]
+/// would alias it away.
 pub fn capture_screen_for_diagnostics_half() -> Result<(Vec<u8>, u32, u32), String> {
     let (pixels, width, height) = capture_warframe_bgra()?;
     let (half_w, half_h) = ((width / 2).max(1), (height / 2).max(1));
@@ -2390,10 +1666,9 @@ pub fn capture_screen_for_diagnostics_half() -> Result<(Vec<u8>, u32, u32), Stri
     Ok((out, half_w, half_h))
 }
 
-/// Reward-strip capture. The top 80% of the window is kept for the same reason
-/// as on Windows: reward cards never reach the lower fifth of the screen, and
-/// cropping there removes the squad list and chat box from the OCR input.
-#[cfg(target_os = "linux")]
+/// Reward-strip capture. Only the top 80% of the window is kept: reward cards
+/// never reach the lower fifth of the screen, and cropping there removes the
+/// squad list and chat box from the OCR input.
 #[tracing::instrument(level = "info", skip_all)]
 pub fn capture_warframe_reward_area() -> Option<(Vec<u8>, u32, u32, u32, String)> {
     let (mut pixels, width, full_h) = capture_warframe_bgra().ok()?;
@@ -2405,34 +1680,15 @@ pub fn capture_warframe_reward_area() -> Option<(Vec<u8>, u32, u32, u32, String)
     Some((pixels, width, cap_h, full_h, info))
 }
 
-/// The composited desktop is not reachable on this platform.
-///
-/// Under XWayland the X11 root window has no backing content — a root grab comes
-/// back uniformly black (measured) because every X11 client is an independent
-/// Wayland surface. Grabbing the game window instead would defeat the purpose of
-/// this capture, which exists to prove the FrameForge overlay is being drawn on
-/// top of the game, so it reports failure rather than a picture that can never
-/// contain the overlay.
-///
-/// ponytail: no Linux desktop grab; wire up xdg-desktop-portal ScreenCast if
-/// overlay-on-game diagnostics are wanted (it prompts for permission per run).
-#[cfg(target_os = "linux")]
-pub fn capture_desktop_for_diag() -> Option<(Vec<u8>, u32, u32)> {
-    None
-}
-
 // ─── OCR line assembly (Linux/Tesseract) ─────────────────────────────────────
 //
-// Upstream assembles its lines inline inside `run_windows_ocr`, and that is
-// left exactly as upstream wrote it. This is the same logic re-expressed for
-// Tesseract, which reports geometry per word in TSV rather than per line.
+// Tesseract reports geometry per word in TSV. Assembling words into lines here
+// yields the same (line text, position) shape the reward extractor expects.
 
 /// One recognised word, with its horizontal extent and vertical centre already
-/// expressed as fractions of the source image. Both OCR engines (WinRT on
-/// Windows, Tesseract on Linux) report pixel bounding boxes; normalising at the
-/// engine boundary lets the card-column logic downstream stay resolution- and
-/// engine-agnostic.
-#[cfg(target_os = "linux")]
+/// expressed as fractions of the source image. Tesseract reports pixel
+/// bounding boxes; normalising at the engine boundary lets the card-column
+/// logic downstream stay resolution-agnostic.
 pub struct OcrWord {
     pub text: String,
     pub x_left: f32,
@@ -2442,11 +1698,9 @@ pub struct OcrWord {
 
 /// How much page structure the OCR engine should assume.
 ///
-/// Windows OCR does its own layout analysis and ignores this; Tesseract does not,
-/// and picks up nothing at all on the wrong setting — a cropped riven card reads
+/// Tesseract picks up nothing at all on the wrong setting — a cropped riven card reads
 /// perfectly as one block and returns empty as scattered text, and a full reward
 /// frame does the opposite.
-#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum OcrLayout {
     /// Text scattered anywhere in a full game frame.
@@ -2457,10 +1711,9 @@ pub enum OcrLayout {
 
 /// Inter-card gap: reward cards are separated by ~10–12% of image width.
 /// Word gaps within a single item name are ≤ 3%. Splitting at 7% cleanly
-/// divides "Daikyu Prime Upper Limb Nautilus Prime Systems" (which both OCR
-/// engines merge into one line when the two names share a baseline Y) into the
+/// divides "Daikyu Prime Upper Limb Nautilus Prime Systems" (which Tesseract
+/// merges into one line when the two names share a baseline Y) into the
 /// two separate card entries the column-assignment logic expects.
-#[cfg(target_os = "linux")]
 const WORD_GAP: f32 = 0.07;
 
 /// Turn engine lines into the `(full_text, positions)` pair the reward pipeline
@@ -2468,7 +1721,6 @@ const WORD_GAP: f32 = 0.07;
 ///
 /// Each returned entry is `(text, x_centre, y_centre)`, averaged over the words
 /// that make up that sub-line.
-#[cfg(target_os = "linux")]
 fn assemble_ocr_lines(engine_lines: &[Vec<OcrWord>]) -> (String, Vec<(String, f32, f32)>) {
     let mut full = String::new();
     let mut lines_out: Vec<(String, f32, f32)> = Vec::new();
@@ -2510,7 +1762,7 @@ fn assemble_ocr_lines(engine_lines: &[Vec<OcrWord>]) -> (String, Vec<(String, f3
 }
 
 
-/// Tesseract stand-in for `Windows.Media.Ocr`. Same contract: a BGRA buffer in,
+/// Tesseract OCR entry point for a full frame. Contract: a BGRA buffer in,
 /// `(full_text, per-line (text, x_centre, y_centre))` out.
 ///
 /// Two reductions to one byte per pixel are available and the better one is
@@ -2520,7 +1772,6 @@ fn assemble_ocr_lines(engine_lines: &[Vec<OcrWord>]) -> (String, Vec<(String, f3
 /// Word boxes come from Tesseract's TSV output, the only one of its report
 /// formats that carries both per-word geometry and the block/paragraph/line
 /// grouping the gap-splitting logic needs.
-#[cfg(target_os = "linux")]
 #[tracing::instrument(level = "debug", skip_all)]
 pub fn run_ocr(
     pixels_bgra: &[u8],
@@ -2563,7 +1814,6 @@ pub fn run_ocr(
 /// edge — and Tesseract reports those as one- and two-character fragments. Real
 /// interface text always yields at least one run of three or more letters or
 /// digits, which is also the shortest token the catalog matcher will consider.
-#[cfg(target_os = "linux")]
 fn reads_as_words(text: &str) -> bool {
     text.split(|c: char| !c.is_ascii_alphanumeric())
         .any(|token| token.len() >= 3)
@@ -2574,7 +1824,6 @@ fn reads_as_words(text: &str) -> bool {
 /// Empty for a `cargo run` build, which falls back to whatever model the system
 /// has installed. Every bundle carries its own copy, so this is only unset when
 /// the app is run straight out of the build directory.
-#[cfg(target_os = "linux")]
 static BUNDLED_TESSDATA: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// Point Tesseract at the app's own copy of the language model.
@@ -2584,7 +1833,6 @@ static BUNDLED_TESSDATA: std::sync::OnceLock<String> = std::sync::OnceLock::new(
 /// Called once at startup with the bundle's resource directory; a
 /// directory without the model in it is ignored, so a build that skipped the
 /// fetch still runs against the system copy rather than failing outright.
-#[cfg(target_os = "linux")]
 pub fn use_bundled_tessdata(resource_dir: &std::path::Path) {
     let dir = resource_dir.join("tessdata");
     if dir.join("eng.traineddata").is_file() {
@@ -2595,7 +1843,6 @@ pub fn use_bundled_tessdata(resource_dir: &std::path::Path) {
 }
 
 /// Run Tesseract over one 8-bit sample per pixel.
-#[cfg(target_os = "linux")]
 #[tracing::instrument(level = "debug", skip_all)]
 fn recognize_samples(
     samples: &[u8],
@@ -2631,7 +1878,6 @@ fn recognize_samples(
 /// The game draws interface text in exactly one of these colours, unblended, so
 /// an equality test against the whole set isolates text without having to know
 /// which theme the player has selected.
-#[cfg(target_os = "linux")]
 const UI_TEXT_COLOURS: &[(u8, u8, u8)] = &[
     (190, 169, 102), (245, 227, 173), // Vitruvian
     (153, 31, 35),   (255, 61, 51),   // Stalker
@@ -2658,7 +1904,6 @@ const UI_TEXT_COLOURS: &[(u8, u8, u8)] = &[
 /// the artwork too, and on a 4K reward screen that buries four item names in
 /// ~200 lines of noise. Deleting everything that is not interface text is the
 /// difference between mostly-garbage and near-perfect names on real captures.
-#[cfg(target_os = "linux")]
 fn ui_text_mask(pixels_bgra: &[u8]) -> Option<Vec<u8>> {
     let mut matched = false;
     let mask: Vec<u8> = pixels_bgra
@@ -2681,11 +1926,10 @@ fn ui_text_mask(pixels_bgra: &[u8]) -> Option<Vec<u8>> {
 /// with `conf` = -1, so filtering on level keeps each word exactly once.
 ///
 /// Lines are emitted in top-to-bottom, left-to-right order and their words in
-/// left-to-right order. WinRT OCR already reports them that way, and the
-/// full-frame fallback in `extract_reward_items_twophase` uses line index as a
-/// stand-in for screen position — sparse-text mode makes no ordering promise, so
-/// the order is imposed here instead.
-#[cfg(target_os = "linux")]
+/// left-to-right order; the full-frame fallback in
+/// `extract_reward_items_twophase` uses line index as a stand-in for screen
+/// position — sparse-text mode makes no ordering promise, so the order is
+/// imposed here instead.
 fn parse_tesseract_tsv(tsv: &str, img_w: u32, img_h: u32) -> Vec<Vec<OcrWord>> {
     // Zero dimensions would make every fraction a division by zero; the callers
     // reject sub-4-pixel rects, so this only guards against a degenerate BMP.
@@ -2743,59 +1987,6 @@ fn parse_tesseract_tsv(tsv: &str, img_w: u32, img_h: u32) -> Vec<Vec<OcrWord>> {
     ordered.into_iter().map(|(_, _, words)| words).collect()
 }
 
-// ==============================================================================
-// Unsupported platforms
-// ==============================================================================
-//
-// Capture and OCR are implemented for Windows and Linux only. Everywhere else
-// each entry point returns the same explicit error instead of silently producing
-// empty text — callers surface it as "unavailable" rather than "found nothing".
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-const OCR_UNSUPPORTED: &str = "OCR is not supported on this platform";
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-pub fn capture_warframe_pixels() -> Result<(Vec<u8>, u32, u32), String> {
-    Err(OCR_UNSUPPORTED.into())
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-pub fn capture_screen_for_diagnostics() -> Result<(Vec<u8>, u32, u32), String> {
-    Err(OCR_UNSUPPORTED.into())
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-pub fn capture_screen_for_diagnostics_half() -> Result<(Vec<u8>, u32, u32), String> {
-    Err(OCR_UNSUPPORTED.into())
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-pub fn capture_warframe_reward_area() -> Option<(Vec<u8>, u32, u32, u32, String)> {
-    None
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-pub fn capture_desktop_for_diag() -> Option<(Vec<u8>, u32, u32)> {
-    None
-}
-
-// Upstream's own non-Windows stubs, narrowed to exclude Linux now that Linux has
-// real implementations. Kept in upstream's wording and shape so the only delta
-// on these lines is the widened `cfg`.
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-pub fn run_windows_ocr(_bmp: Vec<u8>, _w: u32, _h: u32) -> Result<(String, Vec<(String, f32, f32)>), String> {
-    Err(OCR_UNSUPPORTED.into())
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-pub fn extract_reward_items_twophase(
-    _pixels: &[u8], _w: u32, _cap_h: u32, _full_h: u32,
-    _catalog: &[(String, String)], _capture_info: &str,
-    _hint_squad_size: Option<usize>, _player_names: &[String],
-) -> (bool, bool, Vec<String>, Vec<f32>, String) {
-    (false, false, vec![], vec![], String::new())
-}
-
 #[cfg(test)]
 mod tesseract_tests {
     use super::*;
@@ -2805,7 +1996,6 @@ mod tesseract_tests {
     /// gap-splitting in `assemble_ocr_lines` is what keeps the two names from
     /// being scored as a single item — and the TSV parser is what gives it the
     /// geometry to split on.
-    #[cfg(target_os = "linux")]
     #[test]
     fn tsv_words_split_into_one_sub_line_per_card() {
         // level page block par line word left top width height conf text
@@ -2836,7 +2026,6 @@ mod tesseract_tests {
     /// The mask is what makes Tesseract usable on a game frame, and the word
     /// check is what stops a mask that isolated nothing from being trusted over
     /// the greyscale fallback. Both directions matter, so both are pinned here.
-    #[cfg(target_os = "linux")]
     #[test]
     fn the_ui_colour_mask_keeps_interface_text_and_drops_artwork() {
         // Two pixels of Zephyr-theme text, one of artwork that is merely close to
@@ -2872,7 +2061,6 @@ mod tesseract_tests {
     /// Images the pipeline currently gets wrong, with the reason. Listed rather
     /// than ignored so the test fails in BOTH directions: a regression adds an
     /// entry, and fixing a bug without deleting its entry is also a failure.
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
     const KNOWN_MISSES: &[(&str, &str)] = &[];
 
     /// End-to-end reward extraction against the labelled corpus.
@@ -2881,7 +2069,6 @@ mod tesseract_tests {
     /// already live in the sibling `wfinfo-ng` checkout, so the test skips when
     /// it is missing rather than failing. `WFINFO_TEST_IMAGES` overrides the
     /// location. Expect roughly one OCR pass per image — this is the slow test.
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn reward_extraction_matches_the_labelled_corpus() {
         let dir = std::path::PathBuf::from(
