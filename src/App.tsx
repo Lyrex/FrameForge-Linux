@@ -73,6 +73,7 @@ import RivenAnalyzer from "./RivenAnalyzer";
 import RivenOverlayWindow from "./RivenOverlayWindow";
 import RelicPickOverlay from "./RelicPickOverlay";
 import TimerHelper, { FissureWatch, fmtMs } from "./TimerHelper";
+import Arbitrations from "./Arbitrations";
 import { useWorldState } from "./worldstate";
 import { notify, ensurePermission } from "./notify";
 import { collectNewMatches, type SeenFissures } from "./fissureAlerts";
@@ -187,7 +188,7 @@ interface InventoryUpdate {
   player_name?: string;
 }
 
-type Module = "inventory" | "foundry" | "market" | "relics" | "rivens" | "timers" | "statistics" | "completionist";
+type Module = "inventory" | "foundry" | "market" | "relics" | "rivens" | "timers" | "arbitrations" | "statistics" | "completionist";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -2696,6 +2697,14 @@ if (typeof s.autoDiagEnabled === "boolean") {
             <span className="module-label">Timers</span>
           </button>
           <button
+            className={`module-btn ${activeModule === "arbitrations" ? "module-active" : ""}`}
+            onClick={() => setActiveModule("arbitrations")}
+            title="Arbitrations"
+          >
+            <span aria-hidden style={{ width: 24, height: 24, lineHeight: "24px", fontSize: 20, textAlign: "center" }}>⚖</span>
+            <span className="module-label">Arbitrations</span>
+          </button>
+          <button
             className={`module-btn ${activeModule === "statistics" ? "module-active" : ""}`}
             onClick={() => setActiveModule("statistics")}
             title="Statistics"
@@ -2920,6 +2929,13 @@ if (typeof s.autoDiagEnabled === "boolean") {
             <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
               <RivenAnalyzer />
             </div>
+          </ErrorBoundary>
+        )}
+
+        {/* ── Arbitrations module ── */}
+        {activeModule === "arbitrations" && (
+          <ErrorBoundary>
+            <Arbitrations />
           </ErrorBoundary>
         )}
 

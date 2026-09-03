@@ -10,6 +10,7 @@ fn truncate_chars(s: &str, n: usize) -> String {
 use tauri::{Emitter, Manager, State};
 
 pub mod arbitration;
+mod arbitrations;
 mod cache;
 mod db;
 // EE.log lives at a different path per platform (Proton prefix on Linux), so
@@ -9034,6 +9035,7 @@ pub fn run() {
             get_syndicate_stores,
             get_research_lab_stores,
             fetch_worldstate,
+            arbitrations::fetch_arbitration_schedule,
             get_warframe_window_rect,
             get_overlay_session_log,
             get_pending_relic_rewards,

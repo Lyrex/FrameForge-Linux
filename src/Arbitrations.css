@@ -1,0 +1,59 @@
+.arb {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  padding-bottom: 8px;
+}
+
+.arb-stale {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  font-size: 11px;
+  color: #f0c040;
+  background: rgba(240,192,64,.08);
+  border-bottom: 1px solid rgba(240,192,64,.25);
+}
+.arb-stale button {
+  background: none;
+  border: 1px solid #f0c040;
+  color: #f0c040;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.arb-current {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px 12px 8px;
+  border-bottom: 1px solid rgba(48,54,61,.35);
+}
+.arb-current-body { flex: 1; min-width: 0; }
+.arb-current-node { font-size: 16px; font-weight: 600; color: var(--text); }
+.arb-current-cd { text-align: right; }
+.arb-current-cd .timer-cd { font-size: 18px; }
+
+.arb-region { color: var(--muted); font-weight: 400; }
+.arb-time {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  flex-shrink: 0;
+  min-width: 48px;
+}
+.arb-detail {
+  font-size: 11px;
+  color: var(--muted);
+  flex-shrink: 0;
+  min-width: 170px;
+}
+
+.arb-fav { background: rgba(240,192,64,.08); }
+.arb-fav:hover { background: rgba(240,192,64,.14); }
+.arb-fav .timer-name, .arb-fav .arb-current-node { color: #f0c040; }
