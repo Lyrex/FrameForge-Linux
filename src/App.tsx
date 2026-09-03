@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { usePlatformCapabilities } from "./platform";
 import EeLogSettings from "./EeLogSettings";
 import { applyScale, overlayScale } from "./uiScale";
 
@@ -788,7 +787,6 @@ export default function App() {
   const [memoryProbing, setMemoryProbing] = useState(false);
   const [poking, setPoking] = useState(false);
   const [rawScanning, setRawScanning] = useState(false);
-  const [memRelicDebugRunning, setMemRelicDebugRunning] = useState(false);
   const [diagCapturing, setDiagCapturing] = useState(false);
   const [notifyTestResult, setNotifyTestResult] = useState("");
   const [relicPickOcrTesting, setRelicPickOcrTesting] = useState(false);
@@ -809,7 +807,6 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [wfmInvisibleOnClose,   setWfmInvisibleOnClose]   = useState(false);
   const [wfmAutoInvisible,      setWfmAutoInvisible]      = useState(false);
   const [wfmAutoInvisibleMins,  setWfmAutoInvisibleMins]  = useState(30);
-  const platform = usePlatformCapabilities();
   const [overlayStatus, setOverlayStatus] = useState("");
   // Without OCR the overlay can never trigger, so treat it as off for this run.
   // The stored preference is deliberately left untouched: the same settings file
@@ -866,7 +863,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [overlayEnabledSetting, setOverlayEnabled] = useState<boolean>(
     () => localStorage.getItem("ff-overlay-enabled") !== "false"
   );
-  const overlayEnabled = overlayEnabledSetting && platform.ocr;
+  const overlayEnabled = overlayEnabledSetting;
   const [overlayPriority, setOverlayPriority] = useState<string>(
     () => localStorage.getItem("ff-overlay-priority") ?? "completion"
   );
@@ -2344,7 +2341,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                       </span>
                     </div>
                     <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8, lineHeight: 1.5 }}>
-                      Reads live inventory, crafting jobs, and mod ranks from Warframe's process memory via <code style={{ fontSize: 10 }}>{platform.linux ? "/proc/<pid>/mem" : "ReadProcessMemory"}</code>. DE has historically tolerated read-only tools, but has not given explicit permission. Enable at your own risk.
+                      Reads live inventory, crafting jobs, and mod ranks from Warframe's process memory via <code style={{ fontSize: 10 }}>/proc/&lt;pid&gt;/mem</code>. DE has historically tolerated read-only tools, but has not given explicit permission. Enable at your own risk.
                     </div>
                     <div className="settings-row">
                       <div>
@@ -2431,16 +2428,8 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
                   {/* Relic Overlay */}
                   <div className="settings-section">
-                    {/* The overlay is driven by screen capture + OCR, neither of
-                        which the Linux backend provides, so the controls stay
-                        visible but inert rather than silently doing nothing. */}
                     <div className="settings-section-title">
                       Relic Overlay
-                      {!platform.ocr && (
-                        <span style={{ fontSize: 10, marginLeft: 8, color: "var(--muted)", fontWeight: 400 }}>
-                          Unavailable on Linux
-                        </span>
-                      )}
                     </div>
                     {overlayStatus && (
                       <div style={{ fontSize: 12, padding: '4px 8px', marginBottom: 6,
@@ -2456,7 +2445,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
                       </div>
                       <button
                         className="btn-secondary"
-                        disabled={!platform.ocr}
                         style={{ minWidth: 64, background: overlayEnabled ? "rgba(56,139,253,.15)" : undefined, borderColor: overlayEnabled ? "var(--accent)" : undefined }}
                         onClick={() => {
                           const next = !overlayEnabledSetting;
@@ -2480,7 +2468,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                       <select
                         className="settings-select"
                         value={overlayPriority}
-                        disabled={!overlayEnabled || !platform.ocr}
+                        disabled={!overlayEnabled}
                         onChange={e => {
                           const next = e.target.value;
                           setOverlayPriority(next);
@@ -2497,7 +2485,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                     </div>
                   </div>
 
-                  {platform.linux && <EeLogSettings />}
+                  <EeLogSettings />
 
                   {/* Relic Pick Overlay */}
                   <div className="settings-section">
@@ -2929,27 +2917,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
                         disabled={rawScanSize === 0 || rawScanning}
                         onClick={async () => { await invoke("clear_debug_data", { which: "raw_scan" }); setRawScanSize(0); }}
                       >{rawScanSize > 0 ? `Clear (${fmtBytes(rawScanSize)})` : "Clear"}</button>
-
-                      {/* Memory Relic Debug */}
-                      <div className="settings-row-info">
-                        <span className="settings-row-label">Memory Relic Debug</span>
-                        <span className="settings-row-desc">{memRelicDebugRunning ? "Running — tailing EE.log and scanning Warframe memory. Log at %TEMP%\\frameforge_mem_relic_debug.log." : "Tails EE.log and scans Warframe memory for relic reward patterns. Writes everything to a log file."}</span>
-                      </div>
-                      <div />{/* no folder button */}
-                      <button className={memRelicDebugRunning ? "btn-danger" : "btn-secondary"}
-                        onClick={async () => {
-                          if (memRelicDebugRunning) {
-                            await invoke("stop_memory_relic_debug").catch(() => {});
-                            setMemRelicDebugRunning(false);
-                          } else {
-                            try {
-                              const path = await invoke<string>("start_memory_relic_debug");
-                              setMemRelicDebugRunning(true);
-                              alert(`Memory relic debug started.\nLog: ${path}`);
-                            } catch (e) { alert("Error: " + String(e)); }
-                          }
-                        }}>{memRelicDebugRunning ? "End" : "Start"}</button>
-                      <div />{/* no clear button */}
 
                     </div>
                   </div>

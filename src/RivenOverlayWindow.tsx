@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
-import { usePlatformCapabilities } from "./platform";
 
 // Tells App.tsx to run OCR again (for "Check New Roll" / "Start Comparison")
 const triggerNewCheck = () => emit("riven-manual-check", {}).catch(() => {});
@@ -85,7 +84,6 @@ export default function RivenOverlayWindow() {
   const [scanning, setScanning]         = useState(true);
   const [saved, setSaved]               = useState(false);
   const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const { linux } = usePlatformCapabilities();
 
   const resetToScanning = () => {
     setScanning(true);
@@ -213,7 +211,7 @@ export default function RivenOverlayWindow() {
             TODO: this line is the provisional answer to how the panel is meant
             to be used at all while the game is focused. Driving it from the main
             window and making it display-only are the alternatives. */}
-        {linux && <div className="rov-grab-note">Alt-Tab out of the game to use these buttons</div>}
+        <div className="rov-grab-note">Alt-Tab out of the game to use these buttons</div>
 
         {/* Scanning */}
         {scanning && (

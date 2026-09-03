@@ -1,10 +1,9 @@
 //! Reading Warframe's memory under Proton.
 //!
-//! The game is a Windows binary, so the blob, the markers and the stitch
-//! engine are the same ones the Windows scanner uses. Only the act of reading
-//! another process differs. That is what lives here: `/proc/pid/maps` for the
+//! The blob, the markers and the stitch engine live in `memory_scanner`;
+//! this module only reads another process: `/proc/pid/maps` for the
 //! mappings, `process_vm_readv` for the bytes, and a [`RegionSource`] that
-//! passes both to the shared engine.
+//! passes both to the engine.
 
 use memchr::memmem;
 use std::fs::File;
@@ -176,7 +175,7 @@ fn is_warframe_command(command: &str) -> bool {
 }
 
 /// The game's PID, or `None` while it is not running.
-pub fn find_warframe_pid_pub() -> Option<u32> {
+pub fn find_warframe_pid() -> Option<u32> {
     std::fs::read_dir("/proc")
         .ok()?
         .filter_map(Result::ok)
@@ -202,10 +201,10 @@ const WALK_CHUNK: usize = 64 * 1024 * 1024;
 /// policy, a per-read cap and, for the walk, a deadline.
 ///
 /// The mapping list is a snapshot taken when the caller parsed /proc/maps,
-/// unlike the Windows source's live per-call VirtualQueryEx. Callers build a
-/// fresh source per tick, so it can only age by the milliseconds one probe or
-/// walk runs. A mapping freed inside that window fails at the read, which
-/// ends the stitch the same as a mapping missing from the list.
+/// not a live query per read. Callers build a fresh source per tick, so it can
+/// only age by the milliseconds one probe or walk runs. A mapping freed inside
+/// that window fails at the read, which ends the stitch the same as a mapping
+/// missing from the list.
 struct LinuxRegionSource<'a> {
     process: &'a LinuxProcess,
     regions: Vec<LinuxRegion>,
@@ -317,10 +316,9 @@ impl RegionSource for LinuxRegionSource<'_> {
         let end = region.start + region.len;
         // Executable mappings hold code. File-backed ones hold mapped
         // PE/data files whose string constants false-trigger the anchor
-        // checks — the same reason the Windows source rejects MEM_IMAGE here.
-        // Empty bytes end the stitch. A blob the tier-2 walk found in a
-        // file-backed mapping loses the fast path this way and re-walks per
-        // sync, the trade Windows already makes for image sections.
+        // checks. Empty bytes end the stitch. A blob the tier-2 walk found in
+        // a file-backed mapping loses the fast path this way and re-walks per
+        // sync.
         if region.executable || region.is_file_backed() {
             return Some((end, Vec::new()));
         }
@@ -349,9 +347,8 @@ impl RegionSource for LinuxRegionSource<'_> {
 /// only as a fallback. Pass 1 walks the anonymous mappings. Pass 2 walks the
 /// file-backed remainder only if pass 1 found nothing. Wine's heap being
 /// anonymous is one Wine version's implementation detail, not a guarantee, so
-/// the second tier stays rather than rejecting file-backed mappings outright
-/// the way the Windows source rejects `MEM_IMAGE`. Worst case, both passes run
-/// and read everything.
+/// the second tier stays rather than rejecting file-backed mappings outright.
+/// Worst case, both passes run and read everything.
 fn scan_inventory_regions(
     process: &LinuxProcess,
     regions: Vec<LinuxRegion>,
@@ -412,7 +409,7 @@ pub fn capture_all_blobs(
     blob_tx: Sender<BlobInventory>,
     save: bool,
 ) -> usize {
-    let Some(pid) = find_warframe_pid_pub() else {
+    let Some(pid) = find_warframe_pid() else {
         warn!(target: "frameforge::blob_capture", "Warframe is not running");
         return 0;
     };
@@ -541,7 +538,7 @@ fn linux_newest_sync_timestamp(process: &LinuxProcess, regions: &[LinuxRegion]) 
 
 #[tracing::instrument(level = "info", skip_all)]
 pub fn scan_warframe_credentials_process() -> Result<(String, String, String), String> {
-    let pid = find_warframe_pid_pub().ok_or("Warframe is not running")?;
+    let pid = find_warframe_pid().ok_or("Warframe is not running")?;
     let process = LinuxProcess::open(pid)?;
     let regions = linux_process_regions(pid)?;
 
@@ -559,9 +556,9 @@ fn scan_linux_credential_regions(
     process: &LinuxProcess,
     regions: impl IntoIterator<Item = LinuxRegion>,
 ) -> Option<(String, String, String)> {
-    // Matches the Windows scanner's per-region ceiling: anything larger is a
-    // texture or heap arena, not the small JSON blob we are after, and reading
-    // it would cost hundreds of megabytes of copies per scan.
+    // Per-region ceiling: anything larger is a texture or heap arena, not the
+    // small JSON blob we are after, and reading it would cost hundreds of
+    // megabytes of copies per scan.
     const MAX_REGION: usize = 128 * 1024 * 1024;
 
     // Deliberately not routed through `walk_regions`: that chunks at 64 MiB,
@@ -672,8 +669,6 @@ pub fn read_process_byte(pid: u32, address: usize) -> Option<u8> {
 /// items without any parsing assumptions.
 #[tracing::instrument(level = "info", skip_all, fields(max_hits = max_hits))]
 pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
-    // Same needles and context window as the Windows probe so saved output from
-    // either platform reads the same way.
     const NEEDLES: &[&[u8]] = &[
         b"\"MiscItems\":[{",
         b"\"ItemCount\":",
@@ -684,7 +679,7 @@ pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
     ];
     const HITS_PER_NEEDLE: usize = 3;
 
-    let Some(pid) = find_warframe_pid_pub() else {
+    let Some(pid) = find_warframe_pid() else {
         return vec!["Warframe is not running".to_string()];
     };
 
@@ -728,8 +723,7 @@ pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
 }
 
 /// Collect context around the request strings the game builds its API calls
-/// from. The Windows equivalent is inlined in the command in `lib.rs`. Here it
-/// shares the region walk with the other probes.
+/// from. Shares the region walk with the other probes.
 pub fn scan_api_url_strings() -> Result<Vec<String>, String> {
     const NEEDLES: &[&[u8]] = &[
         b"/API/PHP/",
@@ -741,7 +735,7 @@ pub fn scan_api_url_strings() -> Result<Vec<String>, String> {
     ];
     const MAX_RESULTS: usize = 40;
 
-    let pid = find_warframe_pid_pub().ok_or("Warframe not running")?;
+    let pid = find_warframe_pid().ok_or("Warframe not running")?;
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut found: Vec<String> = Vec::new();
 
@@ -777,7 +771,7 @@ pub fn raw_scan_pass(out: &mut impl std::io::Write) -> Result<usize, String> {
     const MIN_LEN: usize = 8;
     const TIMEOUT: u64 = 600; // 10 minutes — full coverage over a full scan
 
-    let pid = find_warframe_pid_pub().ok_or("Warframe not running")?;
+    let pid = find_warframe_pid().ok_or("Warframe not running")?;
     let deadline = Instant::now() + Duration::from_secs(TIMEOUT);
     let mut count = 0usize;
 
@@ -839,7 +833,7 @@ fn linux_game_image_span(regions: &[LinuxRegion]) -> Option<std::ops::Range<usiz
 /// up. Non-zero = selection pending, which is the same event the EE.log
 /// `omegarerollselection.swf` line reports.
 ///
-/// This is not the Windows Pattern D-2 scan. That pattern matches exactly one
+/// This is not the Pattern D-2 scan. That pattern matches exactly one
 /// site under Proton, and the byte it resolves to reads 1 in the orbiter, in
 /// the mod segment and on the reroll screen alike, so it cannot drive the
 /// watcher. The signature below was found by diffing the game's writable
