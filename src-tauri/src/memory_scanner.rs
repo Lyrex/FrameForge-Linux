@@ -392,21 +392,36 @@ pub fn dump_inventory_regions(_max_hits: usize) -> Vec<String> {
 /// "Relevant" = region ≥ 100 KB that contains at least one of: MiscItems, Suits,
 // ─── Full-account blob parser ─────────────────────────────────────────────────
 
-/// Find the end of the FULL_ACCOUNT blob by locating `"DeathSquadable":` and
-/// the `}` that immediately follows its boolean value (true or false).
+/// Find the end of the FULL_ACCOUNT blob.
+///
+/// Tries all known end markers and returns the rightmost match (the true last
+/// field). `HWIDProtectEnabled` was confirmed as the actual final field for
+/// some accounts/regions (raw dump 2026-09); `DeathSquadable` remains as
+/// fallback for accounts where it is still the last field.
 fn find_blob_end(raw: &[u8]) -> Option<usize> {
-    const KEY: &[u8] = b"\"DeathSquadable\":";
-    let key_pos = memchr::memmem::find(raw, KEY)?;
-    let after   = key_pos + KEY.len();
-    let brace = raw[after..].iter().position(|&b| b == b'}')?;
-    Some(after + brace + 1)
+    const MARKERS: &[&[u8]] = &[
+        b"\"HWIDProtectEnabled\":",
+        b"\"DeathSquadable\":",
+    ];
+    let mut best: Option<usize> = None;
+    for marker in MARKERS {
+        if let Some(key_pos) = memchr::memmem::find(raw, marker) {
+            let after = key_pos + marker.len();
+            if let Some(brace) = raw[after..].iter().position(|&b| b == b'}') {
+                let end = after + brace + 1;
+                if best.map_or(true, |prev| end > prev) {
+                    best = Some(end);
+                }
+            }
+        }
+    }
+    best
 }
 
 const START_MARKER: &[u8] = b"\"SubscribedToEmails\"";
 const ALT_STARTS: &[&[u8]] = &[
-    b"\"MiscItems\":[{\"ItemType\":\"/Lotus/",
-    b"\"Suits\":[{\"ItemType\":\"/Lotus/",
     b"\"RegularCredits\":",
+    b"\"Created\":",
 ];
 
 /// Walk backward from `marker_off` counting braces; return the offset of the
@@ -1032,7 +1047,10 @@ fn stitch_blobs(
         // ── Step 1: append this chunk to every active scan and check for completion ──
         // search_from tracks where we left off so we only scan newly-appended bytes
         // (plus a small overlap for markers that straddle a region boundary).
-        const END_MARKER: &[u8] = b"\"DeathSquadable\":";
+        // Must stay in sync with find_blob_end's MARKERS list.
+        const END_MARKERS: &[&[u8]] = &[b"\"HWIDProtectEnabled\":", b"\"DeathSquadable\":"];
+        // Longest marker length drives the overlap window for straddled-boundary detection.
+        const END_MARKER_MAX_LEN: usize = 21; // len("\"HWIDProtectEnabled\":")
         scans.retain_mut(|scan| {
             // A previous scan in this same retain_mut pass already succeeded.
             // Drop this one immediately — applying a second blob overwrites correct data
@@ -1040,14 +1058,15 @@ fn stitch_blobs(
             if found_result && !save { return false; }
             // Advance the search cursor before appending so the overlap catches split markers.
             let search_from = scan.search_from;
-            scan.search_from = scan.data.len().saturating_sub(END_MARKER.len() - 1);
+            scan.search_from = scan.data.len().saturating_sub(END_MARKER_MAX_LEN - 1);
             scan.data.extend_from_slice(chunk);
             if scan.data.len() > MAX_SCAN {
                 warn!(scan_id = scan.id, max_mb = MAX_SCAN / 1024 / 1024, "scan exceeded size limit without end — dropped");
                 return false; // drop oversized scan
             }
             // Only search the newly-added window, not the full buffer.
-            let has_end = memchr::memmem::find(&scan.data[search_from..], END_MARKER).is_some();
+            let window = &scan.data[search_from..];
+            let has_end = END_MARKERS.iter().any(|m| memchr::memmem::find(window, m).is_some());
             if has_end && find_blob_end(&scan.data).is_some() {
                 match parse_full_account_blob(&scan.data) {
                     Some(inv) => {

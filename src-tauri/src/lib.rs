@@ -172,6 +172,9 @@ pub struct AppState {
     pub force_pid_check: Arc<AtomicBool>,
     /// When false, the Relic Pick Overlay is suppressed even when EE.log triggers it.
     pub relic_pick_overlay_enabled: Arc<AtomicBool>,
+    /// When true, a parallel memory-scan thread polls Warframe's process memory for the
+    /// relic reward screen open/close events instead of relying solely on EE.log.
+    pub mem_trigger_enabled: Arc<AtomicBool>,
 }
 
 // ─── Item catalog ─────────────────────────────────────────────────────────────
@@ -186,6 +189,9 @@ pub struct CatalogItem {
     pub ducats: Option<u32>,
     pub mastery_req: Option<u32>,
     pub max_level_cap: Option<u32>,
+    /// Whether levelling this item grants mastery XP (from WFCD).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub masterable: Option<bool>,
     /// Explicit tradeability flag from corrections.json. `Some(false)` = not on WFM.
     /// `None` = auto-detected from ducat_price / category (the normal case for WFCD items).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -280,8 +286,11 @@ fn fix_category(name: &str, item_type: &str, product_category: &str, wfcd_cat: &
         }
 
         "Pistol" | "Dual Pistols" => {
-            // Guard against the noisy productCategory=Pistols bucket — Sirocco
-            // (the Operator amp) has type=Pistol but productCategory=OperatorAmps.
+            // Amp Prisms (barrels) have type=Pistol but live under /OperatorAmplifiers/.
+            if path.contains("/OperatorAmplifiers/") {
+                return "Operator Weapons".to_string();
+            }
+            // Sirocco has type=Pistol but productCategory=OperatorAmps.
             if product_category == "OperatorAmps" {
                 return "Operator Weapons".to_string();
             }
@@ -422,6 +431,22 @@ fn prime_set_prefix(name: &str) -> Option<String> {
     Some(name[..pos + 5].to_string()) // 5 = "prime".len()
 }
 
+/// WFCD marks all Amp components as `masterable: false`, but Prisms (barrels)
+/// DO grant mastery XP. Path-based overrides run first so they beat WFCD's value.
+fn resolve_masterable(wfcd: Option<bool>, path: &str) -> Option<bool> {
+    if !path.ends_with("Blueprint") {
+        // Amp Prisms (barrels) grant mastery; WFCD incorrectly says false.
+        if path.contains("/OperatorAmplifiers/") && path.contains("/Barrel/") {
+            return Some(true);
+        }
+        // Operator amp weapons (Sirocco, etc.) grant mastery.
+        if path.contains("/Operator/Pistols/") {
+            return Some(true);
+        }
+    }
+    wfcd
+}
+
 fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
     // Clone data and release locks immediately — the catalog build below is O(n²)
     // and holding the locks blocks the monitor thread and other commands.
@@ -510,6 +535,7 @@ fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
                 ducats:        *bp_ducats,
                 mastery_req:   None,
                 max_level_cap: None,
+                masterable:    None,
                 tradeable_wfm: None,
                 source_type:   None,
             });
@@ -539,6 +565,7 @@ fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
             ducats:        i.ducats,
             mastery_req:   i.mastery_req,
             max_level_cap: i.max_level_cap,
+            masterable:    i.masterable,
             tradeable_wfm: None,
             source_type:   None,
         });
@@ -561,6 +588,7 @@ fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
             ducats:        item.ducats,
             mastery_req:   item.mastery_req,
             max_level_cap: None,
+            masterable:    None,
             tradeable_wfm: None,
             source_type:   None,
         });
@@ -605,6 +633,7 @@ fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
                 ducats:        None,
                 mastery_req:   None,
                 max_level_cap: None,
+                masterable:    None,
                 tradeable_wfm: c.tradeable_wfm,
                 source_type:   None,
             });
@@ -627,6 +656,7 @@ fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
             ducats:        None,
             mastery_req:   None,
             max_level_cap: None,
+            masterable:    None,
             tradeable_wfm: None,
             source_type:   None,
         });
@@ -652,6 +682,7 @@ fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
                     ducats:        None,
                     mastery_req:   None,
                     max_level_cap: None,
+                    masterable:    None,
                     tradeable_wfm: None,
                     source_type:   None,
                 });
@@ -864,6 +895,7 @@ fn get_weapon_catalog(state: State<AppState>) -> Vec<CatalogItem> {
                 ducats:        i.ducats,
                 mastery_req:   i.mastery_req,
                 max_level_cap: i.max_level_cap,
+                masterable:    resolve_masterable(i.masterable, &i.unique_name),
                 tradeable_wfm: None,
                 source_type:   None,
             })
@@ -891,6 +923,7 @@ fn get_weapon_catalog(state: State<AppState>) -> Vec<CatalogItem> {
             ducats:        None,
             mastery_req:   None,
             max_level_cap: None,
+            masterable:    None,
             tradeable_wfm: c.tradeable_wfm,
             source_type:   None,
         });
@@ -940,6 +973,7 @@ fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
                 ducats:        i.ducats,
                 mastery_req:   i.mastery_req,
                 max_level_cap: i.max_level_cap,
+                masterable:    resolve_masterable(i.masterable, &i.unique_name),
                 tradeable_wfm: None,
                 source_type:   None,
             })
@@ -966,6 +1000,7 @@ fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
             ducats:        None,
             mastery_req:   None,
             max_level_cap: None,
+            masterable:    None,
             tradeable_wfm: c.tradeable_wfm,
             source_type:   None,
         });
@@ -996,6 +1031,7 @@ fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
             ducats:        i.ducats,
             mastery_req:   i.mastery_req,
             max_level_cap: i.max_level_cap,
+            masterable:    i.masterable,
             tradeable_wfm: None,
             source_type:   Some(source.to_string()),
         });
@@ -3907,21 +3943,33 @@ fn update_version_in_file(path: &std::path::Path, version: &str) -> Result<(), S
     Err(format!("Version field not found in {}", path.display()))
 }
 
-#[tauri::command]
-fn get_app_version() -> String {
-    // In dev mode the source tauri.conf.json is in the current directory
-    let config = std::path::Path::new("src-tauri/tauri.conf.json");
-    if config.exists() {
-        if let Ok(text) = std::fs::read_to_string(config) {
-            let marker = "\"version\": \"";
-            if let Some(start) = text.find(marker) {
-                let after = start + marker.len();
-                if let Some(end) = text[after..].find('"') {
-                    return text[after..after + end].to_string();
-                }
+fn update_cargo_toml_version(path: &std::path::Path, version: &str) -> Result<(), String> {
+    let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    // Find [package] section then replace the first `version = "..."` line after it.
+    // The newline prefix avoids matching version keys inside dependency inline tables.
+    let pkg_marker = "[package]";
+    let ver_marker = "\nversion = \"";
+    if let Some(pkg_start) = content.find(pkg_marker) {
+        let after_pkg = pkg_start + pkg_marker.len();
+        if let Some(rel_start) = content[after_pkg..].find(ver_marker) {
+            let abs_start = after_pkg + rel_start + ver_marker.len();
+            if let Some(end) = content[abs_start..].find('"') {
+                let mut updated = content.clone();
+                updated.replace_range(abs_start..abs_start + end, version);
+                std::fs::write(path, updated).map_err(|e| e.to_string())?;
+                return Ok(());
             }
         }
     }
+    Err(format!("Version field not found in {}", path.display()))
+}
+
+#[tauri::command]
+fn get_app_version(app: tauri::AppHandle) -> String {
+    // Use the Tauri runtime version — same source the updater plugin uses for comparison.
+    // Falls back to CARGO_PKG_VERSION in dev mode where package_info may not be set.
+    let runtime = app.package_info().version.to_string();
+    if !runtime.is_empty() { return runtime; }
     env!("CARGO_PKG_VERSION").to_string()
 }
 
@@ -3929,8 +3977,10 @@ fn get_app_version() -> String {
 fn set_app_version(version: String) -> Result<(), String> {
     let tauri_conf = std::path::Path::new("src-tauri/tauri.conf.json");
     let package_json = std::path::Path::new("package.json");
-    if tauri_conf.exists() { update_version_in_file(tauri_conf, &version)?; }
-    if package_json.exists() { update_version_in_file(package_json, &version)?; }
+    let cargo_toml  = std::path::Path::new("src-tauri/Cargo.toml");
+    if tauri_conf.exists()  { update_version_in_file(tauri_conf, &version)?; }
+    if package_json.exists(){ update_version_in_file(package_json, &version)?; }
+    if cargo_toml.exists()  { update_cargo_toml_version(cargo_toml, &version)?; }
     Ok(())
 }
 
@@ -4446,6 +4496,12 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     let path_to_vaulted: HashMap<String, bool> = items.iter()
         .filter_map(|i| i.vaulted.map(|v| (i.unique_name.clone(), v)))
         .collect();
+    let path_to_tradable: HashMap<String, bool> = items.iter()
+        .filter_map(|i| i.tradable.map(|t| (i.unique_name.clone(), t)))
+        .collect();
+    let path_to_masterable: HashMap<String, bool> = items.iter()
+        .filter_map(|i| i.masterable.map(|m| (i.unique_name.clone(), m)))
+        .collect();
     // Owned maps for debug capture — cloned once, no borrow from `items`.
     let path_to_item_type: HashMap<String, String> = items.iter()
         .map(|i| (i.unique_name.clone(), i.item_type.clone())).collect();
@@ -4668,6 +4724,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 let sc = build_inventory_from_blob(
                     &blob,
                     &path_to_name, &path_to_category, &path_to_ducat, &path_to_vaulted,
+                    &path_to_tradable, &path_to_masterable,
                     &relic_drops_snapshot, &existing_wfm, &alias_excluded,
                 );
                 if let Ok(json) = serde_json::to_string(&sc) {
@@ -5043,78 +5100,25 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     // reward area, matches names against the catalog. Emits "relic-rewards"
     // only when the result changes (screen opens/closes or items change).
     let reward_flag   = state.monitor_active.clone();
-    let reward_items  = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let relic_rewards_map = state.relic_rewards.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let wiki_names    = state.wiki_reward_names.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
-    // ── Catalog: build from Relics.json reward names ─────────────────────────
-    //
-    // relic_rewards_map is already populated from Relics.json — every name in it
-    // IS a confirmed relic reward. Start from those names and look up unique_names
-    // in the WFCD item catalog. This guarantees only actual relic rewards appear
-    // as OCR candidates, preventing false matches against items like
-    // "Titan Extractor Prime Blueprint" or "Kavasa Prime Kubrow Collar Kavasa Prime Band"
-    // that contain "prime" but are not relic rewards.
-
-    // Collect all reward display names (lowercase) from Relics.json + wiki corrections.
-    let reward_display_names: std::collections::HashSet<String> = relic_rewards_map
+    // ── Catalog: built directly from Relics.json reward data ─────────────────
+    // RelicReward.unique_name is now populated from rewards[].item.uniqueName,
+    // so no secondary WFCD item-catalog join is needed. Every entry here is a
+    // confirmed relic reward — no false matches like "Titan Extractor Prime Blueprint".
+    // relic_rewards_map has two keys per relic (uniqueName + display name); iterating
+    // values() gives duplicate reward lists, which dedup_by collapses.
+    let mut catalog_pairs: Vec<(String, String)> = relic_rewards_map
         .values()
-        .flat_map(|rewards| rewards.iter().map(|r| r.name.to_lowercase()))
-        .chain(wiki_names.iter().cloned())
+        .flat_map(|rewards| rewards.iter())
+        .filter(|r| !r.name.is_empty())
+        .map(|r| (r.unique_name.clone(), r.name.clone()))
         .collect();
-
-    // Build a lowercase-name → (unique_name, original_display_name) lookup over the WFCD
-    // item catalog. Excludes assembled warframes/weapons and relics (never relic rewards).
-    let wfcd_by_name: std::collections::HashMap<String, (String, String)> = reward_items.iter()
-        .filter(|i| {
-            let lower = i.name.to_lowercase();
-            let is_relic = lower.ends_with("intact") || lower.ends_with("exceptional")
-                || lower.ends_with("flawless") || lower.ends_with("radiant");
-            let is_built = matches!(i.category.as_str(),
-                "Warframes" | "Primary" | "Secondary" | "Melee" | "Companion" |
-                "Sentinels" | "Archwing" | "Arch-Gun" | "Arch-Melee" | "Pets" | "Robotic");
-            !is_relic && !is_built
-        })
-        .map(|i| (i.name.to_lowercase(), (i.unique_name.clone(), i.name.clone())))
-        .collect();
-
-    // For each known reward name find the WFCD unique_name.
-    // Handles the WFCD "Blueprint" suffix inconsistency in both directions:
-    //   Relics.json "Lavos Prime Chassis Blueprint" ↔ WFCD item "Lavos Prime Chassis"
-    let mut catalog_pairs: Vec<(String, String)> = reward_display_names.iter()
-        .filter_map(|reward_lower| {
-            // Exact match
-            if let Some((unique, display)) = wfcd_by_name.get(reward_lower.as_str()) {
-                return Some((unique.clone(), display.clone()));
-            }
-            // Reward has " blueprint" suffix but WFCD item doesn't
-            if let Some(stem) = reward_lower.strip_suffix(" blueprint") {
-                if let Some((unique, display)) = wfcd_by_name.get(stem) {
-                    return Some((unique.clone(), format!("{} Blueprint", display)));
-                }
-            }
-            // Reward lacks " blueprint" but WFCD item has it
-            let with_bp = format!("{} blueprint", reward_lower);
-            if let Some((unique, display)) = wfcd_by_name.get(&with_bp) {
-                return Some((unique.clone(), display.clone()));
-            }
-            // Not in WFCD item catalog — skip (no unique_name means no price/inventory data)
-            None
-        })
-        .collect();
-
-    // Deduplicate by unique_name
-    catalog_pairs.sort_by(|a, b| a.0.cmp(&b.0));
-    catalog_pairs.dedup_by(|a, b| a.0 == b.0);
+    catalog_pairs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    catalog_pairs.dedup_by(|a, b| !a.0.is_empty() && a.0 == b.0);
 
     // Wrap catalog in Arc so it can be cheaply shared with spawn_blocking closures
     let catalog_pairs = std::sync::Arc::new(catalog_pairs);
-
-    // Build a name-lookup map from catalog_pairs for the debug file.
-    let _catalog_name_map: std::collections::HashMap<String, String> = catalog_pairs
-        .iter()
-        .map(|(u, n)| (u.clone(), n.clone()))
-        .collect();
 
     let debug_path      = std::env::temp_dir().join("frameforge_reward_debug.txt");
     let last_found_path = std::env::temp_dir().join("frameforge_last_reward.txt");
@@ -5637,51 +5641,33 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     // catalog if none were seen (FrameForge started mid-mission, solo, etc.)
                     // To revert: delete this block and restore the two lines below it.
                     let (filtered_cat, prefilter_log) = if !session_relics.is_empty() {
-                        // Collect reward display names from Relics.json for all active relics.
-                        // Relics.json keys match EE.log paths exactly (full path incl. refinement).
-                        // Filter ee_catalog by name — avoids unique_name format mismatches.
-                        let allowed_names: std::collections::HashSet<String> = {
+                        // Build narrow catalog directly from RelicReward structs — no name-matching
+                        // join needed since unique_name is now populated from Relics.json.
+                        let mut rewards: Vec<(String, String)> = {
                             let state = ee_ocr_app.state::<AppState>();
                             let rw = state.relic_rewards.lock().unwrap_or_else(|e| e.into_inner());
                             session_relics.iter()
                                 .filter_map(|p| rw.get(p.as_str()))
-                                .flat_map(|rewards| rewards.iter().map(|r| r.name.to_lowercase()))
+                                .flat_map(|list| list.iter().map(|r| (r.unique_name.clone(), r.name.clone())))
+                                .filter(|(_, name)| !name.is_empty())
                                 .collect()
                         };
-                        if allowed_names.is_empty() {
+                        if rewards.is_empty() {
                             let msg = format!(
                                 "  {} relic path(s) found but none matched relic_rewards — using full catalog\n  Paths: {:?}",
                                 session_relics.len(), session_relics
                             );
                             (Arc::clone(&ee_catalog), msg)
                         } else {
-                            let filtered: Vec<(String, String)> = ee_catalog.iter()
-                                .filter(|(_, display_name)| {
-                                    let dn = display_name.to_lowercase();
-                                    // Relics.json omits " Blueprint" from component names
-                                    // (e.g. "Nautilus Prime Carapace") while the item catalog
-                                    // stores them as "Nautilus Prime Carapace Blueprint".
-                                    // Strip the suffix before comparing so both forms match.
-                                    let dn_no_bp = dn.strip_suffix(" blueprint").unwrap_or(&dn);
-                                    allowed_names.contains(dn_no_bp) || allowed_names.contains(dn.as_str())
-                                })
-                                .cloned()
-                                .collect();
-                            if filtered.is_empty() {
-                                let mut sample: Vec<&String> = allowed_names.iter().take(8).collect();
-                                sample.sort();
-                                let msg = format!(
-                                    "  {} relic(s) → 0 catalog matches (allowed_names={}) — using full catalog\n  Relics: {:?}\n  Names sample: {:?}",
-                                    session_relics.len(), allowed_names.len(), session_relics, sample
-                                );
-                                (Arc::clone(&ee_catalog), msg)
-                            } else {
-                                let msg = format!(
-                                    "  {} relic(s) → {} candidates (full catalog: {})\n  Relics: {:?}",
-                                    session_relics.len(), filtered.len(), ee_catalog.len(), session_relics
-                                );
-                                (std::sync::Arc::new(filtered), msg)
-                            }
+                            rewards.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+                            rewards.dedup_by(|a, b| !a.0.is_empty() && a.0 == b.0);
+                            let names: Vec<&str> = rewards.iter().map(|(_, n)| n.as_str()).collect();
+                            let sample = &names[..names.len().min(8)];
+                            let msg = format!(
+                                "  {} relic(s) → {} rewards (direct from Relics.json)\n  Relics: {:?}\n  Rewards: {:?}",
+                                session_relics.len(), rewards.len(), session_relics, sample
+                            );
+                            (Arc::new(rewards), msg)
                         }
                     } else {
                         (Arc::clone(&ee_catalog), "  No relics collected — using full catalog (FrameForge started mid-mission?)".to_string())
@@ -5732,11 +5718,19 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     let squad_arc    = std::sync::Arc::clone(&shared_squad_size);
                     let names_arc    = std::sync::Arc::clone(&shared_squad_names);
                     let diag_arc2    = Arc::clone(&diag_arc);
-                    // Do NOT write ee_squad_size here. The mutex is already reset to None
-                    // when GetVoidProjectionRewards fires (above), and is updated to the
-                    // correct squad count when the sequence completes (line ~3395).
-                    // Writing ee_squad_size here would corrupt the mutex if the sequence
-                    // completed in this same poll (the per-line loop runs before this code).
+                    // Pre-seed the squad hint with session_relics count so OCR attempt #1
+                    // already knows the correct card count before the VoidProjections sequence
+                    // arrives. Guarded by is_none() so it does NOT overwrite a value the
+                    // sequence already wrote in this same EE.log poll (per-line loop runs first).
+                    // Clamped to 4 — in survival fissures session_relics accumulates across rounds.
+                    let relic_hint = session_relics.len().min(4);
+                    if relic_hint >= 1 {
+                        if let Ok(mut g) = shared_squad_size.lock() {
+                            if g.is_none() {
+                                *g = Some(relic_hint);
+                            }
+                        }
+                    }
 
                     tauri::async_runtime::spawn(async move {
                         let deadline = std::time::Instant::now()
@@ -6193,6 +6187,147 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     // Results, and any screen with Prime item names visible.
     // The EE.log watcher already retries OCR for 45 seconds after the trigger,
     // so the fallback is both redundant and harmful.
+
+    // ── Memory trigger thread ────────────────────────────────────────────────
+    // Parallel to the EE.log watcher. When mem_trigger_enabled is true this thread
+    // polls Warframe's heap memory every second, searching for the same trigger
+    // strings EE.log uses. Because the EE.log ring buffer is written before the
+    // file is flushed to disk, memory detection can fire the overlay pre-creation
+    // event (relic-trigger) earlier than EE.log polling would.
+    //
+    // What it does:
+    //  • Scans small committed heap regions (≤ 2 MB) in address range
+    //    0x0001_0000_0000–0x0000_7FF0_0000_0000 for the OPEN trigger string.
+    //    Live ring-buffer entries end with \r so we can distinguish them from
+    //    the static .rodata copy (which ends with \n\0).
+    //  • On open detected → emits relic-trigger + appends timing to session log.
+    //  • Auto-resets after 90 s (reward screen max duration).
+    //  • Close is still handled by the EE.log watcher (no change there).
+    //
+    // OCR itself is always started by the EE.log watcher; this thread only races
+    // for the overlay pre-creation event. Toggle on/off from Settings.
+    {
+        let mt_app   = reward_app.clone();
+        std::thread::spawn(move || {
+            // Inner helper: scan heap for a byte pattern.
+            // Returns true if found in a live-data region (not .rodata).
+            // "Live" heuristic: the byte immediately after the match is \r (log
+            // line ending) or the pattern contains \r (already live-suffixed).
+            #[cfg(target_os = "windows")]
+            fn scan_heap_for_trigger(pid: u32, pat: &[u8]) -> bool {
+                use windows_sys::Win32::{
+                    Foundation::CloseHandle,
+                    System::{
+                        Diagnostics::Debug::ReadProcessMemory,
+                        Memory::{
+                            VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT,
+                            PAGE_GUARD, PAGE_NOACCESS,
+                        },
+                        Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
+                    },
+                };
+                // Cover both heap (low) and the binary/DLL range where the
+                // EE.log ring buffer actually lives (~0x7Fxx_xxxx_xxxx).
+                const HEAP_MIN: u64 = 0x0000_0001_0000_0000;
+                const HEAP_MAX: u64 = 0x0000_8000_0000_0000;
+                const REGION_MAX: usize = 32 * 1024 * 1024; // 32 MB — covers DLL text sections
+                let mut found = false;
+                unsafe {
+                    let proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, 0, pid);
+                    if proc == 0 { return false; }
+                    let mut addr: u64 = HEAP_MIN;
+                    loop {
+                        if addr >= HEAP_MAX { break; }
+                        let mut mbi: MEMORY_BASIC_INFORMATION = std::mem::zeroed();
+                        let ret = VirtualQueryEx(proc, addr as *const _,
+                            &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>());
+                        if ret == 0 { break; }
+                        let base = mbi.BaseAddress as u64;
+                        let size = mbi.RegionSize;
+                        addr = base.saturating_add(size as u64);
+                        if base < HEAP_MIN || base >= HEAP_MAX { continue; }
+                        if mbi.State != MEM_COMMIT { continue; }
+                        if mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS) != 0 { continue; }
+                        if size > REGION_MAX { continue; }
+                        let mut buf = vec![0u8; size];
+                        let mut n = 0usize;
+                        let ok = ReadProcessMemory(proc, base as *const _,
+                            buf.as_mut_ptr() as *mut _, buf.len(), &mut n);
+                        if ok == 0 || n == 0 { continue; }
+                        buf.truncate(n);
+                        // Pattern already ends with \r so it only matches live
+                        // ring-buffer entries (Windows line-ending \r\n).
+                        // The static .rodata copy ends with \n\0 and won't match.
+                        if buf.windows(pat.len()).any(|w| w == pat) {
+                            found = true;
+                        }
+                        if found { break; }
+                    }
+                    CloseHandle(proc);
+                }
+                found
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            fn scan_heap_for_trigger(_pid: u32, _pat: &[u8]) -> bool { false }
+
+            let session_log = std::env::temp_dir().join("frameforge_overlay_session.txt");
+            let mut was_open  = false;
+            let mut open_at: Option<std::time::Instant> = None;
+            // Include \r so we only match live EE.log ring-buffer entries
+            // (Windows line ending: \r\n). The static .rodata copy ends with \n\0.
+            // EE.log shows the plural form "...Rewards" consistently.
+            const OPEN_PAT: &[u8] = b"VoidProjections: GetVoidProjectionRewards\r";
+            // Poll interval: 1 s is a reasonable starting point. The scan itself
+            // may take 2–15 s so the effective rate may be lower in practice.
+            const POLL_MS: u64 = 1_000;
+            // Auto-reset after 90 s regardless (reward screen max duration).
+            const AUTO_RESET_SECS: u64 = 90;
+
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+
+                let state = mt_app.state::<AppState>();
+                if !state.monitor_active.load(Ordering::SeqCst) { break; }
+                if !state.mem_trigger_enabled.load(Ordering::SeqCst) {
+                    was_open  = false;
+                    open_at   = None;
+                    continue;
+                }
+
+                // Auto-reset open state after the max reward window duration.
+                if was_open {
+                    if open_at.map_or(false, |t| t.elapsed().as_secs() >= AUTO_RESET_SECS) {
+                        was_open = false;
+                        open_at  = None;
+                    } else {
+                        continue; // still within open window, skip scan
+                    }
+                }
+
+                let pid = match memory_scanner::find_warframe_pid_pub() {
+                    Some(p) => p,
+                    None    => { was_open = false; open_at = None; continue; }
+                };
+
+                let found = scan_heap_for_trigger(pid, OPEN_PAT);
+                if found {
+                    was_open = true;
+                    open_at  = Some(std::time::Instant::now());
+                    let ts = chrono::Local::now().format("%H:%M:%S%.3f");
+                    // Append timing info to the session log so it can be compared
+                    // with the EE.log trigger timestamp written by the EE.log watcher.
+                    let _ = std::fs::OpenOptions::new().append(true).open(&session_log)
+                        .and_then(|mut f| {
+                            use std::io::Write;
+                            writeln!(f, "\n[MEM TRIGGER] Open detected @ {} (heap scan found live ring-buffer entry)", ts)
+                        });
+                    let _ = mt_app.emit("ff-status", "🔍 [MEM] Relic reward screen detected");
+                    let _ = mt_app.emit("relic-trigger", ());
+                }
+            }
+        });
+    }
 
     std::thread::spawn(move || {
         // Initialize COM (required for Windows OCR / WinRT APIs).
@@ -8086,6 +8221,11 @@ fn set_relic_pick_enabled(state: State<AppState>, enabled: bool) {
 }
 
 #[tauri::command]
+fn set_mem_trigger_enabled(state: State<AppState>, enabled: bool) {
+    state.mem_trigger_enabled.store(enabled, Ordering::SeqCst);
+}
+
+#[tauri::command]
 fn get_monitor_status(state: State<AppState>) -> bool {
     state.monitor_active.load(Ordering::SeqCst)
 }
@@ -8251,7 +8391,7 @@ fn load_items_cache(path: &PathBuf) -> Option<Vec<WfcdItem>> {
         let fusion_limit      = v["fusion_limit"].as_u64().map(|n| n as u32);
         let max_level_cap     = v["max_level_cap"].as_u64().map(|n| n as u32)
             .or_else(|| if unique_name.contains("/EntratiMech/") { Some(40) } else { None });
-        Some(WfcdItem { unique_name, name, category, item_type, product_category, image_name, vaulted, ducats, mastery_req, omega_attenuation, fusion_limit, max_level_cap })
+        Some(WfcdItem { unique_name, name, category, item_type, product_category, image_name, vaulted, ducats, mastery_req, omega_attenuation, fusion_limit, max_level_cap, tradable: None, masterable: None })
     }).collect();
     if items.is_empty() { None } else { Some(dedup_known_aliases(items)) }
 }
@@ -8344,6 +8484,12 @@ struct CachedItem {
     /// True when this item can drop from void relics.
     #[serde(default, skip_serializing_if = "is_false")]
     relic_reward: bool,
+    /// Whether this item can be traded between players (from WFCD).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tradable: Option<bool>,
+    /// Whether levelling this item grants mastery XP (from WFCD).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    masterable: Option<bool>,
     /// True when this item is listed and tradeable on warframe.market.
     /// Set to false if a WFM price fetch confirmed the item is not listed.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -8415,6 +8561,8 @@ fn build_inventory_from_blob(
     path_to_category: &HashMap<String, String>,
     path_to_ducat: &HashMap<String, u32>,
     path_to_vaulted: &HashMap<String, bool>,
+    path_to_tradable: &HashMap<String, bool>,
+    path_to_masterable: &HashMap<String, bool>,
     relic_drops: &HashMap<String, Vec<String>>,
     existing_wfm_prices: &HashMap<String, u32>,
     excluded_paths: &std::collections::HashSet<String>,
@@ -8550,15 +8698,19 @@ fn build_inventory_from_blob(
         item.is_stackable = true; // cosmetics can have count > 1; never treat as binary-owned
     }
 
-    // Mastery rank per item from XPInfo.
+    // Mastery rank per item from XPInfo. Cap at 30 — raw XP can yield uncapped
+    // values (excess affinity beyond rank 30), matching the .min(30) applied to
+    // Amps and Zaws above.
     for (path, &rank) in &blob.mastery_data {
-        if rank > 0 { upsert!(path).mastery_rank = rank; }
+        if rank > 0 { upsert!(path).mastery_rank = rank.min(30); }
     }
 
     // Catalog-derived fields + carry forward fetched WFM prices.
     for (path, item) in items.iter_mut() {
         item.ducat_price  = path_to_ducat.get(path).copied();
         item.vaulted      = path_to_vaulted.get(path).copied();
+        item.tradable     = path_to_tradable.get(path).copied();
+        item.masterable   = path_to_masterable.get(path).copied();
         item.category     = path_to_category.get(path).cloned().unwrap_or_default();
         item.relic_reward = relic_drops.contains_key(path.as_str());
         let tradeable = item.ducat_price.is_some()
@@ -8794,11 +8946,13 @@ fn start_memory_relic_debug() -> Result<String, String> {
          Log: {}\n\
          ══════════════════════════════════════════════════\n\n\
          Patterns searched in memory:\n\
-           \"HasFissureum\":true           — squad member in fissure (JSON-exact, live blob only)\n\
-           \"VoidProjection\":{{\"ItemType\":\"  — squad member's relic (JSON-exact, live blob only)\n\
-           VoidProjection               — broad scan, 256-byte context; shows all types in memory\n\
-           gets reward                  — in-memory log buffer: [playerID] gets reward [itemPath]\n\
-           Host has reward info for all — in-memory log buffer: fires when all players responded\n\n",
+           \"HasFissureum\":true           — SLOW: squad member in fissure (JSON-exact, live blob only)\n\
+           \"VoidProjection\":{{\"ItemType\":\"  — SLOW: squad member's relic (JSON-exact, live blob only)\n\
+           VoidProjection               — SLOW: broad scan, 256-byte context; shows all types in memory\n\
+           gets reward                  — FAST+ONE-SHOT: in-memory log buffer [playerID gets reward path]\n\
+           Host has reward info for all — FAST+ONE-SHOT: fires when all players have responded\n\
+           [RW] /Lotus/ in small heap   — REWARD WINDOW: runs every 2s while reward screen is open;\n\
+                                          scans heap 0x0001_0000_0000..0x0300_0000_0000, regions <128KB\n\n",
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
         log_str,
     );
@@ -8836,26 +8990,45 @@ fn mem_relic_debug_loop(log_path: &std::path::Path) {
         },
     };
 
+    // Pattern tuple: (name, bytes, ctx_before, ctx_after, min_addr, max_region_size)
+    // max_region_size=0 means no limit. Use a small cap (e.g. 4 MB) for heap-heap patterns
+    // to avoid a full memory walk on the fast tick.
+    //
     // Slow patterns: full memory walk every cycle (~55 s). min_addr=0 → all regions.
-    const PATTERNS_SLOW: &[(&str, &[u8], usize, usize, u64)] = &[
-        ("HasFissureum",         b"\"HasFissureum\":true",               128, 1024, 0),
-        ("VoidProjection.relic", b"\"VoidProjection\":{\"ItemType\":\"", 128, 1024, 0),
-        ("VoidProjection.raw",   b"VoidProjection",                       16,  256, 0),
-        // Lua event name found in heap. Capture 512 bytes after so we can see
-        // whether an item path pointer gets written nearby during the reward screen.
-        ("RewardVoidProjection", b"RewardVoidProjection",                 32, 512, 0),
+    // Keep this list SHORT — each pattern adds ~55 s to the cycle time.
+    const PATTERNS_SLOW: &[(&str, &[u8], usize, usize, u64, u64)] = &[
+        ("HasFissureum",         b"\"HasFissureum\":true",               128, 1024, 0, 0),
+        ("VoidProjection.relic", b"\"VoidProjection\":{\"ItemType\":\"", 128, 1024, 0, 0),
+        ("VoidProjection.raw",   b"VoidProjection",                       16,  256, 0, 0),
+        // Lua event name found in heap. 512 bytes after = see if item paths land nearby.
+        ("RewardVoidProjection", b"RewardVoidProjection",                 32,  512, 0, 0),
     ];
-    // Fast patterns: only scan game-binary address space (0x7ff7_xxxx_xxxx).
-    // This walk takes milliseconds and runs every loop tick (~1 s).
-    // Live log-ring-buffer entries end with \r\n; static format strings end with \n\0.
-    // Game binary is mapped at 0x7ff7_xxxx_xxxx on 64-bit Windows (0x0000_7ff7_...).
-    // Must be < 0x0000_7fff_ffff_ffff (user-space ceiling). Use 0x0000_7f00_0000_0000
-    // so we only scan the high-address region where the game exe/DLLs live.
-    const LOG_BUF_MIN: u64 = 0x0000_7f00_0000_0000;
-    const PATTERNS_FAST: &[(&str, &[u8], usize, usize, u64)] = &[
-        // 96 bytes before "gets reward" captures the player ID preceding it.
-        ("log.gets_reward",    b"gets reward /Lotus/",                   96, 256, LOG_BUF_MIN),
-        ("log.all_rewards_in", b"Host has reward info for all players now!\r", 0, 64, LOG_BUF_MIN),
+
+    // One-shot patterns: scanned immediately when EE.log emits the reward-screen trigger.
+    // Goal: snapshot exactly what text is in heap memory at that precise moment.
+    // min_addr=0, max_region_size=0 → all committed readable regions.
+    const PATTERNS_ONESHOT: &[(&str, &[u8], usize, usize, u64, u64)] = &[
+        ("os.open_trigger",   b"VoidProjections: GetVoidProjectionReward", 96, 256, 0, 0),
+        ("os.gets_reward",    b"gets reward /Lotus/",                      96, 256, 0, 0),
+        ("os.all_rewards",    b"Host has reward info for all players now",  64, 256, 0, 0),
+        ("os.close_trigger",  b"Relic reward screen shut down",            96, 256, 0, 0),
+        ("os.close_rmi",      b"CloseVoidProjectionRewardScreen",          64, 256, 0, 0),
+    ];
+    // Fast patterns: two tiers.
+    // Tier A (min_addr=LOG_BUF_MIN): game binary only — scans in milliseconds every tick.
+    // Tier B (max_region_size=HEAP_SMALL): small heap regions only — still fast (<200 ms).
+    // Live ring-buffer entries end with \r\n; static format strings end with \n\0.
+    const LOG_BUF_MIN:  u64 = 0x0000_7f00_0000_0000;  // binary/DLL range
+    const HEAP_SMALL:   u64 = 4 * 1024 * 1024;         // skip large heap allocs (JSON blobs etc.)
+    const PATTERNS_FAST: &[(&str, &[u8], usize, usize, u64, u64)] = &[
+        // Tier A — binary range: format strings and any ring-buffer copy there
+        ("bin.gets_reward",      b"gets reward /Lotus/",                        96, 256, LOG_BUF_MIN,  0),
+        ("bin.all_rewards_in",   b"Host has reward info for all players now!\r",  0,  64, LOG_BUF_MIN,  0),
+        // Tier B — small heap regions: look for live EE.log ring-buffer text
+        ("heap.open_trigger",    b"VoidProjections: GetVoidProjectionReward",   96, 256, 0, HEAP_SMALL),
+        ("heap.close_trigger",   b"Relic reward screen shut down",              96, 256, 0, HEAP_SMALL),
+        ("heap.gets_reward",     b"gets reward /Lotus/",                        96, 256, 0, HEAP_SMALL),
+        ("heap.all_rewards",     b"Host has reward info for all players now",   64, 256, 0, HEAP_SMALL),
     ];
 
     fn append(path: &std::path::Path, s: &str) {
@@ -8863,6 +9036,66 @@ fn mem_relic_debug_loop(log_path: &std::path::Path) {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
             let _ = f.write_all(s.as_bytes());
         }
+    }
+
+    // Targeted fast scan: /Lotus/ in small heap regions only.
+    // Heap addresses observed empirically: 0x0000_0150_xxxx to 0x0000_0155_xxxx.
+    // We use a wider window (0x0001 to 0x0300) to be safe.
+    // Skips regions > 128 KB to avoid the FULL_ACCOUNT blob and other large allocs.
+    // Returns (region_base, match_addr, context_bytes).
+    fn scan_lotus_in_heap(pid: u32) -> Vec<(u64, u64, Vec<u8>)> {
+        const HEAP_MIN: u64 = 0x0000_0001_0000_0000;
+        const HEAP_MAX: u64 = 0x0000_0300_0000_0000;
+        const REGION_MAX: u64 = 128 * 1024;
+        const CTX: usize = 192;
+        const STRIDE: usize = 256; // skip forward after each match (de-noise)
+        let pat: &[u8] = b"/Lotus/";
+        let mut results = Vec::new();
+        unsafe {
+            let proc = windows_sys::Win32::System::Threading::OpenProcess(
+                windows_sys::Win32::System::Threading::PROCESS_VM_READ
+                | windows_sys::Win32::System::Threading::PROCESS_QUERY_INFORMATION,
+                0, pid);
+            if proc == 0 { return results; }
+            let mut addr: u64 = HEAP_MIN;
+            loop {
+                if addr >= HEAP_MAX { break; }
+                let mut mbi: windows_sys::Win32::System::Memory::MEMORY_BASIC_INFORMATION
+                    = std::mem::zeroed();
+                let ret = windows_sys::Win32::System::Memory::VirtualQueryEx(
+                    proc, addr as *const _,
+                    &mut mbi, std::mem::size_of::<windows_sys::Win32::System::Memory::MEMORY_BASIC_INFORMATION>());
+                if ret == 0 { break; }
+                let region_base = mbi.BaseAddress as u64;
+                let region_size = mbi.RegionSize as u64;
+                addr = region_base.saturating_add(region_size);
+                if mbi.State != windows_sys::Win32::System::Memory::MEM_COMMIT { continue; }
+                if mbi.Protect & (windows_sys::Win32::System::Memory::PAGE_GUARD
+                                | windows_sys::Win32::System::Memory::PAGE_NOACCESS) != 0 { continue; }
+                if region_size > REGION_MAX { continue; }
+                if region_base < HEAP_MIN || region_base >= HEAP_MAX { continue; }
+                let mut buf = vec![0u8; region_size as usize];
+                let mut read = 0usize;
+                let ok = windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory(
+                    proc, region_base as *const _,
+                    buf.as_mut_ptr() as *mut _, buf.len(), &mut read);
+                if ok == 0 || read == 0 { continue; }
+                buf.truncate(read);
+                let mut search_from = 0usize;
+                while let Some(pos) = buf[search_from..].windows(pat.len())
+                    .position(|w| w == pat)
+                    .map(|p| p + search_from)
+                {
+                    let match_addr = region_base + pos as u64;
+                    let start = pos.saturating_sub(8);
+                    let end = (pos + CTX).min(buf.len());
+                    results.push((region_base, match_addr, buf[start..end].to_vec()));
+                    search_from = pos + STRIDE;
+                }
+            }
+            windows_sys::Win32::Foundation::CloseHandle(proc);
+        }
+        results
     }
 
     fn find_warframe_pid() -> Option<u32> {
@@ -8891,7 +9124,7 @@ fn mem_relic_debug_loop(log_path: &std::path::Path) {
         None
     }
 
-    fn scan_process(pid: u32, patterns: &[(&str, &[u8], usize, usize, u64)])
+    fn scan_process(pid: u32, patterns: &[(&str, &[u8], usize, usize, u64, u64)])
         -> Vec<(String, u64, u64, u64, Vec<u8>)>  // (pat_name, region_base, region_size, match_addr, context)
     {
         let mut results = Vec::new();
@@ -8912,6 +9145,12 @@ fn mem_relic_debug_loop(log_path: &std::path::Path) {
                 if mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS) != 0 { continue; }
                 if region_size > 128 * 1024 * 1024 { continue; }
 
+                // Only read the region if at least one pattern applies to it.
+                let any_match = patterns.iter().any(|&(_, _, _, _, min_addr, max_sz)| {
+                    region_base >= min_addr && (max_sz == 0 || region_size <= max_sz)
+                });
+                if !any_match { continue; }
+
                 let mut buf = vec![0u8; region_size as usize];
                 let mut read = 0usize;
                 let ok = windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory(
@@ -8920,8 +9159,9 @@ fn mem_relic_debug_loop(log_path: &std::path::Path) {
                 if ok == 0 || read == 0 { continue; }
                 buf.truncate(read);
 
-                for &(name, pat, ctx_before, ctx_after, min_addr) in patterns {
+                for &(name, pat, ctx_before, ctx_after, min_addr, max_region_size) in patterns {
                     if region_base < min_addr { continue; }
+                    if max_region_size > 0 && region_size > max_region_size { continue; }
                     let mut search_from = 0usize;
                     while let Some(pos) = buf[search_from..].windows(pat.len())
                         .position(|w| w == pat)
@@ -8985,11 +9225,103 @@ fn mem_relic_debug_loop(log_path: &std::path::Path) {
         }
     });
 
+    // ── One-shot scan thread ──────────────────────────────────────────────
+    // Triggered by a channel message when EE.log emits the reward-screen open/close line.
+    // Scans ALL heap memory immediately and logs results, then waits for the next trigger.
+    let (oneshot_tx, oneshot_rx) = std::sync::mpsc::channel::<(u32, String)>(); // (pid, label)
+    let oneshot_log = log_path.to_path_buf();
+    std::thread::spawn(move || {
+        while let Ok((pid, label)) = oneshot_rx.recv() {
+            let ts = chrono::Local::now().format("%H:%M:%S%.3f");
+            append(&oneshot_log, &format!("\n[ONE-SHOT @ {} — {}]\n", ts, label));
+            let results = scan_process(pid, PATTERNS_ONESHOT);
+            let ts2 = chrono::Local::now().format("%H:%M:%S%.3f");
+            if results.is_empty() {
+                append(&oneshot_log, &format!("  (no matches) scan finished @ {}\n", ts2));
+            } else {
+                let mut block = format!("  {} match(es), scan finished @ {}\n", results.len(), ts2);
+                for (name, region_base, _rs, match_addr, ctx) in &results {
+                    block.push_str(&format!("  MATCH {} | match=0x{:016x}  region=0x{:016x}\n",
+                        name, match_addr, region_base));
+                    for chunk in ctx.chunks(32) {
+                        let hex:   String = chunk.iter().map(|b| format!("{:02x} ", b)).collect();
+                        let ascii: String = chunk.iter().map(|&b|
+                            if b >= 0x20 && b < 0x7f { b as char } else { '.' }).collect();
+                        block.push_str(&format!("    {:<96} {}\n", hex, ascii));
+                    }
+                    block.push('\n');
+                }
+                append(&oneshot_log, &block);
+            }
+        }
+    });
+
+    // ── Reward-window heap scan thread ───────────────────────────────────
+    // Fires every 2 s while the relic reward screen is open.
+    // Scans only small heap regions for /Lotus/ paths — these would be
+    // the 4 reward item paths stored in Lua string tables or C++ structures.
+    let rw_pid: std::sync::Arc<std::sync::Mutex<Option<u32>>>
+        = std::sync::Arc::new(std::sync::Mutex::new(None));
+    {
+        let rw_pid_cl  = rw_pid.clone();
+        let rw_log     = log_path.to_path_buf();
+        std::thread::spawn(move || {
+            let mut scan_num = 0u32;
+            let mut was_open = false;
+            loop {
+                let maybe_pid = *rw_pid_cl.lock().unwrap();
+                if let Some(pid) = maybe_pid {
+                    if !was_open {
+                        was_open = true;
+                        scan_num = 0;
+                        let ts = chrono::Local::now().format("%H:%M:%S%.3f");
+                        append(&rw_log,
+                            &format!("\n[RW OPEN @ {}] Starting /Lotus/ heap scan every 2 s\n", ts));
+                    }
+                    scan_num += 1;
+                    let ts = chrono::Local::now().format("%H:%M:%S%.3f");
+                    let hits = scan_lotus_in_heap(pid);
+                    if hits.is_empty() {
+                        append(&rw_log,
+                            &format!("[RW #{} @ {}] (no /Lotus/ in small heap regions)\n", scan_num, ts));
+                    } else {
+                        let mut block = format!(
+                            "[RW #{} @ {}] {} /Lotus/ hit(s) in small heap:\n", scan_num, ts, hits.len());
+                        for (region_base, match_addr, ctx) in &hits {
+                            block.push_str(&format!(
+                                "  match=0x{:016x}  region=0x{:016x}\n", match_addr, region_base));
+                            for chunk in ctx.chunks(32) {
+                                let hex: String = chunk.iter()
+                                    .map(|b| format!("{:02x} ", b)).collect();
+                                let ascii: String = chunk.iter()
+                                    .map(|&b| if b >= 0x20 && b < 0x7f { b as char } else { '.' })
+                                    .collect();
+                                block.push_str(&format!("    {:<96} {}\n", hex, ascii));
+                            }
+                            block.push('\n');
+                        }
+                        append(&rw_log, &block);
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                } else {
+                    if was_open {
+                        was_open = false;
+                        let ts = chrono::Local::now().format("%H:%M:%S%.3f");
+                        append(&rw_log, &format!("[RW CLOSED @ {}]\n\n", ts));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+            }
+        });
+    }
+
     // Separate prev-match maps so fast and slow don't interfere.
-    let mut fast_prev: HashMap<(String, u64), Vec<u8>> = HashMap::new();
-    let mut slow_prev: HashMap<(String, u64), Vec<u8>> = HashMap::new();
+    // Value = (region_base, context_bytes) — region_base lets us log which alloc the match came from.
+    let mut fast_prev: HashMap<(String, u64), (u64, Vec<u8>)> = HashMap::new();
+    let mut slow_prev: HashMap<(String, u64), (u64, Vec<u8>)> = HashMap::new();
     let mut scan_num  = 0u32;
     let mut warned_no_wf = false;
+    let mut last_oneshot_pid: Option<u32> = None;
 
     // ── Main loop: fast pass every second ────────────────────────────────
     while MEM_RELIC_DEBUG_RUNNING.load(Ordering::SeqCst) {
@@ -9012,40 +9344,57 @@ fn mem_relic_debug_loop(log_path: &std::path::Path) {
                     ee_leftover = ee_leftover[nl + 1..].to_string();
                     if !line.is_empty() {
                         log_buf.push_str(&format!("[EE] {}  {}\n", ts, line));
+                        // Fire one-shot scans on key reward-screen events.
+                        if let Some(pid) = last_oneshot_pid {
+                            let ll = line.to_lowercase();
+                            if ll.contains("voidprojections: getvoidprojectionreward") {
+                                let _ = oneshot_tx.send((pid, "OPEN trigger".to_string()));
+                                // Start reward-window heap scan.
+                                *rw_pid.lock().unwrap() = Some(pid);
+                            } else if ll.contains("relic reward screen shut down")
+                                    || ll.contains("closevoidprojectionrewardscreen") {
+                                let _ = oneshot_tx.send((pid, "CLOSE trigger".to_string()));
+                                // Stop reward-window heap scan.
+                                *rw_pid.lock().unwrap() = None;
+                            } else if ll.contains("gets reward /lotus/") {
+                                let _ = oneshot_tx.send((pid, "gets reward".to_string()));
+                            }
+                        }
                     }
                 }
                 if !log_buf.is_empty() { append(log_path, &log_buf); }
             }
         }
 
-        let log_set = |label: &str, keys: &[(String, u64)], m: &HashMap<(String, u64), Vec<u8>>| {
+        let log_set = |label: &str, keys: &[(String, u64)], m: &HashMap<(String, u64), (u64, Vec<u8>)>| {
             let mut s = String::new();
             for key in keys {
-                if let Some(ctx) = m.get(key) {
-                    s.push_str(&format!("  {} {} @ 0x{:016x}\n{}\n",
-                        label, key.0, key.1, fmt_context(ctx)));
+                if let Some((region_base, ctx)) = m.get(key) {
+                    s.push_str(&format!("  {} {} | match=0x{:016x}  region=0x{:016x}\n{}\n",
+                        label, key.0, key.1, region_base, fmt_context(ctx)));
                 }
             }
             s
         };
 
-        // ── Fast pass: log-buffer only, every tick ────────────────────────
+        // ── Fast pass: binary range + small heap regions, every tick ─────
         if let Some(pid) = find_warframe_pid() {
+            last_oneshot_pid = Some(pid);
             warned_no_wf = false;
             append(log_path, &format!("[LOG SCAN @ {}]\n", ts));
             let matches = scan_process(pid, PATTERNS_FAST);
             let mut new_keys:  Vec<(String, u64)> = Vec::new();
             let mut chg_keys:  Vec<(String, u64)> = Vec::new();
             let mut gone_keys: Vec<(String, u64)> = Vec::new();
-            let mut cur_map: HashMap<(String, u64), Vec<u8>> = HashMap::new();
-            for (name, _rb, _rs, addr, ctx) in &matches {
+            let mut cur_map: HashMap<(String, u64), (u64, Vec<u8>)> = HashMap::new();
+            for (name, region_base, _rs, addr, ctx) in &matches {
                 let key = (name.clone(), *addr);
-                if let Some(prev) = fast_prev.get(&key) {
+                if let Some((_, prev)) = fast_prev.get(&key) {
                     if prev != ctx { chg_keys.push(key.clone()); }
                 } else {
                     new_keys.push(key.clone());
                 }
-                cur_map.insert(key, ctx.clone());
+                cur_map.insert(key, (*region_base, ctx.clone()));
             }
             for key in fast_prev.keys() {
                 if !cur_map.contains_key(key) { gone_keys.push(key.clone()); }
@@ -9071,15 +9420,15 @@ fn mem_relic_debug_loop(log_path: &std::path::Path) {
             let mut new_keys:  Vec<(String, u64)> = Vec::new();
             let mut chg_keys:  Vec<(String, u64)> = Vec::new();
             let mut gone_keys: Vec<(String, u64)> = Vec::new();
-            let mut cur_map: HashMap<(String, u64), Vec<u8>> = HashMap::new();
-            for (name, _rb, _rs, addr, ctx) in &matches {
+            let mut cur_map: HashMap<(String, u64), (u64, Vec<u8>)> = HashMap::new();
+            for (name, region_base, _rs, addr, ctx) in &matches {
                 let key = (name.clone(), *addr);
-                if let Some(prev) = slow_prev.get(&key) {
+                if let Some((_, prev)) = slow_prev.get(&key) {
                     if prev != ctx { chg_keys.push(key.clone()); }
                 } else {
                     new_keys.push(key.clone());
                 }
-                cur_map.insert(key, ctx.clone());
+                cur_map.insert(key, (*region_base, ctx.clone()));
             }
             for key in slow_prev.keys() {
                 if !cur_map.contains_key(key) { gone_keys.push(key.clone()); }
@@ -9107,35 +9456,29 @@ pub fn run() {
     // One-shot idempotent: safe to call on every launch.
     paths::migrate_legacy();
 
-    // User-data files (settings, DB, auction IDs) live in the XDG config/data
-    // directories after the migration.  Everything else (legacy caches, logs,
-    // debug dumps) stays in the old warframe-companion\ directory so that
-    // existing sessions aren't disrupted; those files are refetchable or logged
-    // in place and don't need to move.
+    // Directory layout (post-migration):
+    //   cache_dir  (%LOCALAPPDATA%\frameforge\) — caches, logs, debug dumps, img_cache
+    //   data_dir   (%APPDATA%\frameforge\)      — data.db, auction_ids.json
+    //   config_dir (%APPDATA%\frameforge\)      — settings.json, corrections.json
     let config_dir = paths::config_dir();
     let data_xdg_dir = paths::data_dir();
     let cache_xdg_dir = paths::cache_dir();
 
-    let data_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("warframe-companion");
-
-    std::fs::create_dir_all(&data_dir).expect("Failed to create data directory");
     // ── BEGIN ocrs fallback ─────────────────────────────────────────────────
     ocr_fallback::set_data_dir(cache_xdg_dir.clone());
     // ── END ocrs fallback ───────────────────────────────────────────────────
 
     let db_path = data_xdg_dir.join("data.db");
-    let items_cache_path = data_dir.join("items_cache.json");
-    let recipes_cache_path = data_dir.join("recipes_cache.json");
-    let relic_drops_cache_path = data_dir.join("relic_drops_cache.json");
-    let relic_rewards_cache_path = data_dir.join("relic_rewards_cache.json");
+    let items_cache_path = cache_xdg_dir.join("items_cache.json");
+    let recipes_cache_path = cache_xdg_dir.join("recipes_cache.json");
+    let relic_drops_cache_path = cache_xdg_dir.join("relic_drops_cache.json");
+    let relic_rewards_cache_path = cache_xdg_dir.join("relic_rewards_cache.json");
     let quantities_cache_path = cache_xdg_dir.join("quantities_cache.json");
     let inventory_state_cache_path = cache_xdg_dir.join("inventory_state_cache.json");
     let settings_path = config_dir.join("settings.json");
-    let log_path = data_dir.join("scan_log.txt");
-    let changes_log_path = data_dir.join("inventory_changes.txt");
-    let debug_root = data_dir.join("Debugging");
+    let log_path = cache_xdg_dir.join("scan_log.txt");
+    let changes_log_path = cache_xdg_dir.join("inventory_changes.txt");
+    let debug_root = cache_xdg_dir.join("Debugging");
     let blob_log_dir = debug_root.join("Inventory Snapshots");
     let api_log_dir = debug_root.join("Api Responses");
     let auto_capture_dir = debug_root.join("Auto-Capture");
@@ -9149,14 +9492,14 @@ pub fn run() {
                  &memory_probe_dir, &raw_scan_dir, &unmatched_paths_dir] {
         let _ = std::fs::create_dir_all(dir);
     }
-    let wfm_top_cache_path = data_dir.join("wfm_top_cache.json");
-    let syndicate_catalog_path = data_dir.join("syndicate_catalog.json");
-    let img_cache_dir = data_dir.join("img_cache");
+    let wfm_top_cache_path = cache_xdg_dir.join("wfm_top_cache.json");
+    let syndicate_catalog_path = cache_xdg_dir.join("syndicate_catalog.json");
+    let img_cache_dir = cache_xdg_dir.join("img_cache");
     let _ = std::fs::create_dir_all(&img_cache_dir);
     let auction_ids_path = data_xdg_dir.join("auction_ids.json");
     let initial_auction_ids: Vec<String> = std::fs::read_to_string(&auction_ids_path)
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-    let relics_run_prices_cache_path = data_dir.join("relics_run_prices.json");
+    let relics_run_prices_cache_path = cache_xdg_dir.join("relics_run_prices.json");
     let initial_relics_run = load_relics_run_cache(&relics_run_prices_cache_path);
     let initial_relics_run_prices = initial_relics_run.as_ref()
         .map(|(by_name, _)| by_name.clone())
@@ -9280,7 +9623,7 @@ pub fn run() {
     let initial_syndicate_catalog: HashMap<String, Vec<SyndicateOffer>> = std::fs::read_to_string(&syndicate_catalog_path)
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
 
-    let corrections = load_corrections(&data_dir.join("corrections.json"));
+    let corrections = load_corrections(&config_dir.join("corrections.json"));
 
     tauri::Builder::default()
         .register_uri_scheme_protocol("ffauth", |ctx, req| console_login::handle_ffauth(ctx.app_handle(), &req)) // [console-login feature]
@@ -9350,6 +9693,7 @@ pub fn run() {
             corrections,
             force_pid_check: Arc::new(AtomicBool::new(false)),
             relic_pick_overlay_enabled: Arc::new(AtomicBool::new(true)),
+            mem_trigger_enabled: Arc::new(AtomicBool::new(false)),
         })
         .setup(|app| {
             use tauri::Manager;
@@ -9571,6 +9915,7 @@ pub fn run() {
             stop_monitor,
             poke_scan,
             set_relic_pick_enabled,
+            set_mem_trigger_enabled,
             get_monitor_status,
             get_blueprint_names,
             get_system_locale,

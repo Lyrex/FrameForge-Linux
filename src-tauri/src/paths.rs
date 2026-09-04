@@ -106,6 +106,7 @@ const LEGACY_CACHE_FILES: &[&str] = &[
     "wfm_top_cache.json",
     "syndicate_catalog.json",
     "relics_run_prices.json",
+    "scan_log.txt",       // regenerated on every session; no value in keeping the old copy
 ];
 
 const LEGACY_CACHE_DIRS: &[&str] = &["img_cache", "ocr_models"];
@@ -141,6 +142,10 @@ fn migrate_into(old: &Path, config: &Path, data: &Path, cache: &Path) {
     move_file(
         &old.join("inventory_state_cache.json"),
         &cache.join("inventory_state_cache.json"),
+    );
+    move_file(
+        &old.join("inventory_changes.txt"),
+        &cache.join("inventory_changes.txt"),
     );
     move_db(old, data);
 

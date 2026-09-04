@@ -860,6 +860,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     () => localStorage.getItem("ff-overlay-priority") ?? "completion"
   );
   const [relicPickEnabled,    setRelicPickEnabled]    = useState<boolean>(true);
+  const [memTriggerEnabled,   setMemTriggerEnabled]   = useState<boolean>(false);
   const [relicPickPriority,   setRelicPickPriority]   = useState<"unowned" | "ducat" | "platinum">("unowned");
   const [relicPickRefinement, setRelicPickRefinement] = useState<"intact" | "exceptional" | "flawless" | "radiant">("radiant");
   const [relicPickLines,      setRelicPickLines]      = useState<"all" | "best" | "estimated">("all");
@@ -914,8 +915,9 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     wfmInvisibleOnStart: false, wfmInvisibleOnClose: false, wfmAutoInvisible: false, wfmAutoInvisibleMins: 30,
     relicPickEnabled: true, relicPickPriority: "unowned" as "unowned" | "ducat" | "platinum", relicPickRefinement: "radiant" as "intact" | "exceptional" | "flawless" | "radiant", relicPickLines: "all" as "all" | "best" | "estimated",
     foundryPageSize: 30 as 30 | 60 | 100,
+    memTriggerEnabled: false,
   });
-  settingsRef.current = { overlayEnabled, overlayPriority, textScale, colorblindMode, clockFormat, companionApiEnabled, memoryScannerEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize };
+  settingsRef.current = { overlayEnabled, overlayPriority, textScale, colorblindMode, clockFormat, companionApiEnabled, memoryScannerEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled };
 
   const saveAllSettings = useCallback(() => {
     // Until the on-disk settings have been applied, settingsRef still holds
@@ -1093,6 +1095,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         if (typeof s.wfmAutoInvisible    === "boolean") setWfmAutoInvisible(s.wfmAutoInvisible);
         if (typeof s.wfmAutoInvisibleMins === "number") setWfmAutoInvisibleMins(s.wfmAutoInvisibleMins);
         if (typeof s.relicPickEnabled    === "boolean") { setRelicPickEnabled(s.relicPickEnabled); invoke("set_relic_pick_enabled", { enabled: s.relicPickEnabled }); }
+        if (typeof s.memTriggerEnabled   === "boolean") { setMemTriggerEnabled(s.memTriggerEnabled); invoke("set_mem_trigger_enabled", { enabled: s.memTriggerEnabled }); }
         if (["unowned","ducat","platinum"].includes(s.relicPickPriority)) setRelicPickPriority(s.relicPickPriority);
         if (["intact","exceptional","flawless","radiant"].includes(s.relicPickRefinement)) setRelicPickRefinement(s.relicPickRefinement);
         if (["all","best","estimated"].includes(s.relicPickLines)) setRelicPickLines(s.relicPickLines);
@@ -2107,6 +2110,22 @@ if (typeof s.autoDiagEnabled === "boolean") {
         {playerName && (
           <span className="player-name-badge" title="Logged-in Warframe account">{playerName}</span>
         )}
+        {pendingUpdate && (
+          <span
+            className="update-badge"
+            title={updateInstalling ? "Installing update…" : `v${pendingUpdate} is available — click to install`}
+            onClick={() => {
+              if (updateInstalling) return;
+              setUpdateInstalling(true);
+              invoke("install_update").catch(() => setUpdateInstalling(false));
+            }}
+          >
+            {updateInstalling ? "Installing…" : `v${pendingUpdate} ↑`}
+            {!updateInstalling && (
+              <button className="update-badge-dismiss" title="Dismiss" onClick={e => { e.stopPropagation(); setPendingUpdate(null); }}>×</button>
+            )}
+          </span>
+        )}
         {blobStage === "done" && (
           <span className="blob-status-badge blob-status-done" title="Inventory loaded from Warframe memory">
             Inventory Loaded
@@ -2440,6 +2459,32 @@ if (typeof s.autoDiagEnabled === "boolean") {
                         <option value="plat">Most Plat (item)</option>
                         <option value="ducat">Most Ducats</option>
                       </select>
+                    </div>
+                  </div>
+
+                  {/* Relic Overlay — Memory Trigger */}
+                  <div className="settings-section">
+                    <div className="settings-section-title">Memory Trigger <span style={{ fontSize: 11, opacity: 0.55, fontWeight: 400, marginLeft: 6 }}>in development</span></div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">Use memory scan</span>
+                        <span className="settings-row-desc">
+                          Still in development — for testing only. Polls Warframe's process memory for the reward screen event in parallel with EE.log.
+                          Timing for both paths is written to the session log so they can be compared.
+                          The EE.log overlay is unaffected regardless of this setting.
+                        </span>
+                      </div>
+                      <button
+                        className="btn-secondary"
+                        style={{ minWidth: 64, background: memTriggerEnabled ? "rgba(56,139,253,.15)" : undefined, borderColor: memTriggerEnabled ? "var(--accent)" : undefined }}
+                        onClick={() => {
+                          const next = !memTriggerEnabled;
+                          setMemTriggerEnabled(next);
+                          settingsRef.current = { ...settingsRef.current, memTriggerEnabled: next };
+                          saveAllSettings();
+                          invoke("set_mem_trigger_enabled", { enabled: next });
+                        }}
+                      >{memTriggerEnabled ? "On" : "Off"}</button>
                     </div>
                   </div>
 
@@ -3018,32 +3063,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
       )}
 
       <div className="body">
-
-        {/* ── Update banner ── */}
-        {pendingUpdate && (
-          <div style={{
-            display: "flex", alignItems: "center", justifyContent: "center", gap: 12,
-            background: "var(--accent)", color: "#fff", fontSize: 13, padding: "6px 16px",
-            flexShrink: 0,
-          }}>
-            <span>FrameForge v{pendingUpdate} is available</span>
-            <button
-              style={{
-                background: "rgba(0,0,0,0.25)", border: "none", borderRadius: 4,
-                color: "#fff", padding: "2px 10px", cursor: "pointer", fontSize: 12,
-              }}
-              disabled={updateInstalling}
-              onClick={() => {
-                setUpdateInstalling(true);
-                invoke("install_update").catch(() => setUpdateInstalling(false));
-              }}
-            >{updateInstalling ? "Installing…" : "Update now"}</button>
-            <button
-              style={{ background: "none", border: "none", color: "rgba(255,255,255,0.7)", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 0 }}
-              onClick={() => setPendingUpdate(null)}
-            >×</button>
-          </div>
-        )}
 
         {/* ── Module navigation ── */}
         <nav className="module-nav">
