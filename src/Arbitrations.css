@@ -1,11 +1,91 @@
 .arb {
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+}
+
+.arb-scroll {
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   flex: 1;
   min-height: 0;
   padding-bottom: 8px;
 }
+
+/* ── Run history ── */
+
+.arb-history {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.arb-filters {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.arb-filter-count { margin-left: auto; }
+.arb-muted { font-size: 11px; color: var(--muted); }
+
+.arb-breakdown { display: flex; flex-direction: column; gap: 4px; }
+
+.arb-table {
+  background: rgba(255,255,255,.03);
+  border: 1px solid rgba(48,54,61,.4);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.arb-table-head, .arb-table-row {
+  display: grid;
+  grid-template-columns: 1fr 120px 70px 80px;
+  gap: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+.arb-table-head {
+  background: rgba(255,255,255,.04);
+  border-bottom: 1px solid rgba(48,54,61,.4);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--muted);
+}
+.arb-table-head span:not(:first-child), .arb-table-num { text-align: right; }
+.arb-table-row { border-bottom: 1px solid rgba(48,54,61,.2); }
+.arb-table-row:last-child { border-bottom: none; }
+.arb-table-row:hover { background: rgba(255,255,255,.04); }
+.arb-table-name { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.arb-table-num { font-variant-numeric: tabular-nums; color: var(--muted); }
+
+.arb-runs { display: flex; flex-direction: column; gap: 2px; }
+.arb-run {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: rgba(255,255,255,.03);
+  border: 1px solid rgba(48,54,61,.3);
+  border-left: 3px solid var(--green);
+  border-radius: 5px;
+  font-size: 12px;
+}
+.arb-run:hover { background: rgba(255,255,255,.06); }
+.arb-run-incomplete { border-left-color: var(--red); }
+.arb-run-incomplete .timer-name { color: var(--muted); }
+.arb-run-flag { color: var(--red); }
+.arb-run-when { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 110px; flex-shrink: 0; }
+.arb-run-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.arb-run-num { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; min-width: 64px; flex-shrink: 0; }
 
 .arb-stale {
   display: flex;

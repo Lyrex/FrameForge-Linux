@@ -2788,16 +2788,22 @@ fn record_arbitration_runs(
     recorder.parse(chunk);
 
     let state = app.state::<AppState>();
-    let conn = match state.conn.lock() {
-        Ok(conn) => conn,
-        Err(e) => {
-            warn!(error = %e, "database lock poisoned; arbitration runs held back");
-            return;
-        }
+    let stored = {
+        let conn = match state.conn.lock() {
+            Ok(conn) => conn,
+            Err(e) => {
+                warn!(error = %e, "database lock poisoned; arbitration runs held back");
+                return;
+            }
+        };
+        recorder.store(&conn)
     };
-    match recorder.store(&conn) {
+    match stored {
         Ok(0) => {}
-        Ok(stored) => info!(runs = stored, "arbitration runs recorded"),
+        Ok(stored) => {
+            info!(runs = stored, "arbitration runs recorded");
+            app.emit("arbitration-runs-changed", ()).ok();
+        }
         Err(e) => warn!(error = %e, "storing arbitration runs failed; retrying on the next read"),
     }
 }
@@ -3827,6 +3833,25 @@ fn delete_trade(app: tauri::AppHandle, state: State<AppState>, id: i64) -> Resul
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     db::delete_trade(&conn, id).map_err(|e| e.to_string())?;
     app.emit("stats-changed", ()).ok();
+    Ok(())
+}
+
+// ─── Arbitration run history ─────────────────────────────────────────────────
+
+#[tauri::command]
+fn get_arbitration_runs(state: State<AppState>) -> Result<Vec<db::RunRecord>, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    db::list_arbitration_runs(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_arbitration_run(app: tauri::AppHandle, state: State<AppState>, uid: String) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let deleted = db::delete_arbitration_run(&conn, &uid).map_err(|e| e.to_string())?;
+    if !deleted {
+        return Err("run not found; the history shown may be out of date".to_string());
+    }
+    app.emit("arbitration-runs-changed", ()).ok();
     Ok(())
 }
 
@@ -9007,6 +9032,8 @@ pub fn run() {
             get_trades,
             add_trade,
             delete_trade,
+            get_arbitration_runs,
+            delete_arbitration_run,
             export_stats,
             import_stats,
             clear_cache,

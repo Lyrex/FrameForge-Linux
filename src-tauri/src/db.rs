@@ -168,6 +168,23 @@ fn migrate(conn: &Connection) -> Result<()> {
         conn.pragma_update(None, "user_version", 5)?;
     }
 
+    // A deleted run keeps its row: startup backfill re-reads the same log and
+    // would otherwise insert it again. The column check keeps this step
+    // re-runnable after a downgrade, as the CREATE IF NOT EXISTS above is.
+    if version < 6 {
+        let has_deleted: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('arbitration_runs') WHERE name = 'deleted'",
+            [],
+            |r| r.get::<_, i64>(0).map(|n| n > 0),
+        )?;
+        if !has_deleted {
+            conn.execute_batch(
+                "ALTER TABLE arbitration_runs ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+        conn.pragma_update(None, "user_version", 6)?;
+    }
+
     // An older build inserts '' for uid; repair after a downgrade and upgrade.
     conn.execute_batch(BACKFILL_UIDS)?;
 
@@ -487,11 +504,6 @@ pub fn store_arbitration_run(conn: &Connection, run: &Run) -> Result<bool> {
 /// `YYYY-MM-DD`; both are normalised to the column's own form before the
 /// comparison. Runs from a log with no boot-time header have no wall clock and
 /// so fall outside any date range.
-///
-/// Reading runs back has no caller outside the tests yet — the run history is
-/// recorded now and displayed later, and there is deliberately no Tauri
-/// command exposing it until something on the other side asks for one.
-#[allow(dead_code)]
 #[derive(Debug, Default, Clone)]
 pub struct RunQuery {
     pub from: Option<String>,
@@ -500,7 +512,6 @@ pub struct RunQuery {
     pub mission_type: Option<String>,
 }
 
-#[allow(dead_code)]
 pub fn get_arbitration_runs(conn: &Connection, query: &RunQuery) -> Result<Vec<Run>> {
     let mut stmt = conn.prepare(
         "SELECT started_at, run_start_sec, run_end_sec, mission_name, node,
@@ -509,7 +520,8 @@ pub fn get_arbitration_runs(conn: &Connection, query: &RunQuery) -> Result<Vec<R
                 drone_kills, host_telemetry, vitus_mean, vitus_std,
                 vitus_per_minute
          FROM arbitration_runs
-         WHERE (?1 IS NULL OR started_at >= ?1)
+         WHERE deleted = 0
+           AND (?1 IS NULL OR started_at >= ?1)
            AND (?2 IS NULL OR started_at <= ?2)
            AND (?3 IS NULL OR node = ?3)
            AND (?4 IS NULL OR mission_type = ?4)
@@ -553,6 +565,63 @@ pub fn get_arbitration_runs(conn: &Connection, query: &RunQuery) -> Result<Vec<R
         )?
         .collect::<Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RunRecord {
+    pub uid: String,
+    pub started_at: Option<String>,
+    pub node: String,
+    pub mission_type: &'static str,
+    pub end_reason: &'static str,
+    pub duration_sec: f64,
+    pub rotations: u32,
+    pub waves: u32,
+    pub kills: u32,
+    pub drone_kills: u32,
+    pub vitus_mean: f64,
+    pub vitus_per_minute: f64,
+}
+
+/// Newest first. Filtering happens in the view: the whole history is small,
+/// and the filters change far more often than the data.
+///
+/// The key is read back from the row rather than re-derived, so a delete
+/// names exactly what was stored even if the derivation changes.
+pub fn list_arbitration_runs(conn: &Connection) -> Result<Vec<RunRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT uid, started_at, node, mission_type, end_reason, duration_sec,
+                rotations, waves, kills, drone_kills, vitus_mean, vitus_per_minute
+         FROM arbitration_runs
+         WHERE deleted = 0
+         ORDER BY started_at DESC, run_start_sec DESC",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            let mission_type: String = row.get(3)?;
+            let end_reason: String = row.get(4)?;
+            Ok(RunRecord {
+                uid: row.get(0)?,
+                started_at: row.get(1)?,
+                node: row.get(2)?,
+                mission_type: MissionType::from_stored(&mission_type).as_str(),
+                end_reason: EndReason::from_stored(&end_reason).as_str(),
+                duration_sec: row.get(5)?,
+                rotations: row.get(6)?,
+                waves: row.get(7)?,
+                kills: row.get(8)?,
+                drone_kills: row.get(9)?,
+                vitus_mean: row.get(10)?,
+                vitus_per_minute: row.get(11)?,
+            })
+        })?
+        .collect::<Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+pub fn delete_arbitration_run(conn: &Connection, uid: &str) -> Result<bool> {
+    let changed = conn.execute("UPDATE arbitration_runs SET deleted = 1 WHERE uid = ?1", params![uid])?;
+    Ok(changed > 0)
 }
 
 /// Log text in, stored runs out, in two steps so that the database is only
@@ -870,6 +939,26 @@ mod arbitration_storage_tests {
 
         recorder.parse(DEFENSE[head.len()..].to_string());
         assert_eq!(recorder.store(&conn).expect("recording succeeds"), 1);
+        assert_eq!(stored(&conn).len(), 1);
+    }
+
+    #[test]
+    fn a_deleted_run_is_gone_and_stays_gone_across_a_backfill() {
+        let conn = db("delete");
+        watch(&conn, DEFENSE, 4096);
+        watch(&conn, SURVIVAL, 4096);
+        let listed = list_arbitration_runs(&conn).expect("read succeeds");
+        assert_eq!(listed.len(), 2);
+        assert!(listed[0].started_at > listed[1].started_at, "newest first");
+
+        let survival = listed.iter().find(|r| r.node == "Mot (Void)").expect("the survival run is listed");
+        assert!(delete_arbitration_run(&conn, &survival.uid).expect("delete succeeds"));
+        assert!(!delete_arbitration_run(&conn, "no such run").expect("a miss is not an error"));
+        assert_eq!(stored(&conn).len(), 1);
+        assert_eq!(list_arbitration_runs(&conn).expect("read succeeds").len(), 1);
+        assert_eq!(stored(&conn)[0].node, "Stöfler (Lua)");
+
+        assert_eq!(watch(&conn, SURVIVAL, 4096), 0);
         assert_eq!(stored(&conn).len(), 1);
     }
 

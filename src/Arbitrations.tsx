@@ -3,7 +3,9 @@ import { fmtMs } from "./TimerHelper";
 import { ensurePermission, permissionGranted } from "./notify";
 import { clampLead, MAX_LEAD_MINS, MIN_LEAD_MINS, type ScheduleEntry } from "./arbitrationAlerts";
 import { useArbitrationSchedule } from "./arbitrationSchedule";
+import ArbitrationHistory from "./ArbitrationHistory";
 import "./Arbitrations.css";
+import "./Report.css";
 
 const fmtTime = (unix: number) =>
   new Date(unix * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -23,7 +25,20 @@ type Props = {
   onPermissionChange: (denied: boolean) => void;
 };
 
-export default function Arbitrations(
+export default function Arbitrations(props: Props) {
+  const [tab, setTab] = useState<"schedule" | "history">("schedule");
+  return (
+    <div className="arb">
+      <div className="sub-tabs">
+        <button className={tab === "schedule" ? "active" : ""} onClick={() => setTab("schedule")}>Schedule</button>
+        <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>Run history</button>
+      </div>
+      {tab === "schedule" ? <Schedule {...props} /> : <ArbitrationHistory />}
+    </div>
+  );
+}
+
+function Schedule(
   { favorites, onToggleFavorite, leadMins, onLeadChange, permissionDenied, onPermissionChange }: Props,
 ) {
   const { schedule, error, refresh: fetchSchedule } = useArbitrationSchedule(true);
@@ -78,8 +93,8 @@ export default function Arbitrations(
 
   if (!schedule) {
     return error
-      ? <div className="arb"><div className="timer-error">{error} <button onClick={fetchSchedule}>Retry</button></div></div>
-      : <div className="arb"><div className="timer-loading">Loading arbitration schedule…</div></div>;
+      ? <div className="arb-scroll"><div className="timer-error">{error} <button onClick={fetchSchedule}>Retry</button></div></div>
+      : <div className="arb-scroll"><div className="timer-loading">Loading arbitration schedule…</div></div>;
   }
 
   const nowSec = now / 1000;
@@ -101,7 +116,7 @@ export default function Arbitrations(
 
   let lastDay = "";
   return (
-    <div className="arb">
+    <div className="arb-scroll">
       {stale && (
         <div className="arb-stale" title={schedule.warning ?? error}>
           Showing the last schedule that loaded; refreshing failed.
