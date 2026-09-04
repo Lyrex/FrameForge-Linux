@@ -1,42 +1,35 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { fmtMs } from "./TimerHelper";
+import { ensurePermission } from "./notify";
+import { clampLead, MAX_LEAD_MINS, MIN_LEAD_MINS, type Schedule, type ScheduleEntry } from "./arbitrationAlerts";
 import "./Arbitrations.css";
-
-export type ScheduleEntry = {
-  start: number;
-  end: number;
-  node_id: string;
-  node: string;
-  region: string;
-  mission_type: string;
-  faction: string;
-};
-
-type Schedule = {
-  entries: ScheduleEntry[];
-  source: "fresh" | "refreshed" | "refreshing" | "stale" | "fallback";
-  warning: string | null;
-};
 
 // The backend caches the feed for an hour, so this poll only costs IPC; it is
 // what picks up the hourly refresh and rolls the window forward.
 const POLL_MS = 60_000;
-
-// Favorites live under their own settings key. save_settings merges keys, so
-// this never touches, and is never clobbered by, the main window's own save.
-const FAVORITES_KEY = "arbitrationFavorites";
 
 const fmtTime = (unix: number) =>
   new Date(unix * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const dayLabel = (unix: number) =>
   new Date(unix * 1000).toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
 
-export default function Arbitrations() {
+// Favorites and lead time are owned by App: the alerts have to keep firing
+// while the user is looking at another module, and this component is unmounted
+// for all of that time.
+type Props = {
+  favorites: string[];
+  onToggleFavorite: (nodeId: string) => void;
+  leadMins: number;
+  onLeadChange: (mins: number) => void;
+};
+
+export default function Arbitrations({ favorites, onToggleFavorite, leadMins, onLeadChange }: Props) {
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [error, setError] = useState("");
-  const [favorites, setFavorites] = useState<string[]>([]);
   const [now, setNow] = useState(() => Date.now());
+  const [permissionDenied, setPermissionDenied] = useState(false);
+  const [leadDraft, setLeadDraft] = useState(String(leadMins));
 
   const fetchSchedule = useCallback(() => {
     invoke<Schedule>("fetch_arbitration_schedule")
@@ -51,22 +44,28 @@ export default function Arbitrations() {
     return () => { clearInterval(poll); clearInterval(tick); };
   }, [fetchSchedule]);
 
-  useEffect(() => {
-    invoke<string>("load_settings").then(raw => {
-      try {
-        const saved = raw.trim() ? JSON.parse(raw)[FAVORITES_KEY] : [];
-        if (Array.isArray(saved)) setFavorites(saved.filter(x => typeof x === "string"));
-      } catch (e) {
-        console.error("arbitration favorites unreadable", e);
-      }
-    }).catch(e => console.error("load_settings failed", e));
-  }, []);
+  useEffect(() => setLeadDraft(String(leadMins)), [leadMins]);
 
-  const toggleFavorite = (nodeId: string) => {
-    const next = favorites.includes(nodeId) ? favorites.filter(x => x !== nodeId) : [...favorites, nodeId];
-    setFavorites(next);
-    invoke("save_settings", { json: JSON.stringify({ [FAVORITES_KEY]: next }) })
-      .catch(e => console.error("saving arbitration favorites failed", e));
+  // Favorites can predate any permission prompt, and notify() will not raise
+  // one itself. Opening this module is the gesture that earns the dialog.
+  useEffect(() => {
+    if (favorites.length > 0) void ensurePermission().then(granted => setPermissionDenied(!granted));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Committed on blur rather than per keystroke: clamping while the field is
+  // half-typed rewrites what the user is in the middle of entering.
+  const commitLead = () => {
+    const mins = clampLead(Number(leadDraft));
+    onLeadChange(mins);
+    setLeadDraft(String(mins));
+  };
+
+  const toggleFavorite = async (nodeId: string) => {
+    const adding = !favorites.includes(nodeId);
+    onToggleFavorite(nodeId);
+    // Prompt from the star rather than from the alert timer, so the OS dialog
+    // arrives while the user is thinking about arbitration alerts.
+    if (adding) setPermissionDenied(!(await ensurePermission()));
   };
 
   if (!schedule) {
@@ -85,7 +84,7 @@ export default function Arbitrations() {
   const star = (e: ScheduleEntry) => (
     <button
       className={`timer-star ${isFav(e) ? "fav" : ""}`}
-      onClick={() => toggleFavorite(e.node_id)}
+      onClick={() => void toggleFavorite(e.node_id)}
       title={isFav(e) ? "Unfavorite node" : "Favorite node"}
     >★</button>
   );
@@ -100,6 +99,26 @@ export default function Arbitrations() {
           Showing the last schedule that loaded; refreshing failed.
           <button onClick={fetchSchedule}>Retry</button>
         </div>
+      )}
+
+      <div className="arb-alerts">
+        <label>
+          Alert me
+          <input
+            type="number"
+            min={MIN_LEAD_MINS}
+            max={MAX_LEAD_MINS}
+            value={leadDraft}
+            onChange={e => setLeadDraft(e.target.value)}
+            onBlur={commitLead}
+            onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          />
+          minutes before a favorited node starts
+        </label>
+        {favorites.length === 0 && <span>Star a node to be alerted.</span>}
+      </div>
+      {permissionDenied && (
+        <div className="arb-alerts-denied">FrameForge cannot send notifications. Check its permission in your system settings.</div>
       )}
 
       <div className="timer-group-label">Now</div>
