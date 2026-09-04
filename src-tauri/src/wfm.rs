@@ -14,6 +14,7 @@
 // only WFM.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -139,6 +140,12 @@ impl RateLimiter {
 
 pub struct Wfm {
     session: Mutex<Option<WfmSession>>,
+    /// Counts session changes. A restore validates its token over the network
+    /// and only then writes; a logout or a login landing in between must win,
+    /// so the restore compares the count it started with. Only ever touched
+    /// while `session` is held, which is what makes the compare and the write
+    /// one step.
+    session_epoch: AtomicU64,
     /// General limit: ≤3 requests/second across every WFM endpoint.
     limiter: Mutex<RateLimiter>,
     /// Contract limit: ≤10 requests/minute for /v1/auctions/... (rivens, liches, sisters).
@@ -157,6 +164,9 @@ pub struct Wfm {
     /// once instead of racing. Entries are never removed: the map holds only
     /// a few keys for each item the user opens.
     memo_flights: Mutex<std::collections::HashMap<String, std::sync::Arc<Mutex<()>>>>,
+    /// Held while a saved token is validated, so concurrent restores of the
+    /// same login make one request rather than one each.
+    restore_flight: Mutex<()>,
     agent: ureq::Agent,
 }
 
@@ -164,11 +174,13 @@ impl Default for Wfm {
     fn default() -> Self {
         Self {
             session: Mutex::new(None),
+            session_epoch: AtomicU64::new(0),
             limiter: Mutex::new(RateLimiter::new(3, Duration::from_secs(1))),
             auction_limiter: Mutex::new(RateLimiter::new(10, Duration::from_secs(60))),
             price_cache: Mutex::new(std::collections::HashMap::new()),
             memo: Mutex::new(std::collections::HashMap::new()),
             memo_flights: Mutex::new(std::collections::HashMap::new()),
+            restore_flight: Mutex::new(()),
             top_cache: Mutex::new(None),
             prime_sets_cache: Mutex::new(None),
             agent: ureq::Agent::config_builder()
@@ -364,11 +376,55 @@ impl Wfm {
     // ── Session lifecycle ─────────────────────────────────────────────────────
 
     fn set_session(&self, s: WfmSession) {
-        *self.session.lock().unwrap_or_else(|e| e.into_inner()) = Some(s);
+        let mut lock = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        self.session_epoch.fetch_add(1, Ordering::Relaxed);
+        *lock = Some(s);
     }
 
     pub fn clear_session(&self) {
-        *self.session.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let mut lock = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        self.session_epoch.fetch_add(1, Ordering::Relaxed);
+        *lock = None;
+    }
+
+    /// Read before network work whose result will be written back with
+    /// [`Wfm::commit_session`].
+    fn epoch(&self) -> u64 {
+        let _lock = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        self.session_epoch.load(Ordering::Relaxed)
+    }
+
+    /// Store `s` unless the session changed since `epoch`.
+    fn commit_session(&self, epoch: u64, s: WfmSession) -> bool {
+        let mut lock = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        if self.session_epoch.load(Ordering::Relaxed) != epoch {
+            return false;
+        }
+        self.session_epoch.fetch_add(1, Ordering::Relaxed);
+        *lock = Some(s);
+        true
+    }
+
+    /// Lets a repeat restore of the same saved login skip the network.
+    fn identity_for(&self, saved: &WfmSession) -> Option<(String, String)> {
+        self.session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            // The whole bundle has to match, not the access token alone:
+            // answering from memory stores none of the rest, and a session
+            // missing a refresh token or a v1 JWT fails later refreshes and
+            // auction calls after a restore that reported success. The CSRF
+            // token is exempt because the restore below fetches one the save
+            // lacks.
+            .filter(|s| {
+                s.access_token == saved.access_token
+                    && s.refresh_token == saved.refresh_token
+                    && s.client_id == saved.client_id
+                    && s.device_id == saved.device_id
+                    && s.v1_jwt == saved.v1_jwt
+            })
+            .map(|s| (s.username.clone(), s.status.clone()))
     }
 
     /// (username, status) for the current session, or None if not logged in.
@@ -461,37 +517,56 @@ impl Wfm {
 
     /// Restore a session from a saved token JSON string, validating via /v2/me.
     /// Returns (username, status).
+    ///
+    /// Every window that mounts the app restores the same saved bundle, so a
+    /// token the session already holds is answered from memory: the round trip
+    /// would only repeat what the first restore learned.
     pub fn restore_from_json(&self, jwt: &str) -> Result<(String, String), String> {
         // Backward compat: an old save was the bare access token, not a JSON bundle.
         let data: serde_json::Value =
             serde_json::from_str(jwt).unwrap_or_else(|_| serde_json::json!({ "accessToken": jwt }));
-        let access_token = data["accessToken"].as_str().unwrap_or(jwt).to_string();
-        let refresh_token = data["refreshToken"].as_str().unwrap_or("").to_string();
-        let client_id = data["clientId"].as_str().unwrap_or("").to_string();
-        let device_id = data["deviceId"].as_str().unwrap_or("").to_string();
-        let v1_jwt = data["v1Jwt"].as_str().unwrap_or("").to_string();
-        let mut csrf_token = data["csrfToken"].as_str().unwrap_or("").to_string();
+        let mut saved = WfmSession {
+            access_token: data["accessToken"].as_str().unwrap_or(jwt).to_string(),
+            refresh_token: data["refreshToken"].as_str().unwrap_or("").to_string(),
+            client_id: data["clientId"].as_str().unwrap_or("").to_string(),
+            device_id: data["deviceId"].as_str().unwrap_or("").to_string(),
+            v1_jwt: data["v1Jwt"].as_str().unwrap_or("").to_string(),
+            csrf_token: data["csrfToken"].as_str().unwrap_or("").to_string(),
+            username: String::new(),
+            status: String::new(),
+        };
 
-        let json = self.me(&access_token, "401")?;
+        if let Some(identity) = self.identity_for(&saved) {
+            return Ok(identity);
+        }
+        // Those windows open within milliseconds of each other, so the check
+        // above lets them all miss together. Here the first one validates and
+        // the rest find the session filled.
+        let _restoring = self.restore_flight.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(identity) = self.identity_for(&saved) {
+            return Ok(identity);
+        }
+
+        let epoch = self.epoch();
+        let json = self.me(&saved.access_token, "401")?;
         let username = json["data"]["ingameName"].as_str().unwrap_or("Tenno").to_string();
         let status = json["data"]["status"].as_str().unwrap_or("offline").to_string();
 
-        if csrf_token.is_empty() && !v1_jwt.is_empty() {
+        if saved.csrf_token.is_empty() && !saved.v1_jwt.is_empty() {
             debug!("restore: no saved token, fetching from site");
-            csrf_token = self.fetch_csrf(&v1_jwt).unwrap_or_default();
-            debug!(len = csrf_token.len(), "restore: csrf_token fetched");
+            saved.csrf_token = self.fetch_csrf(&saved.v1_jwt).unwrap_or_default();
+            debug!(len = saved.csrf_token.len(), "restore: csrf_token fetched");
         }
-        self.set_session(WfmSession {
-            access_token,
-            refresh_token,
-            client_id,
-            device_id,
-            username: username.clone(),
-            status: status.clone(),
-            v1_jwt,
-            csrf_token,
-        });
-        Ok((username, status))
+        saved.username = username.clone();
+        saved.status = status.clone();
+        let stored = self.commit_session(epoch, saved);
+        if stored {
+            return Ok((username, status));
+        }
+        // A logout or a login for another account landed while /v2/me was in
+        // flight. That session is the live one, and answering with this login
+        // would put the user back into an account they left.
+        self.identity().ok_or_else(|| "Logged out while restoring".to_string())
     }
 
     /// Log in via v1 signin (current recommended method per WFM Discord).
@@ -562,6 +637,7 @@ impl Wfm {
         let new_refresh = json["data"]["refreshToken"].as_str().unwrap_or(&refresh_token).to_string();
         let mut lock = self.session.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(s) = lock.as_mut() {
+            self.session_epoch.fetch_add(1, Ordering::Relaxed);
             s.access_token = new_access;
             s.refresh_token = new_refresh;
         }
@@ -1451,6 +1527,52 @@ fn auction_error(action: &'static str) -> impl Fn(String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn session(access_token: &str, username: &str) -> WfmSession {
+        WfmSession {
+            access_token: access_token.into(),
+            refresh_token: String::new(),
+            client_id: String::new(),
+            device_id: String::new(),
+            username: username.into(),
+            status: "invisible".into(),
+            v1_jwt: String::new(),
+            csrf_token: String::new(),
+        }
+    }
+
+    /// Reaching the network here would be the bug: the restore has to answer
+    /// from the session it already holds, and a real `/v2/me` call could never
+    /// return this seeded name.
+    #[test]
+    fn a_restore_of_the_live_token_asks_no_one() {
+        let wfm = Wfm::new();
+        wfm.set_session(session("live-token", "Lyrex"));
+
+        let saved = serde_json::json!({ "accessToken": "live-token" }).to_string();
+        assert_eq!(
+            wfm.restore_from_json(&saved),
+            Ok(("Lyrex".to_string(), "invisible".to_string()))
+        );
+    }
+
+    /// The restore runs off the main thread now, so a logout or a second login
+    /// can land while it waits on `/v2/me`. Whatever it learned is then about
+    /// an account the user has already left.
+    #[test]
+    fn a_restore_that_lost_the_race_keeps_its_hands_off() {
+        let wfm = Wfm::new();
+
+        let epoch = wfm.epoch();
+        wfm.set_session(session("second-token", "Kaithe"));
+        assert!(!wfm.commit_session(epoch, session("first-token", "Lyrex")));
+        assert_eq!(wfm.identity(), Some(("Kaithe".into(), "invisible".into())));
+
+        let epoch = wfm.epoch();
+        wfm.clear_session();
+        assert!(!wfm.commit_session(epoch, session("first-token", "Lyrex")));
+        assert_eq!(wfm.identity(), None);
+    }
 
     #[test]
     fn slug_lowercases_spaces_and_strips_punctuation() {
