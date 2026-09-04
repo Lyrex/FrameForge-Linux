@@ -1336,11 +1336,18 @@ fn wfm_refresh_token(state: State<AppState>) -> Result<(), String> {
 
 /// Restore a session from saved token data (JSON string).
 /// Returns (username, status) so the frontend can set both in one step.
+///
+/// `async` so the token check runs off the main thread: the app restores its
+/// saved login while the window is coming up, and a synchronous command would
+/// hold the whole UI for the round trip.
 #[tauri::command]
-fn wfm_set_jwt(state: State<AppState>, jwt: String) -> Result<(String, String), String> {
+async fn wfm_set_jwt(state: State<'_, AppState>, jwt: String) -> Result<(String, String), String> {
     // `jwt` is the JSON bundle saved by wfm_save_credentials (or, for old saves,
     // a bare access token — restore_from_json handles both).
-    state.wfm.restore_from_json(&jwt)
+    let wfm = state.wfm.clone();
+    tauri::async_runtime::spawn_blocking(move || wfm.restore_from_json(&jwt))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Log in via v1 signin (current recommended method per WFM Discord).
