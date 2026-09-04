@@ -659,7 +659,7 @@ impl ArbitrationRecorder {
     /// TODO: a log that stops mid-run because the game crashed looks identical
     /// to one whose run is still going, so that last run is never recorded.
     /// Recovering it needs a signal that the log is finished with.
-    pub fn parse(&mut self, chunk: String) {
+    pub fn parse(&mut self, chunk: String) -> Vec<Run> {
         // Taking the text whole rather than copying it in matters at startup,
         // where the chunk is the entire log.
         if self.partial.is_empty() {
@@ -668,11 +668,12 @@ impl ArbitrationRecorder {
             self.partial.push_str(&chunk);
         }
         let Some(last_newline) = self.partial.rfind('\n') else {
-            return;
+            return Vec::new();
         };
         let half_line = self.partial.split_off(last_newline + 1);
         let complete = std::mem::replace(&mut self.partial, half_line);
 
+        let mut ended = Vec::new();
         for line in complete.lines() {
             for event in self.parser.feed_line(line) {
                 if let Event::RunEnded(run) = event {
@@ -683,10 +684,12 @@ impl ArbitrationRecorder {
                             "arbitration run queue is full; dropping the oldest run"
                         );
                     }
-                    self.pending.push_back(*run);
+                    self.pending.push_back((*run).clone());
+                    ended.push(*run);
                 }
             }
         }
+        ended
     }
 
     /// Writes what `parse` found, and returns how many rows that added. A run
@@ -712,6 +715,53 @@ impl ArbitrationRecorder {
         self.pending.clear();
         Ok(stored)
     }
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct RunSummary {
+    pub node: String,
+    pub mission_type: &'static str,
+    pub duration_sec: f64,
+    pub rotations: u32,
+    pub waves: u32,
+    pub kills: u32,
+    pub drone_kills: u32,
+    pub host_telemetry: bool,
+    pub vitus_mean: f64,
+    pub vitus_per_minute: f64,
+}
+
+/// Which run, if any, the post-run overlay shows for the runs a read just
+/// ended. Only the newest is the one the player just left, and if that one
+/// was aborted an older completed run must not stand in for it.
+///
+/// `live` is false for text that may be old, such as the startup backfill: a
+/// run that ended hours ago must not put a summary over the game now.
+pub fn live_run_summary(ended: &[Run], live: bool, enabled: bool) -> Option<RunSummary> {
+    if !(live && enabled) {
+        return None;
+    }
+    ended.last().and_then(post_run_summary)
+}
+
+/// `None` unless the run ended normally: an abort, or a new mission cutting
+/// the old one off, has nothing worth putting over the game.
+pub fn post_run_summary(run: &Run) -> Option<RunSummary> {
+    if run.end_reason != EndReason::MissionEnd {
+        return None;
+    }
+    Some(RunSummary {
+        node: run.node.clone(),
+        mission_type: run.mission_type.as_str(),
+        duration_sec: run.duration_sec,
+        rotations: run.rotations,
+        waves: run.waves,
+        kills: run.kills,
+        drone_kills: run.drone_kills,
+        host_telemetry: run.host_telemetry,
+        vitus_mean: run.vitus.mean,
+        vitus_per_minute: run.vitus.per_minute,
+    })
 }
 
 // ── Stats export / import ─────────────────────────────────────────────────────
@@ -907,6 +957,58 @@ mod arbitration_storage_tests {
             runs[0].mission_type,
             crate::arbitration::MissionType::Defense
         );
+    }
+
+    #[test]
+    fn parse_hands_back_the_runs_that_ended_in_the_chunk() {
+        let mut recorder = ArbitrationRecorder::default();
+        let ended = recorder.parse(DEFENSE.to_string());
+        assert_eq!(ended.len(), 1);
+        let summary = post_run_summary(&ended[0]).expect("a completed run has a summary");
+        assert_eq!(summary.node, "Stöfler (Lua)");
+        assert_eq!(summary.mission_type, "defense");
+        assert!(summary.waves > 0);
+        assert!(summary.duration_sec > 0.0);
+
+        assert!(recorder.parse(String::new()).is_empty());
+    }
+
+    #[test]
+    fn only_a_normally_ended_run_has_a_summary() {
+        let mut recorder = ArbitrationRecorder::default();
+        let ended = recorder.parse(ABORT.to_string());
+        assert_eq!(ended.len(), 1);
+        assert_eq!(ended[0].end_reason, EndReason::Aborted);
+        assert!(post_run_summary(&ended[0]).is_none());
+
+        let mut cut_off = completed_run();
+        cut_off.end_reason = EndReason::NewMission;
+        assert!(post_run_summary(&cut_off).is_none());
+    }
+
+    fn completed_run() -> Run {
+        let mut recorder = ArbitrationRecorder::default();
+        recorder.parse(DEFENSE.to_string()).remove(0)
+    }
+
+    fn aborted_run() -> Run {
+        let mut recorder = ArbitrationRecorder::default();
+        recorder.parse(ABORT.to_string()).remove(0)
+    }
+
+    #[test]
+    fn the_overlay_fires_for_a_live_completed_run_only_when_enabled() {
+        let ended = [completed_run()];
+        assert!(live_run_summary(&ended, true, true).is_some());
+        assert!(live_run_summary(&ended, false, true).is_none(), "backfill");
+        assert!(live_run_summary(&ended, true, false).is_none(), "toggle off");
+        assert!(live_run_summary(&[], true, true).is_none());
+    }
+
+    #[test]
+    fn the_newest_run_decides_whether_the_overlay_fires() {
+        assert!(live_run_summary(&[completed_run(), aborted_run()], true, true).is_none());
+        assert!(live_run_summary(&[aborted_run(), completed_run()], true, true).is_some());
     }
 
     #[test]

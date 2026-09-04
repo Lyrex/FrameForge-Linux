@@ -169,6 +169,7 @@ pub struct AppState {
     pub force_pid_check: Arc<AtomicBool>,
     /// When false, the Relic Pick Overlay is suppressed even when EE.log triggers it.
     pub relic_pick_overlay_enabled: Arc<AtomicBool>,
+    pub arbitration_overlay_enabled: Arc<AtomicBool>,
 }
 
 // ─── Item catalog ─────────────────────────────────────────────────────────────
@@ -2780,14 +2781,28 @@ fn parse_trade_dialog(raw: &str) -> Option<ParsedTrade> {
 /// Parses outside the database lock and takes it only for the writes. A write
 /// that fails leaves its runs queued in the recorder, so this logs and returns
 /// rather than tearing the watcher thread down over a busy database.
+///
+/// The overlay is raised before the runs are written, deliberately: the
+/// summary comes from the log, not the row, and a run whose insert failed is
+/// still queued for the next attempt. Waiting on the write would only lose
+/// the overlay to a transient database failure.
 fn record_arbitration_runs(
     app: &tauri::AppHandle,
     recorder: &mut db::ArbitrationRecorder,
     chunk: String,
+    live: bool,
 ) {
-    recorder.parse(chunk);
+    let ended = recorder.parse(chunk);
 
     let state = app.state::<AppState>();
+    let overlay_on = state.arbitration_overlay_enabled.load(Ordering::SeqCst);
+    if let Some(summary) = db::live_run_summary(&ended, live, overlay_on) {
+        show_overlay(app, "arbitration-overlay");
+        if let Err(e) = app.emit("arbitration-run-ended", &summary) {
+            warn!(error = %e, "arbitration overlay event not delivered");
+        }
+    }
+
     let stored = {
         let conn = match state.conn.lock() {
             Ok(conn) => conn,
@@ -2852,7 +2867,7 @@ fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
         let mut arbitration_runs = db::ArbitrationRecorder::default();
         let mut tail = log_parser::LogTail::from_start(log_path.clone());
         if let Some(backfill) = tail.read() {
-            record_arbitration_runs(&app, &mut arbitration_runs, backfill.text);
+            record_arbitration_runs(&app, &mut arbitration_runs, backfill.text, false);
         }
 
         let mut pending_trade: Option<String> = None;
@@ -2872,7 +2887,14 @@ fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
                 arbitration_runs = db::ArbitrationRecorder::default();
             }
             let buf = chunk.text;
-            record_arbitration_runs(&app, &mut arbitration_runs, buf.clone());
+            // A replaced log arrives whole and may hold runs finished long
+            // before this read; those are backfill too.
+            //
+            // ponytail: a stall of this thread while the game keeps writing
+            // the same file also hands over old runs, and they count as live.
+            // Nothing in practice stalls it for the length of a mission; gate
+            // on the run's own wall clock if that changes.
+            record_arbitration_runs(&app, &mut arbitration_runs, buf.clone(), !chunk.restarted);
             let lower = buf.to_lowercase();
 
             // ── Riven reroll / unveil ─────────────────────────────────────────
@@ -4115,29 +4137,58 @@ pub struct BlobStatusPayload {
 }
 
 
+// ── Overlay windows ───────────────────────────────────────────────────────────
+
+/// Only shows; the window positions itself once it knows its rendered size,
+/// because the overlay scale that decides that size lives in the frontend.
+fn show_overlay(app: &tauri::AppHandle, label: &str) {
+    use tauri::Manager;
+    let Some(win) = app.get_webview_window(label) else {
+        warn!(label, "overlay window missing; check tauri.conf.json and the capability list");
+        return;
+    };
+    if let Err(e) = win.show() {
+        warn!(label, error = %e, "overlay window did not show");
+    }
+}
+
 // ── Relic pick overlay ────────────────────────────────────────────────────────
 
 fn relic_pick_show(app: &tauri::AppHandle) {
-    use tauri::Manager;
-    let Some(win) = app.get_webview_window("relic-pick-overlay") else { return };
-    // Position: right edge of the primary monitor, 20px from top.
-    let (x, _dpi) = win.primary_monitor()
-        .ok()
-        .flatten()
-        .map(|m| {
-            let dpi = m.scale_factor();
-            let w   = m.size().width as f64 / dpi;
-            (w - 440.0, dpi)
-        })
-        .unwrap_or((1920.0 - 440.0, 1.0));
-    let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y: 20.0 }));
-    let _ = win.show();
+    show_overlay(app, "relic-pick-overlay");
 }
 
 fn relic_pick_hide(app: &tauri::AppHandle) {
     use tauri::Manager;
     let Some(win) = app.get_webview_window("relic-pick-overlay") else { return };
     let _ = win.hide();
+}
+
+// ── Arbitration post-run overlay ──────────────────────────────────────────────
+
+#[tauri::command]
+fn set_arbitration_overlay_enabled(state: State<AppState>, enabled: bool) {
+    state.arbitration_overlay_enabled.store(enabled, Ordering::SeqCst);
+}
+
+/// Debug: fire the post-run overlay with a made-up completed run.
+#[tauri::command]
+fn test_arbitration_overlay(app: tauri::AppHandle) -> String {
+    let summary = db::RunSummary {
+        node: "Stöfler (Lua)".into(),
+        mission_type: "defense",
+        duration_sec: 1487.0,
+        rotations: 5,
+        waves: 15,
+        kills: 612,
+        drone_kills: 23,
+        host_telemetry: true,
+        vitus_mean: 41.3,
+        vitus_per_minute: 1.67,
+    };
+    show_overlay(&app, "arbitration-overlay");
+    let _ = app.emit("arbitration-run-ended", &summary);
+    "Emitted arbitration-run-ended with a sample run".to_string()
 }
 
 /// Debug: run OCR on the top-left quarter of the Warframe window and report the detected era.
@@ -8928,6 +8979,7 @@ pub fn run() {
             corrections,
             force_pid_check: Arc::new(AtomicBool::new(false)),
             relic_pick_overlay_enabled: Arc::new(AtomicBool::new(true)),
+            arbitration_overlay_enabled: Arc::new(AtomicBool::new(false)),
         })
         .setup(|app| {
             use tauri::Manager;
@@ -9146,12 +9198,14 @@ pub fn run() {
             stop_monitor,
             poke_scan,
             set_relic_pick_enabled,
+            set_arbitration_overlay_enabled,
             get_monitor_status,
             get_blueprint_names,
             get_system_locale,
             get_current_crafting,
             debug_detect_fissure_era,
             test_relic_pick_overlay,
+            test_arbitration_overlay,
             debug_ee_log_tail,
             wfcd::get_drop_data,
             get_cache_statuses,

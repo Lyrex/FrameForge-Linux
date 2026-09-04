@@ -72,6 +72,7 @@ import RelicHelper, { RELIC_FILTERS_DEFAULT } from "./RelicHelper";
 import RivenAnalyzer from "./RivenAnalyzer";
 import RivenOverlayWindow from "./RivenOverlayWindow";
 import RelicPickOverlay from "./RelicPickOverlay";
+import ArbitrationOverlay from "./ArbitrationOverlay";
 import TimerHelper, { FissureWatch, fmtMs } from "./TimerHelper";
 import Arbitrations from "./Arbitrations";
 import { useWorldState } from "./worldstate";
@@ -100,8 +101,9 @@ const IS_OVERLAY       = _params.has("overlay")      || _hash === "#overlay"    
 const IS_MODULAR       = _params.has("modular")      || _hash === "#modular"      || _winLabel === "modular-popout";
 const IS_RIVEN_OVERLAY      = _params.has("rivenoverlay")      || _hash === "#rivenoverlay"      || _winLabel === "riven-overlay";
 const IS_RELIC_PICK_OVERLAY = _params.has("relicpickoverlay") || _hash === "#relicpickoverlay" || _winLabel === "relic-pick-overlay";
+const IS_ARBITRATION_OVERLAY = _params.has("arbitrationoverlay") || _hash === "#arbitrationoverlay" || _winLabel === "arbitration-overlay";
 const IS_OVERLAY_TEST       = _params.has("overlaytest")       || _hash === "#overlaytest"       || _winLabel === "overlay-test";
-const IS_ANY_OVERLAY = IS_OVERLAY || IS_MODULAR || IS_RIVEN_OVERLAY || IS_RELIC_PICK_OVERLAY;
+const IS_ANY_OVERLAY = IS_OVERLAY || IS_MODULAR || IS_RIVEN_OVERLAY || IS_RELIC_PICK_OVERLAY || IS_ARBITRATION_OVERLAY;
 
 // Overlay windows return from the router before any hook can run, which rules
 // out applying the scale from an effect.
@@ -766,6 +768,7 @@ export default function App() {
   if (IS_OVERLAY) return <Overlay />;
   if (IS_RIVEN_OVERLAY) return <RivenOverlayWindow />;
   if (IS_RELIC_PICK_OVERLAY) return <RelicPickOverlay />;
+  if (IS_ARBITRATION_OVERLAY) return <ArbitrationOverlay />;
   // If we're the pop-out modular window, render the standalone modular UI
   if (IS_MODULAR) return <ModularWindowPage />;
 
@@ -787,6 +790,7 @@ export default function App() {
   const [relicPickOcrResult, setRelicPickOcrResult] = useState<string | null>(null);
   const [relicPickTestEra, setRelicPickTestEra] = useState("LITH");
   const [relicPickTestResult, setRelicPickTestResult] = useState<string | null>(null);
+  const [arbOverlayTestResult, setArbOverlayTestResult] = useState<string | null>(null);
   const [eeLogTail, setEeLogTail] = useState<string | null>(null);
   const [diagPath, setDiagPath] = useState<string | null>(null);
   const [autoDiagEnabled, setAutoDiagEnabled] = useState(false);
@@ -855,6 +859,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     () => localStorage.getItem("ff-overlay-priority") ?? "completion"
   );
   const [relicPickEnabled,    setRelicPickEnabled]    = useState<boolean>(true);
+  const [arbOverlayEnabled,   setArbOverlayEnabled]   = useState<boolean>(false);
   const [relicPickPriority,   setRelicPickPriority]   = useState<"unowned" | "ducat" | "platinum">("unowned");
   const [relicPickRefinement, setRelicPickRefinement] = useState<"intact" | "exceptional" | "flawless" | "radiant">("radiant");
   const [relicPickLines,      setRelicPickLines]      = useState<"all" | "best" | "estimated">("all");
@@ -908,13 +913,13 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const settingsRef = useRef({
     overlayEnabled: true, overlayPriority: "completion", textScale: 1, colorblindMode: false, clockFormat: "auto" as "auto" | "12h" | "24h", memoryScannerEnabled: false, blobLogEnabled: false, autoDiagEnabled: false,
     tracked: [] as string[], favorites: [] as string[], timerFavorites: [] as string[], fissureWatches: [] as FissureWatch[], fissureNotifications: true, modularWidth: 240,
-    arbitrationFavorites: [] as string[], arbitrationLeadMins: DEFAULT_LEAD_MINS,
+    arbitrationFavorites: [] as string[], arbitrationLeadMins: DEFAULT_LEAD_MINS, arbitrationOverlayEnabled: false,
     modularSectionOrder: ["tracking", "favorites", "timers"] as string[], modularPopout: false,
     wfmInvisibleOnStart: false, wfmInvisibleOnClose: false, wfmAutoInvisible: false, wfmAutoInvisibleMins: 30,
     relicPickEnabled: true, relicPickPriority: "unowned" as "unowned" | "ducat" | "platinum", relicPickRefinement: "radiant" as "intact" | "exceptional" | "flawless" | "radiant", relicPickLines: "all" as "all" | "best" | "estimated",
     foundryPageSize: 30 as 30 | 60 | 100,
   });
-  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize };
+  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, arbitrationOverlayEnabled: arbOverlayEnabled, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize };
 
   const saveAllSettings = useCallback(() => {
     // Until the on-disk settings have been applied, settingsRef still holds
@@ -1063,6 +1068,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         if (typeof s.fissureNotifications === "boolean") setFissureNotifications(s.fissureNotifications);
         if (Array.isArray(s.arbitrationFavorites)) setArbFavorites(s.arbitrationFavorites.filter((x: unknown) => typeof x === "string"));
         if (typeof s.arbitrationLeadMins === "number") setArbLeadMins(clampLead(s.arbitrationLeadMins));
+        if (typeof s.arbitrationOverlayEnabled === "boolean") { setArbOverlayEnabled(s.arbitrationOverlayEnabled); invoke("set_arbitration_overlay_enabled", { enabled: s.arbitrationOverlayEnabled }); }
         if (Array.isArray(s.arbitrationAlertsFired)) arbFiredRef.current = s.arbitrationAlertsFired.filter((x: unknown) => typeof x === "string");
         if (typeof s.modularWidth === "number") setModularWidth(s.modularWidth);
         if (Array.isArray(s.modularSectionOrder)) {
@@ -2252,6 +2258,27 @@ if (typeof s.autoDiagEnabled === "boolean") {
                     </div>
                   </div>
 
+                  <div className="settings-section">
+                    <div className="settings-section-title">Arbitration Summary Overlay</div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">Enable Overlay</span>
+                        <span className="settings-row-desc">Briefly show a completed arbitration run's numbers over the game. Runs are recorded either way.</span>
+                      </div>
+                      <button
+                        className="btn-secondary"
+                        style={{ minWidth: 64, background: arbOverlayEnabled ? "rgba(56,139,253,.15)" : undefined, borderColor: arbOverlayEnabled ? "var(--accent)" : undefined }}
+                        onClick={() => {
+                          const next = !arbOverlayEnabled;
+                          setArbOverlayEnabled(next);
+                          settingsRef.current = { ...settingsRef.current, arbitrationOverlayEnabled: next };
+                          saveAllSettings();
+                          invoke("set_arbitration_overlay_enabled", { enabled: next });
+                        }}
+                      >{arbOverlayEnabled ? "Enabled" : "Disabled"}</button>
+                    </div>
+                  </div>
+
                 </>}
 
                 {/* ════════════ MARKET ════════════ */}
@@ -2650,6 +2677,21 @@ if (typeof s.autoDiagEnabled === "boolean") {
                         setRelicPickTestResult(null);
                         try { setRelicPickTestResult(await invoke<string>("test_relic_pick_overlay", { era: relicPickTestEra })); }
                         catch (e) { setRelicPickTestResult(`Error: ${e}`); }
+                      }}>Launch</button>
+
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">Test Arbitration Summary Overlay</span>
+                        <span className="settings-row-desc">
+                          Fire the post-run overlay with a sample run. Ignores the enable setting.
+                          {arbOverlayTestResult && <span style={{ display: "block", marginTop: 2, color: "var(--accent)", fontSize: 11 }}>{arbOverlayTestResult}</span>}
+                        </span>
+                      </div>
+                      <div />
+                      <div />
+                      <button className="btn-secondary" onClick={async () => {
+                        setArbOverlayTestResult(null);
+                        try { setArbOverlayTestResult(await invoke<string>("test_arbitration_overlay")); }
+                        catch (e) { setArbOverlayTestResult(`Error: ${e}`); }
                       }}>Launch</button>
 
                       {/* EE.log tail — reveals what string to trigger on */}
