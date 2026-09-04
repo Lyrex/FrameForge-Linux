@@ -2777,6 +2777,31 @@ fn parse_trade_dialog(raw: &str) -> Option<ParsedTrade> {
 //
 // ponytail: polling; switch to inotify if wake-up latency matters.
 
+/// Parses outside the database lock and takes it only for the writes. A write
+/// that fails leaves its runs queued in the recorder, so this logs and returns
+/// rather than tearing the watcher thread down over a busy database.
+fn record_arbitration_runs(
+    app: &tauri::AppHandle,
+    recorder: &mut db::ArbitrationRecorder,
+    chunk: String,
+) {
+    recorder.parse(chunk);
+
+    let state = app.state::<AppState>();
+    let conn = match state.conn.lock() {
+        Ok(conn) => conn,
+        Err(e) => {
+            warn!(error = %e, "database lock poisoned; arbitration runs held back");
+            return;
+        }
+    };
+    match recorder.store(&conn) {
+        Ok(0) => {}
+        Ok(stored) => info!(runs = stored, "arbitration runs recorded"),
+        Err(e) => warn!(error = %e, "storing arbitration runs failed; retrying on the next read"),
+    }
+}
+
 /// Start a lightweight EE.log watcher for features that don't need the memory scanner:
 /// riven reroll detection, trade completion detection, WFM whisper detection.
 /// Called unconditionally at app startup — EE.log is plain file I/O, not memory reading.
@@ -2784,13 +2809,46 @@ fn parse_trade_dialog(raw: &str) -> Option<ParsedTrade> {
 fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
     let log_path =
         log_parser::watched_log_path().ok_or("Cannot find the local data directory")?;
+
+    // The frontend invokes this from an effect, so a reload or React's
+    // double-mount asks for the watcher again. A second thread would replay
+    // the whole log through arbitration backfill a second time.
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    // A panic in the loop below would otherwise leave the flag set with no
+    // thread behind it, and every later invoke would return into nothing.
+    // Dropping runs on the unwind too, so the next invoke starts a watcher.
+    struct HoldsTheWatcherSlot;
+    impl Drop for HoldsTheWatcherSlot {
+        fn drop(&mut self) {
+            STARTED.store(false, Ordering::SeqCst);
+        }
+    }
+
     if !log_path.is_file() {
         warn!(path = %log_path.display(), "EE.log not found; log-driven features stay idle until it appears");
     }
 
     std::thread::spawn(move || {
-        use std::io::{Read, Seek, SeekFrom};
-        let mut file_pos: u64 = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+        let _slot = HoldsTheWatcherSlot;
+
+        // Arbitration runs finished while FrameForge was closed are still in
+        // the log, so the recorder gets the file from the top before the tail
+        // below starts. It keeps its parser afterwards, which is also what
+        // lets a run already under way at startup end correctly.
+        //
+        // The other features below deliberately start from the end instead:
+        // replaying an old log would fire reward overlays and trade prompts
+        // for missions the player finished hours ago.
+        let mut arbitration_runs = db::ArbitrationRecorder::default();
+        let mut tail = log_parser::LogTail::from_start(log_path.clone());
+        if let Some(backfill) = tail.read() {
+            record_arbitration_runs(&app, &mut arbitration_runs, backfill.text);
+        }
+
         let mut pending_trade: Option<String> = None;
         // Cooldown: don't fire riven-screen-open again within 4 seconds of the last fire.
         // Guards against the same EE.log buffer being processed twice by React StrictMode listeners.
@@ -2800,15 +2858,15 @@ fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
 
         loop {
             std::thread::sleep(std::time::Duration::from_millis(50));
-            let Ok(mut f) = std::fs::File::open(&log_path) else { continue };
-            let len = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
-            if len < file_pos { file_pos = 0; }
-            if len == file_pos { continue; } // nothing new since last read
-            if f.seek(SeekFrom::Start(file_pos)).is_err() { continue; }
-            let mut buf = String::new();
-            if f.read_to_string(&mut buf).is_err() { continue; }
-            file_pos = len;
-            if buf.is_empty() { continue; }
+            let Some(chunk) = tail.read() else { continue };
+            if chunk.restarted {
+                // A new launch's log. No run survives it, and a half line held
+                // over from the old file would otherwise be glued onto the new
+                // file's boot-time header.
+                arbitration_runs = db::ArbitrationRecorder::default();
+            }
+            let buf = chunk.text;
+            record_arbitration_runs(&app, &mut arbitration_runs, buf.clone());
             let lower = buf.to_lowercase();
 
             // ── Riven reroll / unveil ─────────────────────────────────────────
@@ -5180,10 +5238,8 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     if let Some(log_path) = ee_log_path {
         let flag = reward_flag.clone();
         std::thread::spawn(move || {
-            let mut file_pos: u64 = std::fs::metadata(&log_path)
-                .map(|m| m.len()).unwrap_or(0);
+            let mut tail = log_parser::LogTail::from_end(log_path.clone());
             let mut active_since: Option<std::time::Instant> = None;
-            use std::io::{Read, Seek, SeekFrom};
 
             // ── Startup scan: seed player names from the existing log ─────────
             // The tail starts at file-end so lines written before FrameForge launched
@@ -5272,14 +5328,19 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
             loop {
                 if !flag.load(Ordering::SeqCst) { break; }
                 std::thread::sleep(std::time::Duration::from_millis(200));
-                let Ok(mut f) = std::fs::File::open(&log_path) else { continue };
-                let len = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
-                if len < file_pos { file_pos = 0; }
-                if f.seek(SeekFrom::Start(file_pos)).is_err() { continue; }
-                let mut buf = String::new();
-                if f.read_to_string(&mut buf).is_err() { continue; }
-                file_pos = len;
-                if buf.is_empty() { continue; }
+                let Some(chunk) = tail.read() else { continue };
+                if chunk.restarted {
+                    // A new launch's log. The reward handshake this state was
+                    // half way through belongs to a session that is over, and
+                    // the relics were downloaded for missions already played.
+                    vp_in_seq = false;
+                    vp_seq_completed = false;
+                    vp_other_ids.clear();
+                    vp_own_item.clear();
+                    session_relics.clear();
+                    last_dismiss_at = None;
+                }
+                let buf = chunk.text;
 
                 let lower = buf.to_lowercase();
 

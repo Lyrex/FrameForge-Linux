@@ -1,3 +1,4 @@
+use crate::arbitration::{EndReason, Event, MissionType, Parser as ArbitrationParser, Run, Vitus};
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -135,6 +136,36 @@ fn migrate(conn: &Connection) -> Result<()> {
              PRAGMA user_version = 4;
              COMMIT;"
         ))?;
+    }
+
+    if version < 5 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS arbitration_runs (
+                uid                TEXT    PRIMARY KEY,
+                started_at         TEXT,
+                run_start_sec      REAL    NOT NULL,
+                run_end_sec        REAL,
+                mission_name       TEXT    NOT NULL,
+                node               TEXT    NOT NULL,
+                sol_node           TEXT,
+                mission_type       TEXT    NOT NULL,
+                mission_type_raw   TEXT,
+                end_reason         TEXT    NOT NULL,
+                duration_sec       REAL    NOT NULL,
+                rotations          INTEGER NOT NULL,
+                waves              INTEGER NOT NULL,
+                waves_per_rotation INTEGER NOT NULL,
+                kills              INTEGER NOT NULL,
+                drone_kills        INTEGER NOT NULL,
+                host_telemetry     INTEGER NOT NULL,
+                vitus_mean         REAL    NOT NULL,
+                vitus_std          REAL    NOT NULL,
+                vitus_per_minute   REAL    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS arbitration_runs_started
+                ON arbitration_runs(started_at);",
+        )?;
+        conn.pragma_update(None, "user_version", 5)?;
     }
 
     // An older build inserts '' for uid; repair after a downgrade and upgrade.
@@ -371,6 +402,249 @@ pub fn get_quantity_changes(conn: &Connection, limit: i64) -> Result<Vec<Quantit
     Ok(rows)
 }
 
+// ── Arbitration runs ──────────────────────────────────────────────────────────
+//
+// Runs arrive from two directions — the tail of a live log and a backfill pass
+// over the whole file at startup — and both go through `ArbitrationRecorder`,
+// so there is one parser and one insert. Re-reading a log the database has
+// already seen must add nothing, which is what `uid` buys.
+
+/// Identity of a run, from the two things a log fixes about it: when it began
+/// and where. Wall clock comes from the log's boot-time header; without one,
+/// game time since launch stands in.
+///
+/// ponytail: two runs on the same node at the same game-time offset in a log
+/// with no boot header collide and the second is dropped. Store a per-launch
+/// discriminator if a header-less log ever shows up in practice.
+fn run_uid(run: &Run) -> String {
+    let when = match run.started_at {
+        Some(t) => stored_timestamp(t),
+        None => format!("t{:.3}", run.run_start_sec),
+    };
+    format!("{when}\u{1f}{}", run.node)
+}
+
+/// Date ranges are compared as text in SQL, so every timestamp that reaches
+/// the column has to be written the same way: UTC, milliseconds, `Z`. Chrono's
+/// plain `to_rfc3339` writes `+00:00`, which sorts *below* the `Z` form that
+/// every other tool produces, and a bound in one form silently excludes rows
+/// stored in the other.
+fn stored_timestamp(t: chrono::DateTime<chrono::Utc>) -> String {
+    t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// Puts a filter bound in the same shape as the column. A bare `YYYY-MM-DD`
+/// is taken as the whole day, which is what a date picker means by it and
+/// what a plain text comparison would otherwise get wrong at the upper end.
+fn bound(raw: &str, day_end: bool) -> String {
+    if let Ok(t) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return stored_timestamp(t.with_timezone(&chrono::Utc));
+    }
+    if chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").is_ok() {
+        let time = if day_end { "T23:59:59.999Z" } else { "T00:00:00.000Z" };
+        return format!("{raw}{time}");
+    }
+    raw.to_string()
+}
+
+/// Returns false when the database already had this run.
+pub fn store_arbitration_run(conn: &Connection, run: &Run) -> Result<bool> {
+    let changed = conn.execute(
+        "INSERT OR IGNORE INTO arbitration_runs (
+             uid, started_at, run_start_sec, run_end_sec, mission_name, node,
+             sol_node, mission_type, mission_type_raw, end_reason, duration_sec,
+             rotations, waves, waves_per_rotation, kills, drone_kills,
+             host_telemetry, vitus_mean, vitus_std, vitus_per_minute)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                 ?15, ?16, ?17, ?18, ?19, ?20)",
+        params![
+            run_uid(run),
+            run.started_at.map(stored_timestamp),
+            run.run_start_sec,
+            run.run_end_sec,
+            run.mission_name,
+            run.node,
+            run.sol_node,
+            run.mission_type.as_str(),
+            run.mission_type_raw,
+            run.end_reason.as_str(),
+            run.duration_sec,
+            run.rotations,
+            run.waves,
+            run.waves_per_rotation,
+            run.kills,
+            run.drone_kills,
+            run.host_telemetry,
+            run.vitus.mean,
+            run.vitus.std,
+            run.vitus.per_minute,
+        ],
+    )?;
+    Ok(changed > 0)
+}
+
+/// `from` and `to` accept either a full RFC-3339 timestamp or a bare
+/// `YYYY-MM-DD`; both are normalised to the column's own form before the
+/// comparison. Runs from a log with no boot-time header have no wall clock and
+/// so fall outside any date range.
+///
+/// Reading runs back has no caller outside the tests yet — the run history is
+/// recorded now and displayed later, and there is deliberately no Tauri
+/// command exposing it until something on the other side asks for one.
+#[allow(dead_code)]
+#[derive(Debug, Default, Clone)]
+pub struct RunQuery {
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub node: Option<String>,
+    pub mission_type: Option<String>,
+}
+
+#[allow(dead_code)]
+pub fn get_arbitration_runs(conn: &Connection, query: &RunQuery) -> Result<Vec<Run>> {
+    let mut stmt = conn.prepare(
+        "SELECT started_at, run_start_sec, run_end_sec, mission_name, node,
+                sol_node, mission_type, mission_type_raw, end_reason,
+                duration_sec, rotations, waves, waves_per_rotation, kills,
+                drone_kills, host_telemetry, vitus_mean, vitus_std,
+                vitus_per_minute
+         FROM arbitration_runs
+         WHERE (?1 IS NULL OR started_at >= ?1)
+           AND (?2 IS NULL OR started_at <= ?2)
+           AND (?3 IS NULL OR node = ?3)
+           AND (?4 IS NULL OR mission_type = ?4)
+         ORDER BY started_at, run_start_sec",
+    )?;
+    let from = query.from.as_deref().map(|raw| bound(raw, false));
+    let to = query.to.as_deref().map(|raw| bound(raw, true));
+    let rows = stmt
+        .query_map(
+            params![from, to, query.node, query.mission_type],
+            |row| {
+                let started_at: Option<String> = row.get(0)?;
+                let mission_type: String = row.get(6)?;
+                let end_reason: String = row.get(8)?;
+                Ok(Run {
+                    started_at: started_at
+                        .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok())
+                        .map(|t| t.with_timezone(&chrono::Utc)),
+                    run_start_sec: row.get(1)?,
+                    run_end_sec: row.get(2)?,
+                    mission_name: row.get(3)?,
+                    node: row.get(4)?,
+                    sol_node: row.get(5)?,
+                    mission_type: MissionType::from_stored(&mission_type),
+                    mission_type_raw: row.get(7)?,
+                    end_reason: EndReason::from_stored(&end_reason),
+                    duration_sec: row.get(9)?,
+                    rotations: row.get(10)?,
+                    waves: row.get(11)?,
+                    waves_per_rotation: row.get(12)?,
+                    kills: row.get(13)?,
+                    drone_kills: row.get(14)?,
+                    host_telemetry: row.get(15)?,
+                    vitus: Vitus {
+                        mean: row.get(16)?,
+                        std: row.get(17)?,
+                        per_minute: row.get(18)?,
+                    },
+                })
+            },
+        )?
+        .collect::<Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Log text in, stored runs out, in two steps so that the database is only
+/// locked for the writes: parsing a whole log at startup takes far longer than
+/// the handful of inserts it produces, and every other query waits behind that
+/// same lock.
+///
+/// Holds the parser across calls so a run split over several reads still ends
+/// as one run.
+#[derive(Default)]
+pub struct ArbitrationRecorder {
+    parser: ArbitrationParser,
+    /// A read of the growing log ends wherever the game happened to flush, so
+    /// the last line of a chunk is often half a line. It waits here for its
+    /// other half rather than reaching the parser mangled.
+    partial: String,
+    /// Runs parsed but not yet written. The lines behind a run are consumed by
+    /// the parser as they are read and cannot be replayed, so a run whose
+    /// insert failed waits here for the next attempt instead of being lost.
+    pending: std::collections::VecDeque<Run>,
+}
+
+/// Enough runs for a long session of failed writes. Past it the oldest go,
+/// because a queue that grows for as long as the database is broken is a leak.
+///
+/// ponytail: the queue lives in memory, so a crash loses it either way, and
+/// the oldest go first on the assumption that a newer run is the one worth
+/// saving. Persist it if runs lost to a full disk turn out to matter.
+const MAX_PENDING_RUNS: usize = 256;
+
+impl ArbitrationRecorder {
+    /// Reads runs out of the text. A run still in progress is not parsed out:
+    /// it has no end and no final counts yet.
+    ///
+    /// TODO: a log that stops mid-run because the game crashed looks identical
+    /// to one whose run is still going, so that last run is never recorded.
+    /// Recovering it needs a signal that the log is finished with.
+    pub fn parse(&mut self, chunk: String) {
+        // Taking the text whole rather than copying it in matters at startup,
+        // where the chunk is the entire log.
+        if self.partial.is_empty() {
+            self.partial = chunk;
+        } else {
+            self.partial.push_str(&chunk);
+        }
+        let Some(last_newline) = self.partial.rfind('\n') else {
+            return;
+        };
+        let half_line = self.partial.split_off(last_newline + 1);
+        let complete = std::mem::replace(&mut self.partial, half_line);
+
+        for line in complete.lines() {
+            for event in self.parser.feed_line(line) {
+                if let Event::RunEnded(run) = event {
+                    if self.pending.len() == MAX_PENDING_RUNS {
+                        self.pending.pop_front();
+                        tracing::warn!(
+                            queued = MAX_PENDING_RUNS,
+                            "arbitration run queue is full; dropping the oldest run"
+                        );
+                    }
+                    self.pending.push_back(*run);
+                }
+            }
+        }
+    }
+
+    /// Writes what `parse` found, and returns how many rows that added. A run
+    /// stays queued until its insert succeeds, so a database that is busy or
+    /// full delays runs rather than dropping them.
+    ///
+    /// One transaction for the batch, because a startup backfill's runs would
+    /// otherwise cost a disk sync each. The queue is cleared only once the
+    /// commit lands: a failure rolls the whole batch back, and the runs behind
+    /// it have to still be there for the next attempt.
+    pub fn store(&mut self, conn: &Connection) -> Result<usize> {
+        if self.pending.is_empty() {
+            return Ok(0);
+        }
+        let tx = conn.unchecked_transaction()?;
+        let mut stored = 0;
+        for run in &self.pending {
+            if store_arbitration_run(&tx, run)? {
+                stored += 1;
+            }
+        }
+        tx.commit()?;
+        self.pending.clear();
+        Ok(stored)
+    }
+}
+
 // ── Stats export / import ─────────────────────────────────────────────────────
 
 /// Written into every export so a file from some other tool is rejected before
@@ -507,17 +781,202 @@ pub fn import_document(conn: &mut Connection, doc: &ExportDocument) -> Result<Im
     Ok(counts)
 }
 
+/// A database of a test's own, wiped before it is opened. WAL leaves sidecars,
+/// and a stale one carries a previous run's rows into this one.
+#[cfg(test)]
+fn db(name: &str) -> Connection {
+    let dir = std::env::temp_dir().join(format!("frameforge-tests-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir is always writable");
+    let path = dir.join(format!("{name}.sqlite"));
+    for suffix in ["sqlite", "sqlite-wal", "sqlite-shm"] {
+        let _ = std::fs::remove_file(path.with_extension(suffix));
+    }
+    init_db(&path).expect("a fresh database always initialises")
+}
+
+#[cfg(test)]
+mod arbitration_storage_tests {
+    use super::*;
+
+    const DEFENSE: &str = include_str!("../tests/fixtures/arbitration/stoefler-defense.txt");
+    const SURVIVAL: &str = include_str!("../tests/fixtures/arbitration/mot-survival.txt");
+    const ABORT: &str = include_str!("../tests/fixtures/arbitration/oestrus-abort.txt");
+
+    /// Splits the log into chunks that mostly end mid-line, the way a read of
+    /// a file the game is still writing does.
+    fn watch(conn: &Connection, log: &str, chunk_len: usize) -> usize {
+        let mut recorder = ArbitrationRecorder::default();
+        let bytes = log.as_bytes();
+        let mut stored = 0;
+        let mut at = 0;
+        while at < bytes.len() {
+            let mut end = (at + chunk_len).min(bytes.len());
+            while !log.is_char_boundary(end) {
+                end += 1;
+            }
+            recorder.parse(log[at..end].to_string());
+            stored += recorder.store(conn).expect("recording succeeds");
+            at = end;
+        }
+        stored
+    }
+
+    fn stored(conn: &Connection) -> Vec<crate::arbitration::Run> {
+        get_arbitration_runs(conn, &RunQuery::default()).expect("read succeeds")
+    }
+
+    #[test]
+    fn a_run_watched_in_chunks_is_stored_as_one_run() {
+        let conn = db("live");
+        assert_eq!(watch(&conn, DEFENSE, 97), 1);
+
+        let runs = stored(&conn);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].node, "Stöfler (Lua)");
+        assert_eq!(runs[0].end_reason, crate::arbitration::EndReason::MissionEnd);
+        assert_eq!(
+            runs[0].mission_type,
+            crate::arbitration::MissionType::Defense
+        );
+    }
+
+    #[test]
+    fn an_aborted_run_is_stored_too() {
+        let conn = db("abort");
+        assert_eq!(watch(&conn, ABORT, 4096), 1);
+        assert_eq!(stored(&conn)[0].end_reason, crate::arbitration::EndReason::Aborted);
+    }
+
+    /// Restarts and the startup backfill both re-read log text the database
+    /// has already seen.
+    #[test]
+    fn processing_the_same_log_twice_stores_nothing_the_second_time() {
+        let conn = db("idempotent");
+        assert_eq!(watch(&conn, DEFENSE, 4096), 1);
+        assert_eq!(watch(&conn, DEFENSE, 4096), 0);
+        assert_eq!(stored(&conn).len(), 1);
+    }
+
+    #[test]
+    fn a_run_still_in_progress_is_not_stored_until_it_ends() {
+        let conn = db("in-progress");
+        let cut = DEFENSE.len() / 2;
+        let head = &DEFENSE[..DEFENSE[..cut].rfind('\n').expect("the fixture has lines") + 1];
+
+        let mut recorder = ArbitrationRecorder::default();
+        recorder.parse(head.to_string());
+        assert_eq!(recorder.store(&conn).expect("recording succeeds"), 0);
+        assert!(stored(&conn).is_empty());
+
+        recorder.parse(DEFENSE[head.len()..].to_string());
+        assert_eq!(recorder.store(&conn).expect("recording succeeds"), 1);
+        assert_eq!(stored(&conn).len(), 1);
+    }
+
+    #[test]
+    fn runs_are_queryable_by_date_range_node_and_mission_type() {
+        let conn = db("query");
+        watch(&conn, DEFENSE, 4096);
+        watch(&conn, SURVIVAL, 4096);
+        assert_eq!(stored(&conn).len(), 2);
+
+        let query = |q: RunQuery| {
+            get_arbitration_runs(&conn, &q)
+                .expect("read succeeds")
+                .into_iter()
+                .map(|r| r.node)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            query(RunQuery { node: Some("Mot (Void)".into()), ..Default::default() }),
+            vec!["Mot (Void)"]
+        );
+        assert_eq!(
+            query(RunQuery { mission_type: Some("defense".into()), ..Default::default() }),
+            vec!["Stöfler (Lua)"]
+        );
+
+        let earliest = stored(&conn)
+            .iter()
+            .map(|r| r.started_at.expect("the fixtures carry a boot header"))
+            .min()
+            .expect("two runs are stored");
+        assert_eq!(
+            query(RunQuery { from: Some(stored_timestamp(earliest)), ..Default::default() }).len(),
+            2
+        );
+        assert!(query(RunQuery { to: Some("2000-01-01T00:00:00Z".into()), ..Default::default() }).is_empty());
+    }
+
+    /// A bound written the way anything but chrono writes it — `Z` rather than
+    /// `+00:00`, or a bare date — has to select the same rows. Compared as raw
+    /// text these forms sort against each other, not with each other.
+    #[test]
+    fn a_bound_in_any_iso_form_selects_the_same_runs() {
+        let conn = db("bounds");
+        watch(&conn, DEFENSE, 4096);
+        let run = stored(&conn).remove(0);
+        let at = run.started_at.expect("the fixture carries a boot header");
+        let day = at.format("%Y-%m-%d").to_string();
+
+        let count = |q: RunQuery| get_arbitration_runs(&conn, &q).expect("read succeeds").len();
+
+        for from in [
+            at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            at.to_rfc3339(),
+            day.clone(),
+        ] {
+            assert_eq!(count(RunQuery { from: Some(from.clone()), ..Default::default() }), 1, "from {from}");
+        }
+        // Upper bounds are where the raw text comparison goes wrong: `Z` sorts
+        // above `+00:00`, and a bare date sorts below every time on that date.
+        assert_eq!(count(RunQuery { to: Some(at.to_rfc3339()), ..Default::default() }), 1);
+        assert_eq!(count(RunQuery { to: Some(day.clone()), ..Default::default() }), 1);
+        assert_eq!(
+            count(RunQuery { from: Some(day.clone()), to: Some(day), ..Default::default() }),
+            1
+        );
+    }
+
+    /// The parser has already consumed the lines behind a queued run, so a
+    /// write that fails has to leave the run recoverable rather than drop it.
+    #[test]
+    fn a_run_survives_a_failed_write_and_lands_on_the_next_attempt() {
+        let conn = db("write-failure");
+        conn.execute_batch("ALTER TABLE arbitration_runs RENAME TO arbitration_runs_hidden;")
+            .expect("the table can be moved out of the way");
+
+        let mut recorder = ArbitrationRecorder::default();
+        recorder.parse(DEFENSE.to_string());
+        assert!(recorder.store(&conn).is_err(), "the write must fail with no table");
+
+        conn.execute_batch("ALTER TABLE arbitration_runs_hidden RENAME TO arbitration_runs;")
+            .expect("the table can be put back");
+        assert_eq!(
+            recorder.store(&conn).expect("the retry succeeds"),
+            1,
+            "the run held on across the failure"
+        );
+        assert_eq!(stored(&conn).len(), 1);
+    }
+
+    /// Compares every field, so a column left out of the table fails here
+    /// rather than reading back as a silent zero.
+    #[test]
+    fn a_stored_run_equals_the_run_the_parser_produced() {
+        let whole = crate::arbitration::parse_log(DEFENSE.lines());
+        for chunk_len in [1, 13, 512, 100_000] {
+            let conn = db(&format!("boundary-{chunk_len}"));
+            watch(&conn, DEFENSE, chunk_len);
+            assert_eq!(stored(&conn), whole, "chunk length {chunk_len}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod export_import_tests {
     use super::*;
-
-    fn db(name: &str) -> Connection {
-        let dir = std::env::temp_dir().join("frameforge-export-tests");
-        std::fs::create_dir_all(&dir).expect("temp dir is always writable");
-        let path = dir.join(format!("{name}.sqlite"));
-        let _ = std::fs::remove_file(&path);
-        init_db(&path).expect("a fresh database always initialises")
-    }
 
     fn trade(id: i64, item: &str) -> Trade {
         Trade {

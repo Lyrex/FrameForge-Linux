@@ -30,8 +30,6 @@
 //! drones are counted the same way everywhere.
 //! TODO: the rotation-bonus term assumes three waves per rotation; survival
 //! rotations are five-minute intervals and may deserve their own factor.
-//!
-//! TODO: not yet fed by the log watcher or a startup backfill pass.
 
 use chrono::{DateTime, NaiveDateTime, TimeDelta, Utc};
 use regex::Regex;
@@ -54,6 +52,53 @@ pub enum EndReason {
     NewMission,
     /// The input ended without an end marker; the run may still be going.
     Unterminated,
+}
+
+impl MissionType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Defense => "defense",
+            Self::Interception => "interception",
+            Self::Disruption => "disruption",
+            Self::Survival => "survival",
+            Self::Other => "other",
+        }
+    }
+
+    /// An unrecognised name reads back as `Other` rather than failing, so a
+    /// database written by a later build still opens in this one.
+    pub fn from_stored(name: &str) -> Self {
+        match name {
+            "defense" => Self::Defense,
+            "interception" => Self::Interception,
+            "disruption" => Self::Disruption,
+            "survival" => Self::Survival,
+            _ => Self::Other,
+        }
+    }
+}
+
+impl EndReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MissionEnd => "mission_end",
+            Self::Aborted => "aborted",
+            Self::NewMission => "new_mission",
+            Self::Unterminated => "unterminated",
+        }
+    }
+
+    /// A name this build does not know reads back as `Unterminated`: of the
+    /// four it is the one that claims least, where defaulting to `MissionEnd`
+    /// would report an unknown ending as a run the player completed.
+    pub fn from_stored(name: &str) -> Self {
+        match name {
+            "mission_end" => Self::MissionEnd,
+            "aborted" => Self::Aborted,
+            "new_mission" => Self::NewMission,
+            _ => Self::Unterminated,
+        }
+    }
 }
 
 /// Normal-approximation estimate of the vitus essence a run yields.
@@ -677,6 +722,32 @@ pub fn parse_log<'a>(lines: impl IntoIterator<Item = &'a str>) -> Vec<Run> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every name this build writes has to read back as what it wrote, and a
+    /// name it does not know must not become a completed run.
+    #[test]
+    fn stored_names_round_trip_and_unknown_ones_claim_nothing() {
+        for reason in [
+            EndReason::MissionEnd,
+            EndReason::Aborted,
+            EndReason::NewMission,
+            EndReason::Unterminated,
+        ] {
+            assert_eq!(EndReason::from_stored(reason.as_str()), reason);
+        }
+        for mission in [
+            MissionType::Defense,
+            MissionType::Interception,
+            MissionType::Disruption,
+            MissionType::Survival,
+            MissionType::Other,
+        ] {
+            assert_eq!(MissionType::from_stored(mission.as_str()), mission);
+        }
+
+        assert_eq!(EndReason::from_stored("crashed"), EndReason::Unterminated);
+        assert_eq!(MissionType::from_stored("excavation"), MissionType::Other);
+    }
 
     fn fixture(text: &str) -> Vec<Run> {
         parse_log(text.lines())
