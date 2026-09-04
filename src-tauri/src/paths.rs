@@ -105,6 +105,7 @@ const LEGACY_CACHE_FILES: &[&str] = &[
     "wfm_top_cache.json",
     "syndicate_catalog.json",
     "relics_run_prices.json",
+    "scan_log.txt",       // regenerated on every session; no value in keeping the old copy
 ];
 
 const LEGACY_CACHE_DIRS: &[&str] = &["img_cache", "ocr_models"];
@@ -113,10 +114,10 @@ const LEGACY_CACHE_DIRS: &[&str] = &["img_cache", "ocr_models"];
 /// left of its caches. Doing nothing when the old directory is gone makes this
 /// safe to call on every launch, so no marker file records that it ran.
 pub fn migrate_legacy() {
-    migrate_into(&legacy_root(), &config_dir(), &data_dir(), &cache_dir());
+    migrate_into(&legacy_root(), &config_dir(), &data_dir(), &cache_dir(), &state_dir());
 }
 
-fn migrate_into(old: &Path, config: &Path, data: &Path, cache: &Path) {
+fn migrate_into(old: &Path, config: &Path, data: &Path, cache: &Path, state: &Path) {
     if !old.is_dir() {
         return;
     }
@@ -140,6 +141,10 @@ fn migrate_into(old: &Path, config: &Path, data: &Path, cache: &Path) {
     move_file(
         &old.join("inventory_state_cache.json"),
         &cache.join("inventory_state_cache.json"),
+    );
+    move_file(
+        &old.join("inventory_changes.txt"),
+        &state.join("inventory_changes.txt"),
     );
     move_db(old, data);
 
@@ -241,11 +246,12 @@ mod tests {
     #[test]
     fn moves_user_state_and_drops_caches() {
         let dir = scratch("moves");
-        let (old, config, data, cache) = (
+        let (old, config, data, cache, state) = (
             dir.join("old"),
             dir.join("config"),
             dir.join("data"),
             dir.join("cache"),
+            dir.join("state"),
         );
         write(old.join("settings.json"), "{}");
         write(old.join("auction_ids.json"), "[]");
@@ -257,7 +263,7 @@ mod tests {
         write(old.join("items_cache.json"), "[]");
         fs::create_dir_all(old.join("img_cache")).unwrap();
 
-        migrate_into(&old, &config, &data, &cache);
+        migrate_into(&old, &config, &data, &cache, &state);
 
         assert_eq!(
             fs::read_to_string(config.join("settings.json")).unwrap(),
@@ -289,18 +295,19 @@ mod tests {
     #[test]
     fn never_overwrites_the_destination() {
         let dir = scratch("no-overwrite");
-        let (old, config, data, cache) = (
+        let (old, config, data, cache, state) = (
             dir.join("old"),
             dir.join("config"),
             dir.join("data"),
             dir.join("cache"),
+            dir.join("state"),
         );
         write(old.join("settings.json"), "old");
         write(config.join("settings.json"), "new");
         write(old.join("data.db"), "old-db");
         write(data.join("data.db"), "new-db");
 
-        migrate_into(&old, &config, &data, &cache);
+        migrate_into(&old, &config, &data, &cache, &state);
 
         assert_eq!(
             fs::read_to_string(config.join("settings.json")).unwrap(),
@@ -316,18 +323,19 @@ mod tests {
     #[test]
     fn keeps_the_old_directory_when_something_is_left_in_it() {
         let dir = scratch("leftovers");
-        let (old, config, data, cache) = (
+        let (old, config, data, cache, state) = (
             dir.join("old"),
             dir.join("config"),
             dir.join("data"),
             dir.join("cache"),
+            dir.join("state"),
         );
         write(old.join("settings.json"), "{}");
-        write(old.join("scan_log.txt"), "log");
+        write(old.join("notes_from_the_user.txt"), "keep me");
 
-        migrate_into(&old, &config, &data, &cache);
+        migrate_into(&old, &config, &data, &cache, &state);
 
-        assert!(old.join("scan_log.txt").exists());
+        assert!(old.join("notes_from_the_user.txt").exists());
         assert!(old.exists());
     }
 
@@ -340,6 +348,7 @@ mod tests {
             &dir.join("config"),
             &dir.join("data"),
             &dir.join("cache"),
+            &dir.join("state"),
         );
         assert!(!dir.join("config").join("settings.json").exists());
     }
@@ -347,16 +356,17 @@ mod tests {
     #[test]
     fn a_second_run_changes_nothing() {
         let dir = scratch("idempotent");
-        let (old, config, data, cache) = (
+        let (old, config, data, cache, state) = (
             dir.join("old"),
             dir.join("config"),
             dir.join("data"),
             dir.join("cache"),
+            dir.join("state"),
         );
         write(old.join("settings.json"), "{}");
 
-        migrate_into(&old, &config, &data, &cache);
-        migrate_into(&old, &config, &data, &cache);
+        migrate_into(&old, &config, &data, &cache, &state);
+        migrate_into(&old, &config, &data, &cache, &state);
 
         assert_eq!(
             fs::read_to_string(config.join("settings.json")).unwrap(),
