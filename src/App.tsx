@@ -77,7 +77,8 @@ import Arbitrations from "./Arbitrations";
 import { useWorldState } from "./worldstate";
 import { notify, ensurePermission } from "./notify";
 import { collectNewMatches, type SeenFissures } from "./fissureAlerts";
-import { clampLead, dueAlerts, DEFAULT_LEAD_MINS, type Schedule as ArbitrationSchedule, type ScheduleEntry } from "./arbitrationAlerts";
+import { clampLead, runAlertPass, DEFAULT_LEAD_MINS, EVAL_INTERVAL_MS, type ScheduleEntry } from "./arbitrationAlerts";
+import { useArbitrationSchedule } from "./arbitrationSchedule";
 import StatsDataTransfer from "./StatsDataTransfer";
 import Statistics from "./Statistics";
 import Syndicates from "./Syndicates";
@@ -1422,55 +1423,73 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
   // ── Arbitration alerts ─────────────────────────────────────────────────────
   //
-  // Here rather than in Arbitrations for the reason the fissure alerts are
-  // here: that module is unmounted whenever another one is on screen.
+  // Here rather than in Arbitrations, for the same reason the fissure alerts
+  // are: that module is unmounted whenever another one is on screen.
 
   // Persisted, so a restart inside the lead window does not alert a second
-  // time for the same hour. Written straight to its own settings key, since
-  // this is bookkeeping the user never sets.
+  // time for the same hour.
   const arbFiredRef = useRef<string[]>([]);
+  const arbAlertsOn = arbFavorites.length > 0;
+
+  const { schedule: arbSchedule, error: arbScheduleError } = useArbitrationSchedule(arbAlertsOn);
+
+  // The loop reads its inputs from here rather than from the effect closure, so
+  // starring a node changes what the next tick sees without tearing the timer
+  // down and starting a fresh pass on top of one already running. This effect
+  // has to stay above the loop's own, which reads the ref on its first tick.
+  const arbInputsRef = useRef({ entries: [] as ScheduleEntry[], favorites: [] as string[], leadMins: DEFAULT_LEAD_MINS });
+  useEffect(() => {
+    arbInputsRef.current = { entries: arbSchedule?.entries ?? [], favorites: arbFavorites, leadMins: arbLeadMins };
+  });
+
+  // A pass outlives its tick whenever the notification IPC is slow, and two
+  // passes reading the same fired state would raise one occurrence twice.
+  const arbCheckingRef = useRef(false);
+
+  // Held here so a denial survives Arbitrations' unmount, but written only by
+  // that module: it raises the prompt on a gesture and shows the warning.
+  const [arbPermissionDenied, setArbPermissionDenied] = useState(false);
 
   useEffect(() => {
-    // No favorites, no polling: silent and free until somebody stars a node.
-    if (arbFavorites.length === 0) return;
+    if (arbAlertsOn && arbScheduleError) {
+      console.error("arbitration schedule unavailable, alerts paused:", arbScheduleError);
+    }
+  }, [arbAlertsOn, arbScheduleError]);
 
-    let cancelled = false;
+  useEffect(() => {
     const check = async () => {
-      let entries: ScheduleEntry[];
+      // A prune raises nothing, so it need not wait for a pass already running;
+      // queuing it behind the guard would drop it, since unstarring the last
+      // node also stops the timer that would otherwise come back to it.
+      if (arbAlertsOn && arbCheckingRef.current) return;
+      arbCheckingRef.current = true;
       try {
-        entries = (await invoke<ArbitrationSchedule>("fetch_arbitration_schedule")).entries;
-      } catch (e) {
-        console.error("arbitration schedule unavailable", e);
-        return;
-      }
-      if (cancelled) return;
-
-      const { due, fired } = dueAlerts(entries, arbFavorites, arbLeadMins, arbFiredRef.current, Date.now() / 1000);
-      // Recorded before the notification is raised, so a crash in between
-      // costs an alert rather than repeating one.
-      const changed = JSON.stringify(fired) !== JSON.stringify(arbFiredRef.current);
-      arbFiredRef.current = fired;
-      if (changed) {
+        const { entries, favorites, leadMins } = arbInputsRef.current;
+        const nowMs = Date.now();
+        const fired = await runAlertPass(
+          entries, favorites, leadMins, arbFiredRef.current, nowMs / 1000,
+          e => notify(
+            `Arbitration — ${e.node}${e.region ? ` (${e.region})` : ""}`,
+            `${[e.mission_type, e.faction].filter(Boolean).join(" · ")} — ${e.start * 1000 > nowMs
+              ? `starts in ${fmtMs(e.start * 1000 - nowMs)}`
+              : `under way, ${fmtMs(e.end * 1000 - nowMs)} left`}`,
+          ));
+        if (fired === null) return;
+        arbFiredRef.current = fired;
         invoke("save_settings", { json: JSON.stringify({ arbitrationAlertsFired: fired }) })
           .catch(e => console.error("saving arbitration alert state failed", e));
-      }
-
-      // Only one arbitration runs at a time, so this is a single alert unless
-      // the machine was asleep across several of them.
-      for (const e of due) {
-        void notify(
-          `Arbitration — ${e.node}${e.region ? ` (${e.region})` : ""}`,
-          `${[e.mission_type, e.faction].filter(Boolean).join(" · ")} — starts in ${fmtMs(e.start * 1000 - Date.now())}`,
-        );
+      } finally {
+        arbCheckingRef.current = false;
       }
     };
 
+    // Unstarring the last node still leaves keys behind, so one pass runs to
+    // prune them; only a user with favorites keeps the timer.
     void check();
-    // A minute against a lead measured in minutes: close enough, and each call
-    // re-parses the whole multi-year feed, so a tighter tick buys nothing.
-    const poll = setInterval(check, 60_000);
-    return () => { cancelled = true; clearInterval(poll); };
-  }, [arbFavorites, arbLeadMins]);
+    if (!arbAlertsOn) return;
+    const poll = setInterval(check, EVAL_INTERVAL_MS);
+    return () => clearInterval(poll);
+  }, [arbAlertsOn]);
 
   // ── Modular pop-out window ─────────────────────────────────────────────────
   useEffect(() => {
@@ -3001,6 +3020,8 @@ if (typeof s.autoDiagEnabled === "boolean") {
               )}
               leadMins={arbLeadMins}
               onLeadChange={setArbLeadMins}
+              permissionDenied={arbPermissionDenied}
+              onPermissionChange={setArbPermissionDenied}
             />
           </ErrorBoundary>
         )}

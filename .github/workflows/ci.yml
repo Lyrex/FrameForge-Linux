@@ -127,6 +127,9 @@ jobs:
 
       - run: pnpm build
 
+      # tsconfig excludes the test files, so pnpm build never compiles them.
+      - run: pnpm test
+
   scripts:
     needs: changes
     if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.scripts == 'true'

@@ -1,13 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useRef, useState } from "react";
 import { fmtMs } from "./TimerHelper";
-import { ensurePermission } from "./notify";
-import { clampLead, MAX_LEAD_MINS, MIN_LEAD_MINS, type Schedule, type ScheduleEntry } from "./arbitrationAlerts";
+import { ensurePermission, permissionGranted } from "./notify";
+import { clampLead, MAX_LEAD_MINS, MIN_LEAD_MINS, type ScheduleEntry } from "./arbitrationAlerts";
+import { useArbitrationSchedule } from "./arbitrationSchedule";
 import "./Arbitrations.css";
-
-// The backend caches the feed for an hour, so this poll only costs IPC; it is
-// what picks up the hourly refresh and rolls the window forward.
-const POLL_MS = 60_000;
 
 const fmtTime = (unix: number) =>
   new Date(unix * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -16,45 +12,59 @@ const dayLabel = (unix: number) =>
 
 // Favorites and lead time are owned by App: the alerts have to keep firing
 // while the user is looking at another module, and this component is unmounted
-// for all of that time.
+// for all of that time. Permission state too: a denial only this component
+// knows about is invisible for as long as the user is elsewhere.
 type Props = {
   favorites: string[];
   onToggleFavorite: (nodeId: string) => void;
   leadMins: number;
   onLeadChange: (mins: number) => void;
+  permissionDenied: boolean;
+  onPermissionChange: (denied: boolean) => void;
 };
 
-export default function Arbitrations({ favorites, onToggleFavorite, leadMins, onLeadChange }: Props) {
-  const [schedule, setSchedule] = useState<Schedule | null>(null);
-  const [error, setError] = useState("");
+export default function Arbitrations(
+  { favorites, onToggleFavorite, leadMins, onLeadChange, permissionDenied, onPermissionChange }: Props,
+) {
+  const { schedule, error, refresh: fetchSchedule } = useArbitrationSchedule(true);
   const [now, setNow] = useState(() => Date.now());
-  const [permissionDenied, setPermissionDenied] = useState(false);
   const [leadDraft, setLeadDraft] = useState(String(leadMins));
 
-  const fetchSchedule = useCallback(() => {
-    invoke<Schedule>("fetch_arbitration_schedule")
-      .then(s => { setSchedule(s); setError(""); })
-      .catch(e => setError(String(e)));
-  }, []);
-
   useEffect(() => {
-    fetchSchedule();
-    const poll = setInterval(fetchSchedule, POLL_MS);
     const tick = setInterval(() => setNow(Date.now()), 1000);
-    return () => { clearInterval(poll); clearInterval(tick); };
-  }, [fetchSchedule]);
+    return () => clearInterval(tick);
+  }, []);
 
   useEffect(() => setLeadDraft(String(leadMins)), [leadMins]);
 
-  // Favorites can predate any permission prompt, and notify() will not raise
-  // one itself. Opening this module is the gesture that earns the dialog.
+  // Favorites arrive from settings after mount, so this waits for them rather
+  // than reading the empty array the first render sees.
+  const askedRef = useRef(false);
   useEffect(() => {
-    if (favorites.length > 0) void ensurePermission().then(granted => setPermissionDenied(!granted));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    if (favorites.length === 0 || askedRef.current) return;
+    askedRef.current = true;
+    void ensurePermission().then(granted => onPermissionChange(!granted));
+  }, [favorites.length]);
+
+  // Permission is granted in system settings, so the app hears about it by
+  // getting the window back, not by anything happening inside it. Read-only:
+  // a dialog raised by a focus event is one the user did nothing to invite.
+  useEffect(() => {
+    if (favorites.length === 0) return;
+    const recheck = () => void permissionGranted().then(granted => onPermissionChange(!granted));
+    window.addEventListener("focus", recheck);
+    return () => window.removeEventListener("focus", recheck);
+  }, [favorites.length, onPermissionChange]);
 
   // Committed on blur rather than per keystroke: clamping while the field is
   // half-typed rewrites what the user is in the middle of entering.
   const commitLead = () => {
+    // A cleared field is someone retyping, not a request for the shortest lead
+    // the app allows; Number("") would otherwise commit it as zero.
+    if (leadDraft.trim() === "") {
+      setLeadDraft(String(leadMins));
+      return;
+    }
     const mins = clampLead(Number(leadDraft));
     onLeadChange(mins);
     setLeadDraft(String(mins));
@@ -63,9 +73,7 @@ export default function Arbitrations({ favorites, onToggleFavorite, leadMins, on
   const toggleFavorite = async (nodeId: string) => {
     const adding = !favorites.includes(nodeId);
     onToggleFavorite(nodeId);
-    // Prompt from the star rather than from the alert timer, so the OS dialog
-    // arrives while the user is thinking about arbitration alerts.
-    if (adding) setPermissionDenied(!(await ensurePermission()));
+    if (adding) onPermissionChange(!(await ensurePermission()));
   };
 
   if (!schedule) {
