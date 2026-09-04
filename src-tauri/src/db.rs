@@ -781,6 +781,33 @@ pub struct SnapshotRow {
     pub quantity:    i64,
 }
 
+/// One `arbitration_runs` row as stored, `uid` included, so an import lands
+/// the row under the identity the recorder would have given it and a later
+/// backfill of the same log adds nothing.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ArbitrationRunRow {
+    pub uid:                String,
+    pub started_at:         Option<String>,
+    pub run_start_sec:      f64,
+    pub run_end_sec:        Option<f64>,
+    pub mission_name:       String,
+    pub node:               String,
+    pub sol_node:           Option<String>,
+    pub mission_type:       String,
+    pub mission_type_raw:   Option<String>,
+    pub end_reason:         String,
+    pub duration_sec:       f64,
+    pub rotations:          u32,
+    pub waves:              u32,
+    pub waves_per_rotation: u32,
+    pub kills:              u32,
+    pub drone_kills:        u32,
+    pub host_telemetry:     bool,
+    pub vitus_mean:         f64,
+    pub vitus_std:          f64,
+    pub vitus_per_minute:   f64,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct ExportDocument {
     pub format:         String,
@@ -788,6 +815,10 @@ pub struct ExportDocument {
     pub trades:         Vec<Trade>,
     pub item_snapshots: Vec<SnapshotRow>,
     pub tracked_items:  Vec<TrackedItem>,
+    /// Absent from files written before runs were exported, and skipped by
+    /// builds that predate it, so the version stays at 2.
+    #[serde(default)]
+    pub arbitration_runs: Vec<ArbitrationRunRow>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
@@ -798,6 +829,8 @@ pub struct ImportCounts {
     pub snapshots_skipped: usize,
     pub tracked_added:     usize,
     pub tracked_skipped:   usize,
+    pub runs_added:        usize,
+    pub runs_skipped:      usize,
 }
 
 pub fn export_document(conn: &Connection) -> Result<ExportDocument> {
@@ -814,10 +847,39 @@ pub fn export_document(conn: &Connection) -> Result<ExportDocument> {
         date:        row.get(1)?,
         quantity:    row.get(2)?,
     }))?.collect::<Result<Vec<_>>>()?;
-    drop(stmt);
 
     let mut tracked_items = get_tracked_items(conn)?;
     tracked_items.sort_by(|a, b| a.unique_name.cmp(&b.unique_name));
+
+    let mut stmt = conn.prepare(
+        "SELECT uid, started_at, run_start_sec, run_end_sec, mission_name, node,
+                sol_node, mission_type, mission_type_raw, end_reason, duration_sec,
+                rotations, waves, waves_per_rotation, kills, drone_kills,
+                host_telemetry, vitus_mean, vitus_std, vitus_per_minute
+         FROM arbitration_runs ORDER BY uid",
+    )?;
+    let arbitration_runs = stmt.query_map([], |row| Ok(ArbitrationRunRow {
+        uid:                row.get(0)?,
+        started_at:         row.get(1)?,
+        run_start_sec:      row.get(2)?,
+        run_end_sec:        row.get(3)?,
+        mission_name:       row.get(4)?,
+        node:               row.get(5)?,
+        sol_node:           row.get(6)?,
+        mission_type:       row.get(7)?,
+        mission_type_raw:   row.get(8)?,
+        end_reason:         row.get(9)?,
+        duration_sec:       row.get(10)?,
+        rotations:          row.get(11)?,
+        waves:              row.get(12)?,
+        waves_per_rotation: row.get(13)?,
+        kills:              row.get(14)?,
+        drone_kills:        row.get(15)?,
+        host_telemetry:     row.get(16)?,
+        vitus_mean:         row.get(17)?,
+        vitus_std:          row.get(18)?,
+        vitus_per_minute:   row.get(19)?,
+    }))?.collect::<Result<Vec<_>>>()?;
 
     Ok(ExportDocument {
         format: EXPORT_FORMAT.to_string(),
@@ -825,6 +887,7 @@ pub fn export_document(conn: &Connection) -> Result<ExportDocument> {
         trades,
         item_snapshots,
         tracked_items,
+        arbitration_runs,
     })
 }
 
@@ -853,11 +916,14 @@ pub fn parse_export(json: &str) -> std::result::Result<ExportDocument, String> {
     if doc.trades.iter().any(|t| t.uid.is_empty()) {
         return Err("Export is malformed: a trade has no uid".into());
     }
+    if doc.arbitration_runs.iter().any(|r| r.uid.is_empty()) {
+        return Err("Export is malformed: an arbitration run has no uid".into());
+    }
     Ok(doc)
 }
 
 /// Existing rows win on every conflict and nothing is removed, so importing an
-/// older backup cannot lose newer history. One transaction covers all three
+/// older backup cannot lose newer history. One transaction covers all four
 /// sections: a failure part-way leaves the database as it was.
 pub fn import_document(conn: &mut Connection, doc: &ExportDocument) -> Result<ImportCounts> {
     let tx = conn.transaction()?;
@@ -894,6 +960,27 @@ pub fn import_document(conn: &mut Connection, doc: &ExportDocument) -> Result<Im
             params![item.unique_name, item.display_name, item.added_at],
         )?;
         if added == 1 { counts.tracked_added += 1 } else { counts.tracked_skipped += 1 }
+    }
+
+    for run in &doc.arbitration_runs {
+        let added = tx.execute(
+            "INSERT OR IGNORE INTO arbitration_runs (
+                 uid, started_at, run_start_sec, run_end_sec, mission_name, node,
+                 sol_node, mission_type, mission_type_raw, end_reason, duration_sec,
+                 rotations, waves, waves_per_rotation, kills, drone_kills,
+                 host_telemetry, vitus_mean, vitus_std, vitus_per_minute)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                     ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            params![
+                run.uid, run.started_at, run.run_start_sec, run.run_end_sec,
+                run.mission_name, run.node, run.sol_node, run.mission_type,
+                run.mission_type_raw, run.end_reason, run.duration_sec,
+                run.rotations, run.waves, run.waves_per_rotation, run.kills,
+                run.drone_kills, run.host_telemetry, run.vitus_mean,
+                run.vitus_std, run.vitus_per_minute,
+            ],
+        )?;
+        if added == 1 { counts.runs_added += 1 } else { counts.runs_skipped += 1 }
     }
 
     tx.commit()?;
@@ -1187,7 +1274,12 @@ mod export_import_tests {
         }
     }
 
+    const DEFENSE: &str = include_str!("../tests/fixtures/arbitration/stoefler-defense.txt");
+
     fn populate(conn: &Connection) {
+        for run in crate::arbitration::parse_log(DEFENSE.lines()) {
+            store_arbitration_run(conn, &run).expect("insert succeeds");
+        }
         add_trade(conn, &trade(1, "Rhino Prime Systems")).expect("insert succeeds");
         add_trade(conn, &trade(2, "Soma Prime Barrel")).expect("insert succeeds");
         add_tracked_item(conn, "/Lotus/Types/Items/Ducats", "Ducats").expect("insert succeeds");
@@ -1220,7 +1312,8 @@ mod export_import_tests {
         let second = import_document(&mut target, &doc).expect("import succeeds");
 
         assert_eq!(second, ImportCounts {
-            trades_skipped: 2, snapshots_skipped: 2, tracked_skipped: 1, ..Default::default()
+            trades_skipped: 2, snapshots_skipped: 2, tracked_skipped: 1, runs_skipped: 1,
+            ..Default::default()
         });
     }
 
@@ -1258,7 +1351,7 @@ mod export_import_tests {
 
         assert_eq!(counts, ImportCounts {
             trades_added: 1, trades_skipped: 2,
-            snapshots_skipped: 2, tracked_skipped: 1,
+            snapshots_skipped: 2, tracked_skipped: 1, runs_skipped: 1,
             ..Default::default()
         });
         let names: Vec<String> = export_document(&target).expect("export succeeds")
@@ -1281,6 +1374,60 @@ mod export_import_tests {
 
         assert_eq!(counts.trades_added, 2);
         assert_eq!(get_trades(&target).expect("read succeeds").len(), 4);
+    }
+
+    #[test]
+    fn a_round_trip_carries_the_runs_and_the_recorder_still_sees_them_as_known() {
+        let source = db("runs-source");
+        populate(&source);
+        let original = export_document(&source).expect("export succeeds");
+        assert_eq!(original.arbitration_runs.len(), 1);
+
+        let mut target = db("runs-target");
+        import_document(&mut target, &original).expect("import succeeds");
+        assert_eq!(export_document(&target).expect("export succeeds"), original);
+
+        for run in crate::arbitration::parse_log(DEFENSE.lines()) {
+            assert!(!store_arbitration_run(&target, &run).expect("insert succeeds"));
+        }
+    }
+
+    #[test]
+    fn an_import_never_overwrites_a_run_the_target_already_has() {
+        let source = db("runs-merge-source");
+        populate(&source);
+        let mut doc = export_document(&source).expect("export succeeds");
+
+        let mut target = db("runs-merge-target");
+        import_document(&mut target, &doc).expect("import succeeds");
+        doc.arbitration_runs[0].kills = 9999;
+        let mut extra = doc.arbitration_runs[0].clone();
+        extra.uid = "some-other-run".into();
+        doc.arbitration_runs.push(extra);
+        let counts = import_document(&mut target, &doc).expect("import succeeds");
+
+        assert_eq!((counts.runs_added, counts.runs_skipped), (1, 1));
+        let runs = export_document(&target).expect("export succeeds").arbitration_runs;
+        assert_eq!(runs.len(), 2);
+        assert!(runs.iter().all(|r| r.kills != 9999 || r.uid == "some-other-run"));
+    }
+
+    #[test]
+    fn a_database_with_no_runs_exports_an_empty_runs_section() {
+        let conn = db("no-runs");
+        assert!(export_document(&conn).expect("export succeeds").arbitration_runs.is_empty());
+    }
+
+    #[test]
+    fn a_file_written_before_runs_were_exported_still_imports() {
+        let mut conn = db("pre-runs");
+        let doc = parse_export(
+            r#"{"format":"frameforge-stats","version":2,"trades":[],"item_snapshots":[],
+                "tracked_items":[{"unique_name":"/Lotus/Types/Items/Ducats","display_name":"Ducats","added_at":"2026-01-01T00:00:00Z"}]}"#,
+        ).expect("an export without the runs section parses");
+        assert!(doc.arbitration_runs.is_empty());
+        let counts = import_document(&mut conn, &doc).expect("import succeeds");
+        assert_eq!(counts.tracked_added, 1);
     }
 
     fn pre_uid_db(name: &str) -> Connection {
@@ -1350,6 +1497,9 @@ mod export_import_tests {
             r#"{"format":"frameforge-stats","version":99,"trades":[],"item_snapshots":[],"tracked_items":[]}"#,
             r#"{"format":"frameforge-stats","version":2,"trades":"nope"}"#,
             r#"{"format":"frameforge-stats","version":2,"trades":[{"id":0,"uid":"","timestamp":"","with_player":"","direction":"","item_name":"","item_url":"","quantity":1,"platinum":0,"source":"","notes":"","session_id":"","trade_type":""}],"item_snapshots":[],"tracked_items":[]}"#,
+            r#"{"format":"frameforge-stats","version":2,"trades":[],"item_snapshots":[],"tracked_items":[],"arbitration_runs":[{"uid":"","started_at":null,"run_start_sec":0.0,"run_end_sec":null,"mission_name":"","node":"","sol_node":null,"mission_type":"other","mission_type_raw":null,"end_reason":"aborted","duration_sec":0.0,"rotations":0,"waves":0,"waves_per_rotation":0,"kills":0,"drone_kills":0,"host_telemetry":false,"vitus_mean":0.0,"vitus_std":0.0,"vitus_per_minute":0.0}]}"#,
+            // A negative count would land in SQLite and then fail the u32 read of every run.
+            r#"{"format":"frameforge-stats","version":2,"trades":[],"item_snapshots":[],"tracked_items":[],"arbitration_runs":[{"uid":"x","started_at":null,"run_start_sec":0.0,"run_end_sec":null,"mission_name":"m","node":"n","sol_node":null,"mission_type":"other","mission_type_raw":null,"end_reason":"aborted","duration_sec":0.0,"rotations":0,"waves":0,"waves_per_rotation":0,"kills":-1,"drone_kills":0,"host_telemetry":false,"vitus_mean":0.0,"vitus_std":0.0,"vitus_per_minute":0.0}]}"#,
         ] {
             let err = parse_export(bad).expect_err("a bad document must not parse");
             assert!(!err.is_empty(), "rejection must explain itself");

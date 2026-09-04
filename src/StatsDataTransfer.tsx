@@ -8,6 +8,8 @@ type ImportCounts = {
   snapshots_skipped: number;
   tracked_added: number;
   tracked_skipped: number;
+  runs_added: number;
+  runs_skipped: number;
 };
 
 /** Both commands return null when the user dismisses the file dialog, which
@@ -28,7 +30,8 @@ export default function StatsDataTransfer() {
         if (c) setMsg(
           `Imported — trades ${c.trades_added} added, ${c.trades_skipped} already present · ` +
           `snapshots ${c.snapshots_added} added, ${c.snapshots_skipped} already present · ` +
-          `tracked items ${c.tracked_added} added, ${c.tracked_skipped} already present.`
+          `tracked items ${c.tracked_added} added, ${c.tracked_skipped} already present · ` +
+          `arbitration runs ${c.runs_added} added, ${c.runs_skipped} already present.`
         );
       }
     } catch (e) {
@@ -44,7 +47,7 @@ export default function StatsDataTransfer() {
       <div className="settings-row">
         <div className="settings-row-info">
           <span className="settings-row-label">Export</span>
-          <span className="settings-row-desc">Save trade history, item snapshots and tracked items to a JSON file.</span>
+          <span className="settings-row-desc">Save trade history, item snapshots, tracked items and arbitration runs to a JSON file.</span>
         </div>
         <button className="btn-secondary" onClick={() => run("export")} disabled={busy !== null}>
           {busy === "export" ? "Exporting…" : "Export"}
