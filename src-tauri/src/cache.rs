@@ -11,7 +11,7 @@
 //! thing.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -21,16 +21,17 @@ use tracing::warn;
 
 use crate::paths;
 
-pub fn atomic_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
+pub fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_os_string();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
 
-    // Phase 1: write + sync the temp file.
+    // Security software (Defender, Proton Drive) can block new files in the
+    // data directory for an unsigned dev binary while still allowing writes to
+    // existing ones. A direct write is not atomic, but it beats losing user
+    // state that nothing can rebuild.
     if let Err(e) = std::fs::write(&tmp, data) {
-        // .tmp creation failed — security software (Defender, Proton Drive) may
-        // be blocking new files in this directory for the unsigned dev binary.
-        // Warn with a step label so the log makes the failure site clear, then
-        // fall back to a direct (non-atomic) write.  Production signed builds
-        // don't trigger this path; cache files can tolerate it.
+        let _ = std::fs::remove_file(&tmp);
         warn!(
             path = %path.display(),
             "atomic_write/write_tmp failed ({e}), falling back to direct write"
@@ -38,7 +39,6 @@ pub fn atomic_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> 
         return std::fs::write(path, data);
     }
 
-    // Phase 2: flush to platter before the rename commits.
     // Must open with write access: FlushFileBuffers (sync_all) requires it on
     // Windows and returns ERROR_ACCESS_DENIED on a read-only handle.
     if let Err(e) = std::fs::OpenOptions::new()
@@ -50,24 +50,23 @@ pub fn atomic_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> 
         return Err(std::io::Error::new(e.kind(), format!("sync: {e}")));
     }
 
-    // Phase 3: rename with a short retry.  Windows Defender and file-sync tools
+    // Windows Defender and file-sync tools
     // can hold the destination briefly without FILE_SHARE_DELETE, making
     // MoveFileExW return ERROR_ACCESS_DENIED.  A 50–150 ms pause outlasts most
     // scan windows.
+    let mut result = Err(std::io::Error::other("rename: no attempts"));
     for delay_ms in [0u64, 50, 150] {
         if delay_ms > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            std::thread::sleep(Duration::from_millis(delay_ms));
         }
-        match std::fs::rename(&tmp, path) {
-            Ok(()) => return Ok(()),
-            Err(_) if delay_ms < 150 => continue,
-            Err(e) => {
-                let _ = std::fs::remove_file(&tmp);
-                return Err(std::io::Error::new(e.kind(), format!("rename: {e}")));
-            }
+        result = std::fs::rename(&tmp, path)
+            .map_err(|e| std::io::Error::new(e.kind(), format!("rename: {e}")));
+        if result.is_ok() {
+            return result;
         }
     }
-    unreachable!()
+    let _ = std::fs::remove_file(&tmp);
+    result
 }
 
 #[derive(Serialize, Deserialize)]
@@ -339,6 +338,95 @@ pub fn get_conditional(url: &str, etag: Option<&str>) -> Result<Fetched<String>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_preserves_destination_when_temp_disappears() {
+        use std::io::Read;
+        use std::os::unix::ffi::OsStrExt;
+
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tmp/atomic-write-missing-temp");
+        // A run that died between mkfifo and remove_file leaves the pipe behind.
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test directory is writable");
+        let path = root.join("catalogue.json");
+        let tmp = root.join("catalogue.json.tmp");
+        std::fs::write(&path, b"original").expect("test directory is writable");
+        let fifo = std::ffi::CString::new(tmp.as_os_str().as_bytes()).expect("path has no NUL");
+        // A pipe holds the writer open until its temporary name has been removed.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        std::thread::scope(|threads| {
+            let writer = threads.spawn(|| atomic_write(&path, &vec![b'x'; 1024 * 1024]));
+            let mut reader = std::fs::File::open(&tmp).expect("writer opens the pipe");
+            std::fs::remove_file(&tmp).expect("pipe is removable");
+            reader
+                .read_to_end(&mut Vec::new())
+                .expect("writer closes the pipe");
+            let error = writer
+                .join()
+                .expect("writer does not panic")
+                .expect_err("temporary name was removed");
+            assert!(error.to_string().starts_with("sync:"));
+        });
+        assert_eq!(std::fs::read(&path).expect("original exists"), b"original");
+        assert!(!tmp.exists());
+        std::fs::remove_dir_all(root).expect("test directory is removable");
+    }
+
+    #[test]
+    fn atomic_write_cleans_up_after_rename_failure() {
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tmp/atomic-write-rename-failure");
+        let path = root.join("catalogue.json");
+        std::fs::create_dir_all(&path).expect("test directory is writable");
+        let error = atomic_write(&path, b"replacement").expect_err("cannot replace a directory");
+        assert!(error.to_string().starts_with("rename:"));
+        assert!(path.is_dir());
+        assert!(!root.join("catalogue.json.tmp").exists());
+        std::fs::remove_dir_all(root).expect("test directory is removable");
+    }
+
+    #[test]
+    fn atomic_writes_with_different_extensions_do_not_clobber_each_other() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tmp/atomic-write-extensions");
+        std::fs::create_dir_all(&root).expect("test directory is writable");
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|threads| {
+            for (extension, byte) in [("json", b'j'), ("bin", b'b')] {
+                let root = &root;
+                let barrier = &barrier;
+                threads.spawn(move || {
+                    let path = root.join(format!("foo-v1.{extension}"));
+                    let body = vec![byte; 1024 * 1024];
+                    barrier.wait();
+                    for _ in 0..10 {
+                        atomic_write(&path, &body).expect("independent write succeeds");
+                        assert!(std::fs::read(&path).expect("cache exists") == body);
+                    }
+                });
+            }
+        });
+        std::fs::remove_dir_all(root).expect("test directory is removable");
+    }
+
+    #[test]
+    fn blocked_temp_creation_falls_back_to_a_direct_write() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tmp/atomic-write-failure");
+        std::fs::create_dir_all(&root).expect("test directory is writable");
+        let path = root.join("catalogue.json");
+        std::fs::write(&path, b"original").expect("test directory is writable");
+        for name in ["catalogue.tmp", "catalogue.json.tmp"] {
+            std::fs::create_dir_all(root.join(name)).expect("test directory is writable");
+        }
+
+        atomic_write(&path, b"replacement").expect("direct write succeeds");
+        assert_eq!(
+            std::fs::read(&path).expect("destination exists"),
+            b"replacement"
+        );
+        std::fs::remove_dir_all(root).expect("test directory is removable");
+    }
 
     /// One process, one root: every test names its own cache file instead.
     fn scratch(name: &str) -> String {
