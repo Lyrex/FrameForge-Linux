@@ -1,0 +1,182 @@
+/* Pieces the report-style views share: the stat card and its tiles, the
+   small filter button group, the inline delete confirmation, the sparkline
+   box, the empty-state explainer and the sub-tab strip. */
+
+/* ── Sub-tabs ── */
+
+.sub-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.sub-tabs button {
+  background: none;
+  border: 1px solid rgba(48,54,61,.6);
+  color: var(--muted);
+  font-size: 12px;
+  padding: 3px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background .1s, color .1s, border-color .1s;
+}
+.sub-tabs button:hover { background: rgba(255,255,255,.06); color: var(--text); }
+.sub-tabs button.active { background: rgba(56,139,253,.15); border-color: var(--accent); color: var(--accent); }
+
+/* ── Card ── */
+
+.report-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  cursor: default;
+  transition: border-color 0.1s, opacity 0.1s;
+}
+
+.report-tf-btns {
+  display: flex;
+}
+.report-tf-btn {
+  background: none;
+  border: 1px solid rgba(48,54,61,.5);
+  border-right-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: background .1s, color .1s, border-color .1s;
+  line-height: 1.4;
+}
+
+.report-tf-btn:first-child { border-radius: 3px 0 0 3px; }
+.report-tf-btn:last-child { border-right-width: 1px; border-radius: 0 3px 3px 0; margin-right: 4px; }
+
+.report-tf-btn:hover { background: rgba(255,255,255,.06); color: var(--text); }
+.report-tf-btn.active {
+  background: rgba(56,139,253,.15);
+  border-color: var(--accent);
+  border-right-width: 1px;
+  color: var(--accent);
+}
+
+.report-tf-btn.active + .report-tf-btn { border-left-color: rgba(48,54,61,.5); }
+.report-remove-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  transition: color .1s;
+}
+
+.report-remove-btn:hover { color: var(--red); }
+.report-confirm-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.report-confirm-msg {
+  font-size: 11px;
+  color: var(--red);
+  white-space: nowrap;
+}
+
+.report-confirm-yes {
+  background: rgba(248,81,73,.2);
+  border: 1px solid var(--red);
+  border-radius: 3px;
+  color: var(--red);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: background .1s;
+}
+
+.report-confirm-yes:hover { background: rgba(248,81,73,.35); }
+.report-confirm-no {
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(48,54,61,.6);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: background .1s;
+}
+
+.report-confirm-no:hover { background: rgba(255,255,255,.12); color: var(--text); }
+/* ── Chart ── */
+
+.report-chart-svg {
+  width: 100%;
+  height: 60px;
+  display: block;
+  border-radius: 4px;
+  background: rgba(0,0,0,.15);
+}
+
+.report-chart-empty {
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
+  background: rgba(0,0,0,.1);
+  border-radius: 4px;
+}
+
+/* ── Stats row ── */
+
+.report-card-stats {
+  display: flex;
+  gap: 16px;
+}
+
+.report-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.report-stat-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.report-stat-value {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.report-pos { color: var(--green); }
+.report-neg { color: var(--red); }
+.report-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px;
+  text-align: center;
+}
+
+.report-empty-icon { font-size: 48px; }
+.report-empty-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.report-empty-desc { font-size: 13px; color: var(--muted); line-height: 1.6; }

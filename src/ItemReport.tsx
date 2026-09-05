@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import Sparkline from "./Sparkline";
+import "./Report.css";
 import "./ItemReport.css";
 
 interface TrackedItem {
@@ -22,57 +24,6 @@ interface CatalogItem {
 }
 
 type Timeframe = "7" | "30" | "90" | "all";
-
-// ── SVG line chart ─────────────────────────────────────────────────────────────
-
-function ItemChart({ data }: { data: SnapshotPoint[] }) {
-  const W = 300, H = 60;
-  const pt = 6, pb = 6, pl = 2, pr = 2;
-  const cW = W - pl - pr;
-  const cH = H - pt - pb;
-
-  if (data.length === 0) {
-    return <div className="ir-chart-empty">Awaiting first snapshot…</div>;
-  }
-
-  const qtys = data.map(d => d.quantity);
-  const minQ = Math.min(...qtys);
-  const maxQ = Math.max(...qtys);
-  const range = maxQ - minQ || 1;
-
-  const xi = (i: number) =>
-    pl + (data.length === 1 ? cW / 2 : (i / (data.length - 1)) * cW);
-  const yi = (q: number) => pt + (1 - (q - minQ) / range) * cH;
-
-  if (data.length === 1) {
-    return (
-      <svg viewBox={`0 0 ${W} ${H}`} className="ir-chart-svg" preserveAspectRatio="none">
-        <line
-          x1={pl} y1={H / 2} x2={pl + cW} y2={H / 2}
-          stroke="var(--accent)" strokeWidth="1" strokeOpacity="0.4" strokeDasharray="4 3"
-        />
-        <circle cx={xi(0)} cy={H / 2} r="3" fill="var(--accent)" />
-      </svg>
-    );
-  }
-
-  const linePts = data.map((d, i) => `${xi(i).toFixed(1)},${yi(d.quantity).toFixed(1)}`).join(" ");
-  const fillPts = `${pl},${pt + cH} ${linePts} ${pl + cW},${pt + cH}`;
-
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="ir-chart-svg" preserveAspectRatio="none">
-      <polygon points={fillPts} fill="var(--accent)" fillOpacity="0.12" />
-      <polyline
-        points={linePts}
-        fill="none"
-        stroke="var(--accent)"
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
 
 // ── Tracked item card ──────────────────────────────────────────────────────────
 
@@ -110,57 +61,57 @@ function TrackedItemCard({ item, allSnapshots, timeframe, onTimeframeChange, onR
 
   return (
     <div
-      className={`ir-card${isDragSource ? " ir-card-dragsource" : ""}${isDragOver ? " ir-card-dragover" : ""}`}
+      className={`report-card${isDragSource ? " ir-card-dragsource" : ""}${isDragOver ? " ir-card-dragover" : ""}`}
       onMouseEnter={onCardMouseEnter}
     >
       <div className="ir-card-header">
         <span className="ir-drag-handle" title="Drag to reorder" onMouseDown={onHandleMouseDown}>⠿</span>
         <span className="ir-card-name">{item.display_name}</span>
         {confirmDelete ? (
-          <div className="ir-confirm-row">
-            <span className="ir-confirm-msg">Delete all history?</span>
-            <button className="ir-confirm-yes" onClick={onRemove}>Delete</button>
-            <button className="ir-confirm-no" onClick={() => setConfirmDelete(false)}>Cancel</button>
+          <div className="report-confirm-row">
+            <span className="report-confirm-msg">Delete all history?</span>
+            <button className="report-confirm-yes" onClick={onRemove}>Delete</button>
+            <button className="report-confirm-no" onClick={() => setConfirmDelete(false)}>Cancel</button>
           </div>
         ) : (
           <div className="ir-card-right">
-            <div className="ir-tf-btns">
+            <div className="report-tf-btns">
               {(["7", "30", "90", "all"] as Timeframe[]).map(tf => (
                 <button
                   key={tf}
-                  className={`ir-tf-btn${timeframe === tf ? " active" : ""}`}
+                  className={`report-tf-btn${timeframe === tf ? " active" : ""}`}
                   onClick={() => onTimeframeChange(tf)}
                 >
                   {tf === "all" ? "All" : `${tf}d`}
                 </button>
               ))}
             </div>
-            <button className="ir-remove-btn" onClick={() => setConfirmDelete(true)} title="Remove tracking">×</button>
+            <button className="report-remove-btn" onClick={() => setConfirmDelete(true)} title="Remove tracking">×</button>
           </div>
         )}
       </div>
 
-      <ItemChart data={displayData} />
+      <Sparkline values={displayData.map(d => d.quantity)} empty="Awaiting first snapshot…" />
 
-      <div className="ir-card-stats">
-        <div className="ir-stat">
-          <span className="ir-stat-label">Current</span>
-          <span className="ir-stat-value">
+      <div className="report-card-stats">
+        <div className="report-stat">
+          <span className="report-stat-label">Current</span>
+          <span className="report-stat-value">
             {latest !== null ? latest.toLocaleString() : "—"}
           </span>
         </div>
         {avgPerDay !== null && (
-          <div className="ir-stat">
-            <span className="ir-stat-label">Avg/day</span>
-            <span className={`ir-stat-value ${avgPerDay > 0 ? "ir-pos" : avgPerDay < 0 ? "ir-neg" : ""}`}>
+          <div className="report-stat">
+            <span className="report-stat-label">Avg/day</span>
+            <span className={`report-stat-value ${avgPerDay > 0 ? "report-pos" : avgPerDay < 0 ? "report-neg" : ""}`}>
               {fmtChange(avgPerDay)}
             </span>
           </div>
         )}
         {displayData.length > 1 && (
-          <div className="ir-stat">
-            <span className="ir-stat-label">{timeframe === "all" ? "Total" : `${timeframe}d total`}</span>
-            <span className={`ir-stat-value ${totalGain > 0 ? "ir-pos" : totalGain < 0 ? "ir-neg" : ""}`}>
+          <div className="report-stat">
+            <span className="report-stat-label">{timeframe === "all" ? "Total" : `${timeframe}d total`}</span>
+            <span className={`report-stat-value ${totalGain > 0 ? "report-pos" : totalGain < 0 ? "report-neg" : ""}`}>
               {fmtChange(totalGain)}
             </span>
           </div>
@@ -402,10 +353,10 @@ export default function ItemReport() {
       </div>
 
       {tracked.length === 0 ? (
-        <div className="ir-empty">
-          <div className="ir-empty-icon">📊</div>
-          <div className="ir-empty-title">No items tracked yet</div>
-          <div className="ir-empty-desc">
+        <div className="report-empty">
+          <div className="report-empty-icon">📊</div>
+          <div className="report-empty-title">No items tracked yet</div>
+          <div className="report-empty-desc">
             Search for an item above to start tracking its daily quantity.
             <br />
             Snapshots are recorded once per day when FrameForge is running.

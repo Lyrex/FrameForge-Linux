@@ -63,6 +63,11 @@ const TASKS: &[Task] = &[
         run: crate::refresh_riven_db_task,
     },
     Task {
+        name: "arbitrations",
+        interval: Duration::from_secs(3600),
+        run: crate::arbitrations::refresh_feed,
+    },
+    Task {
         name: "wfm-top",
         interval: Duration::from_secs(3 * 3600),
         run: crate::refresh_wfm_top,

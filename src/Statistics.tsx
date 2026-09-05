@@ -1,6 +1,7 @@
 import Reports from "./Reports";
 import ItemReport from "./ItemReport";
 import "./Statistics.css";
+import "./Report.css";
 
 interface Props {
   tab: "trade" | "item";
@@ -14,7 +15,7 @@ interface Props {
 export default function Statistics({ tab, onTabChange, dateRange, onDateRangeChange, clockFormat, systemLocale }: Props) {
   return (
     <div className="statistics">
-      <div className="stat-sub-tabs">
+      <div className="sub-tabs">
         <button className={tab === "trade" ? "active" : ""} onClick={() => onTabChange("trade")}>
           Trade Report
         </button>
