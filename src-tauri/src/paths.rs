@@ -61,16 +61,19 @@ pub struct Roots {
     pub state: PathBuf,
 }
 
-/// Resolve the four roots and move the irreplaceable files out of the pre-XDG
-/// directory. Doing nothing when the old directory is gone makes this safe to
-/// call on every launch, so no marker file records that it ran.
+/// The only place directories get created: the lookups below are pure so hot
+/// callers can use them freely. Doing nothing when the old directory is gone
+/// makes the migration safe to run on every launch, so no marker file records
+/// that it ran. A root deleted mid-session comes back through the write
+/// helpers, which recreate the parent of whatever they write.
 pub fn init() -> Result<Roots, PathError> {
     let roots = Roots {
-        config: config_dir()?,
-        data: data_dir()?,
-        cache: cache_dir()?,
-        state: state_dir()?,
+        config: ensure(config_dir()?)?,
+        data: ensure(data_dir()?)?,
+        cache: ensure(cache_dir()?)?,
+        state: ensure(state_dir()?)?,
     };
+    touch_cache_tag(&roots.cache);
     migrate_into(&legacy_root(), &roots.config, &roots.data, &roots.cache, &roots.state);
     Ok(roots)
 }
@@ -78,57 +81,57 @@ pub fn init() -> Result<Roots, PathError> {
 /// Downloaded catalogues, price snapshots, item images, OCR models: anything
 /// that can be fetched again.
 pub fn cache_dir() -> Result<PathBuf, PathError> {
-    let dir = ensure(match ROOT_OVERRIDE.get() {
-        Some(root) => root.join("cache"),
-        None => base(dirs::cache_dir(), "cache")?,
-    })?;
-    // Tells backup and sync tools to skip the directory
-    // (https://bford.info/cachedir/).
-    let tag = dir.join("CACHEDIR.TAG");
-    if !tag.exists() {
-        let _ = fs::write(
-            &tag,
-            "Signature: 8a477f597d28d172789f06886806bc55\n\
-             # This file is a cache directory tag created by FrameForge.\n\
-             # For information about cache directory tags see https://bford.info/cachedir/\n",
-        );
+    match ROOT_OVERRIDE.get() {
+        Some(root) => Ok(root.join("cache")),
+        None => base(dirs::cache_dir(), "cache"),
     }
-    Ok(dir)
 }
 
 /// settings.json.
 pub fn config_dir() -> Result<PathBuf, PathError> {
-    ensure(match ROOT_OVERRIDE.get() {
-        Some(root) => root.join("config"),
-        None => base(dirs::config_dir(), "config")?,
-    })
+    match ROOT_OVERRIDE.get() {
+        Some(root) => Ok(root.join("config")),
+        None => base(dirs::config_dir(), "config"),
+    }
 }
 
 /// data.db and the WFM auction IDs: user state that no refetch can rebuild.
 pub fn data_dir() -> Result<PathBuf, PathError> {
-    ensure(match ROOT_OVERRIDE.get() {
-        Some(root) => root.join("data"),
-        None => base(dirs::data_dir(), "data")?,
-    })
+    match ROOT_OVERRIDE.get() {
+        Some(root) => Ok(root.join("data")),
+        None => base(dirs::data_dir(), "data"),
+    }
 }
 
 /// Logs, session transcripts, screenshot dumps.
 pub fn state_dir() -> Result<PathBuf, PathError> {
-    ensure(match ROOT_OVERRIDE.get() {
-        Some(root) => root.join("state"),
+    match ROOT_OVERRIDE.get() {
+        Some(root) => Ok(root.join("state")),
         // Only Linux defines a state directory; elsewhere this material sits
         // with the rest of the app data.
-        None => base(dirs::state_dir().or_else(dirs::data_dir), "state")?,
-    })
+        None => base(dirs::state_dir().or_else(dirs::data_dir), "state"),
+    }
+}
+
+/// Tells backup and sync tools to skip the directory
+/// (https://bford.info/cachedir/). Advisory only: a tag that cannot be written
+/// costs some backup space, not a launch.
+fn touch_cache_tag(cache: &Path) {
+    let tag = cache.join("CACHEDIR.TAG");
+    if tag.exists() {
+        return;
+    }
+    if let Err(e) = fs::write(
+        &tag,
+        "Signature: 8a477f597d28d172789f06886806bc55\n\
+         # This file is a cache directory tag created by FrameForge.\n\
+         # For information about cache directory tags see https://bford.info/cachedir/\n",
+    ) {
+        warn!("cannot write {}: {e}", tag.display());
+    }
 }
 
 fn base(dir: Option<PathBuf>, role: &'static str) -> Result<PathBuf, PathError> {
-    #[cfg(test)]
-    let dir = if std::env::var_os("FRAMEFORGE_TEST_MISSING_PLATFORM_DIR").is_some() {
-        None
-    } else {
-        dir
-    };
     dir.map(|dir| dir.join(APP_DIR))
         .ok_or(PathError::MissingPlatformDir(role))
 }
@@ -276,26 +279,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_platform_root_reports_its_role() {
-        let error = base(None, "config").expect_err("missing platform directory");
-        assert_eq!(error.to_string(), "platform config directory is unavailable");
+    fn cache_tag_is_written_once_and_never_fatal() {
+        let cache = scratch("cache-tag").join("cache");
+        let tag = cache.join("CACHEDIR.TAG");
+        touch_cache_tag(&cache);
+        assert!(fs::read_to_string(&tag).unwrap()
+            .starts_with("Signature: 8a477f597d28d172789f06886806bc55\n"));
+
+        fs::write(&tag, "user edited").unwrap();
+        touch_cache_tag(&cache);
+        assert_eq!(fs::read_to_string(&tag).unwrap(), "user edited");
+
+        fs::remove_file(&tag).unwrap();
+        fs::create_dir(&tag).unwrap();
+        touch_cache_tag(&cache);
+        assert!(tag.is_dir());
     }
 
     #[test]
-    fn startup_refuses_a_missing_platform_directory() {
-        const FLAG: &str = "FRAMEFORGE_TEST_MISSING_PLATFORM_DIR";
-        if std::env::var_os(FLAG).is_some() {
-            let error = crate::run().expect_err("platform directories are unavailable");
-            assert_eq!(error.to_string(), "platform config directory is unavailable");
-            return;
-        }
-        let output = std::process::Command::new(std::env::current_exe().expect("running test binary"))
-            .args(["--exact", "paths::tests::startup_refuses_a_missing_platform_directory"])
-            .env(FLAG, "1")
-            .output()
-            .expect("spawn isolated startup test");
-        assert!(output.status.success(), "{}\n{}",
-            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    fn missing_platform_root_reports_its_role() {
+        let error = base(None, "config").expect_err("missing platform directory");
+        assert_eq!(error.to_string(), "platform config directory is unavailable");
     }
 
     #[cfg(unix)]

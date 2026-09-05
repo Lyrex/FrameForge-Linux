@@ -430,7 +430,6 @@ pub fn fetch_items(prev_etags: Option<&str>, force: bool) -> Result<Fetched<Fetc
     static FETCH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = FETCH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = crate::paths::cache_dir().map_err(|e| e.to_string())?.join("catalogue");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     fetch_items_with(prev_etags, force, &|url, etag| cache::get_conditional(url, etag), &DiskStore(dir))
 }
 

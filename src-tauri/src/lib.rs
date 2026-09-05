@@ -5625,7 +5625,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         ts_d, dismiss_line,
                         elapsed_s.map(|s| format!("{:.1}s", s)).unwrap_or_else(|| "(unknown)".to_string())
                     );
-                    append_to_diag(&session_log_path, &dismiss_block);
+                    let _ = append_to_file(&session_log_path, &dismiss_block);
                     // Copy the completed session log to the diagnostics folder for this run.
                     if let Ok(mut g) = diag_arc.lock() {
                         if let Some(folder) = g.take() {
@@ -5673,7 +5673,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         }
                         let _ = ee_ocr_app.emit("inventory-reward",
                             serde_json::json!({ "path": inv_path, "qty": new_qty }));
-                        append_to_diag(&session_log_path, &format!(
+                        let _ = append_to_file(&session_log_path, &format!(
                             "[REWARD] Inventory updated from EE.log\n\
                              ├─ Store path : {}\n\
                              ├─ Inv path   : {}\n\
@@ -6066,7 +6066,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                                                 if let Ok(mut g) = app2.state::<AppState>().pending_relic_rewards.lock() { *g = None; }
                                                 let _ = app2.emit("relic-rewards", serde_json::Value::Null);
                                                 park_overlay_offscreen(&app2, "relic-overlay");
-                                                append_to_diag(&slog2,
+                                                let _ = append_to_file(&slog2,
                                                     "[STEP 4] AUTO-DISMISS (20s safety fallback)\n\n");
                                                 if let Ok(mut g) = diag_arc_fb.lock() {
                                                     if let Some(folder) = g.take() {
@@ -6220,7 +6220,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 if let Some(since) = active_since {
                     if since.elapsed().as_secs() >= 20 {
                         let ts_a = chrono::Local::now().format("%H:%M:%S%.3f");
-                        append_to_diag(&session_log_path, &format!(
+                        let _ = append_to_file(&session_log_path, &format!(
                             "[STEP 4] AUTO-DISMISS (20s timeout)\n\
                              ├─ Time     : {}\n\
                              └─ Open for : {:.1}s\n\n",
@@ -6448,30 +6448,11 @@ fn parse_logged_in_name(
 
 fn append_to_file(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
     f.write_all(text.as_bytes())
-}
-
-/// Append text to both the global overlay session log and the per-session diagnostic file.
-/// The diagnostic target is found by picking the most recently modified folder under
-/// the state directory's `diagnostics/` that contains an ocr_session_log.txt.
-fn append_to_diag(global_log: &std::path::Path, text: &str) {
-    let _ = append_to_file(global_log, text);
-    let Some(state_dir) = global_log.parent() else { return };
-    let diag_base = state_dir.join("diagnostics");
-    if let Ok(entries) = std::fs::read_dir(&diag_base) {
-        let mut folders: Vec<std::path::PathBuf> = entries
-            .filter_map(|e| e.ok().map(|d| d.path()))
-            .filter(|p| p.is_dir())
-            .collect();
-        folders.sort();
-        if let Some(latest) = folders.last() {
-            let diag_log = latest.join("ocr_session_log.txt");
-            if diag_log.exists() {
-                let _ = append_to_file(&diag_log, text);
-            }
-        }
-    }
 }
 
 // ─── Localisation lookup ──────────────────────────────────────────────────────
@@ -8035,6 +8016,7 @@ async fn prewarm_image_cache(state: tauri::State<'_, AppState>) -> Result<(), St
                     if let Ok(resp) = ureq::get(&url).call() {
                         let mut buf = Vec::new();
                         if resp.into_body().into_reader().read_to_end(&mut buf).is_ok() && looks_like_image(&buf) {
+                            let _ = std::fs::create_dir_all(&*dir);
                             let _ = std::fs::write(dir.join(&name), buf);
                         }
                     }
@@ -8958,7 +8940,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let _ = std::fs::create_dir_all(dir);
     }
     let img_cache_dir = cache_dir.join("img_cache");
-    let _ = std::fs::create_dir_all(&img_cache_dir);
+    if let Err(e) = std::fs::create_dir_all(&img_cache_dir) {
+        warn!("cannot create {}: {e}", img_cache_dir.display());
+    }
     let auction_ids_path = data_dir.join("auction_ids.json");
     let initial_auction_ids: Vec<String> = std::fs::read_to_string(&auction_ids_path)
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
