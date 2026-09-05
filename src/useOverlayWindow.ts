@@ -22,8 +22,7 @@ export function useOverlayWindow(width: number, anchor: OverlayAnchor) {
   const roRef   = useRef<ResizeObserver | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
-  // The scale is a CSS transform, so it does not change the measured layout
-  // size. The window must grow by the same factor the content is drawn at.
+  // contentRect reports the pre-zoom layout size; the drawn size is × scale.
   const place = useCallback(async (layoutHeight: number) => {
     if (layoutHeight <= 0) return;
     const s = overlayScale();
@@ -55,8 +54,7 @@ export function useOverlayWindow(width: number, anchor: OverlayAnchor) {
     roRef.current = ro;
   }, [place]);
 
-  // A scale change does not alter the layout size, so the ResizeObserver
-  // never fires. Measure again to refit a window that is already open.
+  // Refit an already-open window when the overlay scale changes.
   useEffect(() => {
     const un = listen("settings-updated", () => {
       const el = rootRef.current;
