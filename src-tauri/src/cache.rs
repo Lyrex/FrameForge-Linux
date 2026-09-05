@@ -105,9 +105,8 @@ pub struct CacheStatus {
 
 static STATUSES: Mutex<Option<HashMap<String, CacheStatus>>> = Mutex::new(None);
 
-/// One lock per cache name, held for the length of a `get_or_refresh`. Two
-/// callers after the same cache take turns, and the second one finds what the
-/// first stored. A slow download of one cache never blocks another.
+/// Held across the fetch so a second caller after the same cache finds what
+/// the first stored instead of downloading it again.
 static REFRESHING: Mutex<Option<HashMap<String, Arc<Mutex<()>>>>> = Mutex::new(None);
 
 fn refresh_lock(name: &str) -> Arc<Mutex<()>> {
@@ -219,26 +218,24 @@ fn get_or_refresh_at<T>(
     name: &str,
     ttl: Duration,
     fetch: impl FnOnce(Option<&str>) -> Result<Fetched<T>, String>,
-    now: impl FnOnce() -> u64,
+    now: impl Fn() -> u64,
 ) -> (Option<T>, Source, Option<String>)
 where
     T: Serialize + DeserializeOwned,
 {
-    // The frontend and the background scheduler both ask for the same caches at
-    // launch. Without this they download the catalogue twice and race each other
-    // writing the same temporary file.
     let lock = refresh_lock(name);
     let _refreshing = lock.lock().unwrap_or_else(|e| e.into_inner());
 
     let cached = load::<T>(name);
     let now = now();
+
     // Strict: `Duration::ZERO` must always refetch, including when the clock
     // has stepped backwards past the stored timestamp.
     let still_fresh = cached
         .as_ref()
         .is_some_and(|c| now.saturating_sub(c.retrieved_at_unix) < ttl.as_secs());
     if still_fresh {
-        let c = cached.expect("still_fresh is only true for a loaded cache");
+        let c = cached.expect("fresh cache exists");
         return report(
             name,
             Some(c.retrieved_at_unix),
@@ -382,6 +379,65 @@ pub fn get_conditional(url: &str, etag: Option<&str>) -> Result<Fetched<String>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panicking_fetch_does_not_leave_the_cache_refreshing() {
+        let name = scratch("panicking-fetch");
+        let panic = std::panic::catch_unwind(|| {
+            get_or_refresh::<String>(&name, Duration::ZERO, |_| panic!("fetch failed"))
+        });
+        assert!(panic.is_err());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            sender
+                .send(get_or_refresh(&name, Duration::ZERO, fetches("recovered")))
+                .expect("caller is listening");
+        });
+        let (data, source, _) = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("another caller can refresh after a panic");
+        assert_eq!(data.as_deref(), Some("recovered"));
+        assert_eq!(source, Source::Refreshed);
+    }
+
+    #[test]
+    fn a_stale_reader_waits_for_the_in_flight_fetch() {
+        let name = scratch("stale-during-fetch");
+        store(&name, None, &"old").expect("test cache is writable");
+        expire(&name);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (reader_tx, reader_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|threads| {
+            threads.spawn({
+                let name = &name;
+                move || {
+                    get_or_refresh(name, Duration::from_secs(60), |_| {
+                        started_tx.send(()).expect("coordinator is listening");
+                        release_rx.recv().expect("coordinator releases fetch");
+                        Ok(Fetched::New("new".to_string(), None))
+                    })
+                }
+            });
+            started_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("fetch starts");
+            threads.spawn(|| {
+                let result = get_or_refresh::<String>(&name, Duration::from_secs(60), |_| {
+                    panic!("only one fetch may run")
+                });
+                reader_tx.send(result).expect("coordinator is listening");
+            });
+            assert!(reader_rx.recv_timeout(Duration::from_millis(200)).is_err());
+            release_tx.send(()).expect("fetch is waiting");
+            let (data, source, warning) = reader_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("reader wakes after the fetch");
+            assert_eq!(data.as_deref(), Some("new"));
+            assert_eq!(source, Source::Fresh);
+            assert!(warning.is_none());
+        });
+    }
 
     #[test]
     fn not_modified_without_a_copy_is_a_fallback() {
@@ -729,11 +785,14 @@ mod tests {
         std::thread::scope(|s| {
             for _ in 0..2 {
                 s.spawn(|| {
-                    get_or_refresh(&name, Duration::from_secs(3600), |_| {
-                        FETCHES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        std::thread::sleep(Duration::from_millis(50));
-                        Ok(Fetched::New("body".to_string(), None))
-                    })
+                    let (data, source, _) =
+                        get_or_refresh(&name, Duration::from_secs(3600), |_| {
+                            FETCHES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            std::thread::sleep(Duration::from_millis(50));
+                            Ok(Fetched::New("body".to_string(), None))
+                        });
+                    assert_eq!(data.as_deref(), Some("body"));
+                    assert!(matches!(source, Source::Fresh | Source::Refreshed));
                 });
             }
         });
