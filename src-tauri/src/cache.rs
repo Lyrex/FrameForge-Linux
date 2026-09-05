@@ -103,6 +103,9 @@ pub struct CacheStatus {
     pub warning: Option<String>,
 }
 
+// Poisoning is recovered with `into_inner` throughout: the critical sections
+// only run HashMap and clone operations, which cannot leave the map half
+// mutated on unwind, and allocation failure aborts rather than panics.
 static STATUSES: Mutex<Option<HashMap<String, CacheStatus>>> = Mutex::new(None);
 
 /// Held across the fetch so a second caller after the same cache finds what
@@ -119,18 +122,18 @@ fn refresh_lock(name: &str) -> Arc<Mutex<()>> {
 }
 
 pub fn set_status(name: &str, status: CacheStatus) {
-    if let Ok(mut guard) = STATUSES.lock() {
-        guard
-            .get_or_insert_with(HashMap::new)
-            .insert(name.to_string(), status);
-    }
+    STATUSES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(name.to_string(), status);
 }
 
 pub fn statuses() -> HashMap<String, CacheStatus> {
     STATUSES
         .lock()
-        .ok()
-        .and_then(|g| g.clone())
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
         .unwrap_or_default()
 }
 
@@ -379,6 +382,49 @@ pub fn get_conditional(url: &str, etag: Option<&str>) -> Result<Fetched<String>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_reads_and_writes_survive_a_poisoned_mutex() {
+        let before = "status-before-poison";
+        let after = "status-after-poison";
+        set_status(
+            before,
+            CacheStatus {
+                source: Source::Stale,
+                last_updated: Some(100),
+                warning: Some("offline".into()),
+            },
+        );
+        let panic = std::panic::catch_unwind(|| {
+            let _guard = STATUSES.lock().unwrap_or_else(|e| e.into_inner());
+            panic!("status writer failed");
+        });
+        assert!(panic.is_err());
+        assert!(STATUSES.is_poisoned());
+        let retained = statuses();
+        assert_eq!(
+            retained.get(before).expect("old status survives").source,
+            Source::Stale
+        );
+        set_status(
+            after,
+            CacheStatus {
+                source: Source::Refreshed,
+                last_updated: Some(200),
+                warning: None,
+            },
+        );
+        let updated = statuses();
+        let status = updated.get(after).expect("new status is recorded");
+        assert_eq!(status.source, Source::Refreshed);
+        assert_eq!(status.last_updated, Some(200));
+        assert!(status.warning.is_none());
+        STATUSES.clear_poison();
+        if let Some(entries) = STATUSES.lock().expect("poison cleared").as_mut() {
+            entries.remove(before);
+            entries.remove(after);
+        }
+    }
 
     #[test]
     fn a_panicking_fetch_does_not_leave_the_cache_refreshing() {
