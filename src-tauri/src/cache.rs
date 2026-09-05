@@ -140,10 +140,14 @@ fn path_of(name: &str) -> PathBuf {
 }
 
 pub fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+    unix_seconds(SystemTime::now())
+}
+
+fn unix_seconds(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .unwrap_or(1)
+        .max(1)
 }
 
 pub fn load<T: DeserializeOwned>(name: &str) -> Option<Cached<T>> {
@@ -181,6 +185,18 @@ pub fn get_or_refresh<T>(
 where
     T: Serialize + DeserializeOwned,
 {
+    get_or_refresh_at(name, ttl, fetch, now_unix)
+}
+
+fn get_or_refresh_at<T>(
+    name: &str,
+    ttl: Duration,
+    fetch: impl FnOnce(Option<&str>) -> Result<Fetched<T>, String>,
+    now: impl FnOnce() -> u64,
+) -> (Option<T>, Source, Option<String>)
+where
+    T: Serialize + DeserializeOwned,
+{
     // The frontend and the background scheduler both ask for the same caches at
     // launch. Without this they download the catalogue twice and race each other
     // writing the same temporary file.
@@ -188,8 +204,9 @@ where
     let _refreshing = lock.lock().unwrap_or_else(|e| e.into_inner());
 
     let cached = load::<T>(name);
-    let now = now_unix();
-
+    let now = now();
+    // Strict: `Duration::ZERO` must always refetch, including when the clock
+    // has stepped backwards past the stored timestamp.
     let still_fresh = cached
         .as_ref()
         .is_some_and(|c| now.saturating_sub(c.retrieved_at_unix) < ttl.as_secs());
@@ -339,6 +356,48 @@ pub fn get_conditional(url: &str, etag: Option<&str>) -> Result<Fetched<String>,
 mod tests {
     use super::*;
 
+    #[test]
+    fn broken_clock_serves_existing_cache_without_refetching() {
+        let name = scratch("broken-clock");
+        store(&name, None, &"cached").expect("test cache is writable");
+        let now = unix_seconds(UNIX_EPOCH - Duration::from_secs(1));
+        assert_eq!(now, 1);
+        assert_eq!(unix_seconds(UNIX_EPOCH), 1);
+        let (data, source, _) = get_or_refresh_at::<String>(
+            &name,
+            Duration::from_secs(60),
+            |_| panic!("broken clock must not refetch"),
+            || now,
+        );
+        assert_eq!(source, Source::Fresh);
+        assert_eq!(data.as_deref(), Some("cached"));
+    }
+
+    #[test]
+    fn ttl_boundary_refetches() {
+        let name = scratch("ttl-boundary");
+        store(&name, None, &"cached").expect("test cache is writable");
+        let retrieved = load::<String>(&name)
+            .expect("cache exists")
+            .retrieved_at_unix;
+        let (data, source, _) = get_or_refresh_at::<String>(
+            &name,
+            Duration::from_secs(60),
+            fetches("refetched"),
+            || retrieved + 60,
+        );
+        assert_eq!(source, Source::Refreshed);
+        assert_eq!(data.as_deref(), Some("refetched"));
+    }
+
+    #[test]
+    fn zero_ttl_refetches_a_copy_stored_this_second() {
+        let name = scratch("zero-ttl");
+        store(&name, None, &"cached").expect("test cache is writable");
+        let (_, source, _) = get_or_refresh(&name, Duration::ZERO, fetches("refetched"));
+        assert_eq!(source, Source::Refreshed);
+    }
+
     #[cfg(unix)]
     #[test]
     fn atomic_write_preserves_destination_when_temp_disappears() {
@@ -437,6 +496,16 @@ mod tests {
         file
     }
 
+    fn expire(name: &str) {
+        let mut cached = load::<String>(name).expect("cache exists");
+        cached.retrieved_at_unix = 1;
+        atomic_write(
+            &path_of(name),
+            &serde_json::to_vec(&cached).expect("cache serializes"),
+        )
+        .expect("test cache is writable");
+    }
+
     fn fetches(body: &str) -> impl FnOnce(Option<&str>) -> Result<Fetched<String>, String> + '_ {
         move |_| Ok(Fetched::New(body.to_string(), None))
     }
@@ -464,6 +533,7 @@ mod tests {
     fn status_reads_refreshing_while_the_fetch_runs() {
         let name = scratch("refreshing");
         store(&name, None, &"old".to_string()).unwrap();
+        expire(&name);
 
         let (_, source, _) = get_or_refresh(&name, Duration::ZERO, |_| {
             assert_eq!(statuses()[&name].source, Source::Refreshing);
@@ -477,6 +547,7 @@ mod tests {
     fn expired_cache_is_replaced_by_the_fetch() {
         let name = scratch("refreshed");
         store(&name, None, &"old".to_string()).unwrap();
+        expire(&name);
 
         let (data, source, _) = get_or_refresh(&name, Duration::ZERO, fetches("new"));
 
@@ -489,6 +560,7 @@ mod tests {
     fn a_failed_refresh_still_serves_the_stale_copy() {
         let name = scratch("stale");
         store(&name, None, &"old".to_string()).unwrap();
+        expire(&name);
 
         let (data, source, warning) = get_or_refresh(&name, Duration::ZERO, fails);
 
@@ -512,6 +584,7 @@ mod tests {
     fn not_modified_keeps_the_payload_and_clears_the_staleness() {
         let name = scratch("not-modified");
         store(&name, Some("abc".to_string()), &"body".to_string()).unwrap();
+        expire(&name);
         let before = load::<String>(&name).unwrap().retrieved_at_unix;
 
         let seen_etag = Mutex::new(None);
