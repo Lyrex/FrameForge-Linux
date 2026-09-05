@@ -4,7 +4,7 @@
 //! functions below split it along the XDG roles instead: throwaway downloads in
 //! the cache root, the user's settings in the config root, the database and the
 //! auction IDs in the data root, and logs and debug dumps in the state root.
-//! `migrate_legacy` carries the irreplaceable files over from the old layout.
+//! `init` carries the irreplaceable files over from the old layout.
 
 use std::fs;
 use std::io;
@@ -14,6 +14,32 @@ use std::sync::OnceLock;
 use tracing::{info, warn};
 
 const APP_DIR: &str = "frameforge";
+
+#[derive(Debug)]
+pub enum PathError {
+    MissingPlatformDir(&'static str),
+    CreateDirectory { path: PathBuf, source: io::Error },
+}
+
+impl std::fmt::Display for PathError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingPlatformDir(role) => write!(f, "platform {role} directory is unavailable"),
+            Self::CreateDirectory { path, source } => {
+                write!(f, "cannot create {}: {source}", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for PathError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::MissingPlatformDir(_) => None,
+            Self::CreateDirectory { source, .. } => Some(source),
+        }
+    }
+}
 
 /// Layout used before the XDG split, still on disk for anyone upgrading.
 const LEGACY_DIR: &str = "warframe-companion";
@@ -28,13 +54,34 @@ pub fn set_root_override(root: PathBuf) -> Result<(), PathBuf> {
     ROOT_OVERRIDE.set(root)
 }
 
+pub struct Roots {
+    pub config: PathBuf,
+    pub data: PathBuf,
+    pub cache: PathBuf,
+    pub state: PathBuf,
+}
+
+/// Resolve the four roots and move the irreplaceable files out of the pre-XDG
+/// directory. Doing nothing when the old directory is gone makes this safe to
+/// call on every launch, so no marker file records that it ran.
+pub fn init() -> Result<Roots, PathError> {
+    let roots = Roots {
+        config: config_dir()?,
+        data: data_dir()?,
+        cache: cache_dir()?,
+        state: state_dir()?,
+    };
+    migrate_into(&legacy_root(), &roots.config, &roots.data, &roots.cache, &roots.state);
+    Ok(roots)
+}
+
 /// Downloaded catalogues, price snapshots, item images, OCR models: anything
 /// that can be fetched again.
-pub fn cache_dir() -> PathBuf {
+pub fn cache_dir() -> Result<PathBuf, PathError> {
     let dir = ensure(match ROOT_OVERRIDE.get() {
         Some(root) => root.join("cache"),
-        None => base(dirs::cache_dir()),
-    });
+        None => base(dirs::cache_dir(), "cache")?,
+    })?;
     // Tells backup and sync tools to skip the directory
     // (https://bford.info/cachedir/).
     let tag = dir.join("CACHEDIR.TAG");
@@ -46,44 +93,52 @@ pub fn cache_dir() -> PathBuf {
              # For information about cache directory tags see https://bford.info/cachedir/\n",
         );
     }
-    dir
+    Ok(dir)
 }
 
 /// settings.json.
-pub fn config_dir() -> PathBuf {
+pub fn config_dir() -> Result<PathBuf, PathError> {
     ensure(match ROOT_OVERRIDE.get() {
         Some(root) => root.join("config"),
-        None => base(dirs::config_dir()),
+        None => base(dirs::config_dir(), "config")?,
     })
 }
 
 /// data.db and the WFM auction IDs: user state that no refetch can rebuild.
-pub fn data_dir() -> PathBuf {
+pub fn data_dir() -> Result<PathBuf, PathError> {
     ensure(match ROOT_OVERRIDE.get() {
         Some(root) => root.join("data"),
-        None => base(dirs::data_dir()),
+        None => base(dirs::data_dir(), "data")?,
     })
 }
 
 /// Logs, session transcripts, screenshot dumps.
-pub fn state_dir() -> PathBuf {
+pub fn state_dir() -> Result<PathBuf, PathError> {
     ensure(match ROOT_OVERRIDE.get() {
         Some(root) => root.join("state"),
         // Only Linux defines a state directory; elsewhere this material sits
         // with the rest of the app data.
-        None => base(dirs::state_dir().or_else(dirs::data_dir)),
+        None => base(dirs::state_dir().or_else(dirs::data_dir), "state")?,
     })
 }
 
-fn base(dir: Option<PathBuf>) -> PathBuf {
-    dir.unwrap_or_else(|| PathBuf::from(".")).join(APP_DIR)
+fn base(dir: Option<PathBuf>, role: &'static str) -> Result<PathBuf, PathError> {
+    #[cfg(test)]
+    let dir = if std::env::var_os("FRAMEFORGE_TEST_MISSING_PLATFORM_DIR").is_some() {
+        None
+    } else {
+        dir
+    };
+    dir.map(|dir| dir.join(APP_DIR))
+        .ok_or(PathError::MissingPlatformDir(role))
 }
 
-fn ensure(dir: PathBuf) -> PathBuf {
-    if let Err(e) = fs::create_dir_all(&dir) {
-        warn!("cannot create {}: {e}", dir.display());
-    }
-    dir
+fn ensure(dir: PathBuf) -> Result<PathBuf, PathError> {
+    fs::create_dir_all(&dir).map_err(|source| PathError::CreateDirectory {
+        path: dir.clone(),
+        source,
+    })?;
+    Ok(dir)
 }
 
 fn legacy_root() -> PathBuf {
@@ -109,13 +164,6 @@ const LEGACY_CACHE_FILES: &[&str] = &[
 ];
 
 const LEGACY_CACHE_DIRS: &[&str] = &["img_cache", "ocr_models"];
-
-/// Move the irreplaceable files out of the pre-XDG directory, then clear what is
-/// left of its caches. Doing nothing when the old directory is gone makes this
-/// safe to call on every launch, so no marker file records that it ran.
-pub fn migrate_legacy() {
-    migrate_into(&legacy_root(), &config_dir(), &data_dir(), &cache_dir(), &state_dir());
-}
 
 fn migrate_into(old: &Path, config: &Path, data: &Path, cache: &Path, state: &Path) {
     if !old.is_dir() {
@@ -226,6 +274,54 @@ fn copy_then_delete(src: &Path, dst: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_platform_root_reports_its_role() {
+        let error = base(None, "config").expect_err("missing platform directory");
+        assert_eq!(error.to_string(), "platform config directory is unavailable");
+    }
+
+    #[test]
+    fn startup_refuses_a_missing_platform_directory() {
+        const FLAG: &str = "FRAMEFORGE_TEST_MISSING_PLATFORM_DIR";
+        if std::env::var_os(FLAG).is_some() {
+            let error = crate::run().expect_err("platform directories are unavailable");
+            assert_eq!(error.to_string(), "platform config directory is unavailable");
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().expect("running test binary"))
+            .args(["--exact", "paths::tests::startup_refuses_a_missing_platform_directory"])
+            .env(FLAG, "1")
+            .output()
+            .expect("spawn isolated startup test");
+        assert!(output.status.success(), "{}\n{}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unwritable_root_reports_the_path_and_cause() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+
+        let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../tmp/paths-permission-test");
+        fs::create_dir_all(&parent).expect("writable test directory");
+        let path = parent.join("config");
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o500))
+            .expect("test owns directory");
+        let result = ensure(path.clone());
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700))
+            .expect("test owns directory");
+
+        let error = result.expect_err("root is not writable");
+        assert!(error.to_string().contains(&path.display().to_string()));
+        assert!(matches!(error, PathError::CreateDirectory { source, .. }
+            if source.kind() == io::ErrorKind::PermissionDenied));
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir()

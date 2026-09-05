@@ -138,7 +138,7 @@ pub fn statuses() -> HashMap<String, CacheStatus> {
 }
 
 fn path_of(name: &str) -> PathBuf {
-    paths::cache_dir().join(name)
+    paths::cache_dir().expect("checked at startup").join(name)
 }
 
 pub fn now_unix() -> u64 {
@@ -700,7 +700,7 @@ mod tests {
         let root = std::env::temp_dir().join("frameforge-cache-tests");
         let _ = paths::set_root_override(root);
         let file = format!("{name}.json");
-        let _ = std::fs::remove_file(paths::cache_dir().join(&file));
+        let _ = std::fs::remove_file(path_of(&file));
         file
     }
 
