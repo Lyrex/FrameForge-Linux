@@ -12,6 +12,7 @@ const run = (over: Partial<RunRecord> = {}): RunRecord => ({
   uid: `run-${seq++}`,
   started_at: new Date(NOW - DAY).toISOString(),
   node: "Mot (Void)",
+  tier: null,
   mission_type: "survival",
   end_reason: "mission_end",
   duration_sec: 600,

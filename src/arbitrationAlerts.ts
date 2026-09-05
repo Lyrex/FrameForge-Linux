@@ -1,3 +1,7 @@
+// Extension spelled out because the alert rules run under node's type
+// stripping in the tests, which resolves this import for real.
+import { tierKey, type Tier, type TierKey } from "./arbitrationTiers.ts";
+
 // Arbitration schedule as the backend serves it. All times are unix seconds.
 export type ScheduleEntry = {
   start: number;
@@ -7,6 +11,8 @@ export type ScheduleEntry = {
   region: string;
   mission_type: string;
   faction: string;
+  /// Null for a node the community rating does not cover.
+  tier: Tier | null;
 };
 
 export type Schedule = {
@@ -40,6 +46,20 @@ export function clampLead(mins: number): number {
   return Math.min(MAX_LEAD_MINS, Math.max(MIN_LEAD_MINS, Math.round(mins)));
 }
 
+/// What the user asked to hear about. Either half alone is a complete rule:
+/// starring a node says "this one", choosing a tier says "any hour this good".
+export type AlertRule = {
+  favorites?: readonly string[];
+  tiers?: readonly TierKey[];
+};
+
+/// One hour can match both halves of the rule; it is still one alert, which
+/// is what the occurrence key downstream enforces.
+function matches(rule: AlertRule, entry: ScheduleEntry): boolean {
+  return (rule.favorites?.includes(entry.node_id) ?? false)
+    || (rule.tiers?.includes(tierKey(entry.tier)) ?? false);
+}
+
 // Keyed by occurrence rather than node: a favorited node comes round again
 // every few days and has to alert again each time.
 export const occurrenceKey = (e: ScheduleEntry) => `${e.start}@${e.node_id}`;
@@ -52,17 +72,16 @@ const keyStart = (key: string) => Number(key.split("@")[0]);
 // not be delivered is retried rather than recorded.
 export function dueAlerts(
   entries: readonly ScheduleEntry[],
-  favorites: readonly string[],
+  rule: AlertRule,
   leadMins: number,
   fired: readonly string[],
   nowSec: number,
 ): { due: ScheduleEntry[]; kept: string[] } {
   const leadSecs = clampLead(leadMins) * 60;
-  const favorited = new Set(favorites);
   const alreadyFired = new Set(fired);
 
   const due = entries.filter(e =>
-    favorited.has(e.node_id) &&
+    matches(rule, e) &&
     !alreadyFired.has(occurrenceKey(e)) &&
     // Once the hour is running the alert is a catch-up for a timer suspended
     // across the lead window, so the time left to join the run decides it
@@ -88,13 +107,13 @@ export function dueAlerts(
 // nothing moved, which spares the caller a settings write.
 export async function runAlertPass(
   entries: readonly ScheduleEntry[],
-  favorites: readonly string[],
+  rule: AlertRule,
   leadMins: number,
   fired: readonly string[],
   nowSec: number,
   raise: (entry: ScheduleEntry) => Promise<boolean>,
 ): Promise<string[] | null> {
-  const { due, kept } = dueAlerts(entries, favorites, leadMins, fired, nowSec);
+  const { due, kept } = dueAlerts(entries, rule, leadMins, fired, nowSec);
 
   const raised: string[] = [];
   for (const e of due) if (await raise(e)) raised.push(occurrenceKey(e));
