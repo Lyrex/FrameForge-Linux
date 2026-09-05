@@ -53,6 +53,24 @@ credentials that produced it. The email and password are typed once at login and
 never stored; the session is what outlives the app being closed.
 _Avoid_: credentials, password (when the token is meant)
 
+### Arbitrations
+
+**Arbitration tier**:
+The community's rating, S down to D, of how well a star chart node farms
+Vitus Essence during its arbitration hour, as published by the Arbitration
+Goons. A node the rating does not cover is Unrated.
+_Avoid_: rank, grade, score
+
+**Tier filter**:
+Which arbitration tiers the schedule browser lists. The hour running right now
+is always shown regardless of the filter.
+
+**Alert tiers**:
+The arbitration tiers whose every scheduled hour raises an alert. Independent
+of both the tier filter and favorited nodes: an hour alerts if its node is
+favorited or its tier is an alert tier.
+_Avoid_: notify tiers, tier favorites
+
 ### Updates
 
 **Release notes**:

@@ -7,6 +7,7 @@ import {
   type Breakdown, type Filters, type MissionType, type RunRecord,
 } from "./arbitrationAnalytics";
 import Sparkline from "./Sparkline";
+import { TierBadge } from "./TierSelect";
 import "./Report.css";
 
 const RANGES: { label: string; value: number | "all" }[] = [
@@ -148,7 +149,7 @@ export default function ArbitrationHistory() {
           <div className={`arb-run${completed(run) ? "" : " arb-run-incomplete"}`} key={run.uid}>
             <span className="arb-run-when">{fmtDate(run.started_at)}</span>
             <span className="arb-run-main">
-              <span className="timer-name">{run.node}</span>
+              <span className="timer-name"><TierBadge tier={run.tier} />{run.node}</span>
               <span className="arb-muted">
                 {cap(run.mission_type)}
                 {!completed(run) && <span className="arb-run-flag"> · {endLabel[run.end_reason as keyof typeof endLabel]}</span>}

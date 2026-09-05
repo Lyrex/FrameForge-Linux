@@ -1,8 +1,13 @@
+import type { Tier } from "./arbitrationTiers.ts";
+
 export type MissionType = "defense" | "interception" | "disruption" | "survival" | "other";
 export type EndReason = "mission_end" | "aborted" | "new_mission" | "unterminated";
 
 export interface RunRecord {
   uid: string;
+  /// Null for an unrated node, and for a run recorded without the star chart
+  /// node it happened on.
+  tier: Tier | null;
   /// RFC-3339 UTC; null when the log had no boot-time header.
   started_at: string | null;
   node: string;

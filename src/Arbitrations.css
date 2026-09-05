@@ -169,3 +169,100 @@
   font-size: 11px;
   color: #f0c040;
 }
+
+/* ── Tiers ─────────────────────────────────────────────────────────────────── */
+
+/* The letter is the rating; color only sorts the list faster, which is why
+   the badge never shrinks to a dot. */
+.tier-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  margin-right: 6px;
+  padding: 0 3px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  color: #0d1117;
+  flex-shrink: 0;
+}
+.tier-S { background: #f0c040; }
+.tier-A { background: #3fb950; }
+.tier-B { background: #388bfd; }
+.tier-C { background: #8b949e; }
+.tier-D { background: #6e4a9e; color: #e6edf3; }
+.tier-unrated { background: transparent; border: 1px dashed var(--border); color: var(--muted); }
+.tier-none { background: transparent; }
+
+/* An hour alerting because of its tier rather than a star: dimmer than the
+   favorite highlight, so a starred hour still stands out among them. */
+.arb-tier-alert:not(.arb-fav) { background: rgba(56,139,253,.07); }
+.arb-tier-alert:not(.arb-fav):hover { background: rgba(56,139,253,.12); }
+
+.arb-tier-filter { padding: 0 16px; }
+
+.tier-select { position: relative; display: flex; align-items: center; gap: 6px; }
+.tier-select-label { font-size: 11px; color: var(--muted); }
+
+.tier-select-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 88px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  font-size: 11px;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+.tier-select-btn:hover, .tier-select-btn.open { border-color: var(--accent); }
+.tier-select-caret { margin-left: auto; color: var(--muted); }
+
+.tier-select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  min-width: 140px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px;
+  box-shadow: 0 6px 18px rgba(0,0,0,.45);
+}
+
+.tier-select-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.tier-select-row:hover { background: rgba(255,255,255,.05); }
+.tier-select-row input { margin: 0; }
+
+.tier-select-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+.tier-select-actions button {
+  flex: 1;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 2px 0;
+  cursor: pointer;
+}
+.tier-select-actions button:hover { color: var(--text); border-color: var(--accent); }

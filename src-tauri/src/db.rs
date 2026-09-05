@@ -572,6 +572,10 @@ pub struct RunRecord {
     pub uid: String,
     pub started_at: Option<String>,
     pub node: String,
+    /// Looked up from the run's star chart node rather than stored: the
+    /// rating is a view of the node, and a run recorded before the rating
+    /// existed still shows today's.
+    pub tier: Option<&'static str>,
     pub mission_type: &'static str,
     pub end_reason: &'static str,
     pub duration_sec: f64,
@@ -591,7 +595,8 @@ pub struct RunRecord {
 pub fn list_arbitration_runs(conn: &Connection) -> Result<Vec<RunRecord>> {
     let mut stmt = conn.prepare(
         "SELECT uid, started_at, node, mission_type, end_reason, duration_sec,
-                rotations, waves, kills, drone_kills, vitus_mean, vitus_per_minute
+                rotations, waves, kills, drone_kills, vitus_mean, vitus_per_minute,
+                sol_node
          FROM arbitration_runs
          WHERE deleted = 0
          ORDER BY started_at DESC, run_start_sec DESC",
@@ -604,6 +609,7 @@ pub fn list_arbitration_runs(conn: &Connection) -> Result<Vec<RunRecord>> {
                 uid: row.get(0)?,
                 started_at: row.get(1)?,
                 node: row.get(2)?,
+                tier: row.get::<_, Option<String>>(12)?.as_deref().and_then(crate::arbitrations::tier),
                 mission_type: MissionType::from_stored(&mission_type).as_str(),
                 end_reason: EndReason::from_stored(&end_reason).as_str(),
                 duration_sec: row.get(5)?,
@@ -1129,6 +1135,16 @@ mod arbitration_storage_tests {
         recorder.parse(DEFENSE[head.len()..].to_string());
         assert_eq!(recorder.store(&conn).expect("recording succeeds"), 1);
         assert_eq!(stored(&conn).len(), 1);
+    }
+
+    #[test]
+    fn a_listed_run_carries_the_tier_of_the_node_it_ran_on() {
+        let conn = db("run-tier");
+        watch(&conn, DEFENSE, 4096);
+        let listed = list_arbitration_runs(&conn).expect("read succeeds");
+        let run = listed.first().expect("the defense run is listed");
+        assert_eq!(run.node, "Stöfler (Lua)");
+        assert_eq!(run.tier, Some("D"));
     }
 
     #[test]

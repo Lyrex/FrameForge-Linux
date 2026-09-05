@@ -78,7 +78,8 @@ import Arbitrations from "./Arbitrations";
 import { useWorldState } from "./worldstate";
 import { notify, ensurePermission } from "./notify";
 import { collectNewMatches, type SeenFissures } from "./fissureAlerts";
-import { clampLead, runAlertPass, DEFAULT_LEAD_MINS, EVAL_INTERVAL_MS, type ScheduleEntry } from "./arbitrationAlerts";
+import { clampLead, runAlertPass, DEFAULT_LEAD_MINS, EVAL_INTERVAL_MS, type AlertRule, type ScheduleEntry } from "./arbitrationAlerts";
+import { sanitizeTierKeys, TIER_KEYS, type TierKey } from "./arbitrationTiers";
 import { useArbitrationSchedule } from "./arbitrationSchedule";
 import StatsDataTransfer from "./StatsDataTransfer";
 import Statistics from "./Statistics";
@@ -897,6 +898,10 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [fissureNotifications, setFissureNotifications] = useState(true);
   const [arbFavorites, setArbFavorites] = useState<string[]>([]);
   const [arbLeadMins, setArbLeadMins] = useState(DEFAULT_LEAD_MINS);
+  // The filter starts wide and the alert rule starts empty: showing every hour
+  // is what a browser is for, while alerting is opt-in.
+  const [arbTierFilter, setArbTierFilter] = useState<TierKey[]>([...TIER_KEYS]);
+  const [arbAlertTiers, setArbAlertTiers] = useState<TierKey[]>([]);
   const [modularWidth, setModularWidth] = useState(240);
   const [modularSectionOrder, setModularSectionOrder] = useState<string[]>(["tracking", "favorites", "timers", "fissures"]);
   const [modularPopout, setModularPopout] = useState(false);
@@ -915,13 +920,14 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     overlayEnabled: true, overlayPriority: "completion", textScale: 1, colorblindMode: false, clockFormat: "auto" as "auto" | "12h" | "24h", memoryScannerEnabled: false, blobLogEnabled: false, autoDiagEnabled: false,
     tracked: [] as string[], favorites: [] as string[], timerFavorites: [] as string[], fissureWatches: [] as FissureWatch[], fissureNotifications: true, modularWidth: 240,
     arbitrationFavorites: [] as string[], arbitrationLeadMins: DEFAULT_LEAD_MINS, arbitrationOverlayEnabled: false,
+    arbitrationTierFilter: [...TIER_KEYS] as TierKey[], arbitrationAlertTiers: [] as TierKey[],
     modularSectionOrder: ["tracking", "favorites", "timers"] as string[], modularPopout: false,
     wfmInvisibleOnStart: false, wfmInvisibleOnClose: false, wfmAutoInvisible: false, wfmAutoInvisibleMins: 30,
     relicPickEnabled: true, relicPickPriority: "unowned" as "unowned" | "ducat" | "platinum", relicPickRefinement: "radiant" as "intact" | "exceptional" | "flawless" | "radiant", relicPickLines: "all" as "all" | "best" | "estimated",
     foundryPageSize: 30 as 30 | 60 | 100,
     memTriggerEnabled: false,
   });
-  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, arbitrationOverlayEnabled: arbOverlayEnabled, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled };
+  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, arbitrationOverlayEnabled: arbOverlayEnabled, arbitrationTierFilter: arbTierFilter, arbitrationAlertTiers: arbAlertTiers, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled };
 
   const saveAllSettings = useCallback(() => {
     // Until the on-disk settings have been applied, settingsRef still holds
@@ -1070,6 +1076,10 @@ if (typeof s.autoDiagEnabled === "boolean") {
         if (typeof s.fissureNotifications === "boolean") setFissureNotifications(s.fissureNotifications);
         if (Array.isArray(s.arbitrationFavorites)) setArbFavorites(s.arbitrationFavorites.filter((x: unknown) => typeof x === "string"));
         if (typeof s.arbitrationLeadMins === "number") setArbLeadMins(clampLead(s.arbitrationLeadMins));
+        const storedFilter = sanitizeTierKeys(s.arbitrationTierFilter);
+        if (storedFilter) setArbTierFilter(storedFilter);
+        const storedAlertTiers = sanitizeTierKeys(s.arbitrationAlertTiers);
+        if (storedAlertTiers) setArbAlertTiers(storedAlertTiers);
         if (typeof s.arbitrationOverlayEnabled === "boolean") { setArbOverlayEnabled(s.arbitrationOverlayEnabled); invoke("set_arbitration_overlay_enabled", { enabled: s.arbitrationOverlayEnabled }); }
         if (Array.isArray(s.arbitrationAlertsFired)) arbFiredRef.current = s.arbitrationAlertsFired.filter((x: unknown) => typeof x === "string");
         if (typeof s.modularWidth === "number") setModularWidth(s.modularWidth);
@@ -1371,7 +1381,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
   useEffect(() => {
     if (settingsLoadedRef.current) saveAllSettings();
-  }, [tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbFavorites, arbLeadMins, modularWidth, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, modularSectionOrder, modularPopout]); // eslint-disable-line
+  }, [tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbFavorites, arbLeadMins, arbTierFilter, arbAlertTiers, modularWidth, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, modularSectionOrder, modularPopout]); // eslint-disable-line
 
   // ── Watched fissure notifications ──────────────────────────────────────────
   //
@@ -1438,7 +1448,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
   // Persisted, so a restart inside the lead window does not alert a second
   // time for the same hour.
   const arbFiredRef = useRef<string[]>([]);
-  const arbAlertsOn = arbFavorites.length > 0;
+  const arbAlertsOn = arbFavorites.length > 0 || arbAlertTiers.length > 0;
 
   const { schedule: arbSchedule, error: arbScheduleError } = useArbitrationSchedule(arbAlertsOn);
 
@@ -1446,9 +1456,13 @@ if (typeof s.autoDiagEnabled === "boolean") {
   // starring a node changes what the next tick sees without tearing the timer
   // down and starting a fresh pass on top of one already running. This effect
   // has to stay above the loop's own, which reads the ref on its first tick.
-  const arbInputsRef = useRef({ entries: [] as ScheduleEntry[], favorites: [] as string[], leadMins: DEFAULT_LEAD_MINS });
+  const arbInputsRef = useRef({ entries: [] as ScheduleEntry[], rule: {} as AlertRule, leadMins: DEFAULT_LEAD_MINS });
   useEffect(() => {
-    arbInputsRef.current = { entries: arbSchedule?.entries ?? [], favorites: arbFavorites, leadMins: arbLeadMins };
+    arbInputsRef.current = {
+      entries: arbSchedule?.entries ?? [],
+      rule: { favorites: arbFavorites, tiers: arbAlertTiers },
+      leadMins: arbLeadMins,
+    };
   });
 
   // A pass outlives its tick whenever the notification IPC is slow, and two
@@ -1473,10 +1487,10 @@ if (typeof s.autoDiagEnabled === "boolean") {
       if (arbAlertsOn && arbCheckingRef.current) return;
       arbCheckingRef.current = true;
       try {
-        const { entries, favorites, leadMins } = arbInputsRef.current;
+        const { entries, rule, leadMins } = arbInputsRef.current;
         const nowMs = Date.now();
         const fired = await runAlertPass(
-          entries, favorites, leadMins, arbFiredRef.current, nowMs / 1000,
+          entries, rule, leadMins, arbFiredRef.current, nowMs / 1000,
           e => notify(
             `Arbitration — ${e.node}${e.region ? ` (${e.region})` : ""}`,
             `${[e.mission_type, e.faction].filter(Boolean).join(" · ")} — ${e.start * 1000 > nowMs
@@ -3092,6 +3106,10 @@ if (typeof s.autoDiagEnabled === "boolean") {
               onLeadChange={setArbLeadMins}
               permissionDenied={arbPermissionDenied}
               onPermissionChange={setArbPermissionDenied}
+              tierFilter={arbTierFilter}
+              onTierFilterChange={setArbTierFilter}
+              alertTiers={arbAlertTiers}
+              onAlertTiersChange={setArbAlertTiers}
             />
           </ErrorBoundary>
         )}

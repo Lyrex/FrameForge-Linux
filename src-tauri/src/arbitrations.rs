@@ -39,6 +39,28 @@ pub fn parse_feed(text: &str) -> Vec<Rotation> {
     rotations
 }
 
+/// The Arbitration Goons' rating of how well a node farms Vitus Essence,
+/// vendored from `calamity-inc/browse.wf` (`supplemental-data/arbyTiers.js`).
+/// Refresh by hand when that file changes: it moves once in a blue moon, and
+/// a runtime fetch would mean parsing JavaScript to learn a letter.
+///
+/// A node the rating does not cover is Unrated, which is not the same as bad:
+/// the list only covers nodes the rotation actually visits.
+pub fn tier(node_id: &str) -> Option<&'static str> {
+    Some(match node_id {
+        "SolNode450" | "SolNode106" | "SolNode25" | "SolNode719" | "SolNode64" => "S",
+        "SolNode147" | "SolNode23" | "SolNode172" => "A",
+        "SolNode167" | "ClanNode24" | "SolNode149" | "ClanNode22" | "ClanNode18" | "SolNode164"
+        | "SolNode707" | "SolNode211" | "SolNode42" | "SolNode195" | "SolNode408"
+        | "SolNode402" => "B",
+        "SolNode412" | "ClanNode2" | "SolNode46" | "ClanNode8" | "SolNode212" | "SolNode22"
+        | "SolNode224" | "SolNode26" | "ClanNode6" | "SolNode122" | "SolNode72" => "C",
+        "SolNode130" | "ClanNode15" | "SolNode85" | "SolNode18" | "SolNode305" | "ClanNode4"
+        | "SolNode125" => "D",
+        _ => return None,
+    })
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ScheduleEntry {
     pub start: u64,
@@ -48,6 +70,7 @@ pub struct ScheduleEntry {
     pub region: String,
     pub mission_type: String,
     pub faction: String,
+    pub tier: Option<&'static str>,
 }
 
 /// A rotation lasts until the next one in the feed, or one hour when the
@@ -87,6 +110,7 @@ fn entry(start: u64, end: u64, node_id: &str) -> ScheduleEntry {
         region,
         mission_type: crate::node_mission_type(node_id),
         faction: crate::node_enemy(node_id),
+        tier: tier(node_id),
     }
 }
 
@@ -169,6 +193,15 @@ mod tests {
     fn a_gap_in_the_feed_ends_the_rotation_after_an_hour() {
         let feed = [rotation(0, "a"), rotation(36000, "b")];
         assert_eq!(within_horizon(&feed, 100, 100_000), vec![(0, 3600, "a"), (36000, 39600, "b")]);
+    }
+
+    #[test]
+    fn rated_nodes_carry_their_tier_and_the_rest_carry_none() {
+        assert_eq!(tier("SolNode450"), Some("S"));
+        assert_eq!(tier("ClanNode24"), Some("B"));
+        assert_eq!(tier("SolNode125"), Some("D"));
+        assert_eq!(tier("SolNode1"), None);
+        assert_eq!(tier(""), None);
     }
 
     #[test]
