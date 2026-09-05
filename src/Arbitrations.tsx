@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { fmtMs } from "./TimerHelper";
 import { ensurePermission, permissionGranted } from "./notify";
 import { clampLead, MAX_LEAD_MINS, MIN_LEAD_MINS, type ScheduleEntry } from "./arbitrationAlerts";
-import { useArbitrationSchedule } from "./arbitrationSchedule";
+import { useArbitrationSchedule, clampScheduleDays, SCHEDULE_DAY_OPTIONS } from "./arbitrationSchedule";
 import { tierKey, type TierKey } from "./arbitrationTiers";
 import TierSelect, { TierBadge } from "./TierSelect";
 import ArbitrationHistory from "./ArbitrationHistory";
@@ -29,6 +29,8 @@ type Props = {
   onTierFilterChange: (next: TierKey[]) => void;
   alertTiers: TierKey[];
   onAlertTiersChange: (next: TierKey[]) => void;
+  scheduleDays: number;
+  onScheduleDaysChange: (days: number) => void;
 };
 
 export default function Arbitrations(props: Props) {
@@ -46,9 +48,9 @@ export default function Arbitrations(props: Props) {
 
 function Schedule({
   favorites, onToggleFavorite, leadMins, onLeadChange, permissionDenied, onPermissionChange,
-  tierFilter, onTierFilterChange, alertTiers, onAlertTiersChange,
+  tierFilter, onTierFilterChange, alertTiers, onAlertTiersChange, scheduleDays, onScheduleDaysChange,
 }: Props) {
-  const { schedule, error, refresh: fetchSchedule } = useArbitrationSchedule(true);
+  const { schedule, error, refresh: fetchSchedule } = useArbitrationSchedule(true, scheduleDays);
   const [now, setNow] = useState(() => Date.now());
   const [leadDraft, setLeadDraft] = useState(String(leadMins));
 
@@ -188,6 +190,22 @@ function Schedule({
 
       <div className="arb-filters arb-tier-filter">
         <TierSelect label="Show tiers" selected={tierFilter} onChange={onTierFilterChange} />
+        <span className="arb-filter-sep" aria-hidden="true" />
+        <span className="arb-filter-window">
+          <span className="tier-select-label">Show</span>
+          <span className="arb-window-select">
+            <select
+              className="arb-window-select-input"
+              value={clampScheduleDays(scheduleDays)}
+              onChange={e => onScheduleDaysChange(Number(e.target.value))}
+            >
+              {SCHEDULE_DAY_OPTIONS.map(d => (
+                <option key={d} value={d}>{d} days</option>
+              ))}
+            </select>
+            <span className="arb-window-select-caret" aria-hidden="true">▾</span>
+          </span>
+        </span>
         <span className="arb-muted arb-filter-count">{shown.length} of {upcoming.length} hours</span>
       </div>
 
