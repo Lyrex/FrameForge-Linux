@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { fmtMs } from "./TimerHelper";
+import { fmtClock, type ClockFormat } from "./clockFormat";
 import { ensurePermission, permissionGranted } from "./notify";
 import { clampLead, MAX_LEAD_MINS, MIN_LEAD_MINS, type ScheduleEntry } from "./arbitrationAlerts";
 import { useArbitrationSchedule, clampScheduleDays, SCHEDULE_DAY_OPTIONS } from "./arbitrationSchedule";
@@ -9,10 +10,10 @@ import ArbitrationHistory from "./ArbitrationHistory";
 import "./Arbitrations.css";
 import "./Report.css";
 
-const fmtTime = (unix: number) =>
-  new Date(unix * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+// The day header always reads English like the rest of the UI; only the time
+// takes the locale-driven hour cycle.
 const dayLabel = (unix: number) =>
-  new Date(unix * 1000).toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
+  new Date(unix * 1000).toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
 
 // Favorites and lead time are owned by App: the alerts have to keep firing
 // while the user is looking at another module, and this component is unmounted
@@ -31,6 +32,8 @@ type Props = {
   onAlertTiersChange: (next: TierKey[]) => void;
   scheduleDays: number;
   onScheduleDaysChange: (days: number) => void;
+  clockFormat: ClockFormat;
+  systemLocale: string;
 };
 
 export default function Arbitrations(props: Props) {
@@ -41,7 +44,7 @@ export default function Arbitrations(props: Props) {
         <button className={tab === "schedule" ? "active" : ""} onClick={() => setTab("schedule")}>Schedule</button>
         <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>Run history</button>
       </div>
-      {tab === "schedule" ? <Schedule {...props} /> : <ArbitrationHistory />}
+      {tab === "schedule" ? <Schedule {...props} /> : <ArbitrationHistory clockFormat={props.clockFormat} systemLocale={props.systemLocale} />}
     </div>
   );
 }
@@ -49,6 +52,7 @@ export default function Arbitrations(props: Props) {
 function Schedule({
   favorites, onToggleFavorite, leadMins, onLeadChange, permissionDenied, onPermissionChange,
   tierFilter, onTierFilterChange, alertTiers, onAlertTiersChange, scheduleDays, onScheduleDaysChange,
+  clockFormat, systemLocale,
 }: Props) {
   const { schedule, error, refresh: fetchSchedule } = useArbitrationSchedule(true, scheduleDays);
   const [now, setNow] = useState(() => Date.now());
@@ -221,7 +225,7 @@ function Schedule({
             {header}
             <div className={`timer-row${rowClass(e)}`} title={alertTitle(e)}>
               {star(e)}
-              <span className="arb-time">{fmtTime(e.start)}</span>
+              <span className="arb-time">{fmtClock(e.start, clockFormat, systemLocale)}</span>
               <span className="timer-name">{name(e)}</span>
               <span className="arb-detail">{detail(e)}</span>
               <span className="timer-until">in {fmtMs(e.start * 1000 - now)}</span>

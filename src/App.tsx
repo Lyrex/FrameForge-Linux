@@ -76,6 +76,7 @@ import ArbitrationOverlay from "./ArbitrationOverlay";
 import TimerHelper, { FissureWatch, fmtMs } from "./TimerHelper";
 import Arbitrations from "./Arbitrations";
 import { useWorldState } from "./worldstate";
+import { fmtClock } from "./clockFormat";
 import { notify, ensurePermission } from "./notify";
 import { collectNewMatches, type SeenFissures } from "./fissureAlerts";
 import { clampLead, runAlertPass, DEFAULT_LEAD_MINS, EVAL_INTERVAL_MS, type AlertRule, type ScheduleEntry } from "./arbitrationAlerts";
@@ -263,12 +264,6 @@ function fmtBytes(n: number) {
 }
 function deltaClass(d: number) { return d > 0 ? "delta-pos" : "delta-neg"; }
 function deltaText(d: number) { return d > 0 ? `+${fmt(d)}` : fmt(d); }
-function timeStr(ts: number, format: "auto" | "12h" | "24h" = "auto", locale = "en-US") {
-  const opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" };
-  if (format === "12h") opts.hour12 = true;
-  else if (format === "24h") opts.hour12 = false;
-  return new Date(ts * 1000).toLocaleTimeString(locale, opts);
-}
 
 // ─── Standalone modular window page (runs in pop-out Tauri window) ────────────
 
@@ -3056,7 +3051,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                           </span>
                           <span className={`log-delta ${deltaClass(c.delta)}`}>{deltaText(c.delta)}</span>
                           <span className="log-range">{fmt(c.old_qty)} → {fmt(c.new_qty)}</span>
-                          <span className="log-time">{timeStr(c.timestamp, clockFormat, systemLocale)}</span>
+                          <span className="log-time">{fmtClock(c.timestamp, clockFormat, systemLocale)}</span>
                         </div>
                       );
                     })
@@ -3115,6 +3110,8 @@ if (typeof s.autoDiagEnabled === "boolean") {
               onAlertTiersChange={setArbAlertTiers}
               scheduleDays={arbScheduleDays}
               onScheduleDaysChange={setArbScheduleDays}
+              clockFormat={clockFormat}
+              systemLocale={systemLocale}
             />
           </ErrorBoundary>
         )}

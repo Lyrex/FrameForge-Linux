@@ -8,6 +8,7 @@ import {
 } from "./arbitrationAnalytics";
 import Sparkline from "./Sparkline";
 import { TierBadge } from "./TierSelect";
+import { fmtClock, type ClockFormat } from "./clockFormat";
 import "./Report.css";
 
 const RANGES: { label: string; value: number | "all" }[] = [
@@ -16,8 +17,13 @@ const RANGES: { label: string; value: number | "all" }[] = [
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const fmtRate = (r: number | null) => (r === null ? "—" : r.toFixed(2));
-const fmtDate = (iso: string | null) =>
-  iso === null ? "unknown time" : new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+const fmtDate = (iso: string | null, format: ClockFormat, locale: string) => {
+  if (iso === null) return "unknown time";
+  const when = new Date(iso);
+  // The month name stays English; only the time follows the hour format.
+  const date = when.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${date}, ${fmtClock(when.getTime() / 1000, format, locale)}`;
+};
 const endLabel: Record<Exclude<RunRecord["end_reason"], "mission_end">, string> = {
   aborted: "aborted", new_mission: "left early", unterminated: "unfinished",
 };
@@ -44,7 +50,7 @@ function BreakdownTable({ label, rows, name }: { label: string; rows: Breakdown[
 
 // ── Run history tab ────────────────────────────────────────────────────────────
 
-export default function ArbitrationHistory() {
+export default function ArbitrationHistory({ clockFormat, systemLocale }: { clockFormat: ClockFormat; systemLocale: string }) {
   const [runs, setRuns] = useState<RunRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>({ days: 30, missionType: "all" });
@@ -147,7 +153,7 @@ export default function ArbitrationHistory() {
       <div className="arb-runs">
         {shown.map(run => (
           <div className={`arb-run${completed(run) ? "" : " arb-run-incomplete"}`} key={run.uid}>
-            <span className="arb-run-when">{fmtDate(run.started_at)}</span>
+            <span className="arb-run-when">{fmtDate(run.started_at, clockFormat, systemLocale)}</span>
             <span className="arb-run-main">
               <span className="timer-name"><TierBadge tier={run.tier} />{run.node}</span>
               <span className="arb-muted">
