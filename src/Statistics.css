@@ -6,27 +6,6 @@
   min-height: 0;
 }
 
-/* ── Sub-tabs ── */
-.stat-sub-tabs {
-  display: flex;
-  gap: 2px;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-.stat-sub-tabs button {
-  background: none;
-  border: 1px solid rgba(48,54,61,.6);
-  color: var(--muted);
-  font-size: 12px;
-  padding: 3px 14px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: background .1s, color .1s, border-color .1s;
-}
-.stat-sub-tabs button:hover { background: rgba(255,255,255,.06); color: var(--text); }
-.stat-sub-tabs button.active { background: rgba(56,139,253,.15); border-color: var(--accent); color: var(--accent); }
-
 /* ── Trades tab ── */
 .stat-trades {
   flex: 1;

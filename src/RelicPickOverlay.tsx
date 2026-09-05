@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { clampToMonitor, overlayScale } from "./uiScale";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useOverlayWindow } from "./useOverlayWindow";
 import "./RelicPickOverlay.css";
 
 type Priority = "unowned" | "ducat" | "platinum";
@@ -91,30 +91,7 @@ export default function RelicPickOverlay() {
   const [payload,  setPayload]  = useState<PickPayload | null>(null);
   const [priority, setPriority] = useState<Priority>("unowned");
   const [lines,    setLines]    = useState<Lines>("all");
-  // Use a callback ref so the ResizeObserver is set up each time the root div
-  // mounts (payload goes null→non-null). A plain useRef+useEffect misses this
-  // because the root div doesn't exist yet when the effect runs at mount time.
-  const roRef   = useRef<ResizeObserver | null>(null);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-
-  // The scale is a CSS transform, so it does not change the measured layout size.
-  // The window must grow by the same factor that the content is drawn at.
-  const syncSize = useCallback((layoutHeight: number) => {
-    if (layoutHeight <= 0) return;
-    const s = overlayScale();
-    clampToMonitor(340 * s, layoutHeight * s)
-      .then(([w, h]) => getCurrentWindow().setSize(new LogicalSize(Math.round(w), Math.round(h))))
-      .catch(() => {});
-  }, []);
-
-  const rootCallback = useCallback((el: HTMLDivElement | null) => {
-    if (roRef.current) { roRef.current.disconnect(); roRef.current = null; }
-    rootRef.current = el;
-    if (!el) return;
-    const ro = new ResizeObserver(entries => syncSize(Math.ceil(entries[0].contentRect.height)));
-    ro.observe(el);
-    roRef.current = ro;
-  }, [syncSize]);
+  const root = useOverlayWindow(340, "top-right");
 
   const hide = () => {
     setPayload(null);
@@ -136,14 +113,8 @@ export default function RelicPickOverlay() {
       setPayload(e.payload);
     });
     const unClose = listen("relic-pick-close", () => hide());
-    // A scale change does not alter the layout size, so the ResizeObserver never
-    // fires. Measure again to resize a window that is already open.
-    const unScale = listen("settings-updated", () => {
-      const el = rootRef.current;
-      if (el) syncSize(Math.ceil(el.getBoundingClientRect().height / overlayScale()));
-    });
-    return () => { unOpen.then(f => f()); unClose.then(f => f()); unScale.then(f => f()); };
-  }, [syncSize]);
+    return () => { unOpen.then(f => f()); unClose.then(f => f()); };
+  }, []);
 
   if (!payload) return null;
 
@@ -153,7 +124,7 @@ export default function RelicPickOverlay() {
   const eraLabel = ERA_LABEL[payload.era] ?? payload.era;
 
   return (
-    <div className="rpo-root" ref={rootCallback}>
+    <div className="rpo-root" ref={root}>
       <div className="rpo-header">
         <span className="rpo-title">{eraLabel} Fissure</span>
         <button className="rpo-close" onClick={hide} title="Close">✕</button>

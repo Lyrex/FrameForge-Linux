@@ -30,6 +30,7 @@ const DISPLAY: Record<string, string> = {
   "drop-data": "Drop Data",
   "riven-db": "Riven DB",
   "wfm-top": "WFM Top Items",
+  "arbitrations-v1.json": "Arbitrations",
 };
 
 export default function CacheStatusChip() {

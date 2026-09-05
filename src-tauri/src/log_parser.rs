@@ -850,3 +850,293 @@ mod linux_tests {
         assert_eq!(logs.len(), before, "candidate list repeats a path");
     }
 }
+
+// ==============================================================================
+// Following the log as it is written
+// ==============================================================================
+//
+// Warframe appends to EE.log while we read it, and starts a fresh log on every
+// launch. Both watchers below the parser follow the file through this one
+// cursor rather than each doing their own arithmetic, because getting either
+// half wrong is silent: a cursor that lags re-delivers text that was already
+// handled, and a stateful reader downstream then counts it twice.
+
+/// Text that appeared since the last read.
+pub struct TailChunk {
+    pub text: String,
+    /// The file this text came from is not the one the previous chunk came
+    /// from. Readers holding state across chunks must drop it.
+    pub restarted: bool,
+}
+
+/// Inode alone is not enough: a filesystem is free to hand a freshly created
+/// file the inode of the one just deleted, and a relaunch deletes and recreates
+/// EE.log within the same moment. Creation time separates those two files;
+/// where the filesystem does not record one, identity falls back to the inode.
+type FileId = (u64, Option<std::time::SystemTime>);
+
+fn file_id(meta: &std::fs::Metadata) -> FileId {
+    use std::os::unix::fs::MetadataExt;
+    (meta.ino(), meta.created().ok())
+}
+
+/// A byte cursor into a file that only grows or starts over.
+pub struct LogTail {
+    path: PathBuf,
+    pos: u64,
+    /// Identity of the file `pos` counts into. A new launch writes a new file
+    /// at the same path, and its first bytes are a boot header that readers
+    /// must not miss.
+    file_id: Option<FileId>,
+    /// The leading bytes of a character whose remaining bytes have not been
+    /// written yet.
+    partial_char: Vec<u8>,
+    /// Set when the file changed underneath us, cleared once a chunk has
+    /// carried the fact to the caller. It outlives the read that noticed it
+    /// because that read can come back empty.
+    restarted: bool,
+}
+
+impl LogTail {
+    /// Starts at the beginning, so the first read yields the whole file.
+    pub fn from_start(path: PathBuf) -> Self {
+        Self { path, pos: 0, file_id: None, partial_char: Vec::new(), restarted: false }
+    }
+
+    /// Starts at the end, for readers that react to events as they happen and
+    /// would fire on hours-old lines if handed the existing log.
+    pub fn from_end(path: PathBuf) -> Self {
+        let seen = std::fs::metadata(&path).ok();
+        Self {
+            pos: seen.as_ref().map_or(0, |m| m.len()),
+            file_id: seen.as_ref().map(file_id),
+            path,
+            partial_char: Vec::new(),
+            restarted: false,
+        }
+    }
+
+    /// Whatever has been appended since the last call, or `None` when the file
+    /// is unreadable or has not grown.
+    pub fn read(&mut self) -> Option<TailChunk> {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let meta = std::fs::metadata(&self.path).ok()?;
+        // A relaunch usually replaces the file, which shows up as a new inode
+        // long before the new log grows past the old one's length. Shrinkage
+        // still has to be checked for the case where it is truncated in place.
+        let replaced = self.file_id.is_some_and(|seen| seen != file_id(&meta));
+        if replaced || meta.len() < self.pos {
+            self.pos = 0;
+            self.partial_char.clear();
+            self.restarted = true;
+        }
+        self.file_id = Some(file_id(&meta));
+        if meta.len() == self.pos {
+            return None;
+        }
+
+        let mut file = std::fs::File::open(&self.path).ok()?;
+        file.seek(SeekFrom::Start(self.pos)).ok()?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).ok()?;
+        // Advance by what was read, not by the length sampled before reading:
+        // the game may have appended more in between, and those bytes are in
+        // hand now. Trusting the earlier length would hand them out twice.
+        self.pos += bytes.len() as u64;
+
+        let text = self.decode(&bytes);
+        if text.is_empty() {
+            return None;
+        }
+        Some(TailChunk { text, restarted: std::mem::take(&mut self.restarted) })
+    }
+
+    /// A read can land mid-character, and a log can hold a byte that is no
+    /// character at all. The first waits for the rest of its character; the
+    /// second is dropped, because a cursor that refuses to pass one bad byte
+    /// stops delivering the file for as long as the byte is in it.
+    fn decode(&mut self, bytes: &[u8]) -> String {
+        let mut buf = std::mem::take(&mut self.partial_char);
+        buf.extend_from_slice(bytes);
+
+        let mut text = String::new();
+        let mut at = 0;
+        loop {
+            match std::str::from_utf8(&buf[at..]) {
+                Ok(rest) => {
+                    text.push_str(rest);
+                    break;
+                }
+                Err(e) => {
+                    let valid = e.valid_up_to();
+                    text.push_str(
+                        std::str::from_utf8(&buf[at..at + valid])
+                            .expect("valid_up_to reports a decodable prefix"),
+                    );
+                    match e.error_len() {
+                        Some(bad) => at += valid + bad,
+                        None => {
+                            self.partial_char = buf[at + valid..].to_vec();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        text
+    }
+}
+
+#[cfg(test)]
+mod log_tail_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("frameforge-tail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir is always writable");
+        let path = dir.join(name);
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    fn append(path: &Path, bytes: &[u8]) {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("scratch file is writable");
+        f.write_all(bytes).expect("scratch write succeeds");
+    }
+
+    fn text_of(tail: &mut LogTail) -> String {
+        tail.read().map(|c| c.text).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_missing_file_reads_as_nothing() {
+        let mut tail = LogTail::from_start(scratch("absent.log"));
+        assert!(tail.read().is_none());
+    }
+
+    #[test]
+    fn each_line_is_delivered_exactly_once() {
+        let path = scratch("append.log");
+        append(&path, b"one\n");
+        let mut tail = LogTail::from_start(path.clone());
+        assert_eq!(text_of(&mut tail), "one\n");
+        assert!(tail.read().is_none());
+
+        append(&path, b"two\n");
+        assert_eq!(text_of(&mut tail), "two\n");
+        assert!(tail.read().is_none());
+    }
+
+    /// The bug this cursor exists to prevent: bytes written between sampling
+    /// the length and finishing the read must not be delivered a second time.
+    #[test]
+    fn bytes_appended_during_a_read_are_not_delivered_twice() {
+        let path = scratch("race.log");
+        append(&path, b"first\n");
+        let mut tail = LogTail::from_start(path.clone());
+
+        // Stands in for the append that lands mid-read: the cursor is behind
+        // the file by exactly the bytes a concurrent write would have added.
+        append(&path, b"second\n");
+        assert_eq!(text_of(&mut tail), "first\nsecond\n");
+        assert!(tail.read().is_none(), "the second line must not come back");
+    }
+
+    #[test]
+    fn a_character_split_across_two_reads_survives() {
+        let path = scratch("split.log");
+        let stoefler = "Stöfler\n".as_bytes();
+        let cut = 2; // mid-way through the two-byte 'ö'
+        append(&path, &stoefler[..cut + 1]);
+
+        let mut tail = LogTail::from_start(path.clone());
+        let first = text_of(&mut tail);
+        append(&path, &stoefler[cut + 1..]);
+        let second = text_of(&mut tail);
+
+        assert_eq!(format!("{first}{second}"), "Stöfler\n");
+    }
+
+    #[test]
+    fn a_byte_that_is_no_character_does_not_stall_the_cursor() {
+        let path = scratch("invalid.log");
+        append(&path, b"before\n\xffafter\n");
+
+        let mut tail = LogTail::from_start(path.clone());
+        let text = text_of(&mut tail);
+        assert!(text.contains("before"), "text before the bad byte is delivered");
+        assert!(text.contains("after"), "text after it is delivered too");
+        assert!(tail.read().is_none(), "the cursor moved past the bad byte");
+    }
+
+    #[test]
+    fn truncating_the_file_replays_it_and_says_so() {
+        let path = scratch("truncate.log");
+        append(&path, b"old session\n");
+        let mut tail = LogTail::from_start(path.clone());
+        assert_eq!(text_of(&mut tail), "old session\n");
+
+        std::fs::write(&path, b"new\n").expect("scratch file is writable");
+        let chunk = tail.read().expect("a truncated file reads from its start");
+        assert_eq!(chunk.text, "new\n");
+        assert!(chunk.restarted);
+    }
+
+    /// A relaunch replaces the file rather than truncating it, and the new log
+    /// can pass the old cursor before the next poll. Length alone misses that.
+    #[test]
+    fn replacing_the_file_with_a_longer_one_still_reads_as_a_restart() {
+        let path = scratch("replace.log");
+        append(&path, b"old\n");
+        let mut tail = LogTail::from_start(path.clone());
+        assert_eq!(text_of(&mut tail), "old\n");
+
+        std::fs::remove_file(&path).expect("scratch file is removable");
+        append(&path, b"a much longer new session log\n");
+
+        let chunk = tail.read().expect("a replaced file reads from its start");
+        assert_eq!(chunk.text, "a much longer new session log\n");
+        assert!(chunk.restarted);
+    }
+
+    /// A tail that opened at the end already holds the file's identity, which
+    /// is a different way into the restart check than starting without one.
+    #[test]
+    fn a_tail_that_opened_at_the_end_still_sees_a_replacement() {
+        let path = scratch("end-replace.log");
+        append(&path, b"old session\n");
+        let mut tail = LogTail::from_end(path.clone());
+        assert!(tail.read().is_none(), "nothing has been appended yet");
+
+        std::fs::remove_file(&path).expect("scratch file is removable");
+        append(&path, b"a much longer new session log\n");
+
+        let chunk = tail.read().expect("a replaced file reads from its start");
+        assert_eq!(chunk.text, "a much longer new session log\n");
+        assert!(chunk.restarted);
+    }
+
+    /// The restart has to reach the reader even when the read that noticed it
+    /// had nothing to hand over.
+    #[test]
+    fn a_restart_seen_on_an_empty_file_is_reported_with_the_next_chunk() {
+        let path = scratch("empty-restart.log");
+        append(&path, b"old\n");
+        let mut tail = LogTail::from_start(path.clone());
+        assert_eq!(text_of(&mut tail), "old\n");
+
+        std::fs::write(&path, b"").expect("scratch file is writable");
+        assert!(tail.read().is_none(), "an empty file has nothing to deliver");
+
+        append(&path, b"new\n");
+        let chunk = tail.read().expect("the new file has text");
+        assert_eq!(chunk.text, "new\n");
+        assert!(chunk.restarted, "the restart must not be forgotten");
+    }
+}
