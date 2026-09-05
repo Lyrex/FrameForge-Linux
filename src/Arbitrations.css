@@ -131,7 +131,18 @@
   font-size: 11px;
   color: var(--muted);
   flex-shrink: 0;
-  min-width: 170px;
+  width: 210px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.arb-current .arb-detail { width: auto; }
+
+.arb-scroll .timer-row .timer-until {
+  width: 96px;
+  max-width: none;
+  text-align: right;
 }
 
 .arb-fav { background: rgba(240,192,64,.08); }
