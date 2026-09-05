@@ -1,8 +1,8 @@
 //! Disk cache with a stale-while-revalidate ladder.
 //!
 //! Every cached payload carries the time it was retrieved and the ETag it came
-//! with, so freshness is a property of the file rather than of its mtime, and a
-//! conditional GET can be built from it. `get_or_refresh` walks four rungs in
+//! with, so a conditional GET can be built from it; a 304 then bumps the file's
+//! mtime instead of rewriting the payload. `get_or_refresh` walks four rungs in
 //! order (fresh copy, successful refetch, stale copy, nothing) and reports
 //! which one answered so the UI can say how old what it shows is.
 //!
@@ -150,10 +150,20 @@ fn unix_seconds(time: SystemTime) -> u64 {
         .max(1)
 }
 
+/// A 304 confirms the copy without rewriting it, so the confirmation lives in
+/// the file's mtime (see `confirm`). A freshly stored payload has an mtime at
+/// or after its embedded timestamp, so taking the later of the two never ages
+/// a copy and a replacement cannot inherit its predecessor's confirmation.
 pub fn load<T: DeserializeOwned>(name: &str) -> Option<Cached<T>> {
     let file = std::fs::File::open(path_of(name)).ok()?;
-    match serde_json::from_reader(std::io::BufReader::new(file)) {
-        Ok(cached) => Some(cached),
+    let confirmed = file.metadata().and_then(|m| m.modified()).ok();
+    match serde_json::from_reader::<_, Cached<T>>(std::io::BufReader::new(file)) {
+        Ok(mut cached) => {
+            if let Some(confirmed) = confirmed {
+                cached.retrieved_at_unix = cached.retrieved_at_unix.max(unix_seconds(confirmed));
+            }
+            Some(cached)
+        }
         Err(e) => {
             warn!("discarding unreadable cache {name}: {e}");
             None
@@ -162,14 +172,31 @@ pub fn load<T: DeserializeOwned>(name: &str) -> Option<Cached<T>> {
 }
 
 pub fn store<T: Serialize>(name: &str, etag: Option<String>, data: &T) -> std::io::Result<()> {
+    store_at(name, etag, data, now_unix())
+}
+
+fn store_at<T: Serialize>(
+    name: &str,
+    etag: Option<String>,
+    data: &T,
+    retrieved_at_unix: u64,
+) -> std::io::Result<()> {
     let cached = Cached {
-        retrieved_at_unix: now_unix(),
+        retrieved_at_unix,
         etag,
         data,
     };
     let body = serde_json::to_vec(&cached)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     atomic_write(&path_of(name), &body)
+}
+
+fn confirm(name: &str, unix: u64) -> std::io::Result<()> {
+    // Write access: SetFileTime needs FILE_WRITE_ATTRIBUTES on Windows.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path_of(name))?
+        .set_modified(UNIX_EPOCH + Duration::from_secs(unix))
 }
 
 /// Serve `name`, refetching when it is older than `ttl`.
@@ -232,7 +259,7 @@ where
     let result = fetch(cached.as_ref().and_then(|c| c.etag.as_deref()));
     match result {
         Ok(Fetched::New(data, etag)) => {
-            if let Err(e) = store(name, etag, &data) {
+            if let Err(e) = store_at(name, etag, &data, now) {
                 warn!("cannot write cache {name}: {e}");
             }
             report(name, Some(now), Source::Refreshed, None, Some(data))
@@ -242,8 +269,8 @@ where
         // place.
         Ok(Fetched::NotModified) => match cached {
             Some(c) => {
-                if let Err(e) = store(name, c.etag, &c.data) {
-                    warn!("cannot refresh cache timestamp {name}: {e}");
+                if let Err(e) = confirm(name, now) {
+                    warn!("cannot confirm cache {name}: {e}");
                 }
                 report(name, Some(now), Source::Fresh, None, Some(c.data))
             }
@@ -355,6 +382,65 @@ pub fn get_conditional(url: &str, etag: Option<&str>) -> Result<Fetched<String>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn not_modified_without_a_copy_is_a_fallback() {
+        let name = scratch("not-modified-missing");
+        let (data, source, warning) = get_or_refresh(&name, Duration::ZERO, |_| {
+            Ok(Fetched::<String>::NotModified)
+        });
+        assert!(data.is_none());
+        assert_eq!(source, Source::Fallback);
+        assert!(warning
+            .expect("missing copy is reported")
+            .contains("no cached copy"));
+    }
+
+    #[test]
+    fn replacement_does_not_inherit_previous_confirmation() {
+        let name = scratch("replace-confirmed");
+        store(&name, None, &"old").expect("test cache is writable");
+        expire(&name);
+        let confirmed = now_unix() + 1_000_000;
+        get_or_refresh_at(
+            &name,
+            Duration::ZERO,
+            |_| Ok(Fetched::<String>::NotModified),
+            || confirmed,
+        );
+        assert_eq!(
+            load::<String>(&name)
+                .expect("cache exists")
+                .retrieved_at_unix,
+            confirmed
+        );
+        store(&name, Some("new-etag".into()), &"new").expect("replacement is writable");
+        let cached = load::<String>(&name).expect("replacement loads");
+        assert!(cached.retrieved_at_unix < confirmed);
+        assert_eq!(cached.data, "new");
+        assert_eq!(cached.etag.as_deref(), Some("new-etag"));
+    }
+
+    #[test]
+    fn not_modified_updates_freshness_without_rewriting_payload() {
+        let name = scratch("not-modified-bytes");
+        store(&name, Some("catalogue-etag".into()), &"catalogue").expect("test cache is writable");
+        expire(&name);
+        let before = std::fs::read(path_of(&name)).expect("cache exists");
+        let (data, source, warning) = get_or_refresh_at(
+            &name,
+            Duration::ZERO,
+            |_| Ok(Fetched::<String>::NotModified),
+            || 100,
+        );
+        assert_eq!(data.as_deref(), Some("catalogue"));
+        assert_eq!(source, Source::Fresh);
+        assert!(warning.is_none());
+        assert_eq!(std::fs::read(path_of(&name)).expect("cache exists"), before);
+        let cached = load::<String>(&name).expect("cache remains readable");
+        assert_eq!(cached.retrieved_at_unix, 100);
+        assert_eq!(cached.etag.as_deref(), Some("catalogue-etag"));
+    }
 
     #[test]
     fn large_catalogue_round_trips() {
@@ -524,6 +610,7 @@ mod tests {
             &serde_json::to_vec(&cached).expect("cache serializes"),
         )
         .expect("test cache is writable");
+        confirm(name, 1).expect("test cache records mtimes");
     }
 
     fn fetches(body: &str) -> impl FnOnce(Option<&str>) -> Result<Fetched<String>, String> + '_ {
