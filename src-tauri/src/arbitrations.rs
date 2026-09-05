@@ -14,8 +14,16 @@ const FEED_URL: &str = "https://browse.wf/arbys.txt";
 const FEED_CACHE: &str = "arbitrations-v1.json";
 const FEED_TTL: Duration = Duration::from_secs(3600);
 const ROTATION_SECS: u64 = 3600;
-/// How far ahead the browser shows. The feed runs years further.
-const HORIZON_SECS: u64 = 3 * 24 * 3600;
+
+/// A hand-typed argument must not blank the app into a multi-month parse, so
+/// the clamp is the same both ends and enforced here, not trusted to the
+/// caller.
+const MIN_HORIZON_DAYS: u64 = 1;
+const MAX_HORIZON_DAYS: u64 = 60;
+
+fn horizon_secs(days: u64) -> u64 {
+    days.clamp(MIN_HORIZON_DAYS, MAX_HORIZON_DAYS) * 24 * 3600
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rotation {
@@ -134,13 +142,13 @@ pub(crate) fn refresh_feed(_app: &tauri::AppHandle, force: bool) -> Result<(), S
 }
 
 #[tauri::command]
-pub async fn fetch_arbitration_schedule() -> Result<Schedule, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+pub async fn fetch_arbitration_schedule(horizon_days: u64) -> Result<Schedule, String> {
+    tauri::async_runtime::spawn_blocking(move || {
         let (text, source, warning) = fetch_feed(false);
         let Some(text) = text else {
             return Err(warning.unwrap_or_else(|| "arbitration feed unavailable".to_string()));
         };
-        let entries = within_horizon(&parse_feed(&text), cache::now_unix(), HORIZON_SECS)
+        let entries = within_horizon(&parse_feed(&text), cache::now_unix(), horizon_secs(horizon_days))
             .into_iter()
             .map(|(start, end, node_id)| entry(start, end, node_id))
             .collect();
@@ -179,7 +187,7 @@ mod tests {
     #[test]
     fn empty_feed_is_an_empty_schedule() {
         assert!(parse_feed("").is_empty());
-        assert!(within_horizon(&[], 1000, HORIZON_SECS).is_empty());
+        assert!(within_horizon(&[], 1000, 3 * 24 * 3600).is_empty());
     }
 
     #[test]
@@ -208,5 +216,27 @@ mod tests {
     fn horizon_is_exclusive_of_rotations_starting_at_its_edge() {
         let feed = [rotation(0, "a"), rotation(3600, "b")];
         assert_eq!(within_horizon(&feed, 0, 3600), vec![(0, 3600, "a")]);
+    }
+
+    #[test]
+    fn a_wide_horizon_reaches_across_days_without_losing_gaps_or_ends() {
+        let mut feed: Vec<Rotation> = (0..7)
+            .map(|d| rotation(86_400 * d, &format!("n{d}")))
+            .collect();
+        feed.push(rotation(86_400 * 10, "late"));
+        let got = within_horizon(&feed, 0, 7 * 86_400);
+        assert_eq!(got.len(), 7);
+        // The gap rotation keeps its own one-hour slot, not the missing week.
+        assert_eq!(got[6], (86_400 * 6, 86_400 * 6 + 3600, "n6"));
+    }
+
+    #[test]
+    fn horizon_secs_rounds_and_clamps_to_the_1_60_day_range() {
+        assert_eq!(horizon_secs(0), 86_400);
+        assert_eq!(horizon_secs(1), 86_400);
+        assert_eq!(horizon_secs(7), 7 * 86_400);
+        assert_eq!(horizon_secs(60), 60 * 86_400);
+        assert_eq!(horizon_secs(61), 60 * 86_400);
+        assert_eq!(horizon_secs(9999), 60 * 86_400);
     }
 }

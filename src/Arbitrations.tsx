@@ -1,18 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { fmtMs } from "./TimerHelper";
+import { fmtClock, type ClockFormat } from "./clockFormat";
 import { ensurePermission, permissionGranted } from "./notify";
 import { clampLead, MAX_LEAD_MINS, MIN_LEAD_MINS, type ScheduleEntry } from "./arbitrationAlerts";
-import { useArbitrationSchedule } from "./arbitrationSchedule";
+import { useArbitrationSchedule, clampScheduleDays, SCHEDULE_DAY_OPTIONS } from "./arbitrationSchedule";
 import { tierKey, type TierKey } from "./arbitrationTiers";
 import TierSelect, { TierBadge } from "./TierSelect";
 import ArbitrationHistory from "./ArbitrationHistory";
 import "./Arbitrations.css";
 import "./Report.css";
 
-const fmtTime = (unix: number) =>
-  new Date(unix * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+// The day header always reads English like the rest of the UI; only the time
+// takes the locale-driven hour cycle.
 const dayLabel = (unix: number) =>
-  new Date(unix * 1000).toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
+  new Date(unix * 1000).toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
 
 // Favorites and lead time are owned by App: the alerts have to keep firing
 // while the user is looking at another module, and this component is unmounted
@@ -29,6 +30,10 @@ type Props = {
   onTierFilterChange: (next: TierKey[]) => void;
   alertTiers: TierKey[];
   onAlertTiersChange: (next: TierKey[]) => void;
+  scheduleDays: number;
+  onScheduleDaysChange: (days: number) => void;
+  clockFormat: ClockFormat;
+  systemLocale: string;
 };
 
 export default function Arbitrations(props: Props) {
@@ -39,16 +44,17 @@ export default function Arbitrations(props: Props) {
         <button className={tab === "schedule" ? "active" : ""} onClick={() => setTab("schedule")}>Schedule</button>
         <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>Run history</button>
       </div>
-      {tab === "schedule" ? <Schedule {...props} /> : <ArbitrationHistory />}
+      {tab === "schedule" ? <Schedule {...props} /> : <ArbitrationHistory clockFormat={props.clockFormat} systemLocale={props.systemLocale} />}
     </div>
   );
 }
 
 function Schedule({
   favorites, onToggleFavorite, leadMins, onLeadChange, permissionDenied, onPermissionChange,
-  tierFilter, onTierFilterChange, alertTiers, onAlertTiersChange,
+  tierFilter, onTierFilterChange, alertTiers, onAlertTiersChange, scheduleDays, onScheduleDaysChange,
+  clockFormat, systemLocale,
 }: Props) {
-  const { schedule, error, refresh: fetchSchedule } = useArbitrationSchedule(true);
+  const { schedule, error, refresh: fetchSchedule } = useArbitrationSchedule(true, scheduleDays);
   const [now, setNow] = useState(() => Date.now());
   const [leadDraft, setLeadDraft] = useState(String(leadMins));
 
@@ -188,6 +194,22 @@ function Schedule({
 
       <div className="arb-filters arb-tier-filter">
         <TierSelect label="Show tiers" selected={tierFilter} onChange={onTierFilterChange} />
+        <span className="arb-filter-sep" aria-hidden="true" />
+        <span className="arb-filter-window">
+          <span className="tier-select-label">Show</span>
+          <span className="arb-window-select">
+            <select
+              className="arb-window-select-input"
+              value={clampScheduleDays(scheduleDays)}
+              onChange={e => onScheduleDaysChange(Number(e.target.value))}
+            >
+              {SCHEDULE_DAY_OPTIONS.map(d => (
+                <option key={d} value={d}>{d} days</option>
+              ))}
+            </select>
+            <span className="arb-window-select-caret" aria-hidden="true">▾</span>
+          </span>
+        </span>
         <span className="arb-muted arb-filter-count">{shown.length} of {upcoming.length} hours</span>
       </div>
 
@@ -203,7 +225,7 @@ function Schedule({
             {header}
             <div className={`timer-row${rowClass(e)}`} title={alertTitle(e)}>
               {star(e)}
-              <span className="arb-time">{fmtTime(e.start)}</span>
+              <span className="arb-time">{fmtClock(e.start, clockFormat, systemLocale)}</span>
               <span className="timer-name">{name(e)}</span>
               <span className="arb-detail">{detail(e)}</span>
               <span className="timer-until">in {fmtMs(e.start * 1000 - now)}</span>

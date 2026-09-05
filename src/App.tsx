@@ -76,11 +76,12 @@ import ArbitrationOverlay from "./ArbitrationOverlay";
 import TimerHelper, { FissureWatch, fmtMs } from "./TimerHelper";
 import Arbitrations from "./Arbitrations";
 import { useWorldState } from "./worldstate";
+import { fmtClock } from "./clockFormat";
 import { notify, ensurePermission } from "./notify";
 import { collectNewMatches, type SeenFissures } from "./fissureAlerts";
 import { clampLead, runAlertPass, DEFAULT_LEAD_MINS, EVAL_INTERVAL_MS, type AlertRule, type ScheduleEntry } from "./arbitrationAlerts";
 import { sanitizeTierKeys, TIER_KEYS, type TierKey } from "./arbitrationTiers";
-import { useArbitrationSchedule } from "./arbitrationSchedule";
+import { clampScheduleDays, DEFAULT_SCHEDULE_DAYS, useArbitrationSchedule } from "./arbitrationSchedule";
 import StatsDataTransfer from "./StatsDataTransfer";
 import Statistics from "./Statistics";
 import Syndicates from "./Syndicates";
@@ -263,12 +264,6 @@ function fmtBytes(n: number) {
 }
 function deltaClass(d: number) { return d > 0 ? "delta-pos" : "delta-neg"; }
 function deltaText(d: number) { return d > 0 ? `+${fmt(d)}` : fmt(d); }
-function timeStr(ts: number, format: "auto" | "12h" | "24h" = "auto", locale = "en-US") {
-  const opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" };
-  if (format === "12h") opts.hour12 = true;
-  else if (format === "24h") opts.hour12 = false;
-  return new Date(ts * 1000).toLocaleTimeString(locale, opts);
-}
 
 // ─── Standalone modular window page (runs in pop-out Tauri window) ────────────
 
@@ -902,6 +897,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   // is what a browser is for, while alerting is opt-in.
   const [arbTierFilter, setArbTierFilter] = useState<TierKey[]>([...TIER_KEYS]);
   const [arbAlertTiers, setArbAlertTiers] = useState<TierKey[]>([]);
+  const [arbScheduleDays, setArbScheduleDays] = useState(DEFAULT_SCHEDULE_DAYS);
   const [modularWidth, setModularWidth] = useState(240);
   const [modularSectionOrder, setModularSectionOrder] = useState<string[]>(["tracking", "favorites", "timers", "fissures"]);
   const [modularPopout, setModularPopout] = useState(false);
@@ -921,13 +917,14 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     tracked: [] as string[], favorites: [] as string[], timerFavorites: [] as string[], fissureWatches: [] as FissureWatch[], fissureNotifications: true, modularWidth: 240,
     arbitrationFavorites: [] as string[], arbitrationLeadMins: DEFAULT_LEAD_MINS, arbitrationOverlayEnabled: false,
     arbitrationTierFilter: [...TIER_KEYS] as TierKey[], arbitrationAlertTiers: [] as TierKey[],
+    arbitrationScheduleDays: DEFAULT_SCHEDULE_DAYS,
     modularSectionOrder: ["tracking", "favorites", "timers"] as string[], modularPopout: false,
     wfmInvisibleOnStart: false, wfmInvisibleOnClose: false, wfmAutoInvisible: false, wfmAutoInvisibleMins: 30,
     relicPickEnabled: true, relicPickPriority: "unowned" as "unowned" | "ducat" | "platinum", relicPickRefinement: "radiant" as "intact" | "exceptional" | "flawless" | "radiant", relicPickLines: "all" as "all" | "best" | "estimated",
     foundryPageSize: 30 as 30 | 60 | 100,
     memTriggerEnabled: false,
   });
-  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, arbitrationOverlayEnabled: arbOverlayEnabled, arbitrationTierFilter: arbTierFilter, arbitrationAlertTiers: arbAlertTiers, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled };
+  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, arbitrationOverlayEnabled: arbOverlayEnabled, arbitrationTierFilter: arbTierFilter, arbitrationAlertTiers: arbAlertTiers, arbitrationScheduleDays: arbScheduleDays, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled };
 
   const saveAllSettings = useCallback(() => {
     // Until the on-disk settings have been applied, settingsRef still holds
@@ -1080,6 +1077,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         if (storedFilter) setArbTierFilter(storedFilter);
         const storedAlertTiers = sanitizeTierKeys(s.arbitrationAlertTiers);
         if (storedAlertTiers) setArbAlertTiers(storedAlertTiers);
+        if (typeof s.arbitrationScheduleDays === "number") setArbScheduleDays(clampScheduleDays(s.arbitrationScheduleDays));
         if (typeof s.arbitrationOverlayEnabled === "boolean") { setArbOverlayEnabled(s.arbitrationOverlayEnabled); invoke("set_arbitration_overlay_enabled", { enabled: s.arbitrationOverlayEnabled }); }
         if (Array.isArray(s.arbitrationAlertsFired)) arbFiredRef.current = s.arbitrationAlertsFired.filter((x: unknown) => typeof x === "string");
         if (typeof s.modularWidth === "number") setModularWidth(s.modularWidth);
@@ -1381,7 +1379,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
   useEffect(() => {
     if (settingsLoadedRef.current) saveAllSettings();
-  }, [tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbFavorites, arbLeadMins, arbTierFilter, arbAlertTiers, modularWidth, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, modularSectionOrder, modularPopout]); // eslint-disable-line
+  }, [tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbFavorites, arbLeadMins, arbTierFilter, arbAlertTiers, arbScheduleDays, modularWidth, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, modularSectionOrder, modularPopout]); // eslint-disable-line
 
   // ── Watched fissure notifications ──────────────────────────────────────────
   //
@@ -3053,7 +3051,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                           </span>
                           <span className={`log-delta ${deltaClass(c.delta)}`}>{deltaText(c.delta)}</span>
                           <span className="log-range">{fmt(c.old_qty)} → {fmt(c.new_qty)}</span>
-                          <span className="log-time">{timeStr(c.timestamp, clockFormat, systemLocale)}</span>
+                          <span className="log-time">{fmtClock(c.timestamp, clockFormat, systemLocale)}</span>
                         </div>
                       );
                     })
@@ -3110,6 +3108,10 @@ if (typeof s.autoDiagEnabled === "boolean") {
               onTierFilterChange={setArbTierFilter}
               alertTiers={arbAlertTiers}
               onAlertTiersChange={setArbAlertTiers}
+              scheduleDays={arbScheduleDays}
+              onScheduleDaysChange={setArbScheduleDays}
+              clockFormat={clockFormat}
+              systemLocale={systemLocale}
             />
           </ErrorBoundary>
         )}
