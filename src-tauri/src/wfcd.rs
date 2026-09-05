@@ -25,6 +25,10 @@ pub struct WfcdItem {
     pub fusion_limit: Option<u32>,
     /// Maximum level cap override (maxLevelCap from WFCD). Present on items with non-standard max levels.
     pub max_level_cap: Option<u32>,
+    /// Whether the item can be traded between players (tradable from WFCD).
+    pub tradable: Option<bool>,
+    /// Whether levelling this item grants mastery XP (masterable from WFCD).
+    pub masterable: Option<bool>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -914,7 +918,7 @@ fn parse_relics_rewards(
             let item = r.get("item")?;
             let name = item.get("name").and_then(|v| v.as_str())?.to_string();
             if name.is_empty() { return None; }
-            let unique_name = String::new();
+            let unique_name = item.get("uniqueName").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let rarity_raw = r.get("rarity").and_then(|v| v.as_str()).unwrap_or("Common");
             let rarity = match rarity_raw.to_lowercase().as_str() {
                 "uncommon" => "Silver",
@@ -1009,6 +1013,8 @@ fn fetch_from_wfcd(
             let fusion_limit      = item.get("fusionLimit").and_then(|v| v.as_u64()).map(|n| n as u32);
             let max_level_cap     = item.get("maxLevelCap").and_then(|v| v.as_u64()).map(|n| n as u32)
                 .or_else(|| if unique_name.contains("/EntratiMech/") { Some(40) } else { None });
+            let tradable          = item.get("tradable").and_then(|v| v.as_bool());
+            let masterable        = item.get("masterable").and_then(|v| v.as_bool());
 
             // `category` (display category from wfcd_category_to_display) groups similar WFCD
             // categories together (e.g. "Sentinels"+"SentinelWeapons"+"Pets" → "Companions").
@@ -1046,6 +1052,7 @@ fn fetch_from_wfcd(
                     product_category: product_category.clone(),
                     image_name: image_name.clone(),
                     vaulted, ducats, mastery_req, omega_attenuation, fusion_limit, max_level_cap,
+                    tradable, masterable,
                 });
             }
 
@@ -1169,6 +1176,8 @@ fn fetch_from_wfcd(
                             omega_attenuation: None,
                             fusion_limit: None,
                             max_level_cap: None,
+                            tradable: None,
+                            masterable: None,
                         });
 
                         // Note: blueprint entries for these components are provided by
@@ -1262,6 +1271,8 @@ fn fetch_from_wfcd(
                             omega_attenuation: None,
                             fusion_limit:     None,
                             max_level_cap:    None,
+                            tradable:         None,
+                            masterable:       None,
                         });
                     }
                 }
@@ -1292,6 +1303,8 @@ fn fetch_from_wfcd(
                             omega_attenuation: None,
                             fusion_limit:     None,
                             max_level_cap:    None,
+                            tradable:         None,
+                            masterable:       None,
                         });
                     }
                 }
@@ -1323,6 +1336,8 @@ fn fetch_from_wfcd(
                     omega_attenuation: None,
                     fusion_limit:     None,
                     max_level_cap:    None,
+                    tradable:         None,
+                    masterable:       None,
                 });
             }
         }
@@ -1389,6 +1404,8 @@ fn fetch_from_wfcd(
                             omega_attenuation: None,
                             fusion_limit:     None,
                             max_level_cap:    None,
+                            tradable:         None,
+                            masterable:       None,
                         });
                     }
 
@@ -1540,7 +1557,7 @@ pub fn fallback_items() -> Vec<WfcdItem> {
         name: n.to_string(),
         category: c.to_string(),
         item_type: String::new(), product_category: String::new(),
-        image_name: None, vaulted: None, ducats: None, mastery_req: None, omega_attenuation: None, fusion_limit: None, max_level_cap: None,
+        image_name: None, vaulted: None, ducats: None, mastery_req: None, omega_attenuation: None, fusion_limit: None, max_level_cap: None, tradable: None, masterable: None,
     })
     .collect()
 }

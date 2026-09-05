@@ -17,6 +17,7 @@ interface CatalogItem {
   vaulted?: boolean | null;
   mastery_req?: number | null;
   max_level_cap?: number | null;
+  masterable?: boolean | null;
   source_type?: string;
 }
 
@@ -652,9 +653,9 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
       .filter(i => !filterUnvaulted || i.vaulted === false)
       .filter(i => {
         if (!filterMastered && !filterUnmastered) return true;
-        const cap = effectiveMaxCap(i);
-        if (cap == null) return false; // not levelable — exclude from both filters
+        if (!i.masterable) return false; // WFCD says not masterable → exclude from both filters
         const rank = inventory[i.unique_name]?.mastery_rank ?? 0;
+        const cap = effectiveMaxCap(i) ?? 30;
         return filterMastered ? rank >= cap : rank < cap;
       })
       .filter(i => {
@@ -791,8 +792,8 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
           <button className={`fchip ${ignoreFormaKuva ? "fchip-on" : ""}`} onClick={() => set("ignoreFormaKuva", !ignoreFormaKuva)} title="Treat Forma and Kuva as always owned when filtering">Ignore Forma/Kuva</button>
           <button className={`fchip ${filterReady     ? "fchip-on" : ""}`} onClick={() => set("filterReady", !filterReady)}>⚡ Ready</button>
           <span className="fbar-sep"/>
-          <button className={`fchip ${filterMastered  ? "fchip-on" : ""}`} onClick={() => set("filterMastered", !filterMastered)}>★ Mastered</button>
-          <button className={`fchip ${filterUnmastered? "fchip-on" : ""}`} onClick={() => set("filterUnmastered", !filterUnmastered)}>☆ Unmastered</button>
+          <button className={`fchip ${filterMastered  ? "fchip-on" : ""}`} onClick={() => onFiltersChange({ ...filters, filterMastered: !filterMastered, filterUnmastered: false })}>★ Mastered</button>
+          <button className={`fchip ${filterUnmastered? "fchip-on" : ""}`} onClick={() => onFiltersChange({ ...filters, filterUnmastered: !filterUnmastered, filterMastered: false })}>☆ Unmastered</button>
           <span className="fbar-sep"/>
           <button className={`fchip ${filterLvlCap   ? "fchip-on" : ""}`} onClick={() => onFiltersChange({ ...filters, filterLvlCap: !filterLvlCap, ...(!filterLvlCap ? { activeCat: "All" } : {}) })}>Lvl &gt; 30</button>
           {isFiltered && <button className="fchip fchip-reset" onClick={() => onFiltersChange({ ...FOUNDRY_FILTERS_DEFAULT, activeCat })}>Show All</button>}

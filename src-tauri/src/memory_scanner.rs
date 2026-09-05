@@ -178,22 +178,26 @@ pub fn xp_to_rank(xp: i64, path: &str) -> u32 {
 
 // ─── Full-account blob parser ─────────────────────────────────────────────────
 
-/// Find the end of the FULL_ACCOUNT blob by locating `"DeathSquadable":` and
-/// the `}` that immediately follows its boolean value (true or false).
+/// Offset just past the FULL_ACCOUNT blob's closing brace, from the rightmost
+/// [`END_MARKERS`] hit.
 fn find_blob_end(raw: &[u8]) -> Option<usize> {
-    const KEY: &[u8] = b"\"DeathSquadable\":";
-    let key_pos = memmem::find(raw, KEY)?;
-    let after   = key_pos + KEY.len();
-    // Skip the boolean value and find the closing brace
-    let brace = memchr::memchr(b'}', &raw[after..])?;
-    Some(after + brace + 1)
+    let mut best: Option<usize> = None;
+    for marker in END_MARKERS {
+        let Some(key_pos) = memmem::find(raw, marker) else { continue };
+        let after = key_pos + marker.len();
+        let Some(brace) = memchr::memchr(b'}', &raw[after..]) else { continue };
+        let end = after + brace + 1;
+        if best.is_none_or(|prev| end > prev) {
+            best = Some(end);
+        }
+    }
+    best
 }
 
 const START_MARKER: &[u8] = b"\"SubscribedToEmails\"";
 const ALT_STARTS: &[&[u8]] = &[
-    b"\"MiscItems\":[{\"ItemType\":\"/Lotus/",
-    b"\"Suits\":[{\"ItemType\":\"/Lotus/",
     b"\"RegularCredits\":",
+    b"\"Created\":",
 ];
 
 /// Walk backward from `marker_off` counting braces; return the offset of the
@@ -737,12 +741,16 @@ fn blob_unchanged(json: &[u8]) -> bool {
 pub(crate) const MAX_SCAN: usize = 20 * 1024 * 1024;
 const MISSION_DELTA: &[u8] = b"\"InventoryChanges\":";
 const LOTUS_KEY: &[u8] = b"/Lotus/";
-/// The blob's last field. Finding it is not finding the blob's end: the
-/// closing brace can still be a region away. It only gates the
-/// `find_blob_end` call that answers that question.
-const END_MARKER: &[u8] = b"\"DeathSquadable\":";
+/// The blob's last field. Which key that is varies by account and region —
+/// `HWIDProtectEnabled` on some, `DeathSquadable` on others — so all are tried
+/// and the rightmost wins. Finding one is not finding the blob's end: the
+/// closing brace can still be a region away. It only gates the `find_blob_end`
+/// call that answers that question.
+const END_MARKERS: &[&[u8]] = &[b"\"HWIDProtectEnabled\":", b"\"DeathSquadable\":"];
+/// Drives the search backoff, so no marker can be split across two windows.
+const END_MARKER_MAX_LEN: usize = 21; // len("\"HWIDProtectEnabled\":")
 
-/// Incremental [`END_MARKER`] search over an append-only stitch buffer.
+/// Incremental [`END_MARKERS`] search over an append-only stitch buffer.
 ///
 /// Each `search` covers only the bytes appended since the last one, backed
 /// off by one marker length so a copy split across a region boundary is still
@@ -761,8 +769,14 @@ impl EndMarkerLatch {
     fn search(&mut self, data: &[u8]) {
         if self.marker_at.is_none() {
             let from = self.search_from;
-            self.search_from = data.len().saturating_sub(END_MARKER.len() - 1);
-            self.marker_at = memmem::find(&data[from..], END_MARKER).map(|found| from + found);
+            self.search_from = data.len().saturating_sub(END_MARKER_MAX_LEN - 1);
+            // Earliest marker in the window: `find_blob_end` re-scans from there
+            // and still picks the rightmost, whichever key arrived first.
+            self.marker_at = END_MARKERS
+                .iter()
+                .filter_map(|m| memmem::find(&data[from..], m))
+                .min()
+                .map(|found| from + found);
         }
     }
 

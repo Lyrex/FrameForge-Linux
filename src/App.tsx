@@ -859,6 +859,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     () => localStorage.getItem("ff-overlay-priority") ?? "completion"
   );
   const [relicPickEnabled,    setRelicPickEnabled]    = useState<boolean>(true);
+  const [memTriggerEnabled,   setMemTriggerEnabled]   = useState<boolean>(false);
   const [arbOverlayEnabled,   setArbOverlayEnabled]   = useState<boolean>(false);
   const [relicPickPriority,   setRelicPickPriority]   = useState<"unowned" | "ducat" | "platinum">("unowned");
   const [relicPickRefinement, setRelicPickRefinement] = useState<"intact" | "exceptional" | "flawless" | "radiant">("radiant");
@@ -918,8 +919,9 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     wfmInvisibleOnStart: false, wfmInvisibleOnClose: false, wfmAutoInvisible: false, wfmAutoInvisibleMins: 30,
     relicPickEnabled: true, relicPickPriority: "unowned" as "unowned" | "ducat" | "platinum", relicPickRefinement: "radiant" as "intact" | "exceptional" | "flawless" | "radiant", relicPickLines: "all" as "all" | "best" | "estimated",
     foundryPageSize: 30 as 30 | 60 | 100,
+    memTriggerEnabled: false,
   });
-  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, arbitrationOverlayEnabled: arbOverlayEnabled, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize };
+  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, arbitrationOverlayEnabled: arbOverlayEnabled, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled };
 
   const saveAllSettings = useCallback(() => {
     // Until the on-disk settings have been applied, settingsRef still holds
@@ -1087,6 +1089,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         if (typeof s.wfmAutoInvisible    === "boolean") setWfmAutoInvisible(s.wfmAutoInvisible);
         if (typeof s.wfmAutoInvisibleMins === "number") setWfmAutoInvisibleMins(s.wfmAutoInvisibleMins);
         if (typeof s.relicPickEnabled    === "boolean") { setRelicPickEnabled(s.relicPickEnabled); invoke("set_relic_pick_enabled", { enabled: s.relicPickEnabled }); }
+        if (typeof s.memTriggerEnabled   === "boolean") { setMemTriggerEnabled(s.memTriggerEnabled); invoke("set_mem_trigger_enabled", { enabled: s.memTriggerEnabled }); }
         if (["unowned","ducat","platinum"].includes(s.relicPickPriority)) setRelicPickPriority(s.relicPickPriority);
         if (["intact","exceptional","flawless","radiant"].includes(s.relicPickRefinement)) setRelicPickRefinement(s.relicPickRefinement);
         if (["all","best","estimated"].includes(s.relicPickLines)) setRelicPickLines(s.relicPickLines);
@@ -2201,6 +2204,31 @@ if (typeof s.autoDiagEnabled === "boolean") {
                   </div>
 
                   <EeLogSettings />
+                  {/* Relic Overlay — Memory Trigger */}
+                  <div className="settings-section">
+                    <div className="settings-section-title">Memory Trigger <span style={{ fontSize: 11, opacity: 0.55, fontWeight: 400, marginLeft: 6 }}>in development</span></div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">Use memory scan</span>
+                        <span className="settings-row-desc">
+                          Still in development — for testing only. Polls Warframe's process memory for the reward screen event in parallel with EE.log.
+                          Timing for both paths is written to the session log so they can be compared.
+                          The EE.log overlay is unaffected regardless of this setting.
+                        </span>
+                      </div>
+                      <button
+                        className="btn-secondary"
+                        style={{ minWidth: 64, background: memTriggerEnabled ? "rgba(56,139,253,.15)" : undefined, borderColor: memTriggerEnabled ? "var(--accent)" : undefined }}
+                        onClick={() => {
+                          const next = !memTriggerEnabled;
+                          setMemTriggerEnabled(next);
+                          settingsRef.current = { ...settingsRef.current, memTriggerEnabled: next };
+                          saveAllSettings();
+                          invoke("set_mem_trigger_enabled", { enabled: next });
+                        }}
+                      >{memTriggerEnabled ? "On" : "Off"}</button>
+                    </div>
+                  </div>
 
                   {/* Relic Pick Overlay */}
                   <div className="settings-section">
