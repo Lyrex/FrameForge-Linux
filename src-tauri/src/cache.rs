@@ -151,8 +151,8 @@ fn unix_seconds(time: SystemTime) -> u64 {
 }
 
 pub fn load<T: DeserializeOwned>(name: &str) -> Option<Cached<T>> {
-    let body = std::fs::read_to_string(path_of(name)).ok()?;
-    match serde_json::from_str(&body) {
+    let file = std::fs::File::open(path_of(name)).ok()?;
+    match serde_json::from_reader(std::io::BufReader::new(file)) {
         Ok(cached) => Some(cached),
         Err(e) => {
             warn!("discarding unreadable cache {name}: {e}");
@@ -355,6 +355,26 @@ pub fn get_conditional(url: &str, etag: Option<&str>) -> Result<Fetched<String>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_catalogue_round_trips() {
+        let name = scratch("large-catalogue");
+        let catalogue = vec!["/Lotus/Weapons/Tenno/Rifle/Braton".repeat(160); 1024];
+        store(&name, Some("catalogue-etag".into()), &catalogue).expect("test cache is writable");
+        let cached = load::<Vec<String>>(&name).expect("catalogue loads");
+        assert!(cached.data == catalogue);
+        assert_eq!(cached.etag.as_deref(), Some("catalogue-etag"));
+    }
+
+    #[test]
+    fn missing_and_malformed_caches_are_misses() {
+        let name = scratch("malformed-catalogue");
+        assert!(load::<Vec<String>>(&name).is_none());
+        for body in [b"{\"data\":".as_slice(), b"\xff", b"{} trailing"] {
+            atomic_write(&path_of(&name), body).expect("test cache is writable");
+            assert!(load::<Vec<String>>(&name).is_none());
+        }
+    }
 
     #[test]
     fn broken_clock_serves_existing_cache_without_refetching() {
