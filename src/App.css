@@ -1749,21 +1749,6 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .wfm-auction-topbid { color: var(--accent); }
 .wfm-auction-bidder { color: var(--text); }
 
-/* ══════════════════════════════════════════════════════
-   VIEW TOGGLE — shared across Inventory / Foundry / Relics
-   ══════════════════════════════════════════════════════ */
-
-.view-toggle { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
-.view-btn {
-  background: none; border: 1px solid transparent; border-radius: 4px;
-  cursor: pointer; color: var(--muted); padding: 3px 5px;
-  display: flex; align-items: center; justify-content: center;
-  transition: color .12s, border-color .12s, background .12s;
-  line-height: 0;
-}
-.view-btn:hover { color: var(--text); background: rgba(255,255,255,.06); }
-.view-btn-active { color: var(--accent); border-color: rgba(56,139,253,.4); background: rgba(56,139,253,.08); }
-
 /* ── Foundry view modes ── */
 
 /* icons */

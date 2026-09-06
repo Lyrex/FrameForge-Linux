@@ -110,7 +110,7 @@ function SynItemImg({ imageName, category }: { imageName?: string; category: str
 
   useEffect(() => {
     if (ref.current?.complete) ref.current.classList.add("img-loaded");
-  });
+  }, []);
 
   if (!imageName || failed) {
     return (

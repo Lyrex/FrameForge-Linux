@@ -234,7 +234,7 @@ function ItemImg({ imageName, category, size = 40 }: { imageName?: string; categ
 
   useEffect(() => {
     if (ref.current?.complete) ref.current.classList.add("img-loaded");
-  });
+  }, []);
 
   if (!imageName || cdnFailed)
     return <span className="img-fallback" style={{ ...style, fontSize: size * 0.35 }}>{category[0].toUpperCase()}</span>;

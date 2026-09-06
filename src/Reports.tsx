@@ -275,17 +275,16 @@ function ItemImg({ imageName, size = 28 }: { imageName?: string; size?: number }
   const [localFailed, setLocalFailed] = useState(false);
   const [failed, setFailed] = useState(false);
   const ref = useRef<HTMLImageElement>(null);
-  const s: React.CSSProperties = { width: size, height: size, objectFit: "contain", flexShrink: 0, borderRadius: 3 };
 
   useEffect(() => {
-    if (ref.current?.complete) ref.current.style.opacity = "1";
-  });
+    if (ref.current?.complete) ref.current.classList.add("img-loaded");
+  }, []);
 
   if (!imageName || failed)
-    return <span style={{ ...s, background: "rgba(255,255,255,.06)", border: "1px solid #30363d", display: "inline-block" }} />;
+    return <span className="img-fallback" style={{ width: size, height: size }} />;
   const useLocal = Boolean(baseUrl) && !localFailed;
   const src = useLocal ? `${baseUrl}/${imageName}` : `https://cdn.warframestat.us/img/${imageName}`;
-  return <img ref={ref} style={{ ...s, opacity: 0, transform: "translate(-4px, -4px) scale(0.9)", transition: "opacity 0.25s ease-out, transform 0.25s ease-out" }} src={src} alt="" loading="lazy" onError={() => useLocal ? setLocalFailed(true) : setFailed(true)} onLoad={(e) => { e.currentTarget.style.opacity = "1"; e.currentTarget.style.transform = "translate(0,0) scale(1)"; }} />;
+  return <img ref={ref} className="img" style={{ width: size, height: size }} src={src} alt="" loading="lazy" onError={() => useLocal ? setLocalFailed(true) : setFailed(true)} onLoad={() => ref.current?.classList.add("img-loaded")} />;
 }
 
 interface Props {
