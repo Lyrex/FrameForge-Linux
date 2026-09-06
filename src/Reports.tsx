@@ -1,7 +1,7 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useContext } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { cdnUrl, useImgLadder } from "./ImgCacheDir";
+import { ImgCacheDirContext } from "./ImgCacheDir";
 import "./Reports.css";
 
 interface WfmTopItem {
@@ -272,11 +272,15 @@ function Legend({ items }: { items: { label: string; color: string; value: numbe
 // ── Main component ───────────────────────────────────────────────────────────
 
 function ItemImg({ imageName, size = 28 }: { imageName?: string; size?: number }) {
-  const { src, onError } = useImgLadder([cdnUrl(imageName)]);
+  const baseUrl = useContext(ImgCacheDirContext);
+  const [localFailed, setLocalFailed] = useState(false);
+  const [failed, setFailed] = useState(false);
   const s: React.CSSProperties = { width: size, height: size, objectFit: "contain", flexShrink: 0, borderRadius: 3 };
-  if (!src)
+  if (!imageName || failed)
     return <span style={{ ...s, background: "rgba(255,255,255,.06)", border: "1px solid #30363d", display: "inline-block" }} />;
-  return <img key={src} style={s} src={src} alt="" loading="lazy" onError={onError} />;
+  const useLocal = Boolean(baseUrl) && !localFailed;
+  const src = useLocal ? `${baseUrl}/${imageName}` : `https://cdn.warframestat.us/img/${imageName}`;
+  return <img style={s} src={src} alt="" loading="lazy" onError={() => useLocal ? setLocalFailed(true) : setFailed(true)} />;
 }
 
 interface Props {
