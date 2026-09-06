@@ -19,6 +19,7 @@ CLAUDE.md
 # Release tooling and personal scripts — internal, not for contributors
 build-and-release.bat
 backup-memory.bat
+pnpm-workspace.yaml
 
 # Tauri build output
 src-tauri/target/

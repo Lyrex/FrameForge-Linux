@@ -3813,7 +3813,15 @@ fn wfm_get_cached_prices(state: State<'_, AppState>) -> HashMap<String, Option<u
 #[tauri::command]
 fn get_change_log(state: State<AppState>, limit: i64) -> Result<Vec<QuantityChange>, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    db::get_quantity_changes(&conn, limit).map_err(|e| e.to_string())
+    let ignored_paths: std::collections::HashSet<&str> = state.corrections.iter()
+        .filter(|(_, correction)| correction.category.as_deref() == Some("Ignored"))
+        .map(|(path, _)| path.as_str())
+        .collect();
+    db::get_quantity_changes(&conn, limit)
+        .map(|changes| changes.into_iter()
+            .filter(|change| !ignored_paths.contains(change.unique_name.as_str()))
+            .collect())
+        .map_err(|e| e.to_string())
 }
 
 // ─── Tracked items / snapshots ───────────────────────────────────────────────
@@ -6270,12 +6278,22 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     {
         let mt_app   = reward_app.clone();
         std::thread::spawn(move || {
-            // Inner helper: scan heap for a byte pattern.
-            // Returns true if found in a live-data region (not .rodata).
-            // "Live" heuristic: the byte immediately after the match is \r (log
-            // line ending) or the pattern contains \r (already live-suffixed).
+            // Inner helper: scan heap for a byte pattern. Two-phase design:
+            //
+            // Phase 1 — FULL scan (cached_bare = None):
+            //   Walk all committed readable regions from 4 GB to 512 TB.
+            //   ~30 s but only happens ONCE per game session (first run).
+            //   Records the address of the bare string (static .rodata copy)
+            //   so phase 2 can narrow the search window.
+            //
+            // Phase 2 — NARROW scan (cached_bare = Some(addr)):
+            //   Walk only ±128 MB around the known static-string address,
+            //   skipping read-only regions (.rodata where the static copy lives).
+            //   Covers only the writable DLL data sections — typically < 10 ms.
+            //
+            // Returns (live_found, diag, updated_bare_addr).
             #[cfg(target_os = "windows")]
-            fn scan_heap_for_trigger(pid: u32, pat: &[u8]) -> bool {
+            fn scan_heap_for_trigger(pid: u32, pat: &[u8], cached_bare: Option<u64>) -> (bool, String, Option<u64>) {
                 use windows_sys::Win32::{
                     Foundation::CloseHandle,
                     System::{
@@ -6283,22 +6301,39 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         Memory::{
                             VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT,
                             PAGE_GUARD, PAGE_NOACCESS,
+                            PAGE_READWRITE, PAGE_EXECUTE_READWRITE,
+                            PAGE_WRITECOPY, PAGE_EXECUTE_WRITECOPY,
                         },
                         Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
                     },
                 };
-                // Cover both heap (low) and the binary/DLL range where the
-                // EE.log ring buffer actually lives (~0x7Fxx_xxxx_xxxx).
-                const HEAP_MIN: u64 = 0x0000_0001_0000_0000;
-                const HEAP_MAX: u64 = 0x0000_8000_0000_0000;
-                const REGION_MAX: usize = 32 * 1024 * 1024; // 32 MB — covers DLL text sections
-                let mut found = false;
+                const FULL_MIN: u64   = 0x0000_0001_0000_0000; // 4 GB
+                const FULL_MAX: u64   = 0x0000_8000_0000_0000; // 512 TB (covers DLL image range)
+                const NARROW_R: u64   = 128 * 1024 * 1024;     // ±128 MB around bare_hit
+                const REGION_MAX: usize = 32 * 1024 * 1024;    // skip regions > 32 MB
+                // Any writable protection (heap/stack/data). Excludes PAGE_READONLY (.rodata).
+                const WRITABLE: u32 = PAGE_READWRITE | PAGE_EXECUTE_READWRITE
+                                    | PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY;
+
+                let bare_pat = &pat[..pat.len().saturating_sub(1)];
+
+                let (scan_min, scan_max, rw_only) = match cached_bare {
+                    Some(ba) => (ba.saturating_sub(NARROW_R), ba.saturating_add(NARROW_R), true),
+                    None     => (FULL_MIN, FULL_MAX, false),
+                };
+
+                let mut found        = false;
+                let mut regions_read = 0u32;
+                let mut bare_hit: Option<u64> = None;
+                let t = std::time::Instant::now();
                 unsafe {
                     let proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, 0, pid);
-                    if proc == 0 { return false; }
-                    let mut addr: u64 = HEAP_MIN;
+                    if proc == 0 {
+                        return (false, format!("OpenProcess failed pid={}", pid), cached_bare);
+                    }
+                    let mut addr = scan_min;
                     loop {
-                        if addr >= HEAP_MAX { break; }
+                        if addr >= scan_max { break; }
                         let mut mbi: MEMORY_BASIC_INFORMATION = std::mem::zeroed();
                         let ret = VirtualQueryEx(proc, addr as *const _,
                             &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>());
@@ -6306,9 +6341,11 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         let base = mbi.BaseAddress as u64;
                         let size = mbi.RegionSize;
                         addr = base.saturating_add(size as u64);
-                        if base < HEAP_MIN || base >= HEAP_MAX { continue; }
+                        if base < scan_min || base >= scan_max { continue; }
                         if mbi.State != MEM_COMMIT { continue; }
                         if mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS) != 0 { continue; }
+                        // Narrow mode: skip read-only sections (.rodata has the static copy).
+                        if rw_only && mbi.Protect & WRITABLE == 0 { continue; }
                         if size > REGION_MAX { continue; }
                         let mut buf = vec![0u8; size];
                         let mut n = 0usize;
@@ -6316,34 +6353,51 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                             buf.as_mut_ptr() as *mut _, buf.len(), &mut n);
                         if ok == 0 || n == 0 { continue; }
                         buf.truncate(n);
-                        // Pattern already ends with \r so it only matches live
-                        // ring-buffer entries (Windows line-ending \r\n).
-                        // The static .rodata copy ends with \n\0 and won't match.
+                        regions_read += 1;
+                        if bare_hit.is_none() {
+                            if let Some(off) = buf.windows(bare_pat.len()).position(|w| w == bare_pat) {
+                                bare_hit = Some(base + off as u64);
+                            }
+                        }
                         if buf.windows(pat.len()).any(|w| w == pat) {
                             found = true;
+                            break;
                         }
-                        if found { break; }
                     }
                     CloseHandle(proc);
                 }
-                found
+                let mode = if cached_bare.is_some() { "narrow" } else { "full" };
+                let diag = format!(
+                    "{} scan in {}ms: {} regions, bare={}, live={}",
+                    mode, t.elapsed().as_millis(), regions_read,
+                    bare_hit.map_or("none".to_string(), |a| format!("{:#x}", a)),
+                    found
+                );
+                // Full mode: return the newly discovered bare_hit.
+                // Narrow mode: preserve the cached address (skipped .rodata so bare_hit is None).
+                (found, diag, if cached_bare.is_none() { bare_hit } else { cached_bare })
             }
 
             #[cfg(not(target_os = "windows"))]
-            fn scan_heap_for_trigger(_pid: u32, _pat: &[u8]) -> bool { false }
+            fn scan_heap_for_trigger(_pid: u32, _pat: &[u8], cached_bare: Option<u64>) -> (bool, String, Option<u64>) {
+                (false, "non-windows".to_string(), cached_bare)
+            }
 
             let session_log = mt_app.state::<AppState>().overlay_log.clone();
             let mut was_open  = false;
             let mut open_at: Option<std::time::Instant> = None;
             // Include \r so we only match live EE.log ring-buffer entries
             // (Windows line ending: \r\n). The static .rodata copy ends with \n\0.
-            // EE.log shows the plural form "...Rewards" consistently.
             const OPEN_PAT: &[u8] = b"VoidProjections: GetVoidProjectionRewards\r";
-            // Poll interval: 1 s is a reasonable starting point. The scan itself
-            // may take 2–15 s so the effective rate may be lower in practice.
-            const POLL_MS: u64 = 1_000;
+            // 200 ms is fine in narrow mode (each scan < 10 ms).
+            // The first scan (full mode, ~30 s) will block here once per game session.
+            const POLL_MS: u64 = 200;
             // Auto-reset after 90 s regardless (reward screen max duration).
             const AUTO_RESET_SECS: u64 = 90;
+
+            // Two-phase scan state. Reset when the game PID changes (ASLR re-randomizes).
+            let mut cached_bare: Option<u64> = None;
+            let mut last_pid: u32 = 0;
 
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
@@ -6362,26 +6416,37 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         was_open = false;
                         open_at  = None;
                     } else {
-                        continue; // still within open window, skip scan
+                        continue;
                     }
                 }
 
                 let pid = match memory_scanner_linux::find_warframe_pid() {
                     Some(p) => p,
-                    None    => { was_open = false; open_at = None; continue; }
+                    None    => { was_open = false; open_at = None; cached_bare = None; last_pid = 0; continue; }
                 };
+                // Game restart → ASLR changed all addresses; start over with a full scan.
+                if pid != last_pid {
+                    cached_bare = None;
+                    last_pid = pid;
+                }
 
-                let found = scan_heap_for_trigger(pid, OPEN_PAT);
+                let (found, diag, new_bare) = scan_heap_for_trigger(pid, OPEN_PAT, cached_bare);
+                // Promote bare_hit from a full scan; preserve across narrow scans.
+                if cached_bare.is_none() { cached_bare = new_bare; }
+
+                let ts = chrono::Local::now().format("%H:%M:%S%.3f");
+                let _ = std::fs::OpenOptions::new().append(true).open(&session_log)
+                    .and_then(|mut f| {
+                        use std::io::Write;
+                        writeln!(f, "[MEM SCAN] @ {} — {}", ts, diag)
+                    });
                 if found {
                     was_open = true;
                     open_at  = Some(std::time::Instant::now());
-                    let ts = chrono::Local::now().format("%H:%M:%S%.3f");
-                    // Append timing info to the session log so it can be compared
-                    // with the EE.log trigger timestamp written by the EE.log watcher.
                     let _ = std::fs::OpenOptions::new().append(true).open(&session_log)
                         .and_then(|mut f| {
                             use std::io::Write;
-                            writeln!(f, "\n[MEM TRIGGER] Open detected @ {} (heap scan found live ring-buffer entry)", ts)
+                            writeln!(f, "[MEM TRIGGER] Open detected @ {}", ts)
                         });
                     let _ = mt_app.emit("ff-status", "🔍 [MEM] Relic reward screen detected");
                     let _ = mt_app.emit("relic-trigger", ());
