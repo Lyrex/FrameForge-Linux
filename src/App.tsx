@@ -1767,9 +1767,11 @@ if (typeof s.autoDiagEnabled === "boolean") {
   const favoritesSet = useMemo(() => new Set(favorites), [favorites]);
 
   const changeLogMap = useMemo(() => {
-    const m = new Map<string, ChangeLogEntry>();
+    const m = new Map<string, ChangeLogEntry[]>();
     for (const c of changeLog) {
-      if (!m.has(c.unique_name)) m.set(c.unique_name, c);
+      const arr = m.get(c.unique_name);
+      if (arr) arr.push(c);
+      else m.set(c.unique_name, [c]);
     }
     return m;
   }, [changeLog]);

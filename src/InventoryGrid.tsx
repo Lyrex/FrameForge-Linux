@@ -25,7 +25,7 @@ interface InventoryGridProps {
   modCopies: Record<string, { rank: number | null; count: number }[]>;
   favorites: Set<string>;
   lastChanged: Record<string, number>;
-  changes: Map<string, { delta: number }>;
+  changes: Map<string, { delta: number; rank?: number | null }[]>;
   crafting: Map<string, { item_name: string }>;
   filterRank: number | "unranked" | null;
   onToggleFavorite: (id: string) => void;
@@ -44,8 +44,9 @@ interface InvModCardProps {
   view: ViewMode;
   changedAt?: number;
   recentDelta?: number | null;
+  rankDeltas?: { rank: number; delta: number }[];
 }
-const InvModCard = memo(function InvModCard({ unique_name, name, category, image_name, ranks, total, view, changedAt, recentDelta }: InvModCardProps) {
+const InvModCard = memo(function InvModCard({ unique_name, name, category, image_name, ranks, total, view, changedAt, recentDelta, rankDeltas }: InvModCardProps) {
   const nowSec = Date.now() / 1000;
   const secAgo = changedAt != null ? nowSec - changedAt : null;
   const isRecent = secAgo !== null && secAgo < 300;
@@ -78,12 +79,20 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
       <div className="inv-card-name">{name}</div>
       <div className="inv-card-cat">{category}</div>
       <div className="mod-rank-table">
-        {ranks.map(r => (
-          <div key={r.rank} className={`mod-rank-row${r.count === 0 ? " mod-rank-zero" : ""}`}>
-            <span className="mod-rank-label">R{r.rank}</span>
-            <span className="mod-rank-count">{r.count}</span>
-          </div>
-        ))}
+        {ranks.map(r => {
+          const rankDelta = rankDeltas?.find(rd => rd.rank === r.rank);
+          return (
+            <div key={r.rank} className={`mod-rank-row${r.count === 0 ? " mod-rank-zero" : ""}`}>
+              <span className="mod-rank-label">R{r.rank}</span>
+              <span className="mod-rank-count">{r.count}</span>
+              {rankDelta && (
+                <span className={`mod-rank-delta ${rankDelta.delta > 0 ? "log-positive" : "log-negative"}`}>
+                  {rankDelta.delta > 0 ? "+1" : "-1"}
+                </span>
+              )}
+            </div>
+          );
+        })}
       </div>
       <div className="inv-card-qty mod-total">{fmt(total)}</div>
     </div>
@@ -97,7 +106,8 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
   prev.ranks.length === next.ranks.length &&
   prev.ranks.every((r, i) => r.rank === next.ranks[i].rank && r.count === next.ranks[i].count) &&
   prev.changedAt === next.changedAt &&
-  prev.recentDelta === next.recentDelta
+  prev.recentDelta === next.recentDelta &&
+  prev.rankDeltas === next.rankDeltas
 );
 
 interface InvCardProps {
@@ -245,19 +255,23 @@ export default memo(function InventoryGrid({
               if ((byRank[targetRank] ?? 0) === 0) return [];
             }
             const total = Object.values(byRank).reduce((a, b) => a + b, 0);
+            const changeEntries = lastChanged[item.unique_name] != null ? changes.get(item.unique_name) : undefined;
+            const rankDeltas = changeEntries?.filter(c => c.rank != null).map(c => ({ rank: c.rank!, delta: c.delta })) ?? [];
             return [(
               <InvModCard key={item.unique_name}
                 unique_name={item.unique_name} name={item.name}
                 category={item.category} image_name={item.image_name}
                 ranks={ranks} total={total} view={view}
                 changedAt={lastChanged[item.unique_name]}
-                recentDelta={changes.get(item.unique_name)?.delta ?? null} />
+                recentDelta={changeEntries?.find(c => c.rank == null)?.delta ?? null}
+                rankDeltas={rankDeltas} />
             )];
           }
 
           // Normal item card
           const changedAt = lastChanged[item.unique_name];
-          const recentChange = changedAt != null ? changes.get(item.unique_name) : undefined;
+          const changeEntries = changedAt != null ? changes.get(item.unique_name) : undefined;
+          const recentChange = changeEntries?.find(c => c.rank == null) ?? changeEntries?.[0];
           const craftJob = crafting.get(item.unique_name);
           return [(
             <InvCard key={item.unique_name}

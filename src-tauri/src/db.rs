@@ -11,6 +11,9 @@ pub struct QuantityChange {
     pub new_qty: i64,
     pub delta: i64,
     pub timestamp: i64,
+    /// Rank of the mod/arcane that changed (None for regular items).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rank: Option<u8>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -319,6 +322,7 @@ pub fn get_quantity_changes(conn: &Connection, limit: i64) -> Result<Vec<Quantit
                 new_qty: row.get(4)?,
                 delta: row.get(5)?,
                 timestamp: row.get(6)?,
+                rank: None,
             })
         })?
         .filter_map(|r| r.ok())

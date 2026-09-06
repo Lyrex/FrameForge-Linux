@@ -33,6 +33,7 @@ export interface ChangeLogEntry {
   new_qty: number;
   delta: number;
   timestamp: number;
+  rank?: number | null;
 }
 
 export interface ChangeLogCatalogItem {

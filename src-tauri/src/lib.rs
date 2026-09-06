@@ -4583,6 +4583,9 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
         let mut known: HashMap<String, i64> =
             shared_quantities.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
+        // Previous mod state for rank-specific change detection.
+        let mut prev_mods: HashMap<String, memory_scanner::ModCount> = HashMap::new();
+
         // Load the full inventory state from the last session so the UI shows data
         // immediately on restart without waiting for the first full scan pass.
         let startup_cache = load_inventory_state_cache(&inventory_state_cache_path);
@@ -4960,9 +4963,44 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                             new_qty,
                             delta: new_qty - old_qty,
                             timestamp: ts,
+                            rank: None,
                         });
                     }
                 }
+
+                // Rank-specific change detection for mods/arcanes.
+                // Compare current by_rank with previous to find which specific rank changed.
+                if !prev_mods.is_empty() {
+                    let ts = chrono::Utc::now().timestamp();
+                    for (path, mc) in &known_mods {
+                        if ignored_paths.contains(path.as_str()) { continue; }
+                        let prev = prev_mods.get(path);
+                        let all_ranks: std::collections::HashSet<u8> = match prev {
+                            Some(p) => p.by_rank.keys().chain(mc.by_rank.keys()).cloned().collect(),
+                            None => mc.by_rank.keys().cloned().collect(),
+                        };
+                        for rank in all_ranks {
+                            let old_count = prev.map(|p| *p.by_rank.get(&rank).unwrap_or(&0)).unwrap_or(0);
+                            let new_count = *mc.by_rank.get(&rank).unwrap_or(&0);
+                            if old_count == new_count { continue; }
+                            let item_name = path_to_name.get(path.as_str())
+                                .cloned()
+                                .unwrap_or_else(|| path.split('/').last().unwrap_or("?").to_string());
+                            changes.push(QuantityChange {
+                                id: 0,
+                                unique_name: path.clone(),
+                                item_name,
+                                old_qty: old_count,
+                                new_qty: new_count,
+                                delta: new_count - old_count,
+                                timestamp: ts,
+                                rank: Some(rank),
+                            });
+                        }
+                    }
+                }
+                // Update prev_mods for next iteration
+                prev_mods = known_mods.clone();
 
                 let crafting: Vec<CraftingJob> = blob.pending_recipes.iter().map(|r| {
                     let name = display_names.iter().zip(unique_names.iter())
