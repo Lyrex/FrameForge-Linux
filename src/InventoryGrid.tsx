@@ -50,7 +50,10 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
   const nowSec = Date.now() / 1000;
   const secAgo = changedAt != null ? nowSec - changedAt : null;
   const isRecent = secAgo !== null && secAgo < 300;
-  const baseClass = `inv-card${isRecent ? (recentDelta != null && recentDelta > 0 ? " inv-card-gained" : " inv-card-lost") : ""}`;
+  const hasPositive = rankDeltas != null && rankDeltas.some(d => d.delta > 0);
+  const hasNegative = rankDeltas != null && rankDeltas.some(d => d.delta < 0);
+  const mixedChange = isRecent && hasPositive && hasNegative;
+  const baseClass = `inv-card${isRecent ? (mixedChange ? " inv-card-mixed" : (recentDelta != null && recentDelta > 0 ? " inv-card-gained" : " inv-card-lost")) : ""}`;
 
   if (view === "icons") {
     return (
@@ -84,12 +87,14 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
           return (
             <div key={r.rank} className={`mod-rank-row${r.count === 0 ? " mod-rank-zero" : ""}`}>
               <span className="mod-rank-label">R{r.rank}</span>
-              <span className="mod-rank-count">{r.count}</span>
-              {rankDelta && (
-                <span className={`mod-rank-delta ${rankDelta.delta > 0 ? "log-positive" : "log-negative"}`}>
-                  {rankDelta.delta > 0 ? "+1" : "-1"}
-                </span>
-              )}
+              <span className="mod-rank-value">
+                <span className="mod-rank-count">{r.count}</span>
+                {isRecent && rankDelta && (
+                  <span className={`mod-rank-delta ${rankDelta.delta > 0 ? "log-positive" : "log-negative"}`}>
+                    {rankDelta.delta > 0 ? "+1" : "-1"}
+                  </span>
+                )}
+              </span>
             </div>
           );
         })}
@@ -257,13 +262,14 @@ export default memo(function InventoryGrid({
             const total = Object.values(byRank).reduce((a, b) => a + b, 0);
             const changeEntries = lastChanged[item.unique_name] != null ? changes.get(item.unique_name) : undefined;
             const rankDeltas = changeEntries?.filter(c => c.rank != null).map(c => ({ rank: c.rank!, delta: c.delta })) ?? [];
+            const totalDelta = changeEntries?.find(c => c.rank == null)?.delta ?? rankDeltas.reduce((s, d) => s + d.delta, 0);
             return [(
               <InvModCard key={item.unique_name}
                 unique_name={item.unique_name} name={item.name}
                 category={item.category} image_name={item.image_name}
                 ranks={ranks} total={total} view={view}
                 changedAt={lastChanged[item.unique_name]}
-                recentDelta={changeEntries?.find(c => c.rank == null)?.delta ?? null}
+                recentDelta={totalDelta || null}
                 rankDeltas={rankDeltas} />
             )];
           }

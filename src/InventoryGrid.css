@@ -54,6 +54,7 @@
 .inv-card-zero  { opacity: .35; }
 .inv-card-gained { border-left: 2px solid var(--green); background: rgba(63,185,80,.04); }
 .inv-card-lost   { border-left: 2px solid var(--red);   background: rgba(248,81,73,.04); }
+.inv-card-mixed  { border-left: 2px solid #e0973e; background: rgba(224,151,62,.04); }
 
 /* ── Mastery row ───────────────────────────────────────────────────────────── */
 
@@ -92,7 +93,7 @@
 .inv-card-mod .inv-card-cat  { text-align: left; }
 .mod-rank-table {
   width: 100%; margin-top: 5px;
-  display: grid; grid-template-columns: 1fr 1fr;
+  display: grid; grid-template-columns: 1fr auto;
   gap: 1px 6px;
 }
 .mod-rank-row {
@@ -106,10 +107,13 @@
   font-size: 10px; font-weight: 700; color: var(--text);
   font-variant-numeric: tabular-nums; text-align: right;
 }
+.mod-rank-value { display: flex; align-items: center; gap: 4px; justify-content: flex-end; }
 .mod-rank-delta {
   font-size: 10px; font-weight: 600;
-  margin-left: 4px;
+  padding: 0 3px; border-radius: 2px;
 }
+.mod-rank-delta.log-positive { color: var(--green); background: rgba(63,185,80,.12); }
+.mod-rank-delta.log-negative { color: var(--red); background: rgba(248,81,73,.12); }
 .mod-rank-zero .mod-rank-label,
 .mod-rank-zero .mod-rank-count { color: rgba(139,148,158,.3); }
 .inv-card-mod .mod-total {
