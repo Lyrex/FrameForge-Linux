@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useContext } from "react";
+import { useState, useEffect, useMemo, useContext, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ImgCacheDirContext } from "./ImgCacheDir";
@@ -275,12 +275,18 @@ function ItemImg({ imageName, size = 28 }: { imageName?: string; size?: number }
   const baseUrl = useContext(ImgCacheDirContext);
   const [localFailed, setLocalFailed] = useState(false);
   const [failed, setFailed] = useState(false);
+  const ref = useRef<HTMLImageElement>(null);
   const s: React.CSSProperties = { width: size, height: size, objectFit: "contain", flexShrink: 0, borderRadius: 3 };
+
+  useEffect(() => {
+    if (ref.current?.complete) ref.current.style.opacity = "1";
+  });
+
   if (!imageName || failed)
     return <span style={{ ...s, background: "rgba(255,255,255,.06)", border: "1px solid #30363d", display: "inline-block" }} />;
   const useLocal = Boolean(baseUrl) && !localFailed;
   const src = useLocal ? `${baseUrl}/${imageName}` : `https://cdn.warframestat.us/img/${imageName}`;
-  return <img style={s} src={src} alt="" loading="lazy" onError={() => useLocal ? setLocalFailed(true) : setFailed(true)} />;
+  return <img ref={ref} style={{ ...s, opacity: 0, transform: "translate(-4px, -4px) scale(0.9)", transition: "opacity 0.25s ease-out, transform 0.25s ease-out" }} src={src} alt="" loading="lazy" onError={() => useLocal ? setLocalFailed(true) : setFailed(true)} onLoad={(e) => { e.currentTarget.style.opacity = "1"; e.currentTarget.style.transform = "translate(0,0) scale(1)"; }} />;
 }
 
 interface Props {
