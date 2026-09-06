@@ -1809,7 +1809,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
       out.push({ ...i, qty });
     }
     out.sort((a, b) => {
-      if (sortMode === "recent") {
+      if (sortMode === "recent" || filterRecent) {
         const at = lastChanged[a.unique_name] ?? 0;
         const bt = lastChanged[b.unique_name] ?? 0;
         return bt - at || a.name.localeCompare(b.name);
