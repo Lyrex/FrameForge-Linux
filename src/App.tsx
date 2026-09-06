@@ -87,6 +87,7 @@ import { type ViewMode, ViewToggle } from "./ViewToggle";
 import SearchBar from "./SearchBar";
 import { HelpTip } from "./HelpTip";
 import "./App.css";
+import "./images.css";
 import "./InventoryGrid.css";
 
 const _winLabel = getCurrentWindow().label;

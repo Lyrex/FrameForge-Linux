@@ -62,14 +62,14 @@ function WeaponImg({ imageName, name }: { imageName?: string; name: string }) {
   });
 
   if (!imageName || failed) {
-    return <div className="wpn-img-fallback">{name[0]?.toUpperCase() ?? "?"}</div>;
+    return <div className="img-fallback">{name[0]?.toUpperCase() ?? "?"}</div>;
   }
   const useLocal = Boolean(baseUrl) && !localFailed;
   const src = useLocal ? `${baseUrl}/${imageName}` : `https://cdn.warframestat.us/img/${imageName}`;
   return (
     <img
       ref={ref}
-      className="wpn-img"
+      className="img"
       src={src}
       alt=""
       loading="lazy"

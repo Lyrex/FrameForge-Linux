@@ -448,15 +448,7 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .item-gained     { border-left: 2px solid var(--green); background: rgba(63,185,80,.04); }
 .item-lost       { border-left: 2px solid var(--red);   background: rgba(248,81,73,.04); }
 
-.item-img { width: 32px; height: 32px; object-fit: contain; flex-shrink: 0; border-radius: 4px; opacity: 0; transform: translate(-4px, -4px) scale(0.9); transition: opacity 0.25s ease-out, transform 0.25s ease-out; }
-.item-img.img-loaded { opacity: 1; transform: translate(0, 0) scale(1); }
-.item-img-fallback {
-  width: 32px; height: 32px; flex-shrink: 0; border-radius: 4px;
-  background: rgba(255,255,255,.06); border: 1px solid var(--border);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase;
-}
-svg.item-img-fallback { background: transparent; border: none; padding: 0; }
+/* .item-img, .item-img-fallback removed — now in images.css */
 .item-name { flex: 1; color: var(--text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; display: flex; flex-direction: column; justify-content: center; gap: 1px; }
 .item-rank-info { font-size: 10px; color: var(--accent); opacity: 0.85; white-space: nowrap; }
 
@@ -801,11 +793,11 @@ svg.item-img-fallback { background: transparent; border: none; padding: 0; }
   background: rgba(0,0,0,.15);
   border-right: 1px solid var(--border);
 }
-.cc-image img, .cc-image .item-img {
+.cc-image img, .cc-image .img {
   width: 88px !important; height: 96px !important;
   object-fit: cover !important; border-radius: 0 !important; display: block !important;
 }
-.cc-image .item-img-fallback {
+.cc-image .img-fallback {
   width: 88px !important; height: 96px !important; border-radius: 0 !important;
 }
 .cc-subsumed-icon {
@@ -1788,7 +1780,7 @@ svg.item-img-fallback { background: transparent; border: none; padding: 0; }
 .craft-icon-card:hover { border-color: rgba(56,139,253,.5); }
 .craft-icon-card.craft-card-owned { border-color: rgba(240,192,64,.6); }
 .craft-icon-card.craft-card-ready { border-color: rgba(56,139,253,.55); }
-.craft-icon-card img, .craft-icon-card .item-img { width: 80px !important; height: 80px !important; object-fit: cover !important; }
+.craft-icon-card img, .craft-icon-card .img { width: 80px !important; height: 80px !important; object-fit: cover !important; }
 .craft-icon-badge {
   position: absolute; bottom: 2px; right: 3px;
   font-size: 9px; font-weight: 700; padding: 1px 3px; border-radius: 3px;
@@ -1812,7 +1804,7 @@ svg.item-img-fallback { background: transparent; border: none; padding: 0; }
 .craft-row.craft-row-owned { border-left: 2px solid rgba(240,192,64,.7); }
 .craft-row.craft-row-ready { border-left: 2px solid rgba(56,139,253,.7); }
 .craft-row-icon { width: 26px; height: 26px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
-.craft-row-icon img, .craft-row-icon .item-img { width: 24px !important; height: 24px !important; object-fit: cover !important; border-radius: 3px !important; }
+.craft-row-icon img, .craft-row-icon .img { width: 24px !important; height: 24px !important; object-fit: cover !important; border-radius: 3px !important; }
 .craft-row-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .craft-row-mr { font-size: 10px; flex-shrink: 0; }
 .craft-row-status { display: flex; gap: 3px; flex-shrink: 0; }
@@ -1868,7 +1860,7 @@ svg.item-img-fallback { background: transparent; border: none; padding: 0; }
 .relic-card-row.relic-card-complete { border-left: 2px solid rgba(63,185,80,.6); }
 .relic-row-img { flex-shrink: 0; }
 .relic-list-list .relic-row-img img,
-.relic-list-list .relic-row-img .item-img { width: 24px !important; height: 24px !important; object-fit: contain !important; }
+.relic-list-list .relic-row-img .img { width: 24px !important; height: 24px !important; object-fit: contain !important; }
 .relic-row-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .relic-row-total { font-size: 12px; font-weight: 700; color: var(--muted); flex-shrink: 0; }
 .relic-row-refs { font-size: 10px; color: var(--muted); flex-shrink: 0; letter-spacing: .02em; }

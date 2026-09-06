@@ -237,13 +237,13 @@ function ItemImg({ imageName, category, size = 40 }: { imageName?: string; categ
   });
 
   if (!imageName || cdnFailed)
-    return <span className="item-img-fallback" style={{ ...style, fontSize: size * 0.35 }}>{category[0].toUpperCase()}</span>;
+    return <span className="img-fallback" style={{ ...style, fontSize: size * 0.35 }}>{category[0].toUpperCase()}</span>;
   const useLocal = Boolean(baseUrl) && !localFailed;
   const src = useLocal
     ? `${baseUrl}/${imageName}`
     : `https://cdn.warframestat.us/img/${imageName}`;
   return (
-    <img ref={ref} className="item-img" style={style} src={src}
+    <img ref={ref} className="img" style={style} src={src}
       alt="" loading="lazy"
       onError={() => useLocal ? setLocalFailed(true) : setCdnFailed(true)}
       onLoad={() => ref.current?.classList.add("img-loaded")} />
