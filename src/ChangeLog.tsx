@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import ItemImg from "./ItemImg";
 import SearchBar from "./SearchBar";
+import { useContextMenu, CtxMenu, openWiki, copyWikiLink } from "./CtxMenu";
 import "./ChangeLog.css";
 
 export const CHANGE_BATCH_GAP_SECONDS = 8;
@@ -81,7 +82,7 @@ function changeKey(change: ChangeLogEntry) {
 }
 
 function ChangeRow({
-  change, item, clockFormat, systemLocale, onItemClick, onCategoryClick, onFeedExpand, timeBreak = false, feed = false,
+  change, item, clockFormat, systemLocale, onItemClick, onCategoryClick, onFeedExpand, onContextMenu, timeBreak = false, feed = false,
 }: {
   change: ChangeLogEntry;
   item?: ChangeLogCatalogItem;
@@ -90,6 +91,7 @@ function ChangeRow({
   onItemClick: () => void;
   onCategoryClick: (category: string) => void;
   onFeedExpand?: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
   timeBreak?: boolean;
   feed?: boolean;
 }) {
@@ -98,6 +100,7 @@ function ChangeRow({
   return (
     <div
       className={`inv-card inv-card-row log-item-row${feed ? " log-feed-row" : ""}${timeBreak ? " log-time-break" : ""}`}
+      onContextMenu={onContextMenu}
     >
       {onFeedExpand && <button className="log-feed-open" onClick={onFeedExpand} aria-label="Open change log" />}
       <span className="log-time">{timeStr(change.timestamp, clockFormat, systemLocale)}</span>
@@ -209,6 +212,21 @@ export default function ChangeLog({
   const [search, setSearch] = useState("");
   const catalogById = useMemo(() => new Map(catalog.map(item => [item.unique_name, item])), [catalog]);
   const latestBatch = useMemo(() => getLatestChangeBatch(changes), [changes]);
+  const { ctxMenu, open: openCtx, close: closeCtx } = useContextMenu();
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    const card = (e.target as HTMLElement).closest(".inv-card");
+    if (!card) return;
+    const nameEl = card.querySelector(".log-name-link");
+    const name = nameEl?.textContent?.trim();
+    if (name) {
+      e.preventDefault();
+      openCtx(e.clientX, e.clientY, [
+        { label: "Open Wiki", action: () => openWiki(name) },
+        { label: "Copy Wiki Link", action: () => copyWikiLink(name) },
+      ]);
+    }
+  };
   const filteredChanges = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     if (!query) return changes;
@@ -291,6 +309,7 @@ export default function ChangeLog({
           onItemClick={() => onItemClick(feedChange.unique_name)}
           onCategoryClick={onCategoryClick}
           onFeedExpand={() => onExpandedChange(true)}
+          onContextMenu={handleContextMenu}
           feed
         />
       </div>}
@@ -317,6 +336,7 @@ export default function ChangeLog({
                   systemLocale={systemLocale}
                   onItemClick={() => onItemClick(change.unique_name)}
                   onCategoryClick={onCategoryClick}
+                  onContextMenu={handleContextMenu}
                   timeBreak={index > 0 && filteredChanges[index - 1].timestamp - change.timestamp > CHANGE_BATCH_GAP_SECONDS}
                 />
               );
@@ -327,6 +347,7 @@ export default function ChangeLog({
           </div>
         </div>
       )}
+      {ctxMenu && <CtxMenu state={ctxMenu} onClose={closeCtx} />}
     </div>
   );
 }
