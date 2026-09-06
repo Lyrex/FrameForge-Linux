@@ -532,6 +532,8 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [changeLog, setChangeLog] = useState<ChangeLogEntry[]>([]);
   const [changeLogArrivalToken, setChangeLogArrivalToken] = useState(0);
   const [lastInventoryScanAt, setLastInventoryScanAt] = useState<number | null>(null);
+  const [inventoryReady, setInventoryReady] = useState(false);
+  const inventoryReadyRef = useRef(false);
   const [changeLogExpanded, setChangeLogExpanded] = useState(false);
   const [changeLogHeight, setChangeLogHeight] = useState(270);
   const [category, setCategory] = useState("all");
@@ -869,6 +871,10 @@ if (typeof s.autoDiagEnabled === "boolean") {
     const unlisten = listen<InventoryUpdate>("inventory-update", (e) => {
       const p = e.payload;
       setLastInventoryScanAt(p.scanned_at);
+      if (!inventoryReadyRef.current) {
+        inventoryReadyRef.current = true;
+        setInventoryReady(true);
+      }
       // Only replace quantities if the content actually changed.
       // The monitor loop re-emits cached state periodically; without this guard
       // every emit triggers a full 17k-item useMemo rebuild cascade.
@@ -2966,7 +2972,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
               <InventoryGrid
                 items={visibleItems}
-                loading={false}
+                loading={!inventoryReady}
                 monitoring={monitoring}
                 view={inventoryView}
                 inventory={inventory}
