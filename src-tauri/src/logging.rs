@@ -16,12 +16,12 @@ static FILE_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceL
 
 /// Installs the global subscriber, log-crate bridge and panic hook. Safe to
 /// call more than once; later calls do nothing.
-pub fn init() {
+pub fn init(state_dir: &std::path::Path) {
     if FILE_GUARD.get().is_some() {
         return;
     }
 
-    let log_dir = crate::paths::state_dir().join("logs");
+    let log_dir = state_dir.join("logs");
     let _ = std::fs::create_dir_all(&log_dir);
 
     let appender = tracing_appender::rolling::Builder::new()

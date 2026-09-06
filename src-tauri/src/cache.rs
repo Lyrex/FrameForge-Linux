@@ -22,6 +22,11 @@ use tracing::warn;
 use crate::paths;
 
 pub fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    // Cache cleaners honouring CACHEDIR.TAG may remove the whole tree while
+    // the app runs; the next write brings it back.
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let mut tmp = path.as_os_str().to_os_string();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
@@ -138,7 +143,7 @@ pub fn statuses() -> HashMap<String, CacheStatus> {
 }
 
 fn path_of(name: &str) -> PathBuf {
-    paths::cache_dir().join(name)
+    paths::cache_dir().expect("checked at startup").join(name)
 }
 
 pub fn now_unix() -> u64 {
@@ -700,7 +705,7 @@ mod tests {
         let root = std::env::temp_dir().join("frameforge-cache-tests");
         let _ = paths::set_root_override(root);
         let file = format!("{name}.json");
-        let _ = std::fs::remove_file(paths::cache_dir().join(&file));
+        let _ = std::fs::remove_file(path_of(&file));
         file
     }
 

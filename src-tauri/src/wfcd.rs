@@ -266,23 +266,15 @@ trait BodyStore: Sync {
     fn write(&self, name: &str, body: &str);
 }
 
-struct DiskStore;
-
-impl DiskStore {
-    fn dir() -> std::path::PathBuf {
-        let dir = crate::paths::cache_dir().join("catalogue");
-        let _ = std::fs::create_dir_all(&dir);
-        dir
-    }
-}
+struct DiskStore(std::path::PathBuf);
 
 impl BodyStore for DiskStore {
     fn read(&self, name: &str) -> Option<String> {
-        std::fs::read_to_string(Self::dir().join(format!("{name}.json"))).ok()
+        std::fs::read_to_string(self.0.join(format!("{name}.json"))).ok()
     }
 
     fn write(&self, name: &str, body: &str) {
-        let path = Self::dir().join(format!("{name}.json"));
+        let path = self.0.join(format!("{name}.json"));
         if let Err(e) = cache::atomic_write(&path, body.as_bytes()) {
             warn!("cannot store {name}: {e}");
         }
@@ -437,7 +429,8 @@ pub fn fetch_items(prev_etags: Option<&str>, force: bool) -> Result<Fetched<Fetc
     // on-disk temp files.
     static FETCH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = FETCH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    fetch_items_with(prev_etags, force, &|url, etag| cache::get_conditional(url, etag), &DiskStore)
+    let dir = crate::paths::cache_dir().map_err(|e| e.to_string())?.join("catalogue");
+    fetch_items_with(prev_etags, force, &|url, etag| cache::get_conditional(url, etag), &DiskStore(dir))
 }
 
 #[tracing::instrument(level = "info", skip_all, fields(force))]

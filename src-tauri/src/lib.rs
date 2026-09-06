@@ -75,6 +75,9 @@ pub struct CorrectionEntry {
 }
 
 pub struct AppState {
+    pub roots: paths::Roots,
+    pub riven_log: PathBuf,
+    pub overlay_log: PathBuf,
     pub db_path: PathBuf,
     pub quantities_cache_path: PathBuf,
     pub inventory_state_cache_path: PathBuf,
@@ -1760,12 +1763,10 @@ async fn wfm_delete_credentials() -> Result<(), String> {
 /// so we write a marker to the temp dir and finish the deletion on the next launch
 /// (before a new connection is opened).  Everything else is deleted immediately.
 #[tauri::command]
-async fn factory_reset(app: tauri::AppHandle, _state: State<'_, AppState>) -> Result<(), String> {
+async fn factory_reset(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let _ = wfm_delete_credentials().await;
 
-    let config_dir = paths::config_dir();
-    let data_dir   = paths::data_dir();
-    let cache_dir  = paths::cache_dir();
+    let paths::Roots { config: config_dir, data: data_dir, cache: cache_dir, .. } = &state.roots;
 
     // Delete user-editable config files.
     for name in &["settings.json", "corrections.json"] {
@@ -2395,8 +2396,8 @@ fn parse_original_stats(text: Option<&str>) -> Vec<serde_json::Value> {
 /// Capture the riven reroll screen and OCR the stats + weapon name.
 /// Returns (weapon_name, positives, negatives).
 #[tauri::command]
-async fn ocr_riven_screen() -> Result<serde_json::Value, String> {
-    let riven_log = paths::state_dir().join("frameforge_riven_session.txt");
+async fn ocr_riven_screen(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let riven_log = state.riven_log.clone();
     let ts1 = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
 
     let _ = append_to_file(&riven_log, &format!(
@@ -2959,7 +2960,7 @@ fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
                 });
                 if riven_active {
                     last_riven_fire = None;
-                    let riven_log = paths::state_dir().join("frameforge_riven_session.txt");
+                    let riven_log = app.state::<AppState>().riven_log.clone();
                     let ts = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
                     let _ = append_to_file(&riven_log, &format!(
                         "[STEP 4] CLOSE (DiegeticArtifactCards HudVis 0) — {}\n\n", ts
@@ -2979,7 +2980,7 @@ fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
                 });
                 if riven_active {
                     last_riven_fire = None;
-                    let riven_log = paths::state_dir().join("frameforge_riven_session.txt");
+                    let riven_log = app.state::<AppState>().riven_log.clone();
                     let ts = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
                     let _ = append_to_file(&riven_log, &format!(
                         "[STEP 4] CLOSE (VolumetricFog render target = orbiter loaded) — {}\n\n", ts
@@ -3079,8 +3080,8 @@ fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
 ///  "closed"  = inventory header visible + "FITS IN" gone (user exited riven screen)
 ///  "unknown" = inventory header not visible (alt-tabbed, or left inventory entirely)
 #[tauri::command]
-fn riven_screen_status() -> String {
-    let riven_log = paths::state_dir().join("frameforge_riven_session.txt");
+fn riven_screen_status(state: State<'_, AppState>) -> String {
+    let riven_log = state.riven_log.clone();
     let ts = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
 
     let Ok((pixels, w, h)) = ocr::capture_warframe_pixels() else {
@@ -3120,8 +3121,8 @@ fn riven_screen_status() -> String {
 /// Only closes the overlay when Warframe is still focused (INVENTORY/MODS header present)
 /// AND "FITS IN" is gone — so alt-tabbing away doesn't trigger a false close.
 #[tauri::command]
-fn riven_screen_visible() -> bool {
-    let riven_log = paths::state_dir().join("frameforge_riven_session.txt");
+fn riven_screen_visible(state: State<'_, AppState>) -> bool {
+    let riven_log = state.riven_log.clone();
     let ts = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
 
     let Ok((pixels, w, h)) = ocr::capture_warframe_pixels() else {
@@ -3249,8 +3250,8 @@ fn start_riven_memory_watcher(app: tauri::AppHandle) {
 
 /// Write an error into the riven session log (called from TypeScript when OCR command fails).
 #[tauri::command]
-fn ocr_riven_log_error(error: String) {
-    let path = paths::state_dir().join("frameforge_riven_session.txt");
+fn ocr_riven_log_error(state: State<'_, AppState>, error: String) {
+    let path = state.riven_log.clone();
     let ts = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     let _ = append_to_file(&path, &format!(
         "[STEP 2] OCR COMMAND FAILED — {}\n└─ Error: {}\n\n", ts, error
@@ -5255,8 +5256,8 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     // Wrap catalog in Arc so it can be cheaply shared with spawn_blocking closures
     let catalog_pairs = std::sync::Arc::new(catalog_pairs);
 
-    let debug_path      = paths::state_dir().join("frameforge_reward_debug.txt");
-    let last_found_path = paths::state_dir().join("frameforge_last_reward.txt");
+    let debug_path      = state.roots.state.join("frameforge_reward_debug.txt");
+    let last_found_path = state.roots.state.join("frameforge_last_reward.txt");
 
     // ── EE.log watcher ────────────────────────────────────────────────────────
     // Warframe writes "Script [Info]: Got rewards" to EE.log the moment the
@@ -5302,7 +5303,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     let ee_ocr_app   = reward_app.clone();
     let ee_catalog   = std::sync::Arc::clone(&catalog_pairs);
     let ee_last_path = last_found_path.clone();
-    let session_log_path = paths::state_dir().join("frameforge_overlay_session.txt");
+    let session_log_path = state.overlay_log.clone();
     let ee_auto_capture_dir = auto_capture_dir.clone();
 
     // The gate only makes blob capture faster; with no log to tail the monitor
@@ -5624,7 +5625,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         ts_d, dismiss_line,
                         elapsed_s.map(|s| format!("{:.1}s", s)).unwrap_or_else(|| "(unknown)".to_string())
                     );
-                    append_to_diag(&session_log_path, &dismiss_block);
+                    let _ = append_to_file(&session_log_path, &dismiss_block);
                     // Copy the completed session log to the diagnostics folder for this run.
                     if let Ok(mut g) = diag_arc.lock() {
                         if let Some(folder) = g.take() {
@@ -5672,7 +5673,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         }
                         let _ = ee_ocr_app.emit("inventory-reward",
                             serde_json::json!({ "path": inv_path, "qty": new_qty }));
-                        append_to_diag(&session_log_path, &format!(
+                        let _ = append_to_file(&session_log_path, &format!(
                             "[REWARD] Inventory updated from EE.log\n\
                              ├─ Store path : {}\n\
                              ├─ Inv path   : {}\n\
@@ -6065,7 +6066,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                                                 if let Ok(mut g) = app2.state::<AppState>().pending_relic_rewards.lock() { *g = None; }
                                                 let _ = app2.emit("relic-rewards", serde_json::Value::Null);
                                                 park_overlay_offscreen(&app2, "relic-overlay");
-                                                append_to_diag(&slog2,
+                                                let _ = append_to_file(&slog2,
                                                     "[STEP 4] AUTO-DISMISS (20s safety fallback)\n\n");
                                                 if let Ok(mut g) = diag_arc_fb.lock() {
                                                     if let Some(folder) = g.take() {
@@ -6219,7 +6220,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 if let Some(since) = active_since {
                     if since.elapsed().as_secs() >= 20 {
                         let ts_a = chrono::Local::now().format("%H:%M:%S%.3f");
-                        append_to_diag(&session_log_path, &format!(
+                        let _ = append_to_file(&session_log_path, &format!(
                             "[STEP 4] AUTO-DISMISS (20s timeout)\n\
                              ├─ Time     : {}\n\
                              └─ Open for : {:.1}s\n\n",
@@ -6331,7 +6332,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
             #[cfg(not(target_os = "windows"))]
             fn scan_heap_for_trigger(_pid: u32, _pat: &[u8]) -> bool { false }
 
-            let session_log = paths::state_dir().join("frameforge_overlay_session.txt");
+            let session_log = mt_app.state::<AppState>().overlay_log.clone();
             let mut was_open  = false;
             let mut open_at: Option<std::time::Instant> = None;
             // Include \r so we only match live EE.log ring-buffer entries
@@ -6447,29 +6448,11 @@ fn parse_logged_in_name(
 
 fn append_to_file(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
     f.write_all(text.as_bytes())
-}
-
-/// Append text to both the global overlay session log and the per-session diagnostic file.
-/// The diagnostic target is found by picking the most recently modified folder under
-/// the state directory's `diagnostics/` that contains an ocr_session_log.txt.
-fn append_to_diag(global_log: &std::path::Path, text: &str) {
-    let _ = append_to_file(global_log, text);
-    let diag_base = paths::state_dir().join("diagnostics");
-    if let Ok(entries) = std::fs::read_dir(&diag_base) {
-        let mut folders: Vec<std::path::PathBuf> = entries
-            .filter_map(|e| e.ok().map(|d| d.path()))
-            .filter(|p| p.is_dir())
-            .collect();
-        folders.sort();
-        if let Some(latest) = folders.last() {
-            let diag_log = latest.join("ocr_session_log.txt");
-            if diag_log.exists() {
-                let _ = append_to_file(&diag_log, text);
-            }
-        }
-    }
 }
 
 // ─── Localisation lookup ──────────────────────────────────────────────────────
@@ -7681,24 +7664,24 @@ pub(crate) fn refresh_worldstate(app: &tauri::AppHandle, _force: bool) -> Result
 
 /// Read the riven overlay session log.
 #[tauri::command]
-fn get_riven_session_log() -> String {
-    let path = paths::state_dir().join("frameforge_riven_session.txt");
+fn get_riven_session_log(state: State<'_, AppState>) -> String {
+    let path = state.riven_log.clone();
     std::fs::read_to_string(&path)
         .unwrap_or_else(|_| "(no riven session log yet — open the riven reroll screen first)".into())
 }
 
 /// Read the current overlay session log.
 #[tauri::command]
-fn get_overlay_session_log() -> String {
-    let path = paths::state_dir().join("frameforge_overlay_session.txt");
+fn get_overlay_session_log(state: State<'_, AppState>) -> String {
+    let path = state.overlay_log.clone();
     std::fs::read_to_string(&path).unwrap_or_else(|_| "(no session log yet — trigger a Void Fissure first)".into())
 }
 
 /// Frontend tracing — App.tsx and Overlay.tsx call this to write diagnostic
 /// lines into the same session log that gets copied to the diagnostics folder.
 #[tauri::command]
-fn log_relic_fe(msg: String) {
-    let path = paths::state_dir().join("frameforge_overlay_session.txt");
+fn log_relic_fe(state: State<'_, AppState>, msg: String) {
+    let path = state.overlay_log.clone();
     let _ = append_to_file(&path, &format!("[FE] {}\n", msg));
 }
 
@@ -8033,6 +8016,7 @@ async fn prewarm_image_cache(state: tauri::State<'_, AppState>) -> Result<(), St
                     if let Ok(resp) = ureq::get(&url).call() {
                         let mut buf = Vec::new();
                         if resp.into_body().into_reader().read_to_end(&mut buf).is_ok() && looks_like_image(&buf) {
+                            let _ = std::fs::create_dir_all(&*dir);
                             let _ = std::fs::write(dir.join(&name), buf);
                         }
                     }
@@ -8189,13 +8173,13 @@ async fn save_auto_diag_capture(state: State<'_, AppState>) -> Result<String, St
         .ok()
         .and_then(|g| g.clone());
     let auto_capture_dir = state.auto_capture_dir.clone();
+    let session_log = state.overlay_log.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
         let ts = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
         let folder = auto_capture_dir.join(&ts);
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
 
-        let session_log = paths::state_dir().join("frameforge_overlay_session.txt");
         if session_log.exists() {
             let _ = std::fs::copy(&session_log, folder.join("ocr_session_log.txt"));
         }
@@ -8900,7 +8884,7 @@ fn restore_window_state(app: &tauri::AppHandle, window: &tauri::WebviewWindow, s
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================================================
     // Linux: run the GTK/WebKit side under XWayland, not native Wayland
     // ==========================================================================
@@ -8932,11 +8916,8 @@ pub fn run() {
 
     // Everything below used to sit in a single directory; carry the files that
     // cannot be refetched over to the split layout before anything opens them.
-    paths::migrate_legacy();
-    let data_dir = paths::data_dir();
-    let cache_dir = paths::cache_dir();
-    let state_dir = paths::state_dir();
-    let config_dir = paths::config_dir();
+    let roots = paths::init()?;
+    let paths::Roots { config: config_dir, data: data_dir, cache: cache_dir, state: state_dir } = &roots;
 
     let db_path = data_dir.join("data.db");
     let quantities_cache_path = cache_dir.join("quantities_cache.json");
@@ -8959,7 +8940,9 @@ pub fn run() {
         let _ = std::fs::create_dir_all(dir);
     }
     let img_cache_dir = cache_dir.join("img_cache");
-    let _ = std::fs::create_dir_all(&img_cache_dir);
+    if let Err(e) = std::fs::create_dir_all(&img_cache_dir) {
+        warn!("cannot create {}: {e}", img_cache_dir.display());
+    }
     let auction_ids_path = data_dir.join("auction_ids.json");
     let initial_auction_ids: Vec<String> = std::fs::read_to_string(&auction_ids_path)
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
@@ -9079,6 +9062,9 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updater::LaunchCheck::default())
         .manage(AppState {
+            riven_log: roots.state.join("frameforge_riven_session.txt"),
+            overlay_log: roots.state.join("frameforge_overlay_session.txt"),
+            roots,
             db_path,
             quantities_cache_path,
             inventory_state_cache_path,
@@ -9137,7 +9123,7 @@ pub fn run() {
         .setup(|app| {
             use tauri::Manager;
 
-            logging::init();
+            logging::init(&app.state::<AppState>().roots.state);
 
             // Every Linux bundle carries its own Tesseract language model. Point
             // the OCR engine at it before anything can call it.
@@ -9395,8 +9381,8 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .run(tauri::generate_context!())?;
+    Ok(())
 }
 
 #[cfg(test)]
