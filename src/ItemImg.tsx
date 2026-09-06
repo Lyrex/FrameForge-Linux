@@ -3,7 +3,7 @@ import { ImgCacheDirContext } from "./ImgCacheDir";
 
 function BlueprintIcon() {
   return (
-    <svg className="item-img-fallback" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg className="img-fallback" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect x="5" y="2" width="17" height="22" rx="1.5" fill="#0d1f33" stroke="#388bfd" strokeWidth="1.2"/>
       <path d="M18 2 L22 6 L18 6 Z" fill="#388bfd" opacity="0.5"/>
       <line x1="8" y1="11" x2="19" y2="11" stroke="#388bfd" strokeWidth="1" opacity="0.9"/>
@@ -29,15 +29,15 @@ export default function ItemImg({ imageName, category, size = 32 }: { imageName?
 
   if (!imageName || failed) {
     if (category === "Blueprints") return <BlueprintIcon />;
-    return <span className="item-img-fallback" style={{ ...style, fontSize: size * 0.35 }}>{category[0].toUpperCase()}</span>;
+    return <span className="img-fallback" style={{ ...style, fontSize: size * 0.35 }}>{category[0].toUpperCase()}</span>;
   }
   if (imageName.startsWith("http") || imageName.startsWith("/")) {
-    return <img ref={ref} className="item-img" style={style} src={imageName} alt="" loading="lazy" onError={() => setFailed(true)} onLoad={() => ref.current?.classList.add("img-loaded")} />;
+    return <img ref={ref} className="img" style={style} src={imageName} alt="" loading="lazy" onError={() => setFailed(true)} onLoad={() => ref.current?.classList.add("img-loaded")} />;
   }
   const useLocal = Boolean(baseUrl) && !localFailed;
   const src = useLocal ? `${baseUrl}/${imageName}` : `https://cdn.warframestat.us/img/${imageName}`;
   return (
-    <img ref={ref} className="item-img" style={style} src={src} alt="" loading="lazy"
+    <img ref={ref} className="img" style={style} src={src} alt="" loading="lazy"
       onError={() => useLocal ? setLocalFailed(true) : setFailed(true)} onLoad={() => ref.current?.classList.add("img-loaded")} />
   );
 }

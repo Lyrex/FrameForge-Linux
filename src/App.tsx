@@ -97,6 +97,7 @@ import UpdateDialog from "./UpdateDialog";
 import UpdateCheckRow from "./UpdateCheck";
 import { onUpdateAvailable, pendingUpdate, type UpdateAvailable } from "./updater";
 import "./App.css";
+import "./images.css";
 import "./InventoryGrid.css";
 
 const _winLabel = getCurrentWindow().label;

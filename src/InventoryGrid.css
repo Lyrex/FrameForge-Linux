@@ -132,7 +132,7 @@
   cursor: pointer; border-radius: 8px;
 }
 .item-grid-icons .inv-card-icon-only img,
-.item-grid-icons .inv-card-icon-only .item-img { width: 56px !important; height: 56px !important; }
+.item-grid-icons .inv-card-icon-only .img { width: 56px !important; height: 56px !important; }
 
 /* text-cards: keep grid, just no image area — handled inline */
 
@@ -156,7 +156,7 @@
 .inv-fav-star-row:hover { color: rgba(240,192,64,.8); }
 .inv-fav-star-row.active { color: #f0c040; }
 .inv-row-icon { width: 22px; height: 22px; flex-shrink: 0; position: relative; display: flex; align-items: center; }
-.inv-row-icon img, .inv-row-icon .item-img { width: 20px !important; height: 20px !important; }
+.inv-row-icon img, .inv-row-icon .img { width: 20px !important; height: 20px !important; }
 .inv-foundry-icon-row { position: absolute; top: -4px; right: -6px; font-size: 9px; }
 .inv-row-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .inv-row-cat  { width: 90px; flex-shrink: 0; font-size: 10px; color: var(--muted); text-align: right; text-transform: uppercase; letter-spacing: .03em; }

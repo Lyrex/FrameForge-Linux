@@ -114,7 +114,7 @@ function SynItemImg({ imageName, category }: { imageName?: string; category: str
 
   if (!imageName || failed) {
     return (
-      <div className="syn-item-img-fallback">
+      <div className="img-fallback">
         {category[0]?.toUpperCase() ?? "?"}
       </div>
     );
@@ -124,7 +124,7 @@ function SynItemImg({ imageName, category }: { imageName?: string; category: str
   return (
     <img
       ref={ref}
-      className="syn-item-img"
+      className="img"
       src={src}
       alt=""
       loading="lazy"
