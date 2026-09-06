@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { appScale } from "./uiScale";
 
 interface CtxMenuItem {
   label: string;
@@ -27,12 +28,16 @@ export function useContextMenu() {
     };
   }, [ctxMenu]);
 
-  const open = (x: number, y: number, items: CtxMenuItem[]) => {
+  // The menu is fixed-positioned inside #root, which is zoomed by the text
+  // scale, so its coordinates are in zoomed units while the mouse event and
+  // the viewport size are in real pixels.
+  const open = (clientX: number, clientY: number, items: CtxMenuItem[]) => {
+    const scale = appScale();
     const menuW = 180;
     const menuH = items.length * 30 + 8;
-    const maxX = window.innerWidth - menuW;
-    const maxY = window.innerHeight - menuH;
-    setCtxMenu({ x: Math.min(x, maxX), y: Math.min(y, maxY), items });
+    const maxX = window.innerWidth / scale - menuW;
+    const maxY = window.innerHeight / scale - menuH;
+    setCtxMenu({ x: Math.min(clientX / scale, maxX), y: Math.min(clientY / scale, maxY), items });
   };
 
   const close = () => setCtxMenu(null);
