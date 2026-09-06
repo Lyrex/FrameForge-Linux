@@ -25,7 +25,7 @@ export default function ItemImg({ imageName, category, size = 32 }: { imageName?
 
   useEffect(() => {
     if (ref.current?.complete) ref.current.classList.add("img-loaded");
-  });
+  }, []);
 
   if (!imageName || failed) {
     if (category === "Blueprints") return <BlueprintIcon />;

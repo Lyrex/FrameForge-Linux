@@ -59,7 +59,7 @@ function WeaponImg({ imageName, name }: { imageName?: string; name: string }) {
 
   useEffect(() => {
     if (ref.current?.complete) ref.current.classList.add("img-loaded");
-  });
+  }, []);
 
   if (!imageName || failed) {
     return <div className="img-fallback">{name[0]?.toUpperCase() ?? "?"}</div>;

@@ -27,7 +27,7 @@ interface InventoryGridProps {
   lastChanged: Record<string, number>;
   changes: Map<string, { delta: number }>;
   crafting: Map<string, { item_name: string }>;
-  filterRank: string | number | null;
+  filterRank: number | "unranked" | null;
   onToggleFavorite: (id: string) => void;
   onContextMenu?: (e: React.MouseEvent) => void;
 }
@@ -204,7 +204,7 @@ const InvCard = memo(function InvCard({
 
 // ─── Main grid component ────────────────────────────────────────────────────
 
-export default function InventoryGrid({
+export default memo(function InventoryGrid({
   items, loading, monitoring, view,
   inventory, modCopies, favorites, lastChanged, changes, crafting,
   filterRank, onToggleFavorite, onContextMenu,
@@ -232,7 +232,7 @@ export default function InventoryGrid({
             const maxRank = Math.max(...Object.keys(byRank).map(Number));
             const ranks = Array.from({ length: maxRank + 1 }, (_, r) => ({ rank: r, count: byRank[r] ?? 0 })).filter(r => r.count > 0);
             if (filterRank !== null) {
-              const targetRank = filterRank === "unranked" ? 0 : filterRank as number;
+              const targetRank = filterRank === "unranked" ? 0 : filterRank;
               if ((byRank[targetRank] ?? 0) === 0) return [];
             }
             const total = Object.values(byRank).reduce((a, b) => a + b, 0);
@@ -265,4 +265,4 @@ export default function InventoryGrid({
       )}
     </div>
   );
-}
+});

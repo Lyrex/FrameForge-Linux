@@ -7988,7 +7988,8 @@ async fn prewarm_image_cache(state: tauri::State<'_, AppState>) -> Result<(), St
                     let url = format!("https://cdn.warframestat.us/img/{}", name);
                     if let Ok(resp) = agent.get(&url).call() {
                         let mut buf = Vec::new();
-                        if resp.into_body().into_reader().read_to_end(&mut buf).is_ok() && looks_like_image(&buf) {
+                        // Limit to 5 MB to prevent memory exhaustion from malformed responses
+                        if resp.into_body().into_reader().take(5 * 1024 * 1024).read_to_end(&mut buf).is_ok() && looks_like_image(&buf) {
                             let _ = std::fs::create_dir_all(&*dir);
                             let _ = std::fs::write(dir.join(&name), buf);
                         }
