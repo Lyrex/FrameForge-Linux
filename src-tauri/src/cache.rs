@@ -1,8 +1,8 @@
 //! Disk cache with a stale-while-revalidate ladder.
 //!
 //! Every cached payload carries the time it was retrieved and the ETag it came
-//! with, so freshness is a property of the file rather than of its mtime, and a
-//! conditional GET can be built from it. `get_or_refresh` walks four rungs in
+//! with, so a conditional GET can be built from it; a 304 then bumps the file's
+//! mtime instead of rewriting the payload. `get_or_refresh` walks four rungs in
 //! order (fresh copy, successful refetch, stale copy, nothing) and reports
 //! which one answered so the UI can say how old what it shows is.
 //!
@@ -11,7 +11,7 @@
 //! thing.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -21,16 +21,17 @@ use tracing::warn;
 
 use crate::paths;
 
-pub fn atomic_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
+pub fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_os_string();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
 
-    // Phase 1: write + sync the temp file.
+    // Security software (Defender, Proton Drive) can block new files in the
+    // data directory for an unsigned dev binary while still allowing writes to
+    // existing ones. A direct write is not atomic, but it beats losing user
+    // state that nothing can rebuild.
     if let Err(e) = std::fs::write(&tmp, data) {
-        // .tmp creation failed — security software (Defender, Proton Drive) may
-        // be blocking new files in this directory for the unsigned dev binary.
-        // Warn with a step label so the log makes the failure site clear, then
-        // fall back to a direct (non-atomic) write.  Production signed builds
-        // don't trigger this path; cache files can tolerate it.
+        let _ = std::fs::remove_file(&tmp);
         warn!(
             path = %path.display(),
             "atomic_write/write_tmp failed ({e}), falling back to direct write"
@@ -38,7 +39,6 @@ pub fn atomic_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> 
         return std::fs::write(path, data);
     }
 
-    // Phase 2: flush to platter before the rename commits.
     // Must open with write access: FlushFileBuffers (sync_all) requires it on
     // Windows and returns ERROR_ACCESS_DENIED on a read-only handle.
     if let Err(e) = std::fs::OpenOptions::new()
@@ -50,24 +50,23 @@ pub fn atomic_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> 
         return Err(std::io::Error::new(e.kind(), format!("sync: {e}")));
     }
 
-    // Phase 3: rename with a short retry.  Windows Defender and file-sync tools
+    // Windows Defender and file-sync tools
     // can hold the destination briefly without FILE_SHARE_DELETE, making
     // MoveFileExW return ERROR_ACCESS_DENIED.  A 50–150 ms pause outlasts most
     // scan windows.
+    let mut result = Err(std::io::Error::other("rename: no attempts"));
     for delay_ms in [0u64, 50, 150] {
         if delay_ms > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            std::thread::sleep(Duration::from_millis(delay_ms));
         }
-        match std::fs::rename(&tmp, path) {
-            Ok(()) => return Ok(()),
-            Err(_) if delay_ms < 150 => continue,
-            Err(e) => {
-                let _ = std::fs::remove_file(&tmp);
-                return Err(std::io::Error::new(e.kind(), format!("rename: {e}")));
-            }
+        result = std::fs::rename(&tmp, path)
+            .map_err(|e| std::io::Error::new(e.kind(), format!("rename: {e}")));
+        if result.is_ok() {
+            return result;
         }
     }
-    unreachable!()
+    let _ = std::fs::remove_file(&tmp);
+    result
 }
 
 #[derive(Serialize, Deserialize)]
@@ -104,11 +103,13 @@ pub struct CacheStatus {
     pub warning: Option<String>,
 }
 
+// Poisoning is recovered with `into_inner` throughout: the critical sections
+// only run HashMap and clone operations, which cannot leave the map half
+// mutated on unwind, and allocation failure aborts rather than panics.
 static STATUSES: Mutex<Option<HashMap<String, CacheStatus>>> = Mutex::new(None);
 
-/// One lock per cache name, held for the length of a `get_or_refresh`. Two
-/// callers after the same cache take turns, and the second one finds what the
-/// first stored. A slow download of one cache never blocks another.
+/// Held across the fetch so a second caller after the same cache finds what
+/// the first stored instead of downloading it again.
 static REFRESHING: Mutex<Option<HashMap<String, Arc<Mutex<()>>>>> = Mutex::new(None);
 
 fn refresh_lock(name: &str) -> Arc<Mutex<()>> {
@@ -121,18 +122,18 @@ fn refresh_lock(name: &str) -> Arc<Mutex<()>> {
 }
 
 pub fn set_status(name: &str, status: CacheStatus) {
-    if let Ok(mut guard) = STATUSES.lock() {
-        guard
-            .get_or_insert_with(HashMap::new)
-            .insert(name.to_string(), status);
-    }
+    STATUSES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(name.to_string(), status);
 }
 
 pub fn statuses() -> HashMap<String, CacheStatus> {
     STATUSES
         .lock()
-        .ok()
-        .and_then(|g| g.clone())
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
         .unwrap_or_default()
 }
 
@@ -141,16 +142,30 @@ fn path_of(name: &str) -> PathBuf {
 }
 
 pub fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    unix_seconds(SystemTime::now())
 }
 
+fn unix_seconds(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(1)
+        .max(1)
+}
+
+/// A 304 confirms the copy without rewriting it, so the confirmation lives in
+/// the file's mtime (see `confirm`). A freshly stored payload has an mtime at
+/// or after its embedded timestamp, so taking the later of the two never ages
+/// a copy and a replacement cannot inherit its predecessor's confirmation.
 pub fn load<T: DeserializeOwned>(name: &str) -> Option<Cached<T>> {
-    let body = std::fs::read_to_string(path_of(name)).ok()?;
-    match serde_json::from_str(&body) {
-        Ok(cached) => Some(cached),
+    let file = std::fs::File::open(path_of(name)).ok()?;
+    let confirmed = file.metadata().and_then(|m| m.modified()).ok();
+    match serde_json::from_reader::<_, Cached<T>>(std::io::BufReader::new(file)) {
+        Ok(mut cached) => {
+            if let Some(confirmed) = confirmed {
+                cached.retrieved_at_unix = cached.retrieved_at_unix.max(unix_seconds(confirmed));
+            }
+            Some(cached)
+        }
         Err(e) => {
             warn!("discarding unreadable cache {name}: {e}");
             None
@@ -159,14 +174,31 @@ pub fn load<T: DeserializeOwned>(name: &str) -> Option<Cached<T>> {
 }
 
 pub fn store<T: Serialize>(name: &str, etag: Option<String>, data: &T) -> std::io::Result<()> {
+    store_at(name, etag, data, now_unix())
+}
+
+fn store_at<T: Serialize>(
+    name: &str,
+    etag: Option<String>,
+    data: &T,
+    retrieved_at_unix: u64,
+) -> std::io::Result<()> {
     let cached = Cached {
-        retrieved_at_unix: now_unix(),
+        retrieved_at_unix,
         etag,
         data,
     };
     let body = serde_json::to_vec(&cached)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     atomic_write(&path_of(name), &body)
+}
+
+fn confirm(name: &str, unix: u64) -> std::io::Result<()> {
+    // Write access: SetFileTime needs FILE_WRITE_ATTRIBUTES on Windows.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path_of(name))?
+        .set_modified(UNIX_EPOCH + Duration::from_secs(unix))
 }
 
 /// Serve `name`, refetching when it is older than `ttl`.
@@ -182,20 +214,31 @@ pub fn get_or_refresh<T>(
 where
     T: Serialize + DeserializeOwned,
 {
-    // The frontend and the background scheduler both ask for the same caches at
-    // launch. Without this they download the catalogue twice and race each other
-    // writing the same temporary file.
+    get_or_refresh_at(name, ttl, fetch, now_unix)
+}
+
+fn get_or_refresh_at<T>(
+    name: &str,
+    ttl: Duration,
+    fetch: impl FnOnce(Option<&str>) -> Result<Fetched<T>, String>,
+    now: impl Fn() -> u64,
+) -> (Option<T>, Source, Option<String>)
+where
+    T: Serialize + DeserializeOwned,
+{
     let lock = refresh_lock(name);
     let _refreshing = lock.lock().unwrap_or_else(|e| e.into_inner());
 
     let cached = load::<T>(name);
-    let now = now_unix();
+    let now = now();
 
+    // Strict: `Duration::ZERO` must always refetch, including when the clock
+    // has stepped backwards past the stored timestamp.
     let still_fresh = cached
         .as_ref()
         .is_some_and(|c| now.saturating_sub(c.retrieved_at_unix) < ttl.as_secs());
     if still_fresh {
-        let c = cached.expect("still_fresh is only true for a loaded cache");
+        let c = cached.expect("fresh cache exists");
         return report(
             name,
             Some(c.retrieved_at_unix),
@@ -216,7 +259,7 @@ where
     let result = fetch(cached.as_ref().and_then(|c| c.etag.as_deref()));
     match result {
         Ok(Fetched::New(data, etag)) => {
-            if let Err(e) = store(name, etag, &data) {
+            if let Err(e) = store_at(name, etag, &data, now) {
                 warn!("cannot write cache {name}: {e}");
             }
             report(name, Some(now), Source::Refreshed, None, Some(data))
@@ -226,8 +269,8 @@ where
         // place.
         Ok(Fetched::NotModified) => match cached {
             Some(c) => {
-                if let Err(e) = store(name, c.etag, &c.data) {
-                    warn!("cannot refresh cache timestamp {name}: {e}");
+                if let Err(e) = confirm(name, now) {
+                    warn!("cannot confirm cache {name}: {e}");
                 }
                 report(name, Some(now), Source::Fresh, None, Some(c.data))
             }
@@ -340,6 +383,318 @@ pub fn get_conditional(url: &str, etag: Option<&str>) -> Result<Fetched<String>,
 mod tests {
     use super::*;
 
+    #[test]
+    fn status_reads_and_writes_survive_a_poisoned_mutex() {
+        let before = "status-before-poison";
+        let after = "status-after-poison";
+        set_status(
+            before,
+            CacheStatus {
+                source: Source::Stale,
+                last_updated: Some(100),
+                warning: Some("offline".into()),
+            },
+        );
+        let panic = std::panic::catch_unwind(|| {
+            let _guard = STATUSES.lock().unwrap_or_else(|e| e.into_inner());
+            panic!("status writer failed");
+        });
+        assert!(panic.is_err());
+        assert!(STATUSES.is_poisoned());
+        let retained = statuses();
+        assert_eq!(
+            retained.get(before).expect("old status survives").source,
+            Source::Stale
+        );
+        set_status(
+            after,
+            CacheStatus {
+                source: Source::Refreshed,
+                last_updated: Some(200),
+                warning: None,
+            },
+        );
+        let updated = statuses();
+        let status = updated.get(after).expect("new status is recorded");
+        assert_eq!(status.source, Source::Refreshed);
+        assert_eq!(status.last_updated, Some(200));
+        assert!(status.warning.is_none());
+        STATUSES.clear_poison();
+        if let Some(entries) = STATUSES.lock().expect("poison cleared").as_mut() {
+            entries.remove(before);
+            entries.remove(after);
+        }
+    }
+
+    #[test]
+    fn a_panicking_fetch_does_not_leave_the_cache_refreshing() {
+        let name = scratch("panicking-fetch");
+        let panic = std::panic::catch_unwind(|| {
+            get_or_refresh::<String>(&name, Duration::ZERO, |_| panic!("fetch failed"))
+        });
+        assert!(panic.is_err());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            sender
+                .send(get_or_refresh(&name, Duration::ZERO, fetches("recovered")))
+                .expect("caller is listening");
+        });
+        let (data, source, _) = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("another caller can refresh after a panic");
+        assert_eq!(data.as_deref(), Some("recovered"));
+        assert_eq!(source, Source::Refreshed);
+    }
+
+    #[test]
+    fn a_stale_reader_waits_for_the_in_flight_fetch() {
+        let name = scratch("stale-during-fetch");
+        store(&name, None, &"old").expect("test cache is writable");
+        expire(&name);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (reader_tx, reader_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|threads| {
+            threads.spawn({
+                let name = &name;
+                move || {
+                    get_or_refresh(name, Duration::from_secs(60), |_| {
+                        started_tx.send(()).expect("coordinator is listening");
+                        release_rx.recv().expect("coordinator releases fetch");
+                        Ok(Fetched::New("new".to_string(), None))
+                    })
+                }
+            });
+            started_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("fetch starts");
+            threads.spawn(|| {
+                let result = get_or_refresh::<String>(&name, Duration::from_secs(60), |_| {
+                    panic!("only one fetch may run")
+                });
+                reader_tx.send(result).expect("coordinator is listening");
+            });
+            assert!(reader_rx.recv_timeout(Duration::from_millis(200)).is_err());
+            release_tx.send(()).expect("fetch is waiting");
+            let (data, source, warning) = reader_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("reader wakes after the fetch");
+            assert_eq!(data.as_deref(), Some("new"));
+            assert_eq!(source, Source::Fresh);
+            assert!(warning.is_none());
+        });
+    }
+
+    #[test]
+    fn not_modified_without_a_copy_is_a_fallback() {
+        let name = scratch("not-modified-missing");
+        let (data, source, warning) = get_or_refresh(&name, Duration::ZERO, |_| {
+            Ok(Fetched::<String>::NotModified)
+        });
+        assert!(data.is_none());
+        assert_eq!(source, Source::Fallback);
+        assert!(warning
+            .expect("missing copy is reported")
+            .contains("no cached copy"));
+    }
+
+    #[test]
+    fn replacement_does_not_inherit_previous_confirmation() {
+        let name = scratch("replace-confirmed");
+        store(&name, None, &"old").expect("test cache is writable");
+        expire(&name);
+        let confirmed = now_unix() + 1_000_000;
+        get_or_refresh_at(
+            &name,
+            Duration::ZERO,
+            |_| Ok(Fetched::<String>::NotModified),
+            || confirmed,
+        );
+        assert_eq!(
+            load::<String>(&name)
+                .expect("cache exists")
+                .retrieved_at_unix,
+            confirmed
+        );
+        store(&name, Some("new-etag".into()), &"new").expect("replacement is writable");
+        let cached = load::<String>(&name).expect("replacement loads");
+        assert!(cached.retrieved_at_unix < confirmed);
+        assert_eq!(cached.data, "new");
+        assert_eq!(cached.etag.as_deref(), Some("new-etag"));
+    }
+
+    #[test]
+    fn not_modified_updates_freshness_without_rewriting_payload() {
+        let name = scratch("not-modified-bytes");
+        store(&name, Some("catalogue-etag".into()), &"catalogue").expect("test cache is writable");
+        expire(&name);
+        let before = std::fs::read(path_of(&name)).expect("cache exists");
+        let (data, source, warning) = get_or_refresh_at(
+            &name,
+            Duration::ZERO,
+            |_| Ok(Fetched::<String>::NotModified),
+            || 100,
+        );
+        assert_eq!(data.as_deref(), Some("catalogue"));
+        assert_eq!(source, Source::Fresh);
+        assert!(warning.is_none());
+        assert_eq!(std::fs::read(path_of(&name)).expect("cache exists"), before);
+        let cached = load::<String>(&name).expect("cache remains readable");
+        assert_eq!(cached.retrieved_at_unix, 100);
+        assert_eq!(cached.etag.as_deref(), Some("catalogue-etag"));
+    }
+
+    #[test]
+    fn large_catalogue_round_trips() {
+        let name = scratch("large-catalogue");
+        let catalogue = vec!["/Lotus/Weapons/Tenno/Rifle/Braton".repeat(160); 1024];
+        store(&name, Some("catalogue-etag".into()), &catalogue).expect("test cache is writable");
+        let cached = load::<Vec<String>>(&name).expect("catalogue loads");
+        assert!(cached.data == catalogue);
+        assert_eq!(cached.etag.as_deref(), Some("catalogue-etag"));
+    }
+
+    #[test]
+    fn missing_and_malformed_caches_are_misses() {
+        let name = scratch("malformed-catalogue");
+        assert!(load::<Vec<String>>(&name).is_none());
+        for body in [b"{\"data\":".as_slice(), b"\xff", b"{} trailing"] {
+            atomic_write(&path_of(&name), body).expect("test cache is writable");
+            assert!(load::<Vec<String>>(&name).is_none());
+        }
+    }
+
+    #[test]
+    fn broken_clock_serves_existing_cache_without_refetching() {
+        let name = scratch("broken-clock");
+        store(&name, None, &"cached").expect("test cache is writable");
+        let now = unix_seconds(UNIX_EPOCH - Duration::from_secs(1));
+        assert_eq!(now, 1);
+        assert_eq!(unix_seconds(UNIX_EPOCH), 1);
+        let (data, source, _) = get_or_refresh_at::<String>(
+            &name,
+            Duration::from_secs(60),
+            |_| panic!("broken clock must not refetch"),
+            || now,
+        );
+        assert_eq!(source, Source::Fresh);
+        assert_eq!(data.as_deref(), Some("cached"));
+    }
+
+    #[test]
+    fn ttl_boundary_refetches() {
+        let name = scratch("ttl-boundary");
+        store(&name, None, &"cached").expect("test cache is writable");
+        let retrieved = load::<String>(&name)
+            .expect("cache exists")
+            .retrieved_at_unix;
+        let (data, source, _) = get_or_refresh_at::<String>(
+            &name,
+            Duration::from_secs(60),
+            fetches("refetched"),
+            || retrieved + 60,
+        );
+        assert_eq!(source, Source::Refreshed);
+        assert_eq!(data.as_deref(), Some("refetched"));
+    }
+
+    #[test]
+    fn zero_ttl_refetches_a_copy_stored_this_second() {
+        let name = scratch("zero-ttl");
+        store(&name, None, &"cached").expect("test cache is writable");
+        let (_, source, _) = get_or_refresh(&name, Duration::ZERO, fetches("refetched"));
+        assert_eq!(source, Source::Refreshed);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_preserves_destination_when_temp_disappears() {
+        use std::io::Read;
+        use std::os::unix::ffi::OsStrExt;
+
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tmp/atomic-write-missing-temp");
+        // A run that died between mkfifo and remove_file leaves the pipe behind.
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test directory is writable");
+        let path = root.join("catalogue.json");
+        let tmp = root.join("catalogue.json.tmp");
+        std::fs::write(&path, b"original").expect("test directory is writable");
+        let fifo = std::ffi::CString::new(tmp.as_os_str().as_bytes()).expect("path has no NUL");
+        // A pipe holds the writer open until its temporary name has been removed.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        std::thread::scope(|threads| {
+            let writer = threads.spawn(|| atomic_write(&path, &vec![b'x'; 1024 * 1024]));
+            let mut reader = std::fs::File::open(&tmp).expect("writer opens the pipe");
+            std::fs::remove_file(&tmp).expect("pipe is removable");
+            reader
+                .read_to_end(&mut Vec::new())
+                .expect("writer closes the pipe");
+            let error = writer
+                .join()
+                .expect("writer does not panic")
+                .expect_err("temporary name was removed");
+            assert!(error.to_string().starts_with("sync:"));
+        });
+        assert_eq!(std::fs::read(&path).expect("original exists"), b"original");
+        assert!(!tmp.exists());
+        std::fs::remove_dir_all(root).expect("test directory is removable");
+    }
+
+    #[test]
+    fn atomic_write_cleans_up_after_rename_failure() {
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tmp/atomic-write-rename-failure");
+        let path = root.join("catalogue.json");
+        std::fs::create_dir_all(&path).expect("test directory is writable");
+        let error = atomic_write(&path, b"replacement").expect_err("cannot replace a directory");
+        assert!(error.to_string().starts_with("rename:"));
+        assert!(path.is_dir());
+        assert!(!root.join("catalogue.json.tmp").exists());
+        std::fs::remove_dir_all(root).expect("test directory is removable");
+    }
+
+    #[test]
+    fn atomic_writes_with_different_extensions_do_not_clobber_each_other() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tmp/atomic-write-extensions");
+        std::fs::create_dir_all(&root).expect("test directory is writable");
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|threads| {
+            for (extension, byte) in [("json", b'j'), ("bin", b'b')] {
+                let root = &root;
+                let barrier = &barrier;
+                threads.spawn(move || {
+                    let path = root.join(format!("foo-v1.{extension}"));
+                    let body = vec![byte; 1024 * 1024];
+                    barrier.wait();
+                    for _ in 0..10 {
+                        atomic_write(&path, &body).expect("independent write succeeds");
+                        assert!(std::fs::read(&path).expect("cache exists") == body);
+                    }
+                });
+            }
+        });
+        std::fs::remove_dir_all(root).expect("test directory is removable");
+    }
+
+    #[test]
+    fn blocked_temp_creation_falls_back_to_a_direct_write() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tmp/atomic-write-failure");
+        std::fs::create_dir_all(&root).expect("test directory is writable");
+        let path = root.join("catalogue.json");
+        std::fs::write(&path, b"original").expect("test directory is writable");
+        for name in ["catalogue.tmp", "catalogue.json.tmp"] {
+            std::fs::create_dir_all(root.join(name)).expect("test directory is writable");
+        }
+
+        atomic_write(&path, b"replacement").expect("direct write succeeds");
+        assert_eq!(
+            std::fs::read(&path).expect("destination exists"),
+            b"replacement"
+        );
+        std::fs::remove_dir_all(root).expect("test directory is removable");
+    }
+
     /// One process, one root: every test names its own cache file instead.
     fn scratch(name: &str) -> String {
         let root = std::env::temp_dir().join("frameforge-cache-tests");
@@ -347,6 +702,17 @@ mod tests {
         let file = format!("{name}.json");
         let _ = std::fs::remove_file(paths::cache_dir().join(&file));
         file
+    }
+
+    fn expire(name: &str) {
+        let mut cached = load::<String>(name).expect("cache exists");
+        cached.retrieved_at_unix = 1;
+        atomic_write(
+            &path_of(name),
+            &serde_json::to_vec(&cached).expect("cache serializes"),
+        )
+        .expect("test cache is writable");
+        confirm(name, 1).expect("test cache records mtimes");
     }
 
     fn fetches(body: &str) -> impl FnOnce(Option<&str>) -> Result<Fetched<String>, String> + '_ {
@@ -376,6 +742,7 @@ mod tests {
     fn status_reads_refreshing_while_the_fetch_runs() {
         let name = scratch("refreshing");
         store(&name, None, &"old".to_string()).unwrap();
+        expire(&name);
 
         let (_, source, _) = get_or_refresh(&name, Duration::ZERO, |_| {
             assert_eq!(statuses()[&name].source, Source::Refreshing);
@@ -389,6 +756,7 @@ mod tests {
     fn expired_cache_is_replaced_by_the_fetch() {
         let name = scratch("refreshed");
         store(&name, None, &"old".to_string()).unwrap();
+        expire(&name);
 
         let (data, source, _) = get_or_refresh(&name, Duration::ZERO, fetches("new"));
 
@@ -401,6 +769,7 @@ mod tests {
     fn a_failed_refresh_still_serves_the_stale_copy() {
         let name = scratch("stale");
         store(&name, None, &"old".to_string()).unwrap();
+        expire(&name);
 
         let (data, source, warning) = get_or_refresh(&name, Duration::ZERO, fails);
 
@@ -424,6 +793,7 @@ mod tests {
     fn not_modified_keeps_the_payload_and_clears_the_staleness() {
         let name = scratch("not-modified");
         store(&name, Some("abc".to_string()), &"body".to_string()).unwrap();
+        expire(&name);
         let before = load::<String>(&name).unwrap().retrieved_at_unix;
 
         let seen_etag = Mutex::new(None);
@@ -461,11 +831,14 @@ mod tests {
         std::thread::scope(|s| {
             for _ in 0..2 {
                 s.spawn(|| {
-                    get_or_refresh(&name, Duration::from_secs(3600), |_| {
-                        FETCHES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        std::thread::sleep(Duration::from_millis(50));
-                        Ok(Fetched::New("body".to_string(), None))
-                    })
+                    let (data, source, _) =
+                        get_or_refresh(&name, Duration::from_secs(3600), |_| {
+                            FETCHES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            std::thread::sleep(Duration::from_millis(50));
+                            Ok(Fetched::New("body".to_string(), None))
+                        });
+                    assert_eq!(data.as_deref(), Some("body"));
+                    assert!(matches!(source, Source::Fresh | Source::Refreshed));
                 });
             }
         });
