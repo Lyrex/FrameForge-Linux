@@ -69,6 +69,7 @@
 .log-name-group { display: flex; align-items: center; gap: 6px; }
 .log-name-link { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0; border: none; background: none; color: var(--text); cursor: pointer; font: inherit; text-align: left; }
 .log-name-link:hover { color: var(--accent); text-decoration: underline; }
+.log-rank-badge { font-size: 9px; font-weight: 700; color: var(--accent); background: rgba(88,166,255,.12); padding: 1px 4px; border-radius: 3px; }
 .log-cat { max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
 .log-category-link { padding: 0; border: none; background: none; cursor: pointer; font-family: inherit; }
 .log-category-link:hover, .log-category-link:focus-visible { color: var(--accent); text-decoration: underline; outline: none; }

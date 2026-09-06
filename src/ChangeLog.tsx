@@ -110,6 +110,7 @@ function ChangeRow({
       </div>
       <div className="inv-row-name log-name-group">
         <button className="log-name-link" onClick={e => { e.stopPropagation(); onItemClick(); }}>{name}</button>
+        {change.rank != null && <span className="log-rank-badge">R{change.rank}</span>}
         <button className="log-cat log-category-link" onClick={e => { e.stopPropagation(); onCategoryClick(category); }}>{category}</button>
       </div>
       <div className="inv-row-qty log-change-qty">

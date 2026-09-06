@@ -4583,12 +4583,25 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
         let mut known: HashMap<String, i64> =
             shared_quantities.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
-        // Previous mod state for rank-specific change detection.
-        let mut prev_mods: HashMap<String, memory_scanner::ModCount> = HashMap::new();
-
         // Load the full inventory state from the last session so the UI shows data
         // immediately on restart without waiting for the first full scan pass.
         let startup_cache = load_inventory_state_cache(&inventory_state_cache_path);
+
+        // Previous mod state for rank-specific change detection.
+        // Pre-seed from startup cache so the first scan detects rank changes
+        // since the last session instead of requiring two full scans.
+        let mut prev_mods: HashMap<String, memory_scanner::ModCount> = startup_cache.items.iter()
+            .filter(|(_, v)| v.mod_ranks.is_some())
+            .map(|(path, v)| {
+                let by_rank: HashMap<u8, i64> = v.mod_ranks.as_ref()
+                    .map(|ranks| ranks.iter()
+                        .filter_map(|(r, &c)| r.parse::<u8>().ok().map(|rank| (rank, c)))
+                        .collect())
+                    .unwrap_or_default();
+                let total = by_rank.values().sum();
+                (path.clone(), memory_scanner::ModCount { total, by_rank })
+            })
+            .collect();
 
         // Pre-populate known with cached resource quantities so that per-cycle hint
         // emits never replace the frontend display with a partial inventory.
