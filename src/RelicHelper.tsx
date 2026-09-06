@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { HelpTip } from "./HelpTip";
-import type { InventoryItem, ViewMode } from "./App";
-import { ViewToggle } from "./App";
+import type { InventoryItem } from "./App";
+import type { ViewMode } from "./ViewToggle";
+import { ViewToggle } from "./ViewToggle";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
