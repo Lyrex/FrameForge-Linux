@@ -106,14 +106,12 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .btn-wf-connect.connected { border-color: #f0c040; color: #f0c040; cursor: default; }
 .btn-wf-connect:disabled { opacity: .6; cursor: wait; }
 
-/* Text scaling — transform on #root avoids the WebView2 scrollbar hit-test bug
-   that css zoom on html causes (scrollbar renders correctly but can't be dragged
-   to the bottom when zoom > 1). */
+/* Text scaling — zoom re-renders glyphs at the scaled size (crisp); the old
+   transform: scale() rasterized at layout size then stretched the bitmap,
+   blurring text. Applied to #root, not html: zoom on html hit a WebView2
+   scrollbar hit-test bug (thumb couldn't be dragged to the bottom). */
 #root {
-  transform: scale(var(--ff-scale, 1));
-  transform-origin: top left;
-  width: calc(100% / var(--ff-scale, 1));
-  height: calc(100% / var(--ff-scale, 1));
+  zoom: var(--ff-scale, 1);
   overflow: hidden;
 }
 
