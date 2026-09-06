@@ -42,18 +42,25 @@ interface InvModCardProps {
   ranks: { rank: number; count: number }[];
   total: number;
   view: ViewMode;
+  changedAt?: number;
+  recentDelta?: number | null;
 }
-const InvModCard = memo(function InvModCard({ unique_name, name, category, image_name, ranks, total, view }: InvModCardProps) {
+const InvModCard = memo(function InvModCard({ unique_name, name, category, image_name, ranks, total, view, changedAt, recentDelta }: InvModCardProps) {
+  const nowSec = Date.now() / 1000;
+  const secAgo = changedAt != null ? nowSec - changedAt : null;
+  const isRecent = secAgo !== null && secAgo < 300;
+  const baseClass = `inv-card${isRecent ? (recentDelta != null && recentDelta > 0 ? " inv-card-gained" : " inv-card-lost") : ""}`;
+
   if (view === "icons") {
     return (
-      <div key={unique_name} className="inv-card inv-card-icon-only" title={`${name} ×${fmt(total)}`}>
+      <div key={unique_name} className={`${baseClass} inv-card-icon-only`} title={`${name} ×${fmt(total)}`}>
         <ItemImg imageName={image_name ?? undefined} category={category} size={52} />
       </div>
     );
   }
   if (view === "list" || view === "list-compact") {
     return (
-      <div key={unique_name} className="inv-card inv-card-row">
+      <div key={unique_name} className={`${baseClass} inv-card-row`}>
         {view === "list" && <div className="inv-row-icon"><ItemImg imageName={image_name ?? undefined} category={category} size={20} /></div>}
         <div className="inv-row-name">{name}</div>
         <div className="inv-row-cat">{category}</div>
@@ -62,7 +69,7 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
     );
   }
   return (
-    <div key={unique_name} className="inv-card inv-card-mod">
+    <div key={unique_name} className={`${baseClass} inv-card-mod`}>
       {view !== "text-cards" && (
         <div className="inv-card-img-wrap">
           <ItemImg imageName={image_name ?? undefined} category={category} size={40} />
@@ -88,7 +95,9 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
   prev.total === next.total &&
   prev.image_name === next.image_name &&
   prev.ranks.length === next.ranks.length &&
-  prev.ranks.every((r, i) => r.rank === next.ranks[i].rank && r.count === next.ranks[i].count)
+  prev.ranks.every((r, i) => r.rank === next.ranks[i].rank && r.count === next.ranks[i].count) &&
+  prev.changedAt === next.changedAt &&
+  prev.recentDelta === next.recentDelta
 );
 
 interface InvCardProps {
@@ -240,7 +249,9 @@ export default memo(function InventoryGrid({
               <InvModCard key={item.unique_name}
                 unique_name={item.unique_name} name={item.name}
                 category={item.category} image_name={item.image_name}
-                ranks={ranks} total={total} view={view} />
+                ranks={ranks} total={total} view={view}
+                changedAt={lastChanged[item.unique_name]}
+                recentDelta={changes.get(item.unique_name)?.delta ?? null} />
             )];
           }
 
