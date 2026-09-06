@@ -8,6 +8,9 @@
   gap: 8px;
   padding: 10px 12px;
   align-content: start;
+  /* Mod cards can have more rank rows; fill their shared grid row to keep gutters stable. */
+  align-items: stretch;
+  justify-items: stretch;
 }
 
 /* ── Card base ─────────────────────────────────────────────────────────────── */
@@ -25,6 +28,10 @@
   transition: border-color .12s;
   min-width: 0;
   position: relative;
+  align-self: stretch;
+  justify-self: stretch;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .inv-fav-star {
@@ -79,7 +86,7 @@
 
 /* ── Mod rank breakdown card ───────────────────────────────────────────────── */
 
-.inv-card-mod { align-items: flex-start; padding: 8px 10px 8px; min-width: 140px; max-width: 200px; }
+.inv-card-mod { align-items: flex-start; padding: 8px 10px 8px; }
 .inv-card-mod .inv-card-img-wrap { width: 40px; height: 40px; }
 .inv-card-mod .inv-card-name { text-align: left; font-size: 12px; }
 .inv-card-mod .inv-card-cat  { text-align: left; }
