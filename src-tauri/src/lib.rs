@@ -7951,14 +7951,11 @@ async fn prewarm_image_cache(state: tauri::State<'_, AppState>) -> Result<(), St
     use std::collections::HashSet;
     use std::sync::Arc;
     let items: Vec<_> = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let recipe_names: HashSet<String> = state.recipes.lock()
-        .unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
     let cache_dir = Arc::new(state.img_cache_dir.clone());
 
     tokio::task::spawn_blocking(move || {
         use std::io::Read;
         let names: Vec<String> = items.iter()
-            .filter(|i| recipe_names.contains(&i.unique_name))
             .filter_map(|i| i.image_name.clone())
             .collect::<HashSet<_>>()
             .into_iter()
@@ -7977,13 +7974,19 @@ async fn prewarm_image_cache(state: tauri::State<'_, AppState>) -> Result<(), St
         if names.is_empty() { return; }
         debug!(count = names.len(), "prewarming images in background");
 
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
+
         for chunk in names.chunks(8) {
             let handles: Vec<_> = chunk.iter().map(|name| {
                 let dir = Arc::clone(&cache_dir);
                 let name = name.clone();
+                let agent = agent.clone();
                 std::thread::spawn(move || {
                     let url = format!("https://cdn.warframestat.us/img/{}", name);
-                    if let Ok(resp) = ureq::get(&url).call() {
+                    if let Ok(resp) = agent.get(&url).call() {
                         let mut buf = Vec::new();
                         if resp.into_body().into_reader().read_to_end(&mut buf).is_ok() && looks_like_image(&buf) {
                             let _ = std::fs::create_dir_all(&*dir);
