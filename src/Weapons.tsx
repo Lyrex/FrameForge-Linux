@@ -55,6 +55,12 @@ function WeaponImg({ imageName, name }: { imageName?: string; name: string }) {
   const baseUrl = useContext(ImgCacheDirContext);
   const [localFailed, setLocalFailed] = useState(false);
   const [failed, setFailed] = useState(false);
+  const ref = useRef<HTMLImageElement>(null);
+
+  useEffect(() => {
+    if (ref.current?.complete) ref.current.classList.add("img-loaded");
+  });
+
   if (!imageName || failed) {
     return <div className="wpn-img-fallback">{name[0]?.toUpperCase() ?? "?"}</div>;
   }
@@ -62,11 +68,13 @@ function WeaponImg({ imageName, name }: { imageName?: string; name: string }) {
   const src = useLocal ? `${baseUrl}/${imageName}` : `https://cdn.warframestat.us/img/${imageName}`;
   return (
     <img
+      ref={ref}
       className="wpn-img"
       src={src}
       alt=""
       loading="lazy"
       onError={() => useLocal ? setLocalFailed(true) : setFailed(true)}
+      onLoad={() => ref.current?.classList.add("img-loaded")}
     />
   );
 }

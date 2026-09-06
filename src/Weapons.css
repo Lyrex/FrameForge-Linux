@@ -148,7 +148,11 @@
   object-fit: contain;
   flex-shrink: 0;
   border-radius: 3px;
+  opacity: 0;
+  transform: translate(-4px, -4px) scale(0.9);
+  transition: opacity 0.25s ease-out, transform 0.25s ease-out;
 }
+.wpn-img.img-loaded { opacity: 1; transform: translate(0, 0) scale(1); }
 .wpn-img-fallback {
   width: 32px;
   height: 32px;

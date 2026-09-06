@@ -229,7 +229,13 @@ function ItemImg({ imageName, category, size = 40 }: { imageName?: string; categ
   const baseUrl = useContext(ImgCacheDirContext);
   const [localFailed, setLocalFailed] = useState(false);
   const [cdnFailed,   setCdnFailed]   = useState(false);
+  const ref = useRef<HTMLImageElement>(null);
   const style = { width: size, height: size, flexShrink: 0 };
+
+  useEffect(() => {
+    if (ref.current?.complete) ref.current.classList.add("img-loaded");
+  });
+
   if (!imageName || cdnFailed)
     return <span className="item-img-fallback" style={{ ...style, fontSize: size * 0.35 }}>{category[0].toUpperCase()}</span>;
   const useLocal = Boolean(baseUrl) && !localFailed;
@@ -237,9 +243,10 @@ function ItemImg({ imageName, category, size = 40 }: { imageName?: string; categ
     ? `${baseUrl}/${imageName}`
     : `https://cdn.warframestat.us/img/${imageName}`;
   return (
-    <img className="item-img" style={style} src={src}
+    <img ref={ref} className="item-img" style={style} src={src}
       alt="" loading="lazy"
-      onError={() => useLocal ? setLocalFailed(true) : setCdnFailed(true)} />
+      onError={() => useLocal ? setLocalFailed(true) : setCdnFailed(true)}
+      onLoad={() => ref.current?.classList.add("img-loaded")} />
   );
 }
 

@@ -448,7 +448,8 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .item-gained     { border-left: 2px solid var(--green); background: rgba(63,185,80,.04); }
 .item-lost       { border-left: 2px solid var(--red);   background: rgba(248,81,73,.04); }
 
-.item-img { width: 32px; height: 32px; object-fit: contain; flex-shrink: 0; border-radius: 4px; }
+.item-img { width: 32px; height: 32px; object-fit: contain; flex-shrink: 0; border-radius: 4px; opacity: 0; transform: translate(-4px, -4px) scale(0.9); transition: opacity 0.25s ease-out, transform 0.25s ease-out; }
+.item-img.img-loaded { opacity: 1; transform: translate(0, 0) scale(1); }
 .item-img-fallback {
   width: 32px; height: 32px; flex-shrink: 0; border-radius: 4px;
   background: rgba(255,255,255,.06); border: 1px solid var(--border);

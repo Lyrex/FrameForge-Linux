@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useContext } from "react";
+import { useState, useEffect, useMemo, useContext, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
 import "./Syndicates.css";
@@ -106,6 +106,12 @@ function SynItemImg({ imageName, category }: { imageName?: string; category: str
   const baseUrl = useContext(ImgCacheDirContext);
   const [localFailed, setLocalFailed] = useState(false);
   const [failed, setFailed] = useState(false);
+  const ref = useRef<HTMLImageElement>(null);
+
+  useEffect(() => {
+    if (ref.current?.complete) ref.current.classList.add("img-loaded");
+  });
+
   if (!imageName || failed) {
     return (
       <div className="syn-item-img-fallback">
@@ -117,11 +123,13 @@ function SynItemImg({ imageName, category }: { imageName?: string; category: str
   const src = useLocal ? `${baseUrl}/${imageName}` : `https://cdn.warframestat.us/img/${imageName}`;
   return (
     <img
+      ref={ref}
       className="syn-item-img"
       src={src}
       alt=""
       loading="lazy"
       onError={() => useLocal ? setLocalFailed(true) : setFailed(true)}
+      onLoad={() => ref.current?.classList.add("img-loaded")}
     />
   );
 }

@@ -1,4 +1,4 @@
-import { useContext, useState } from "react";
+import { useContext, useState, useRef, useEffect } from "react";
 import { ImgCacheDirContext } from "./ImgCacheDir";
 
 function BlueprintIcon() {
@@ -20,18 +20,24 @@ export default function ItemImg({ imageName, category, size = 32 }: { imageName?
   const baseUrl = useContext(ImgCacheDirContext);
   const [localFailed, setLocalFailed] = useState(false);
   const [failed, setFailed] = useState(false);
+  const ref = useRef<HTMLImageElement>(null);
   const style = { width: size, height: size, flexShrink: 0 as const };
+
+  useEffect(() => {
+    if (ref.current?.complete) ref.current.classList.add("img-loaded");
+  });
+
   if (!imageName || failed) {
     if (category === "Blueprints") return <BlueprintIcon />;
     return <span className="item-img-fallback" style={{ ...style, fontSize: size * 0.35 }}>{category[0].toUpperCase()}</span>;
   }
   if (imageName.startsWith("http") || imageName.startsWith("/")) {
-    return <img className="item-img" style={style} src={imageName} alt="" loading="lazy" onError={() => setFailed(true)} />;
+    return <img ref={ref} className="item-img" style={style} src={imageName} alt="" loading="lazy" onError={() => setFailed(true)} onLoad={() => ref.current?.classList.add("img-loaded")} />;
   }
   const useLocal = Boolean(baseUrl) && !localFailed;
   const src = useLocal ? `${baseUrl}/${imageName}` : `https://cdn.warframestat.us/img/${imageName}`;
   return (
-    <img className="item-img" style={style} src={src} alt="" loading="lazy"
-      onError={() => useLocal ? setLocalFailed(true) : setFailed(true)} />
+    <img ref={ref} className="item-img" style={style} src={src} alt="" loading="lazy"
+      onError={() => useLocal ? setLocalFailed(true) : setFailed(true)} onLoad={() => ref.current?.classList.add("img-loaded")} />
   );
 }
