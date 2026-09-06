@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useMemo, useCallback, useRef, memo, Component, ReactNode } from "react";
+﻿import { useState, useEffect, useMemo, useCallback, useRef, Component, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
@@ -82,10 +82,12 @@ import Weapons from "./Weapons";
 import Overlay from "./Overlay";
 import ModularWindow from "./ModularWindow";
 import ChangeLog, { type ChangeLogEntry } from "./ChangeLog";
-import ItemImg from "./ItemImg";
+import InventoryGrid from "./InventoryGrid";
+import { type ViewMode, ViewToggle } from "./ViewToggle";
 import SearchBar from "./SearchBar";
 import { HelpTip } from "./HelpTip";
 import "./App.css";
+import "./InventoryGrid.css";
 
 const _winLabel = getCurrentWindow().label;
 // Support all URL formats: query string (?overlay), hash (#overlay), or window label.
@@ -202,14 +204,11 @@ const CATEGORIES = [
   { id: "Railjack",   label: "Railjack" },
 ];
 
-function fmt(n: number) { return n.toLocaleString(); }
 function fmtBytes(n: number) {
   if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   if (n >= 1024)        return `${Math.round(n / 1024)} KB`;
   return `${n} B`;
 }
-function deltaClass(d: number) { return d > 0 ? "delta-pos" : "delta-neg"; }
-function deltaText(d: number) { return d > 0 ? `+${fmt(d)}` : fmt(d); }
 function timeStr(ts: number, format: "auto" | "12h" | "24h" = "auto", locale = "en-US") {
   const opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" };
   if (format === "12h") opts.hour12 = true;
@@ -382,252 +381,6 @@ function ModularWindowPage() {
   );
 }
 
-
-// ─── View mode ───────────────────────────────────────────────────────────────
-
-export type ViewMode = "cards" | "icons" | "text-cards" | "list" | "list-compact";
-
-const VIEW_LABELS: Record<ViewMode, string> = {
-  "cards":        "Cards (icon + text)",
-  "icons":        "Icon grid",
-  "text-cards":   "Text cards (no icons)",
-  "list":         "List with icon",
-  "list-compact": "Compact list (text only)",
-};
-
-function ViewIcon({ mode }: { mode: ViewMode }) {
-  switch (mode) {
-    case "cards": return (
-      <svg width="16" height="13" viewBox="0 0 16 13" fill="currentColor">
-        <rect x="0" y="0" width="3" height="3" rx="0.5"/><rect x="4" y="0.5" width="3.5" height="1.5" rx="0.4"/>
-        <rect x="9" y="0" width="3" height="3" rx="0.5"/><rect x="13" y="0.5" width="3" height="1.5" rx="0.4"/>
-        <rect x="0" y="5" width="3" height="3" rx="0.5"/><rect x="4" y="5.5" width="3.5" height="1.5" rx="0.4"/>
-        <rect x="9" y="5" width="3" height="3" rx="0.5"/><rect x="13" y="5.5" width="3" height="1.5" rx="0.4"/>
-        <rect x="0" y="10" width="3" height="3" rx="0.5"/><rect x="4" y="10.5" width="3.5" height="1.5" rx="0.4"/>
-        <rect x="9" y="10" width="3" height="3" rx="0.5"/><rect x="13" y="10.5" width="3" height="1.5" rx="0.4"/>
-      </svg>
-    );
-    case "icons": return (
-      <svg width="16" height="13" viewBox="0 0 16 13" fill="currentColor">
-        <rect x="0" y="0" width="4" height="4" rx="0.5"/><rect x="6" y="0" width="4" height="4" rx="0.5"/><rect x="12" y="0" width="4" height="4" rx="0.5"/>
-        <rect x="0" y="5" width="4" height="4" rx="0.5"/><rect x="6" y="5" width="4" height="4" rx="0.5"/><rect x="12" y="5" width="4" height="4" rx="0.5"/>
-        <rect x="0" y="10" width="4" height="4" rx="0.5"/><rect x="6" y="10" width="4" height="4" rx="0.5"/><rect x="12" y="10" width="4" height="4" rx="0.5"/>
-      </svg>
-    );
-    case "text-cards": return (
-      <svg width="16" height="13" viewBox="0 0 16 13" fill="currentColor">
-        <rect x="0" y="0" width="7" height="1.5" rx="0.4"/><rect x="0" y="2.5" width="5" height="1" rx="0.4"/>
-        <rect x="9" y="0" width="7" height="1.5" rx="0.4"/><rect x="9" y="2.5" width="5" height="1" rx="0.4"/>
-        <rect x="0" y="5" width="7" height="1.5" rx="0.4"/><rect x="0" y="7.5" width="5" height="1" rx="0.4"/>
-        <rect x="9" y="5" width="7" height="1.5" rx="0.4"/><rect x="9" y="7.5" width="5" height="1" rx="0.4"/>
-        <rect x="0" y="10" width="7" height="1.5" rx="0.4"/><rect x="0" y="12" width="5" height="1" rx="0.4"/>
-        <rect x="9" y="10" width="7" height="1.5" rx="0.4"/><rect x="9" y="12" width="5" height="1" rx="0.4"/>
-      </svg>
-    );
-    case "list": return (
-      <svg width="16" height="13" viewBox="0 0 16 13" fill="currentColor">
-        <rect x="0" y="0" width="2.5" height="2.5" rx="0.4"/><rect x="4" y="0.5" width="12" height="1.5" rx="0.4"/>
-        <rect x="0" y="3.5" width="2.5" height="2.5" rx="0.4"/><rect x="4" y="4" width="12" height="1.5" rx="0.4"/>
-        <rect x="0" y="7" width="2.5" height="2.5" rx="0.4"/><rect x="4" y="7.5" width="12" height="1.5" rx="0.4"/>
-        <rect x="0" y="10.5" width="2.5" height="2.5" rx="0.4"/><rect x="4" y="11" width="12" height="1.5" rx="0.4"/>
-      </svg>
-    );
-    case "list-compact": return (
-      <svg width="16" height="13" viewBox="0 0 16 13" fill="currentColor">
-        <rect x="0" y="0" width="16" height="1.5" rx="0.4"/>
-        <rect x="0" y="2.5" width="11" height="1.5" rx="0.4"/>
-        <rect x="0" y="5" width="16" height="1.5" rx="0.4"/>
-        <rect x="0" y="7.5" width="13" height="1.5" rx="0.4"/>
-        <rect x="0" y="10" width="16" height="1.5" rx="0.4"/>
-        <rect x="0" y="12" width="10" height="1" rx="0.4"/>
-      </svg>
-    );
-  }
-}
-
-export function ViewToggle({ view, onChange }: { view: ViewMode; onChange: (v: ViewMode) => void }) {
-  const modes: ViewMode[] = ["cards", "icons", "text-cards", "list", "list-compact"];
-  return (
-    <div className="view-toggle">
-      {modes.map(m => (
-        <button key={m} className={`view-btn${view === m ? " view-btn-active" : ""}`}
-          title={VIEW_LABELS[m]} onClick={() => onChange(m)}>
-          <ViewIcon mode={m} />
-        </button>
-      ))}
-    </div>
-  );
-}
-
-// ─── Memoized inventory card components ──────────────────────────────────────
-
-interface InvModCardProps {
-  unique_name: string;
-  name: string;
-  category: string;
-  image_name?: string | null;
-  ranks: { rank: number; count: number }[];
-  total: number;
-  view: ViewMode;
-}
-const InvModCard = memo(function InvModCard({ unique_name, name, category, image_name, ranks, total, view }: InvModCardProps) {
-  if (view === "icons") {
-    return (
-      <div key={unique_name} className="inv-card inv-card-icon-only" title={`${name} ×${fmt(total)}`}>
-        <ItemImg imageName={image_name ?? undefined} category={category} size={52} />
-      </div>
-    );
-  }
-  if (view === "list" || view === "list-compact") {
-    return (
-      <div key={unique_name} className="inv-card inv-card-row">
-        {view === "list" && <div className="inv-row-icon"><ItemImg imageName={image_name ?? undefined} category={category} size={20} /></div>}
-        <div className="inv-row-name">{name}</div>
-        <div className="inv-row-cat">{category}</div>
-        <div className="inv-row-qty">{fmt(total)}</div>
-      </div>
-    );
-  }
-  return (
-    <div key={unique_name} className="inv-card inv-card-mod">
-      {view !== "text-cards" && (
-        <div className="inv-card-img-wrap">
-          <ItemImg imageName={image_name ?? undefined} category={category} size={40} />
-        </div>
-      )}
-      <div className="inv-card-name">{name}</div>
-      <div className="inv-card-cat">{category}</div>
-      <div className="mod-rank-table">
-        {ranks.map(r => (
-          <div key={r.rank} className={`mod-rank-row${r.count === 0 ? " mod-rank-zero" : ""}`}>
-            <span className="mod-rank-label">R{r.rank}</span>
-            <span className="mod-rank-count">{r.count}</span>
-          </div>
-        ))}
-      </div>
-      <div className="inv-card-qty mod-total">{fmt(total)}</div>
-    </div>
-  );
-}, (prev, next) =>
-  prev.view === next.view &&
-  prev.unique_name === next.unique_name &&
-  prev.name === next.name &&
-  prev.total === next.total &&
-  prev.image_name === next.image_name &&
-  prev.ranks.length === next.ranks.length &&
-  prev.ranks.every((r, i) => r.rank === next.ranks[i].rank && r.count === next.ranks[i].count)
-);
-
-interface InvCardProps {
-  unique_name: string;
-  name: string;
-  category: string;
-  image_name?: string | null;
-  qty: number;
-  isFavorite: boolean;
-  changedAt: number | undefined;
-  recentDelta: number | null;
-  craftJobName: string | null;
-  masteryRank: number | undefined;
-  onToggleFavorite: (id: string) => void;
-  view: ViewMode;
-}
-const InvCard = memo(function InvCard({
-  unique_name, name, category, image_name, qty,
-  isFavorite, changedAt, recentDelta, craftJobName, masteryRank, onToggleFavorite, view,
-}: InvCardProps) {
-  const nowSec = Date.now() / 1000;
-  const secAgo = changedAt != null ? nowSec - changedAt : null;
-  const isRecent = secAgo !== null && secAgo < 300;
-  const isZero = qty === 0 && !craftJobName;
-  const isMastered = masteryRank != null && masteryRank >= 30;
-  const showRank = masteryRank != null && masteryRank > 0;
-  const recentLabel = secAgo !== null ? (Math.floor(secAgo / 60) === 0 ? "· now" : `· ${Math.floor(secAgo / 60)}m`) : null;
-  const baseClass = `inv-card${isZero ? " inv-card-zero" : ""}${isRecent ? (recentDelta != null && recentDelta > 0 ? " inv-card-gained" : " inv-card-lost") : ""}`;
-
-  if (view === "icons") {
-    return (
-      <div className={`${baseClass} inv-card-icon-only`} title={`${name} (${fmt(qty)})`}>
-        <ItemImg imageName={image_name ?? undefined} category={category} size={52} />
-      </div>
-    );
-  }
-  if (view === "list" || view === "list-compact") {
-    return (
-      <div className={`${baseClass} inv-card-row`}>
-        <button className={`inv-fav-star-row ${isFavorite ? "active" : ""}`}
-          title={isFavorite ? "Remove from Modular Window" : "Add to Modular Window"}
-          onClick={e => { e.stopPropagation(); onToggleFavorite(unique_name); }}>
-          {isFavorite ? "★" : "☆"}
-        </button>
-        {view === "list" && (
-          <div className="inv-row-icon">
-            <ItemImg imageName={image_name ?? undefined} category={category} size={20} />
-            {craftJobName && <span className="inv-foundry-icon-row" title={`Building — ${craftJobName}`}>⚒</span>}
-          </div>
-        )}
-        <div className="inv-row-name">
-          {name}
-          {isRecent && <span className="item-updated">{recentLabel}</span>}
-        </div>
-        <div className="inv-row-cat">{category}</div>
-        <div className="inv-row-qty">
-          {fmt(qty)}
-          {isRecent && recentDelta != null && <span className={`item-delta ${deltaClass(recentDelta)}`}>{deltaText(recentDelta)}</span>}
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div className={baseClass}>
-      <button
-        className={`inv-fav-star ${isFavorite ? "active" : ""}`}
-        title={isFavorite ? "Remove from Modular Window" : "Add to Modular Window"}
-        onClick={e => { e.stopPropagation(); onToggleFavorite(unique_name); }}
-      >{isFavorite ? "★" : "☆"}</button>
-      <div className="inv-mastery-row">
-        {isMastered
-          ? <span className="inv-mastery-star" title="Mastered">★</span>
-          : showRank
-            ? <span className="inv-mastery-rank" title={`Rank ${masteryRank}`}>R{masteryRank}</span>
-            : null}
-      </div>
-      {view !== "text-cards" && (
-        <div className="inv-card-img-wrap">
-          <ItemImg imageName={image_name ?? undefined} category={category} size={48} />
-          {craftJobName && <span className="inv-foundry-icon" title={`Building — ${craftJobName}`}>⚒</span>}
-        </div>
-      )}
-      <div className="inv-card-name">
-        {name}
-        {isRecent && <span className="item-updated">{recentLabel}</span>}
-      </div>
-      <div className="inv-card-cat">{category}</div>
-      <div className={`inv-card-qty ${isZero ? "inv-card-qty-zero" : ""}`}>
-        {fmt(qty)}
-        {isRecent && recentDelta != null && (
-          <span className={`item-delta ${deltaClass(recentDelta)}`}>{deltaText(recentDelta)}</span>
-        )}
-      </div>
-    </div>
-  );
-}, (prev, next) => {
-  if (prev.view !== next.view) return false;
-  if (
-    prev.unique_name !== next.unique_name ||
-    prev.qty !== next.qty ||
-    prev.isFavorite !== next.isFavorite ||
-    prev.image_name !== next.image_name ||
-    prev.masteryRank !== next.masteryRank ||
-    prev.craftJobName !== next.craftJobName ||
-    prev.recentDelta !== next.recentDelta ||
-    prev.changedAt !== next.changedAt
-  ) return false;
-  // Recently-changed items must re-render so elapsed time stays fresh
-  const nowSec = Date.now() / 1000;
-  if (prev.changedAt != null && nowSec - prev.changedAt < 300) return false;
-  return true;
-});
 
 // Feature 3 — api.warframe.com/api/inventory.php
 // DE confirmed third-party tools are used "at your own risk" but could not clarify
@@ -3209,62 +2962,27 @@ if (typeof s.autoDiagEnabled === "boolean") {
                 ]} />
               </div>
 
-              <div className={`item-grid item-grid-${inventoryView}`}
-                   onContextMenu={e => {
-                     const name = extractItemName(e);
-                     if (name) { e.preventDefault(); openCtx(e.clientX, e.clientY, [
-                       { label: "Open Wiki", action: () => openWiki(name) },
-                       { label: "Copy Wiki Link", action: () => copyWikiLink(name) },
-                     ]); }
-                   }}>
-                {visibleItems.length === 0 ? (
-                  <div className="empty-msg" style={{gridColumn:"1/-1"}}>
-                    {monitoring
-                      ? "No items found. Complete a mission or visit a relay to sync inventory."
-                      : "Start the monitor to begin tracking your inventory."}
-                  </div>
-                ) : (
-                  visibleItems.flatMap(item => {
-                    // Mods & Arcanes: single card with inline rank breakdown
-                    if ((item.category === "Mods" || item.category === "Arcanes") && modCopiesMap[item.unique_name]) {
-                      const copies = modCopiesMap[item.unique_name];
-                      const byRank: Record<number, number> = {};
-                      for (const c of copies) byRank[c.rank ?? 0] = (byRank[c.rank ?? 0] ?? 0) + c.count;
-                      const maxRank = Math.max(...Object.keys(byRank).map(Number));
-                      const ranks = Array.from({ length: maxRank + 1 }, (_, r) => ({ rank: r, count: byRank[r] ?? 0 })).filter(r => r.count > 0);
-                      if (filterRank !== null) {
-                        const targetRank = filterRank === "unranked" ? 0 : filterRank as number;
-                        if ((byRank[targetRank] ?? 0) === 0) return [];
-                      }
-                      const total = Object.values(byRank).reduce((a, b) => a + b, 0);
-                      return [(
-                        <InvModCard key={item.unique_name}
-                          unique_name={item.unique_name} name={item.name}
-                          category={item.category} image_name={item.image_name}
-                          ranks={ranks} total={total} view={inventoryView} />
-                      )];
-                    }
-
-                    // Normal item card
-                    const changedAt = lastChanged[item.unique_name];
-                    const recentChange = changedAt != null ? changeLogMap.get(item.unique_name) : undefined;
-                    const craftJob = craftingMap.get(item.unique_name);
-                    return [(
-                      <InvCard key={item.unique_name}
-                        unique_name={item.unique_name} name={item.name}
-                        category={item.category} image_name={item.image_name}
-                        qty={item.qty}
-                        isFavorite={favoritesSet.has(item.unique_name)}
-                        changedAt={changedAt}
-                        recentDelta={recentChange?.delta ?? null}
-                        craftJobName={craftJob?.item_name ?? null}
-                        masteryRank={inventory[item.unique_name]?.mastery_rank}
-                        onToggleFavorite={toggleFavorite}
-                        view={inventoryView} />
-                    )];
-                  })
-                )}
-              </div>
+              <InventoryGrid
+                items={visibleItems}
+                loading={false}
+                monitoring={monitoring}
+                view={inventoryView}
+                inventory={inventory}
+                modCopies={modCopiesMap}
+                favorites={favoritesSet}
+                lastChanged={lastChanged}
+                changes={changeLogMap}
+                crafting={craftingMap}
+                filterRank={filterRank}
+                onToggleFavorite={toggleFavorite}
+                onContextMenu={e => {
+                  const name = extractItemName(e);
+                  if (name) { e.preventDefault(); openCtx(e.clientX, e.clientY, [
+                    { label: "Open Wiki", action: () => openWiki(name) },
+                    { label: "Copy Wiki Link", action: () => copyWikiLink(name) },
+                  ]); }
+                }}
+              />
 
             </div>
           </>

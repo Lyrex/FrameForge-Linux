@@ -2,8 +2,9 @@ import { useState, useEffect, useMemo, useCallback, memo, startTransition, useRe
 import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
 import { HelpTip } from "./HelpTip";
-import type { InventoryItem, ViewMode } from "./App";
-import { ViewToggle } from "./App";
+import type { InventoryItem } from "./App";
+import type { ViewMode } from "./ViewToggle";
+import { ViewToggle } from "./ViewToggle";
 import sentientIcon from "./assets/SentientFactionIcon.webp";
 import formaIcon from "./assets/forma-icon.png";
 
