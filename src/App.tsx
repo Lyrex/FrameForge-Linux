@@ -1,9 +1,10 @@
-﻿import { useState, useEffect, useMemo, useCallback, useRef, memo, useContext, Component, ReactNode } from "react";
+﻿import { useState, useEffect, useMemo, useCallback, useRef, memo, Component, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { applyScale, overlayScale } from "./uiScale";
+import { useContextMenu, CtxMenu, extractItemName, openWiki, copyWikiLink } from "./CtxMenu";
 
 // ── Riven overlay — module-level window management ────────────────────────────
 // Stored OUTSIDE React so StrictMode remounts don't destroy/recreate the window.
@@ -80,6 +81,9 @@ import Syndicates from "./Syndicates";
 import Weapons from "./Weapons";
 import Overlay from "./Overlay";
 import ModularWindow from "./ModularWindow";
+import ChangeLog, { type ChangeLogEntry } from "./ChangeLog";
+import ItemImg from "./ItemImg";
+import SearchBar from "./SearchBar";
 import { HelpTip } from "./HelpTip";
 import "./App.css";
 
@@ -139,16 +143,6 @@ export interface InventoryItem {
   mastery_req: number | null;
 }
 
-interface QuantityChange {
-  id: number;
-  unique_name: string;
-  item_name: string;
-  old_qty: number;
-  new_qty: number;
-  delta: number;
-  timestamp: number;
-}
-
 interface CraftingJob {
   unique_name: string;
   item_name: string;
@@ -171,7 +165,7 @@ interface InventoryUpdate {
   crafting: CraftingJob[];
   mastery_rank?: number;
   mastery_data?: Record<string, number>;
-  changes: QuantityChange[];
+  changes: ChangeLogEntry[];
   warframe_running: boolean;
   scanned_at: number;
   consumed_suits?: string[];
@@ -207,42 +201,6 @@ const CATEGORIES = [
   { id: "Skins",      label: "Skins" },
   { id: "Railjack",   label: "Railjack" },
 ];
-
-function BlueprintIcon() {
-  return (
-    <svg className="item-img-fallback" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect x="5" y="2" width="17" height="22" rx="1.5" fill="#0d1f33" stroke="#388bfd" strokeWidth="1.2"/>
-      <path d="M18 2 L22 6 L18 6 Z" fill="#388bfd" opacity="0.5"/>
-      <line x1="8" y1="11" x2="19" y2="11" stroke="#388bfd" strokeWidth="1" opacity="0.9"/>
-      <line x1="8" y1="14" x2="19" y2="14" stroke="#388bfd" strokeWidth="1" opacity="0.9"/>
-      <line x1="8" y1="17" x2="14" y2="17" stroke="#388bfd" strokeWidth="1" opacity="0.9"/>
-      <circle cx="23" cy="23" r="6" fill="#0d1117" stroke="#388bfd" strokeWidth="1.2"/>
-      <line x1="23" y1="20" x2="23" y2="26" stroke="#388bfd" strokeWidth="1.2"/>
-      <line x1="20" y1="23" x2="26" y2="23" stroke="#388bfd" strokeWidth="1.2"/>
-    </svg>
-  );
-}
-
-function ItemImg({ imageName, category, size = 32 }: { imageName?: string; category: string; size?: number }) {
-  const baseUrl = useContext(ImgCacheDirContext);
-  const [localFailed, setLocalFailed] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const style = { width: size, height: size, flexShrink: 0 as const };
-  if (!imageName || failed) {
-    if (category === "Blueprints") return <BlueprintIcon />;
-    return <span className="item-img-fallback" style={{ ...style, fontSize: size * 0.35 }}>{category[0].toUpperCase()}</span>;
-  }
-  if (imageName.startsWith("http") || imageName.startsWith("/")) {
-    return <img className="item-img" style={style} src={imageName} alt="" loading="lazy" onError={() => setFailed(true)} />;
-  }
-  const useLocal = Boolean(baseUrl) && !localFailed;
-  const src = useLocal ? `${baseUrl}/${imageName}` : `https://cdn.warframestat.us/img/${imageName}`;
-  return (
-    <img className="item-img" style={style} src={src} alt="" loading="lazy"
-      onError={() => useLocal ? setLocalFailed(true) : setFailed(true)} />
-  );
-}
-
 
 function fmt(n: number) { return n.toLocaleString(); }
 function fmtBytes(n: number) {
@@ -766,6 +724,7 @@ export default function App() {
   if (IS_MODULAR) return <ModularWindowPage />;
 
   const [activeModule, setActiveModule] = useState<Module>("inventory");
+  const { ctxMenu, open: openCtx, close: closeCtx } = useContextMenu();
 
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [quantities, setQuantities] = useState<Record<string, number>>({});
@@ -816,7 +775,11 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const catalogRef = useRef<CatalogItem[]>([]);
   const prevApiQtyRef = useRef<Record<string, number>>({});
   const manualCredsRef = useRef<{ accountId: string; nonce: string } | null>(null);
-  const [changeLog, setChangeLog] = useState<QuantityChange[]>([]);
+  const [changeLog, setChangeLog] = useState<ChangeLogEntry[]>([]);
+  const [changeLogArrivalToken, setChangeLogArrivalToken] = useState(0);
+  const [lastInventoryScanAt, setLastInventoryScanAt] = useState<number | null>(null);
+  const [changeLogExpanded, setChangeLogExpanded] = useState(false);
+  const [changeLogHeight, setChangeLogHeight] = useState(270);
   const [category, setCategory] = useState("all");
   const [search, setSearch] = useState("");
   const [filterOwned,    setFilterOwned]    = useState(false);
@@ -825,6 +788,8 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [filterVaulted,  setFilterVaulted]  = useState(false);
   const [filterUnvaulted,setFilterUnvaulted]= useState(false);
   const [sortMode, setSortMode] = useState<"qty-desc" | "qty-asc" | "name-asc" | "name-desc" | "recent">("qty-desc");
+  const prevSortRef = useRef(sortMode);
+  useEffect(() => { if (sortMode !== "recent") prevSortRef.current = sortMode; }, [sortMode]);
   const [filterRank, setFilterRank] = useState<number | "unranked" | null>(null);
   const [inventoryView, setInventoryView] = useState<ViewMode>(() =>
     (localStorage.getItem("ff-view-inventory") as ViewMode | null) ?? "cards"
@@ -843,7 +808,6 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [statsTab, setStatsTab] = useState<"trade" | "item">("trade");
   const [reportsDateRange, setReportsDateRange] = useState<number | "all">(30);
   const [lastChanged, setLastChanged] = useState<Record<string, number>>({});
-  const [logPanelH, setLogPanelH] = useState(180);
   const [monitoring, setMonitoring] = useState(false);
   const [warframeRunning, setWarframeRunning] = useState(false);
   const [itemCount, setItemCount] = useState(0);
@@ -1110,7 +1074,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
     invoke<CatalogItem[]>("get_all_items").then(items => { setCatalog(items); catalogRef.current = items; });
     invoke<Record<string, number>>("get_current_quantities").then(setQuantities);
     invoke<number>("get_diag_folder_size").then(setDiagFolderSize).catch(() => {});
-    invoke<QuantityChange[]>("get_change_log", { limit: 200 }).then(log => {
+    invoke<ChangeLogEntry[]>("get_change_log", { limit: 200 }).then(log => {
       setChangeLog(log);
       const lc: Record<string, number> = {};
       for (const c of log) lc[c.unique_name] = Math.max(lc[c.unique_name] ?? 0, c.timestamp);
@@ -1149,6 +1113,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
   useEffect(() => {
     const unlisten = listen<InventoryUpdate>("inventory-update", (e) => {
       const p = e.payload;
+      setLastInventoryScanAt(p.scanned_at);
       // Only replace quantities if the content actually changed.
       // The monitor loop re-emits cached state periodically; without this guard
       // every emit triggers a full 17k-item useMemo rebuild cascade.
@@ -1229,6 +1194,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
       }
       if (p.changes.length > 0) {
         setChangeLog(prev => [...p.changes, ...prev].slice(0, 200));
+        setChangeLogArrivalToken(token => token + 1);
         setLastChanged(prev => {
           const next = { ...prev };
           for (const c of p.changes) next[c.unique_name] = c.timestamp;
@@ -1514,11 +1480,11 @@ if (typeof s.autoDiagEnabled === "boolean") {
     const now = Math.floor(Date.now() / 1000);
     setLastApiRefresh(now);
 
-    // Diff against previous API quantities to generate change log entries
+    // Diff against previous API quantities to generate changelog entries
     const prev = prevApiQtyRef.current;
     if (Object.keys(prev).length > 0) {
       const allKeys = new Set([...Object.keys(prev), ...Object.keys(apiQty)]);
-      const changes: QuantityChange[] = [];
+      const changes: ChangeLogEntry[] = [];
       for (const key of allKeys) {
         const oldQty = prev[key] ?? 0;
         const newQty = apiQty[key] ?? 0;
@@ -1530,6 +1496,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
       }
       if (changes.length > 0) {
         setChangeLog(prev => [...changes, ...prev].slice(0, 200));
+        setChangeLogArrivalToken(token => token + 1);
         setLastChanged(prev => {
           const next = { ...prev };
           for (const c of changes) next[c.unique_name] = c.timestamp;
@@ -2039,7 +2006,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
   const favoritesSet = useMemo(() => new Set(favorites), [favorites]);
 
   const changeLogMap = useMemo(() => {
-    const m = new Map<string, QuantityChange>();
+    const m = new Map<string, ChangeLogEntry>();
     for (const c of changeLog) {
       if (!m.has(c.unique_name)) m.set(c.unique_name, c);
     }
@@ -2094,6 +2061,37 @@ if (typeof s.autoDiagEnabled === "boolean") {
     });
     return out.slice(0, 1000);
   }, [catalog, inventory, category, search, filterOwned, filterRecent, filterPrime, filterVaulted, filterUnvaulted, filterRank, sortMode, lastChanged, modCopiesMap]); // eslint-disable-line
+
+  const resetInventoryFilters = ({
+    recent,
+    searchTerm = "",
+    categoryId = "all",
+  }: {
+    recent: boolean;
+    searchTerm?: string;
+    categoryId?: string;
+  }) => {
+    setActiveModule("inventory");
+    setCategory(categoryId);
+    setSearch(searchTerm);
+    setFilterOwned(false);
+    setFilterRecent(recent);
+    setFilterPrime(false);
+    setFilterVaulted(false);
+    setFilterUnvaulted(false);
+    setFilterRank(null);
+  };
+
+  // Navigate to an item from the changelog — only switches module and sets search,
+  // leaving any existing inventory filters in place (chip filters the user set should survive).
+  const openChangeLogItem = (uniqueName: string) => {
+    const item = catalog.find(candidate => candidate.unique_name === uniqueName);
+    setActiveModule("inventory");
+    setSearch(item?.name ?? "");
+  };
+
+  const openRecentChanges = () => resetInventoryFilters({ recent: true });
+  const openRecentCategory = (categoryId: string) => resetInventoryFilters({ recent: true, categoryId });
 
   // ─── Render ─────────────────────────────────────────────────────────────────
 
@@ -2713,7 +2711,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                     <div className="settings-row">
                       <div className="settings-row-info">
                         <span className="settings-row-label">Clear Cache</span>
-                        <span className="settings-row-desc">Reset all scanned quantities and change log.</span>
+                        <span className="settings-row-desc">Reset all scanned quantities and changelog.</span>
                       </div>
                       <button
                         className="btn-danger"
@@ -3132,6 +3130,8 @@ if (typeof s.autoDiagEnabled === "boolean") {
           </button>
         </nav>
 
+        <div className="app-content">
+        <div className="module-content">
         {/* ── Inventory module ── */}
         {activeModule === "inventory" && (
           <>
@@ -3172,16 +3172,15 @@ if (typeof s.autoDiagEnabled === "boolean") {
               )}
 
               <div className="toolbar">
-                <input
-                  className="search-box"
+                <SearchBar
                   placeholder="Search items…"
                   value={search}
-                  onChange={e => setSearch(e.target.value)}
+                  onChange={setSearch}
                 />
               </div>
               <div className="filter-bar">
                 <button className={`fchip ${filterOwned?"fchip-on":""}`} onClick={()=>setFilterOwned(v=>!v)}>Owned</button>
-                <button className={`fchip ${filterRecent?"fchip-on":""}`} onClick={()=>setFilterRecent(v=>!v)}>Changed recently</button>
+                <button className={`fchip ${filterRecent?"fchip-on":""}`} onClick={()=>setFilterRecent(v=>{ const next = !v; if (next) { setSortMode("recent"); } else { setSortMode(prevSortRef.current); } return next; })}>Changed recently</button>
                 <button className={`fchip ${filterPrime?"fchip-on":""}`} onClick={()=>setFilterPrime(v=>!v)}>Prime</button>
                 <button className={`fchip ${filterVaulted?"fchip-on":""}`} onClick={()=>setFilterVaulted(v=>!v)}>🔒 Vaulted</button>
                 <button className={`fchip ${filterUnvaulted?"fchip-on":""}`} onClick={()=>setFilterUnvaulted(v=>!v)}>🔓 Unvaulted</button>
@@ -3210,7 +3209,14 @@ if (typeof s.autoDiagEnabled === "boolean") {
                 ]} />
               </div>
 
-              <div className={`item-grid item-grid-${inventoryView}`}>
+              <div className={`item-grid item-grid-${inventoryView}`}
+                   onContextMenu={e => {
+                     const name = extractItemName(e);
+                     if (name) { e.preventDefault(); openCtx(e.clientX, e.clientY, [
+                       { label: "Open Wiki", action: () => openWiki(name) },
+                       { label: "Copy Wiki Link", action: () => copyWikiLink(name) },
+                     ]); }
+                   }}>
                 {visibleItems.length === 0 ? (
                   <div className="empty-msg" style={{gridColumn:"1/-1"}}>
                     {monitoring
@@ -3260,49 +3266,11 @@ if (typeof s.autoDiagEnabled === "boolean") {
                 )}
               </div>
 
-              <div className="log-panel" style={{ height: logPanelH }}>
-                <div
-                  className="log-resize-handle"
-                  onMouseDown={e => {
-                    const startY = e.clientY;
-                    const startH = logPanelH;
-                    const onMove = (me: MouseEvent) => {
-                      const delta = startY - me.clientY;
-                      setLogPanelH(Math.max(80, Math.min(600, startH + delta)));
-                    };
-                    const onUp = () => {
-                      window.removeEventListener("mousemove", onMove);
-                      window.removeEventListener("mouseup", onUp);
-                    };
-                    window.addEventListener("mousemove", onMove);
-                    window.addEventListener("mouseup", onUp);
-                  }}
-                />
-                <div className="log-header">Change log</div>
-                <div className="log-list">
-                  {changeLog.length === 0 ? (
-                    <span className="log-empty">No changes recorded yet.</span>
-                  ) : (
-                    changeLog.map((c, i) => {
-                      const logItem = catalogRef.current.find(ci => ci.unique_name === c.unique_name);
-                      return (
-                        <div key={c.id || i} className="log-row">
-                          <span className="log-name">
-                            {logItem?.name ?? c.item_name}
-                            {logItem && <span className="log-cat">{logItem.category}</span>}
-                          </span>
-                          <span className={`log-delta ${deltaClass(c.delta)}`}>{deltaText(c.delta)}</span>
-                          <span className="log-range">{fmt(c.old_qty)} → {fmt(c.new_qty)}</span>
-                          <span className="log-time">{timeStr(c.timestamp, clockFormat, systemLocale)}</span>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
             </div>
           </>
         )}
+
+        {ctxMenu && <CtxMenu state={ctxMenu} onClose={closeCtx} />}
 
         {/* ── Foundry module ── */}
         {activeModule === "foundry" && (
@@ -3398,6 +3366,24 @@ if (typeof s.autoDiagEnabled === "boolean") {
           </ErrorBoundary>
         )}
 
+        </div>
+
+        <ChangeLog
+          changes={changeLog}
+          arrivalToken={changeLogArrivalToken}
+          lastScanAt={lastInventoryScanAt}
+          catalog={catalog}
+          clockFormat={clockFormat}
+          systemLocale={systemLocale}
+          expanded={changeLogExpanded}
+          height={changeLogHeight}
+          onExpandedChange={setChangeLogExpanded}
+          onHeightChange={setChangeLogHeight}
+          onItemClick={openChangeLogItem}
+          onChangeLogClick={openRecentChanges}
+          onCategoryClick={openRecentCategory}
+        />
+        </div>
 
         {/* ── Modular Window — always visible unless popped out ── */}
         {!modularPopout && <ModularWindow
