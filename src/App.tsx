@@ -831,7 +831,13 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
     invoke<string>("get_system_locale").then(loc => { if (loc) setSystemLocale(loc); }).catch(() => {});
     invoke<CatalogItem[]>("get_all_items").then(items => { setCatalog(items); catalogRef.current = items; });
-    invoke<Record<string, number>>("get_current_quantities").then(setQuantities);
+    invoke<Record<string, number>>("get_current_quantities")
+      .then(setQuantities)
+      .catch(() => {})
+      .finally(() => {
+        inventoryReadyRef.current = true;
+        setInventoryReady(true);
+      });
     invoke<number>("get_diag_folder_size").then(setDiagFolderSize).catch(() => {});
     invoke<ChangeLogEntry[]>("get_change_log", { limit: 200 }).then(log => {
       setChangeLog(log);
