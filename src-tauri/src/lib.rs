@@ -4562,15 +4562,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     // renamed items, etc.).  Map  secondary_path → primary_path.
     // The scanner searches for ALL paths, but stores results under the primary so the
     // inventory shows one entry with the canonical display name.
-    let path_aliases: HashMap<&str, &str> = [
-        // Sirius & Orion: two WFCD entries for one warframe.
-        // "Orion & Sirius" (OrionSuit) is the alternate; "Sirius & Orion" (SiriusSuit) is canonical.
-        ("/Lotus/Powersuits/SiriusOrion/OrionSuit",
-         "/Lotus/Powersuits/SiriusOrion/SiriusSuit"),
-        // Blueprint has the same duplication — Orion & Sirius Blueprint → Sirius & Orion Blueprint.
-        ("/Lotus/Powersuits/SiriusOrion/OrionSuitBlueprint",
-         "/Lotus/Types/Recipes/WarframeRecipes/SiriusOrionBlueprint"),
-    ].into_iter().collect();
+    let path_aliases = inventory_path_aliases();
 
     // Alias keys (secondary paths) are excluded from the inventory cache entirely —
     // they would show as phantom zero-quantity duplicates of the canonical entry.
@@ -4677,17 +4669,8 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
         // immediately on restart without waiting for the first full scan pass.
         let startup_cache = load_inventory_state_cache(&inventory_state_cache_path);
 
-        // Pre-populate known with cached resource quantities so that per-cycle hint
-        // emits never replace the frontend display with a partial inventory.
-        // is_stackable overrides is_unique_path: Kubrow Eggs, Kavat Genetic Codes,
-        // cosmetics, and Railjack weapons share path prefixes with actual unique items
-        // but have counts > 1 from MiscItems/FlavourItems — they must go into known.
-        for (path, item) in &startup_cache.items {
-            if item.amount > 0 && item.mod_ranks.is_none()
-                && (item.is_stackable || !is_unique_path(path))
-            {
-                known.entry(path.clone()).or_insert(item.amount as i64);
-            }
+        for (path, amount) in startup_cache.stackable_quantities() {
+            known.entry(path).or_insert(amount);
         }
         // Keep shared_quantities in sync so the cache-clear detector doesn't misfire.
         {
@@ -4695,16 +4678,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
             if q.is_empty() && !known.is_empty() { *q = known.clone(); }
         }
 
-        // Stability buffer for unique scanner items (weapons/warframes).
-        // Pre-seed confirmed items at count=4 so they show immediately on restart.
-        // Exclude is_stackable items — they are seeded into known above, not here.
-        let mut unique_stable: HashMap<String, u8> = startup_cache.items.iter()
-            .filter(|(k, v)| v.mod_ranks.is_none() && v.amount > 0 && !v.subsumed
-                          && !v.is_stackable && is_unique_path(k))
-            .map(|(k, _)| (k.clone(), 4u8))
-            .collect();
-        let mut confirmed_unique: std::collections::HashSet<String> =
-            unique_stable.keys().cloned().collect();
+        let mut unique_quantities = startup_cache.unique_quantities();
 
         // Mods: commit hint results directly on every partial pass.
         // The hint is the live inventory-root region and is always authoritative.
@@ -4740,7 +4714,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
             let game_found = memory_scanner_linux::find_warframe_pid().is_some();
             let now_pre = chrono::Utc::now().timestamp();
             let mut initial_qty = known.clone();
-            for k in unique_stable.keys() { initial_qty.entry(k.clone()).or_insert(1); }
+            for (k, &amount) in &unique_quantities { initial_qty.entry(k.clone()).or_insert(amount); }
             for (path, mc) in &known_mods { initial_qty.entry(path.clone()).or_insert(mc.total); }
             let _ = app.emit("inventory-update", InventoryUpdate {
                 quantities: initial_qty,
@@ -4799,15 +4773,12 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
         let mut last_not_running_emit: Option<std::time::Instant> = None;
 
         while flag.load(Ordering::SeqCst) {
-            // If shared_quantities was cleared externally (clear_cache command), wipe local
-            // state so the next blob logs everything as fresh.
             {
                 let sq = shared_quantities.lock().unwrap_or_else(|e| e.into_inner());
-                let local_has_data = !known.is_empty() || !unique_stable.is_empty() || !known_mods.is_empty();
+                let local_has_data = !known.is_empty() || !unique_quantities.is_empty() || !known_mods.is_empty();
                 if sq.is_empty() && local_has_data {
                     known.clear();
-                    unique_stable.clear();
-                    confirmed_unique.clear();
+                    unique_quantities.clear();
                     known_mods.clear();
                 }
             }
@@ -4827,62 +4798,27 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     &path_to_tradable, &path_to_masterable,
                     &relic_drops_snapshot, &existing_wfm, &alias_excluded,
                 );
-                if let Ok(json) = serde_json::to_string(&sc) {
-                    let _ = atomic_write(&inventory_state_cache_path, json.as_bytes());
+                if !persist_complete_inventory(&blob, &unique_quantities, &sc, &inventory_state_cache_path) {
+                    continue;
                 }
 
                 // Snapshot previous full inventory (known + uniques + mods) for change detection.
                 let prev_all: HashMap<String, i64> = {
                     let mut m = known.clone();
-                    for k in &confirmed_unique { m.entry(k.clone()).or_insert(1); }
+                    for (k, &amount) in &unique_quantities { m.entry(k.clone()).or_insert(amount); }
                     for (p, mc) in &known_mods { m.entry(p.clone()).or_insert(mc.total); }
                     m
                 };
 
-                // Completeness guard: parse_full_account_blob already rejects blobs missing
-                // required sections (MiscItems, RegularCredits, etc.) — see memory_scanner.rs.
-                // Keep this secondary guard for the unique-items case as a belt-and-suspenders
-                // defence against incomplete blobs that slipped through parsing.
-                let prev_unique_count = confirmed_unique.len();
-                if blob.unique_items.is_empty() && prev_unique_count > 0 {
-                    warn!("blob rejected at commit: 0 unique items vs {} previously — incomplete blob", prev_unique_count);
-                    continue;
-                }
-
-                // Blob is authoritative — full replacement, not a merge.
-                // Clear known so items that disappeared from the blob drop to 0.
-                known.clear();
-
-                // Currency
-                known.insert("/_currency/Credits".to_string(),      blob.credits);
-                known.insert("/_currency/Endo".to_string(),         blob.endo);
-                known.insert("/_currency/Platinum".to_string(),     blob.platinum - blob.free_platinum);
-                known.insert("/_currency/PlatinumGift".to_string(), blob.free_platinum);
-
-                // Stackable items
-                for entry in &blob.stackable_items {
-                    known.insert(entry.item_type.clone(), entry.item_count);
-                }
-
-                // Unique items — full replacement (blob is authoritative)
-                unique_stable.clear();
-                confirmed_unique.clear();
-                current_socketed_shards.clear();
-                current_forma_counts.clear();
-                for entry in &blob.unique_items {
-                    let canonical = path_aliases.get(entry.item_type.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| entry.item_type.clone());
-                    if blob.consumed_suits.contains(&canonical) { continue; }
-                    unique_stable.insert(canonical.clone(), 4);
-                    confirmed_unique.insert(canonical.clone());
-                    if !entry.archon_shards.is_empty() {
-                        current_socketed_shards.insert(canonical.clone(), entry.archon_shards.clone());
-                    }
-                    if entry.polarized > 0 {
-                        current_forma_counts.insert(canonical, entry.polarized);
-                    }
-                }
+                known = sc.stackable_quantities();
+                unique_quantities = sc.unique_quantities();
+                current_socketed_shards = sc.items.iter()
+                    .filter(|(_, item)| !item.archon_shards.is_empty())
+                    .map(|(path, item)| (path.clone(), item.archon_shards.clone()))
+                    .collect();
+                current_forma_counts = sc.items.iter()
+                    .filter_map(|(path, item)| item.forma_count.map(|count| (path.clone(), count)))
+                    .collect();
 
                 // Mods — full replacement
                 known_mods.clear();
@@ -4894,11 +4830,6 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     let mc = known_mods.entry(riven.item_type.clone()).or_default();
                     mc.total += riven.count as i64;
                     *mc.by_rank.entry(riven.mod_rank).or_insert(0) += riven.count as i64;
-                }
-
-                // Cosmetics (FlavourItems + WeaponSkins) — occurrence-counted, go into known
-                for (path, &count) in blob.flavour_items.iter().chain(blob.weapon_skins.iter()) {
-                    known.insert(path.clone(), count);
                 }
 
                 // Debug: write paths with no WFCD entry or Misc fallback to the Unmatched Paths folder.
@@ -5006,10 +4937,6 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     current_mastery_data.insert(path.clone(), rank);
                 }
                 current_consumed_suits = blob.consumed_suits.clone();
-                for suit in &current_consumed_suits {
-                    confirmed_unique.remove(suit);
-                    unique_stable.remove(suit);
-                }
                 current_recipes = blob.pending_recipes.iter().map(|r| memory_scanner::PendingRecipe {
                     unique_name:   r.item_type.clone(),
                     completion_ms: r.completion_ms,
@@ -5019,43 +4946,21 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 if let Ok(mut q)  = shared_quantities.lock() { *q = known.clone(); }
                 if let Ok(mut sm) = shared_mods.lock()       { *sm = known_mods.clone(); }
                 if let Ok(mut uq) = shared_unique.lock() {
-                    uq.clear();
-                    for name in &confirmed_unique { uq.insert(name.clone(), 1); }
+                    *uq = unique_quantities.clone();
                 }
 
                 // Emit inventory update
                 let mut emit_qty = known.clone();
-                for k in &confirmed_unique { emit_qty.entry(k.clone()).or_insert(1); }
+                for (k, &amount) in &unique_quantities { emit_qty.entry(k.clone()).or_insert(amount); }
                 for (p, mc) in &known_mods { emit_qty.entry(p.clone()).or_insert(mc.total); }
 
-                // Detect and record every quantity change (up, down, new, gone-to-0).
-                // Skip on the very first blob of the session (prev_all empty = no prior baseline).
-                let mut changes: Vec<QuantityChange> = vec![];
-                if !prev_all.is_empty() {
-                    let ts = chrono::Utc::now().timestamp();
-                    let all_keys: std::collections::HashSet<&String> =
-                        prev_all.keys().chain(emit_qty.keys()).collect();
-                    for key in all_keys {
-                        // Ignored paths are absent from the startup cache but present
-                        // in every blob, so without this each start logs them as new.
-                        if ignored_paths.contains(key.as_str()) { continue; }
-                        let old_qty = *prev_all.get(key).unwrap_or(&0);
-                        let new_qty = *emit_qty.get(key).unwrap_or(&0);
-                        if old_qty == new_qty { continue; }
-                        let item_name = path_to_name.get(key.as_str())
-                            .cloned()
-                            .unwrap_or_else(|| key.split('/').last().unwrap_or("?").to_string());
-                        let _ = db::add_quantity_change(&conn, key, &item_name, old_qty, new_qty);
-                        changes.push(QuantityChange {
-                            id: 0,
-                            unique_name: key.clone(),
-                            item_name,
-                            old_qty,
-                            new_qty,
-                            delta: new_qty - old_qty,
-                            timestamp: ts,
-                        });
-                    }
+                let changes = compare_inventory_quantities(
+                    &prev_all, &emit_qty, &path_to_name, &ignored_paths, now,
+                );
+                for change in &changes {
+                    let _ = db::add_quantity_change(
+                        &conn, &change.unique_name, &change.item_name, change.old_qty, change.new_qty,
+                    );
                 }
 
                 let crafting: Vec<CraftingJob> = blob.pending_recipes.iter().map(|r| {
@@ -5205,7 +5110,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     .map_or(true, |t: std::time::Instant| t.elapsed() >= std::time::Duration::from_secs(30));
                 if status_changed || heartbeat_due {
                     let mut emit_qty = known.clone();
-                    for k in &confirmed_unique { emit_qty.entry(k.clone()).or_insert(1); }
+                    for (k, &amount) in &unique_quantities { emit_qty.entry(k.clone()).or_insert(amount); }
                     for (p, mc) in &known_mods { emit_qty.entry(p.clone()).or_insert(mc.total); }
                     let crafting: Vec<CraftingJob> = current_recipes.iter().map(|r| {
                         let name = display_names.iter().zip(unique_names.iter())
@@ -8641,6 +8546,27 @@ struct InventoryStateCache {
 }
 
 impl InventoryStateCache {
+    fn unique_quantities(&self) -> HashMap<String, i64> {
+        self.items.iter()
+            .filter(|(path, item)| item.amount > 0 && item.mod_ranks.is_none()
+                && !item.subsumed && !item.is_stackable && !item.is_flavour
+                && !matches!(item.category.as_str(), "Blueprints" | "Parts")
+                && is_unique_path(path))
+            .map(|(path, item)| (path.clone(), item.amount))
+            .collect()
+    }
+
+    fn stackable_quantities(&self) -> HashMap<String, i64> {
+        self.items.iter()
+            // Currency zeroes distinguish an accepted empty inventory from a cache reset.
+            .filter(|(path, item)| (item.amount > 0 || path.starts_with("/_currency/")) && (item.is_flavour
+                || (item.mod_ranks.is_none() && (item.is_stackable
+                    || !is_unique_path(path)
+                    || matches!(item.category.as_str(), "Blueprints" | "Parts")))))
+            .map(|(path, item)| (path.clone(), item.amount))
+            .collect()
+    }
+
     /// Derive consumed_suits from items so callers don't need to know the internal layout.
     fn consumed_suits(&self) -> Vec<String> {
         self.items.iter()
@@ -8667,6 +8593,16 @@ fn is_unique_path(p: &str) -> bool {
         || p.starts_with("/Lotus/Types/Enemies/")
 }
 
+
+fn inventory_path_aliases() -> HashMap<&'static str, &'static str> {
+    [
+        // Sirius & Orion: two WFCD entries for one warframe.
+        ("/Lotus/Powersuits/SiriusOrion/OrionSuit",
+         "/Lotus/Powersuits/SiriusOrion/SiriusSuit"),
+        ("/Lotus/Powersuits/SiriusOrion/OrionSuitBlueprint",
+         "/Lotus/Types/Recipes/WarframeRecipes/SiriusOrionBlueprint"),
+    ].into_iter().collect()
+}
 
 /// Build a fresh `InventoryStateCache` from a parsed FULL_ACCOUNT blob.
 /// All sections are authoritative — this fully replaces scanner-derived data.
@@ -8701,7 +8637,9 @@ fn build_inventory_from_blob(
     upsert!("/_currency/Platinum").amount    = blob.platinum - blob.free_platinum;
     upsert!("/_currency/PlatinumGift").amount = blob.free_platinum;
 
-    // Unique items — binary owned (amount = 1).
+    let path_aliases = inventory_path_aliases();
+
+    // Ordinary weapons are binary-owned; modular components count each instance.
     for entry in &blob.unique_items {
         // Amps: key by Prism (Barrel) path instead of the generic OperatorAmpWeapon type.
         // Must come before the excluded_paths guard because OperatorAmpWeapon is Ignored
@@ -8746,9 +8684,11 @@ fn build_inventory_from_blob(
             continue;
         }
 
-        if excluded_paths.contains(&entry.item_type) { continue; }
+        let canonical = path_aliases.get(entry.item_type.as_str()).copied()
+            .unwrap_or(&entry.item_type);
+        if excluded_paths.contains(canonical) { continue; }
 
-        let item = upsert!(&entry.item_type);
+        let item = upsert!(canonical);
         item.amount        = 1;
         item.archon_shards = entry.archon_shards.clone();
         if entry.polarized > 0 { item.forma_count = Some(entry.polarized); }
@@ -8849,6 +8789,48 @@ fn load_inventory_state_cache(path: &PathBuf) -> InventoryStateCache {
     std::fs::read_to_string(path).ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
+}
+
+fn persist_complete_inventory(
+    blob: &memory_scanner::BlobInventory,
+    previous_unique: &HashMap<String, i64>,
+    cache: &InventoryStateCache,
+    path: &PathBuf,
+) -> bool {
+    // Parsing checks required sections; an empty unique section can still be incomplete.
+    // Reject before writing so a partial scan cannot become the restart baseline.
+    if blob.unique_items.is_empty() && !previous_unique.is_empty() {
+        warn!("blob rejected at commit: 0 unique items vs {} previously — incomplete blob", previous_unique.len());
+        return false;
+    }
+    if let Ok(json) = serde_json::to_string(cache) {
+        let _ = atomic_write(path, json.as_bytes());
+    }
+    true
+}
+
+fn compare_inventory_quantities(
+    previous: &HashMap<String, i64>,
+    current: &HashMap<String, i64>,
+    names: &HashMap<String, String>,
+    ignored: &std::collections::HashSet<String>,
+    timestamp: i64,
+) -> Vec<QuantityChange> {
+    if previous.is_empty() { return vec![]; }
+    let keys: std::collections::HashSet<&String> = previous.keys().chain(current.keys()).collect();
+    keys.into_iter().filter_map(|key| {
+        if ignored.contains(key) { return None; }
+        let old_qty = previous.get(key).copied().unwrap_or(0);
+        let new_qty = current.get(key).copied().unwrap_or(0);
+        if old_qty == new_qty { return None; }
+        Some(QuantityChange {
+            id: 0,
+            unique_name: key.clone(),
+            item_name: names.get(key).cloned()
+                .unwrap_or_else(|| key.split('/').last().unwrap_or("?").to_string()),
+            old_qty, new_qty, delta: new_qty - old_qty, timestamp,
+        })
+    }).collect()
 }
 
 fn save_window_state(window: &tauri::WebviewWindow, settings_path: &std::path::Path, prefix: &str) {
@@ -9072,31 +9054,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
     // Load unified inventory state cache. All data lives in items: unique_name → CachedItem.
     let initial_state = load_inventory_state_cache(&inventory_state_cache_path);
-    // Stackable resources: non-mod, non-unique paths.
-    // Also include items whose path would match is_unique_path but whose category is
-    // Blueprints or Parts — e.g. ClanTech blueprints live under /Lotus/Weapons/ClanTech/
-    // but are stackable resource-scanner items, not unique weapon instances.
-    let initial_quantities: HashMap<String, i64> = initial_state.items.iter()
-        .filter(|(k, v)| {
-            // FlavourItems (skins/cosmetics) are binary-owned. Load them at qty=1 regardless
-            // of mod_ranks (the mod scanner picks them up from RawUpgrades and writes mod_ranks
-            // to the cache, which would otherwise exclude them from initial_quantities).
-            if v.is_flavour { return true; }
-            v.mod_ranks.is_none()
-                && (!is_unique_path(k) || matches!(v.category.as_str(), "Blueprints" | "Parts"))
-                && v.amount > 0
-        })
-        .map(|(k, v)| (k.clone(), if v.is_flavour { 1 } else { v.amount }))
-        .collect();
-    // Unique items: warframes, weapons, companions.
-    // Exclude blueprint/parts items even when their path matches is_unique_path.
-    let initial_unique: HashMap<String, i64> = initial_state.items.iter()
-        .filter(|(k, v)| {
-            v.mod_ranks.is_none() && is_unique_path(k) && v.amount > 0
-                && !matches!(v.category.as_str(), "Blueprints" | "Parts")
-        })
-        .map(|(k, _)| (k.clone(), 1i64))
-        .collect();
+    let initial_quantities = initial_state.stackable_quantities();
+    let initial_unique = initial_state.unique_quantities();
     // Mods and arcanes.
     let initial_mods: HashMap<String, memory_scanner::ModCount> = initial_state.items.iter()
         .filter(|(_, v)| v.mod_ranks.is_some())
@@ -9840,6 +9799,198 @@ mod walk_policy_tests {
     #[test]
     fn the_first_walk_is_never_delayed() {
         assert!(walk_is_due(&ScanOutcome::CacheMiss, false, false, Duration::MAX));
+    }
+}
+
+#[cfg(test)]
+mod inventory_quantity_tests {
+    use super::*;
+
+    const ALIAS: &str = "/Lotus/Powersuits/SiriusOrion/OrionSuit";
+    const CANONICAL: &str = "/Lotus/Powersuits/SiriusOrion/SiriusSuit";
+
+    fn unique(path: &str, section: &str, parts: &[&str]) -> memory_scanner::BlobUniqueEntry {
+        memory_scanner::BlobUniqueEntry {
+            item_type: path.into(), section: section.into(), polarized: 0, xp: 0,
+            item_name: None, pet_name: None, focus_lens: None,
+            archon_shards: vec![], modular_parts: parts.iter().map(|p| p.to_string()).collect(),
+        }
+    }
+
+    fn cache(blob: &memory_scanner::BlobInventory) -> InventoryStateCache {
+        build_inventory_from_blob(
+            blob, &HashMap::new(), &HashMap::new(), &HashMap::new(),
+            &HashMap::new(), &HashMap::new(), &HashMap::new(),
+            &HashMap::new(), &HashMap::new(), &[ALIAS.to_string(), AMP.into(), ZAW.into()].into(),
+        )
+    }
+
+    const AMP: &str = "/Lotus/Weapons/Sentients/OperatorAmplifiers/OperatorAmpWeapon";
+    const PRISM: &str = "/Lotus/Weapons/Sentients/OperatorAmplifiers/Set1/Barrel/SentAmpSet1BarrelPartA";
+    const ZAW: &str = "/Lotus/Weapons/Ostron/Melee/LotusModularWeapon";
+    const STRIKE: &str = "/Lotus/Weapons/Ostron/Melee/ModularMelee01/Tip/TipOne";
+    const COSMETIC: &str = "/Lotus/Powersuits/Operator/VahdCuirass";
+
+    fn modular_blob() -> memory_scanner::BlobInventory {
+        let mut blob = memory_scanner::BlobInventory::default();
+        for _ in 0..2 {
+            blob.unique_items.push(unique(AMP, "OperatorAmps", &[PRISM]));
+            blob.unique_items.push(unique(ZAW, "Melee", &[STRIKE]));
+        }
+        blob.flavour_items.insert(COSMETIC.into(), 2);
+        blob
+    }
+
+    fn quantities(cache: &InventoryStateCache) -> HashMap<String, i64> {
+        let mut quantities = cache.stackable_quantities();
+        quantities.extend(cache.unique_quantities());
+        for (path, item) in &cache.items {
+            if item.mod_ranks.is_some() {
+                quantities.entry(path.clone()).or_insert(item.amount);
+            }
+        }
+        quantities
+    }
+
+    fn changes(previous: &HashMap<String, i64>, current: &HashMap<String, i64>) -> Vec<QuantityChange> {
+        compare_inventory_quantities(
+            previous, current,
+            &[(PRISM.into(), "Raplak Prism".into()), (STRIKE.into(), "Balla".into()),
+                (COSMETIC.into(), "Vahd Cuirass".into())].into(),
+            &[AMP.into(), ZAW.into()].into(), 123,
+        )
+    }
+
+    #[test]
+    fn restart_and_repeated_scans_preserve_modular_and_cosmetic_counts() {
+        let blob = modular_blob();
+        let saved = serde_json::to_string(&cache(&blob)).expect("cache serializes");
+        let restarted: InventoryStateCache = serde_json::from_str(&saved).expect("valid cache");
+        let mut previous = quantities(&restarted);
+        assert_eq!(previous, [(PRISM.into(), 2), (STRIKE.into(), 2), (COSMETIC.into(), 2),
+            ("/_currency/Credits".into(), 0), ("/_currency/Endo".into(), 0),
+            ("/_currency/Platinum".into(), 0), ("/_currency/PlatinumGift".into(), 0)].into());
+        for _ in 0..3 {
+            let current = quantities(&cache(&blob));
+            assert!(changes(&previous, &current).is_empty());
+            previous = current;
+        }
+        assert!(!previous.contains_key(AMP));
+        assert!(!previous.contains_key(ZAW));
+    }
+
+    #[test]
+    fn gains_removals_and_zero_keep_component_names() {
+        for (path, name) in [(PRISM, "Raplak Prism"), (STRIKE, "Balla"), (COSMETIC, "Vahd Cuirass")] {
+            for (old, new) in [(2, 3), (2, 1), (2, 0), (0, 1)] {
+                let mut before = modular_blob();
+                let mut after = modular_blob();
+                for (blob, count) in [(&mut before, old), (&mut after, new)] {
+                    if path == COSMETIC {
+                        blob.flavour_items.insert(path.into(), count);
+                    } else {
+                        blob.unique_items.retain(|entry| !entry.modular_parts.iter().any(|p| p == path));
+                        for _ in 0..count {
+                            blob.unique_items.push(if path == PRISM {
+                                unique(AMP, "OperatorAmps", &[PRISM])
+                            } else {
+                                unique(ZAW, "Melee", &[STRIKE])
+                            });
+                        }
+                    }
+                }
+                let delta = changes(&quantities(&cache(&before)), &quantities(&cache(&after)));
+                assert_eq!(delta.len(), 1);
+                assert_eq!((&*delta[0].unique_name, &*delta[0].item_name), (path, name));
+                assert_eq!((delta[0].old_qty, delta[0].new_qty, delta[0].delta), (old, new, new - old));
+            }
+        }
+    }
+
+    #[test]
+    fn ownership_classification_survives_cache_restart() {
+        let mut blob = modular_blob();
+        let weapon = "/Lotus/Weapons/Tenno/Rifle/Braton";
+        let egg = "/Lotus/Types/Game/KubrowPet/Egg";
+        let blueprint = "/Lotus/Weapons/ClanTech/BratonBlueprint";
+        let part = "/Lotus/Weapons/Tenno/BratonBarrel";
+        let suit = "/Lotus/Powersuits/Excalibur/Excalibur";
+        let mod_path = "/Lotus/Upgrades/Mods/Rifle/Serration";
+        let riven = "/Lotus/Upgrades/Mods/Randomized/ShotgunRiven";
+        blob.unique_items.extend([unique(weapon, "LongGuns", &[]), unique(weapon, "LongGuns", &[]),
+            unique(suit, "Suits", &[])]);
+        blob.consumed_suits.push(suit.into());
+        for path in [egg, blueprint, part] {
+            blob.stackable_items.push(memory_scanner::BlobStackableEntry {
+                item_type: path.into(), item_count: 2, sockets: None,
+            });
+        }
+        blob.mods.insert(mod_path.into(), memory_scanner::ModCount {
+            total: 3, by_rank: [(0, 2), (5, 1)].into(),
+        });
+        blob.rivens.push(serde_json::from_value(serde_json::json!({
+            "item_id": "", "item_type": riven, "compat": null, "lvl_req": null,
+            "polarity": null, "buffs": [], "curses": [], "mod_rank": 0, "count": 2
+        })).expect("valid riven"));
+        let mut cached = cache(&blob);
+        // Legacy caches can predate is_stackable.
+        cached.items.get_mut(COSMETIC).expect("cosmetic").is_stackable = false;
+        for (path, category) in [(blueprint, "Blueprints"), (part, "Parts")] {
+            let item = cached.items.get_mut(path).expect("stackable");
+            item.is_stackable = false;
+            item.category = category.into();
+        }
+        let uniques = cached.unique_quantities();
+        assert_eq!(uniques, [(PRISM.into(), 2), (STRIKE.into(), 2), (weapon.into(), 1)].into());
+        let stackables = cached.stackable_quantities();
+        for path in [COSMETIC, egg, blueprint, part] { assert_eq!(stackables.get(path), Some(&2)); }
+        assert_eq!(cached.items[mod_path].amount, 3);
+        assert_eq!(cached.items[riven].amount, 2);
+        assert!(cached.items[riven].mod_ranks.is_some());
+        assert!(changes(&quantities(&cached), &quantities(&cache(&blob))).is_empty());
+    }
+
+    #[test]
+    fn empty_or_reset_baseline_does_not_log_inventory_as_new() {
+        let current = quantities(&cache(&modular_blob()));
+        let mut baseline = quantities(&InventoryStateCache::default());
+        assert!(changes(&baseline, &current).is_empty());
+        baseline = current.clone();
+        baseline.clear();
+        assert!(changes(&baseline, &current).is_empty());
+        let accepted_empty = quantities(&cache(&memory_scanner::BlobInventory::default()));
+        assert_eq!(changes(&accepted_empty, &current).len(), 3);
+        let previous = [("credits".into(), 1), (AMP.into(), 1)].into();
+        let current = [("credits".into(), 1), (ZAW.into(), 1)].into();
+        assert!(changes(&previous, &current).is_empty());
+    }
+
+    #[test]
+    fn rejected_blob_preserves_persisted_cache_and_baseline() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tmp");
+        std::fs::create_dir_all(&dir).expect("project tmp writable");
+        let path = dir.join(format!("inventory-regression-{}.json", std::process::id()));
+        let blob = modular_blob();
+        let accepted = cache(&blob);
+        assert!(persist_complete_inventory(&blob, &HashMap::new(), &accepted, &path));
+        let before = std::fs::read(&path).expect("cache written");
+        let previous = quantities(&load_inventory_state_cache(&path));
+        let rejected = memory_scanner::BlobInventory::default();
+        assert!(!persist_complete_inventory(&rejected, &accepted.unique_quantities(), &cache(&rejected), &path));
+        assert_eq!(std::fs::read(&path).expect("cache retained"), before);
+        assert!(changes(&previous, &quantities(&load_inventory_state_cache(&path))).is_empty());
+        assert!(changes(&previous, &quantities(&cache(&blob))).is_empty());
+        std::fs::remove_file(path).expect("test cache removable");
+    }
+
+    #[test]
+    fn alias_only_retains_canonical_ownership() {
+        let mut blob = memory_scanner::BlobInventory::default();
+        blob.unique_items.push(unique(ALIAS, "Suits", &[]));
+        assert_eq!(cache(&blob).items.get(CANONICAL).map(|v| v.amount), Some(1));
+        blob.unique_items.push(unique(CANONICAL, "Suits", &[]));
+        assert_eq!(cache(&blob).items.get(CANONICAL).map(|v| v.amount), Some(1));
+        assert!(!cache(&blob).items.contains_key(ALIAS));
     }
 }
 
