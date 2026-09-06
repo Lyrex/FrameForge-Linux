@@ -711,6 +711,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     // Fire-and-forget: populates WFM_TOP_CACHE so the Statistics tab is instant
     invoke("get_wfm_top_items").catch(() => {});
     invoke<string>("get_img_cache_dir").then(setImgCacheDir).catch(() => {});
+    invoke("prewarm_image_cache").catch(() => {});
   }, []); // eslint-disable-line
 
   // ── WFM: intercept window close to go invisible first ─────────────────────
