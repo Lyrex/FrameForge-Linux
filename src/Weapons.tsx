@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useContext } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
+import { warframeStatImageUrl } from "./constants/urls";
 import "./Weapons.css";
 import type { InventoryItem, WeaponItem } from "./types/items";
 
@@ -54,7 +55,7 @@ function WeaponImg({ imageName, name }: { imageName?: string; name: string }) {
     return <div className="img-fallback">{name[0]?.toUpperCase() ?? "?"}</div>;
   }
   const useLocal = Boolean(baseUrl) && !localFailed;
-  const src = useLocal ? `${baseUrl}/${imageName}` : `https://cdn.warframestat.us/img/${imageName}`;
+  const src = useLocal ? `${baseUrl}/${imageName}` : warframeStatImageUrl(imageName);
   return (
     <img
       ref={ref}

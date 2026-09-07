@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useContext, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
+import { warframeStatImageUrl } from "./constants/urls";
 import "./Syndicates.css";
 import type { InventoryItem } from "./types/items";
 import type { SyndicateFilters } from "./types/filters";
@@ -103,7 +104,7 @@ function SynItemImg({ imageName, category }: { imageName?: string; category: str
     );
   }
   const useLocal = Boolean(baseUrl) && !localFailed;
-  const src = useLocal ? `${baseUrl}/${imageName}` : `https://cdn.warframestat.us/img/${imageName}`;
+  const src = useLocal ? `${baseUrl}/${imageName}` : warframeStatImageUrl(imageName);
   return (
     <img
       ref={ref}

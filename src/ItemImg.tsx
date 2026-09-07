@@ -1,5 +1,6 @@
 import { useContext, useState, useRef, useEffect } from "react";
 import { ImgCacheDirContext } from "./ImgCacheDir";
+import { warframeStatImageUrl } from "./constants/urls";
 
 function BlueprintIcon() {
   return (
@@ -35,7 +36,7 @@ export default function ItemImg({ imageName, category, size = 32 }: { imageName?
     return <img ref={ref} className="img" style={style} src={imageName} alt="" loading="lazy" onError={() => setFailed(true)} onLoad={() => ref.current?.classList.add("img-loaded")} />;
   }
   const useLocal = Boolean(baseUrl) && !localFailed;
-  const src = useLocal ? `${baseUrl}/${imageName}` : `https://cdn.warframestat.us/img/${imageName}`;
+  const src = useLocal ? `${baseUrl}/${imageName}` : warframeStatImageUrl(imageName);
   return (
     <img ref={ref} className="img" style={style} src={src} alt="" loading="lazy"
       onError={() => useLocal ? setLocalFailed(true) : setFailed(true)} onLoad={() => ref.current?.classList.add("img-loaded")} />

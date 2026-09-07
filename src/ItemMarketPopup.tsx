@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { warframeStatImageUrl } from "./constants/urls";
 import type { WfmPublicOrder, WfmStatPoint } from "./types/market";
 import "./ItemMarketPopup.css";
 
@@ -268,7 +269,7 @@ export default function ItemMarketPopup({ urlName, displayName, imageName, onClo
         <div className="imp-header">
           <div className="imp-item-identity">
             {imageName && !imgFailed
-              ? <img className="imp-thumb" src={`https://cdn.warframestat.us/img/${imageName}`}
+              ? <img className="imp-thumb" src={warframeStatImageUrl(imageName)}
                   alt="" onError={() => setImgFailed(true)} />
               : <div className="imp-thumb-placeholder">P</div>
             }

@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { HelpTip } from "./HelpTip";
 import { PREFERENCE_KEYS } from "./constants/preferences";
+import { RELIC_DROP_RATES, RELIC_REFINEMENT_LABELS, RELIC_REFINEMENT_ORDER } from "./constants/relics";
+import { warframeStatImageUrl } from "./constants/urls";
 import type { CatalogItem, InventoryItem } from "./types/items";
 import type { RelicFilters } from "./types/filters";
 import type { DropReward, RelicDrop } from "./types/relics";
@@ -127,7 +129,7 @@ function PartImg({ srcs, rarity }: { srcs: (string | undefined)[]; rarity?: stri
     onError={() => setIdx(i => i + 1)} />;
 }
 
-const CDN = (name?: string) => name ? `https://cdn.warframestat.us/img/${name}` : undefined;
+const CDN = (name?: string) => name ? warframeStatImageUrl(name) : undefined;
 
 // ─── Reward box ───────────────────────────────────────────────────────────────
 
@@ -164,9 +166,6 @@ function RewardBox({ reward, imageSrcs, isOwned, isComplete, isHighlighted, colo
 
 // ─── Relic card ───────────────────────────────────────────────────────────────
 
-const REFINEMENT_SUFFIXES_CARD = ["intact", "exceptional", "flawless", "radiant"];
-const REFINEMENT_LABELS_CARD   = ["Intact", "Except.", "Flawless", "Radiant"];
-
 function isFormaOrKuva(itemName: string): boolean {
   return itemName.includes("Forma") || itemName === "Kuva";
 }
@@ -185,9 +184,9 @@ function RelicCard({ drop, catalogRelicByName, inventory, ownedPrimeNames, searc
   const baseLower = drop.fullName.toLowerCase();
 
   // Per-refinement counts using catalog
-  const refCounts = REFINEMENT_SUFFIXES_CARD.map((ref, i) => {
+  const refCounts = RELIC_REFINEMENT_ORDER.map(ref => {
     const cat = catalogRelicByName.get(`${baseLower} ${ref}`);
-    return { label: REFINEMENT_LABELS_CARD[i], count: cat ? (inventory[cat.unique_name]?.quantity ?? 0) : 0 };
+    return { label: RELIC_REFINEMENT_LABELS[ref], count: cat ? (inventory[cat.unique_name]?.quantity ?? 0) : 0 };
   });
   const total = refCounts.reduce((s, r) => s + r.count, 0);
 
@@ -347,14 +346,14 @@ function RelicCard({ drop, catalogRelicByName, inventory, ownedPrimeNames, searc
             (() => {
               const seg = (catalogItem?.unique_name ?? "").split("/").pop() ?? "";
               const file = seg.replace(/Blueprint$/, "");
-              return file ? `https://cdn.warframestat.us/img/${file}.png` : undefined;
+              return file ? warframeStatImageUrl(`${file}.png`) : undefined;
             })(),
             // 4. Construct from parent prime name: "Yareli Prime" → "YareliPrime.png"
-            primeName ? `https://cdn.warframestat.us/img/${primeName.replace(/\s+/g, "")}.png` : undefined,
+            primeName ? warframeStatImageUrl(`${primeName.replace(/\s+/g, "")}.png`) : undefined,
             // 5. Strip "Blueprint" from item name: "Forma Blueprint" → "Forma.png"
-            `https://cdn.warframestat.us/img/${r.itemName.replace(" Blueprint", "").replace(/\s+/g, "")}.png`,
+            warframeStatImageUrl(`${r.itemName.replace(" Blueprint", "").replace(/\s+/g, "")}.png`),
             // 6. Strip leading count prefix: "2X Forma" → "Forma.png"
-            `https://cdn.warframestat.us/img/${r.itemName.replace(/^\d+[xX]\s*/, "").replace(" Blueprint", "").replace(/\s+/g, "")}.png`,
+            warframeStatImageUrl(`${r.itemName.replace(/^\d+[xX]\s*/, "").replace(" Blueprint", "").replace(/\s+/g, "")}.png`),
           ];
           // Gold: the complete parent prime item is built and in inventory
           // "Burston Prime Barrel" → find "Burston Prime" → check inventory by name
@@ -386,18 +385,7 @@ function RelicCard({ drop, catalogRelicByName, inventory, ownedPrimeNames, searc
 
 // ─── Planner ─────────────────────────────────────────────────────────────────
 
-const DROP_RATES = {
-  intact:      { Common: 0.2533, Uncommon: 0.11,  Rare: 0.02 },
-  exceptional: { Common: 0.2333, Uncommon: 0.13,  Rare: 0.04 },
-  flawless:    { Common: 0.20,   Uncommon: 0.17,  Rare: 0.06 },
-  radiant:     { Common: 0.1667, Uncommon: 0.20,  Rare: 0.10 },
-} as const;
-
-type PlannerTier = keyof typeof DROP_RATES;
-const PLANNER_TIERS: PlannerTier[] = ["intact", "exceptional", "flawless", "radiant"];
-const TIER_LABEL: Record<PlannerTier, string> = {
-  intact: "Intact", exceptional: "Except.", flawless: "Flawless", radiant: "Radiant",
-};
+type PlannerTier = keyof typeof RELIC_DROP_RATES;
 
 function wfmNorm(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
@@ -409,7 +397,7 @@ function computeEV(
   vals: number[],
   squadSize: number,
 ): number {
-  const rates = DROP_RATES[tier];
+  const rates = RELIC_DROP_RATES[tier];
   const probs = rewards.map(r => rates[r.rarity as keyof typeof rates] ?? 0);
   const n = rewards.length;
   if (n === 0) return 0;
@@ -475,11 +463,9 @@ function PlannerTab({
       .catch(() => {});
   }, []);
 
-  const REFINEMENT_SUFFIXES = ["intact", "exceptional", "flawless", "radiant"];
-
   const getOwnedByTier = useCallback((drop: RelicDrop) => {
     const base = drop.fullName.toLowerCase();
-    return REFINEMENT_SUFFIXES.reduce<Record<string, number>>((acc, ref) => {
+    return RELIC_REFINEMENT_ORDER.reduce<Record<string, number>>((acc, ref) => {
       const cat = catalogRelicByName.get(`${base} ${ref}`);
       acc[ref] = cat ? (inventory[cat.unique_name]?.quantity ?? 0) : 0;
       return acc;
@@ -519,10 +505,10 @@ function PlannerTab({
         });
 
         const evByTier = Object.fromEntries(
-          PLANNER_TIERS.map(t => [t, computeEV(rewards, t, vals, squadSize)])
+          RELIC_REFINEMENT_ORDER.map(t => [t, computeEV(rewards, t, vals, squadSize)])
         ) as Record<PlannerTier, number>;
 
-        const bestTier = PLANNER_TIERS.reduce((best, t) =>
+        const bestTier = RELIC_REFINEMENT_ORDER.reduce((best, t) =>
           evByTier[t] > evByTier[best] ? t : best, "intact" as PlannerTier);
 
         const ownedByTier = getOwnedByTier(drop);
@@ -599,9 +585,9 @@ function PlannerTab({
             Owned{sortArrow("owned")}
           </button>
         </div>
-        {PLANNER_TIERS.map(t => (
+        {RELIC_REFINEMENT_ORDER.map(t => (
           <button key={t} className={`planner-col-tier planner-col-sortable${sortCol === t ? " active" : ""}`} onClick={() => handleSort(t)}>
-            {TIER_LABEL[t]}{sortArrow(t)}
+            {RELIC_REFINEMENT_LABELS[t]}{sortArrow(t)}
           </button>
         ))}
         <button className={`planner-col-refine planner-col-sortable${sortCol === "gain" ? " active" : ""}`} onClick={() => handleSort("gain")}>
@@ -625,7 +611,7 @@ function PlannerTab({
                   {vaulted && <span className="vault-badge vault-yes" style={{ fontSize: 9 }}>🔒</span>}
                   <span className="planner-owned">×{totalOwned}</span>
                 </div>
-                {PLANNER_TIERS.map(t => (
+                {RELIC_REFINEMENT_ORDER.map(t => (
                   <div key={t} className={`planner-col-tier planner-ev${t === bestTier ? " planner-ev-best" : ""}`}>
                     {evByTier[t] < 0.05 ? <span className="planner-ev-zero">—</span> : `${evByTier[t].toFixed(1)}${unit}`}
                   </div>
@@ -641,12 +627,12 @@ function PlannerTab({
               {isOpen && (
                 <div className="planner-reward-detail">
                   <div className="planner-detail-tier-row">
-                    {PLANNER_TIERS.map(t => (
-                      <span key={t} className="planner-detail-tier-label">{TIER_LABEL[t]}: {DROP_RATES[t].Rare * 100}% rare</span>
+                    {RELIC_REFINEMENT_ORDER.map(t => (
+                      <span key={t} className="planner-detail-tier-label">{RELIC_REFINEMENT_LABELS[t]}: {RELIC_DROP_RATES[t].Rare * 100}% rare</span>
                     ))}
                   </div>
                   {rewards.map((r, i) => {
-                    const rates = DROP_RATES[bestTier];
+                    const rates = RELIC_DROP_RATES[bestTier];
                     const chance = rates[r.rarity as keyof typeof rates] ?? 0;
                     const cls = RARITY_CSS[r.rarity] ?? "bronze";
                     return (
@@ -730,12 +716,10 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
   }, [inventory]);
 
   // Catalog stores per-refinement: "Meso V13 Intact", "Meso V13 Exceptional", "Meso V13 Flawless", "Meso V13 Radiant"
-  const REFINEMENT_SUFFIXES = ["intact", "exceptional", "flawless", "radiant"];
-
   const getTotal = useCallback((drop: RelicDrop): number => {
     if (!drop?.fullName) return 0;
     const base = drop.fullName.toLowerCase();
-    return REFINEMENT_SUFFIXES.reduce((sum, ref) => {
+    return RELIC_REFINEMENT_ORDER.reduce((sum, ref) => {
       const cat = catalogRelicByName.get(`${base} ${ref}`);
       return sum + (cat ? (inventory[cat.unique_name]?.quantity ?? 0) : 0);
     }, 0);
@@ -783,10 +767,9 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
     .sort((a, b) => {
       if (sortMode === "count") return getTotal(b) - getTotal(a) || (a.relicName ?? "").localeCompare(b.relicName ?? "");
       if (sortMode === "ducats") {
-        const CHANCES: Record<string, number> = { Common: 0.2533, Uncommon: 0.11, Rare: 0.02 };
         const avg = (d: RelicDrop) => d.rewards.reduce((s, r) => {
           const cat = findCatalogItemGlobal(r.itemName, nameMap);
-          return s + (cat?.ducats ?? 0) * (CHANCES[r.rarity] ?? 0);
+          return s + (cat?.ducats ?? 0) * (RELIC_DROP_RATES.intact[r.rarity as keyof typeof RELIC_DROP_RATES.intact] ?? 0);
         }, 0);
         return avg(b) - avg(a) || (a.relicName ?? "").localeCompare(b.relicName ?? "");
       }

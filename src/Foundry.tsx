@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
 import { HelpTip } from "./HelpTip";
 import { PREFERENCE_KEYS } from "./constants/preferences";
+import { WARFRAME_WIKI_BASE, warframeStatImageUrl } from "./constants/urls";
 import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeComponentStatus } from "./types/items";
 import type { FoundryFilters } from "./types/filters";
 import type { ViewMode } from "./types/ui";
@@ -205,7 +206,7 @@ function ItemImg({ imageName, category, size = 40 }: { imageName?: string; categ
   const useLocal = Boolean(baseUrl) && !localFailed;
   const src = useLocal
     ? `${baseUrl}/${imageName}`
-    : `https://cdn.warframestat.us/img/${imageName}`;
+    : warframeStatImageUrl(imageName);
   return (
     <img ref={ref} className="img" style={style} src={src}
       alt="" loading="lazy"
@@ -484,7 +485,7 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
         <button className={`cc-star ${isTracked ? "tracked" : ""}`}
           onClick={e => { e.stopPropagation(); onTrack(item); }}>{isTracked ? "★" : "☆"}</button>
         <button className="cc-wiki"
-          onClick={e => { e.stopPropagation(); invoke("plugin:opener|open_url", { url:`https://wiki.warframe.com/w/${item.name.replace(" Blueprint","").replace(/\s+/g,"_")}` }).catch(()=>{}); }}>wiki</button>
+          onClick={e => { e.stopPropagation(); invoke("plugin:opener|open_url", { url:`${WARFRAME_WIKI_BASE}/${item.name.replace(" Blueprint","").replace(/\s+/g,"_")}` }).catch(()=>{}); }}>wiki</button>
         <span className="cc-name">{item.name}</span>
       </div>
 

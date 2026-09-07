@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useContext, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
+import { warframeStatImageUrl } from "./constants/urls";
 import type { WfmTopItem } from "./types/market";
 import type { Trade, TradeSession } from "./types/trades";
 import "./Reports.css";
@@ -250,7 +251,7 @@ function ItemImg({ imageName, size = 28 }: { imageName?: string; size?: number }
   if (!imageName || failed)
     return <span className="img-fallback" style={{ width: size, height: size }} />;
   const useLocal = Boolean(baseUrl) && !localFailed;
-  const src = useLocal ? `${baseUrl}/${imageName}` : `https://cdn.warframestat.us/img/${imageName}`;
+  const src = useLocal ? `${baseUrl}/${imageName}` : warframeStatImageUrl(imageName);
   return <img ref={ref} className="img" style={{ width: size, height: size }} src={src} alt="" loading="lazy" onError={() => useLocal ? setLocalFailed(true) : setFailed(true)} onLoad={() => ref.current?.classList.add("img-loaded")} />;
 }
 

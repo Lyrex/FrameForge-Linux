@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { WARFRAME_WIKI_BASE } from "./constants/urls";
 
 interface CtxMenuItem {
   label: string;
@@ -114,7 +115,7 @@ export function extractItemName(e: React.MouseEvent): string | null {
 }
 
 export function wikiUrl(name: string) {
-  return `https://wiki.warframe.com/w/Special:Search?search=${encodeURIComponent(name)}`;
+  return `${WARFRAME_WIKI_BASE}/Special:Search?search=${encodeURIComponent(name)}`;
 }
 
 export function openWiki(name: string) {

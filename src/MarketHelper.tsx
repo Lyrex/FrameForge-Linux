@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { HelpTip } from "./HelpTip";
 import WfmTrading from "./WfmTrading";
 import ItemMarketPopup from "./ItemMarketPopup";
+import { warframeStatImageUrl } from "./constants/urls";
 import type { CatalogItem, CraftingJob, InventoryItem, RecipeComponent } from "./types/items";
 import type { MarketFilters } from "./types/filters";
 import type { ModCopy } from "./types/inventory";
@@ -85,7 +86,7 @@ function ItemImg({ imageName, size = 32 }: { imageName?: string; size?: number }
   const useLocal = Boolean(baseUrl) && !localFailed;
   const src = useLocal
     ? `${baseUrl}/${imageName}`
-    : `https://cdn.warframestat.us/img/${imageName}`;
+    : warframeStatImageUrl(imageName);
   return <img style={s} src={src} alt="" loading="lazy"
     onError={() => useLocal ? setLocalFailed(true) : setCdnFailed(true)} />;
 }
