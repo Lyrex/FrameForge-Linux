@@ -65,10 +65,10 @@ async function ensureRivenWindow(wx: number, wy: number, wh: number): Promise<{ 
 import { getCurrentWindow, availableMonitors, LogicalSize } from "@tauri-apps/api/window";
 
 import { ImgCacheDirContext } from "./ImgCacheDir";
-import Foundry, { FOUNDRY_FILTERS_DEFAULT } from "./Foundry";
+import Foundry from "./Foundry";
 import CacheStatusChip from "./CacheStatusChip";
-import MarketHelper, { MARKET_FILTERS_DEFAULT } from "./MarketHelper";
-import RelicHelper, { RELIC_FILTERS_DEFAULT } from "./RelicHelper";
+import MarketHelper from "./MarketHelper";
+import RelicHelper from "./RelicHelper";
 import RivenAnalyzer from "./RivenAnalyzer";
 import RivenOverlayWindow from "./RivenOverlayWindow";
 import RelicPickOverlay from "./RelicPickOverlay";
@@ -87,7 +87,7 @@ import ChangeLog from "./ChangeLog";
 import InventoryGrid from "./InventoryGrid";
 import InventoryBatchPreview from "./InventoryBatchPreview";
 import InventoryToolbar from "./InventoryToolbar";
-import { INVENTORY_FILTERS_DEFAULT } from "./InventoryFilters";
+import { FOUNDRY_FILTERS_DEFAULT, INVENTORY_FILTERS_DEFAULT, MARKET_FILTERS_DEFAULT, RELIC_FILTERS_DEFAULT, SYNDICATE_FILTERS_DEFAULT } from "./constants/filters";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import {
   CLOCK_FORMAT_OPTIONS,
@@ -305,10 +305,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [relicFilters, setRelicFilters] = useState(RELIC_FILTERS_DEFAULT);
   const [completionistView, setCompletionistView] = useState<"syndicates" | "weapons">("syndicates");
   const [weaponsTab, setWeaponsTab] = useState<"Primary" | "Secondary" | "Melee" | "Operator">("Primary");
-  const [syndicateFilters, setSyndicateFilters] = useState({
-    activeGroup: "main" as "main" | "openworld" | "other" | "lab",
-    activeTab: "Steel Meridian", missingOnly: false, search: "",
-  });
+  const [syndicateFilters, setSyndicateFilters] = useState(SYNDICATE_FILTERS_DEFAULT);
   const [statsTab, setStatsTab] = useState<"trade" | "item">("trade");
   const [reportsDateRange, setReportsDateRange] = useState<number | "all">(30);
   const [lastChanged, setLastChanged] = useState<Record<string, number>>({});

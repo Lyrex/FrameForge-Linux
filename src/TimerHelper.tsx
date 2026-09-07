@@ -56,29 +56,6 @@ const TIER_COLOR: Record<string, string> = {
   Axi: "#e5c04a", Requiem: "#9b6dff", Omnia: "#e0e0e0",
 };
 
-export const TIMER_LABELS: Record<string, string> = {
-  "cetus-cycle":    "Cetus",
-  "vallis-cycle":   "Orb Vallis",
-  "cambion-cycle":  "Cambion Drift",
-  "zariman-cycle":  "Zariman",
-  "bounty-cetus":   "Cetus Bounties",
-  "bounty-vallis":  "Vallis Bounties",
-  "bounty-cambion": "Cambion Bounties",
-  "bounty-zariman": "Zariman Bounties",
-  "bounty-hex":     "Hex Bounties",
-  "sortie":         "Sortie",
-  "archon-hunt":    "Archon Hunt",
-  "daily-reset":    "Daily Reset",
-  "weekly-reset":   "Weekly Reset",
-  "void-trader":    "Void Trader",
-  "nightwave":        "Nightwave",
-  "prime-resurgence": "Prime Resurgence",
-  "circuit":        "The Circuit",
-  "duviri-spiral":  "Duviri Spiral",
-  "kahl":           "Kahl / Break Narmer",
-  "deep-archimedea":"Deep Archimedea",
-};
-
 export function getTimerInfo(id: string, ws: WorldState): { state: string; expiry: string } | null {
   switch (id) {
     case "cetus-cycle":    return ws.cetus    ? { state: ws.cetus.isDay ? "Day" : "Night",        expiry: ws.cetus.expiry }    : null;

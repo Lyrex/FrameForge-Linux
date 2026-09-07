@@ -6,6 +6,7 @@ import { HelpTip } from "./HelpTip";
 import WfmTrading from "./WfmTrading";
 import ItemMarketPopup from "./ItemMarketPopup";
 import { warframeStatImageUrl } from "./constants/urls";
+import { MARKET_FILTERS_DEFAULT } from "./constants/filters";
 import { TAURI_COMMANDS } from "./constants/tauri";
 import type { CatalogItem, CraftingJob, InventoryItem, RecipeComponent } from "./types/items";
 import type { MarketFilters } from "./types/filters";
@@ -18,13 +19,6 @@ import polZenurik  from "./assets/polarity/zenurik.svg";
 import polUnairu   from "./assets/polarity/unairu.svg";
 import polPenjaga  from "./assets/polarity/penjaga.svg";
 import polUmbra    from "./assets/polarity/umbra.svg";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-export const MARKET_FILTERS_DEFAULT: MarketFilters = {
-  search: "", ownership: [], conditions: [], vault: [], sortMode: "ducats",
-  activeMarketTab: "trading",
-};
 
 interface Props {
   inventory: Record<string, InventoryItem>;

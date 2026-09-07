@@ -129,10 +129,6 @@ function StatusBadge({ status }: { status: CompStatus }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export const SYNDICATE_FILTERS_DEFAULT: SyndicateFilters = {
-  activeGroup: "main", activeTab: "Steel Meridian", missingOnly: false, search: "",
-};
-
 interface Props {
   inventory: Record<string, InventoryItem>;
   filters: SyndicateFilters;

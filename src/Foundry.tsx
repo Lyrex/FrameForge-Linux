@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
 import { HelpTip } from "./HelpTip";
 import { PREFERENCE_KEYS } from "./constants/preferences";
+import { FOUNDRY_FILTERS_DEFAULT } from "./constants/filters";
 import { WARFRAME_WIKI_BASE, warframeStatImageUrl } from "./constants/urls";
 import { TAURI_COMMANDS } from "./constants/tauri";
 import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeComponentStatus } from "./types/items";
@@ -11,17 +12,6 @@ import type { ViewMode } from "./types/ui";
 import { ViewToggle } from "./ViewToggle";
 import sentientIcon from "./assets/SentientFactionIcon.webp";
 import formaIcon from "./assets/forma-icon.png";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-export const FOUNDRY_FILTERS_DEFAULT: FoundryFilters = {
-  search: "", activeCat: "Warframes",
-  filterPrime: false, filterNonPrime: false, filterVaulted: false, filterUnvaulted: false,
-  filterMastered: false, filterUnmastered: false,
-  filterOwned: false, filterUnowned: false, filterReady: false,
-  filterLvlCap: false,
-  ignoreFormaKuva: false,
-};
 
 interface Props {
   inventory: Record<string, InventoryItem>;

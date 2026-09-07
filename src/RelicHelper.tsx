@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { HelpTip } from "./HelpTip";
 import { PREFERENCE_KEYS } from "./constants/preferences";
+import { RELIC_FILTERS_DEFAULT } from "./constants/filters";
 import { RELIC_DROP_RATES, RELIC_REFINEMENT_LABELS, RELIC_REFINEMENT_ORDER } from "./constants/relics";
 import { warframeStatImageUrl } from "./constants/urls";
 import { TAURI_COMMANDS } from "./constants/tauri";
@@ -10,13 +11,6 @@ import type { RelicFilters } from "./types/filters";
 import type { DropReward, RelicDrop } from "./types/relics";
 import type { ViewMode } from "./types/ui";
 import { ViewToggle } from "./ViewToggle";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-export const RELIC_FILTERS_DEFAULT: RelicFilters = {
-  search: "", tiers: [], ownership: [], vault: [], completion: [], sortMode: "count",
-  ignoreFormaKuva: false,
-};
 
 interface Props {
   inventory: Record<string, InventoryItem>;
