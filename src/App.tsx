@@ -83,6 +83,7 @@ import Overlay from "./Overlay";
 import ModularWindow from "./ModularWindow";
 import ChangeLog, { type ChangeLogEntry } from "./ChangeLog";
 import InventoryGrid from "./InventoryGrid";
+import InventoryBatchPreview from "./InventoryBatchPreview";
 import { type ViewMode, ViewToggle } from "./ViewToggle";
 import SearchBar from "./SearchBar";
 import { HelpTip } from "./HelpTip";
@@ -591,6 +592,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [rawScanSize,    setRawScanSize]    = useState(0);
   const [probeSize,      setProbeSize]      = useState(0);
   const [debugCatEnabled,    setDebugCatEnabled]    = useState(false);
+  const [showInventoryBatchPreview, setShowInventoryBatchPreview] = useState(false);
   const [unmatchedPathsSize, setUnmatchedPathsSize] = useState(0);
   // "scanning" while blob capture is running, "done" briefly after it finishes
   const [blobStage, setBlobStage] = useState<"scanning" | "done" | null>(null);
@@ -828,8 +830,17 @@ if (typeof s.autoDiagEnabled === "boolean") {
     }).catch(() => {});
 
     invoke<string>("get_system_locale").then(loc => { if (loc) setSystemLocale(loc); }).catch(() => {});
+    invoke<string | null>("get_player_name").then(name => { if (name) setPlayerName(name); }).catch(() => {});
     invoke<CatalogItem[]>("get_all_items").then(items => { setCatalog(items); catalogRef.current = items; });
-    invoke<Record<string, number>>("get_current_quantities").then(setQuantities);
+    invoke<Record<string, number>>("get_current_quantities")
+      .then(setQuantities)
+      .catch(() => {})
+      .finally(() => {
+        if (!inventoryReadyRef.current) {
+          inventoryReadyRef.current = true;
+          setInventoryReady(true);
+        }
+      });
     invoke<number>("get_diag_folder_size").then(setDiagFolderSize).catch(() => {});
     invoke<ChangeLogEntry[]>("get_change_log", { limit: 200 }).then(log => {
       setChangeLog(log);
@@ -1784,6 +1795,9 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
   const visibleItems = useMemo(() => {
     const q = search.toLowerCase();
+    // Changelog order map: lower index = more recent position in changelog
+    const changeOrder = new Map<string, number>();
+    changeLog.forEach((c, i) => { if (!changeOrder.has(c.unique_name)) changeOrder.set(c.unique_name, i); });
     const out: (CatalogItem & { qty: number })[] = [];
     for (const i of catalog) {
       if (i.name === "Blueprint") continue;
@@ -1812,7 +1826,11 @@ if (typeof s.autoDiagEnabled === "boolean") {
       if (sortMode === "recent" || filterRecent) {
         const at = lastChanged[a.unique_name] ?? 0;
         const bt = lastChanged[b.unique_name] ?? 0;
-        return bt - at || a.name.localeCompare(b.name);
+        if (bt !== at) return bt - at;
+        // Tiebreak by changelog arrival order (lower index = more recent)
+        const ai = changeOrder.get(a.unique_name) ?? Infinity;
+        const bi = changeOrder.get(b.unique_name) ?? Infinity;
+        return ai - bi || a.name.localeCompare(b.name);
       }
       const aOwned = a.qty > 0 ? 1 : 0;
       const bOwned = b.qty > 0 ? 1 : 0;
@@ -1823,7 +1841,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
       return b.qty - a.qty || a.name.localeCompare(b.name);
     });
     return out.slice(0, 1000);
-  }, [catalog, inventory, category, search, filterOwned, filterRecent, filterPrime, filterVaulted, filterUnvaulted, filterRank, sortMode, lastChanged, modCopiesMap]); // eslint-disable-line
+  }, [catalog, inventory, category, search, filterOwned, filterRecent, filterPrime, filterVaulted, filterUnvaulted, filterRank, sortMode, lastChanged, modCopiesMap, changeLog]); // eslint-disable-line
 
   const resetInventoryFilters = ({
     recent,
@@ -2556,6 +2574,17 @@ if (typeof s.autoDiagEnabled === "boolean") {
                   </div>
 
                   <div className="settings-section">
+                    <div className="settings-section-title">Inventory Preview</div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">Incoming Batch</span>
+                        <span className="settings-row-desc">Preview gained, lost, crafting, and mod rank changes without modifying your inventory.</span>
+                      </div>
+                      <button className="btn-secondary" onClick={() => { setShowInventoryBatchPreview(true); setShowSettings(false); }}>Preview</button>
+                    </div>
+                  </div>
+
+                  <div className="settings-section">
                     <div className="settings-section-title">Diagnostics</div>
                     <div className="debug-table">
 
@@ -2822,6 +2851,8 @@ if (typeof s.autoDiagEnabled === "boolean") {
           </div>
         </div>
       )}
+
+      {showInventoryBatchPreview && <InventoryBatchPreview onClose={() => setShowInventoryBatchPreview(false)} />}
 
       <div className="body">
 

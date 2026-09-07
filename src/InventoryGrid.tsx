@@ -91,7 +91,7 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
                 <span className="mod-rank-count">{r.count}</span>
                 {isRecent && rankDelta && (
                   <span className={`mod-rank-delta ${rankDelta.delta > 0 ? "log-positive" : "log-negative"}`}>
-                    {rankDelta.delta > 0 ? "+1" : "-1"}
+                    {rankDelta.delta > 0 ? `+${rankDelta.delta}` : rankDelta.delta}
                   </span>
                 )}
               </span>
@@ -253,15 +253,18 @@ export default memo(function InventoryGrid({
             const copies = modCopies[item.unique_name];
             const byRank: Record<number, number> = {};
             for (const c of copies) byRank[c.rank ?? 0] = (byRank[c.rank ?? 0] ?? 0) + c.count;
-            const maxRank = Math.max(...Object.keys(byRank).map(Number));
-            const ranks = Array.from({ length: maxRank + 1 }, (_, r) => ({ rank: r, count: byRank[r] ?? 0 })).filter(r => r.count > 0);
+            const changeEntries = lastChanged[item.unique_name] != null ? changes.get(item.unique_name) : undefined;
+            const rankDeltas = changeEntries?.filter(c => c.rank != null).map(c => ({ rank: c.rank!, delta: c.delta })) ?? [];
+            const isRecent = lastChanged[item.unique_name] != null && Date.now() / 1000 - lastChanged[item.unique_name] < 300;
+            const ranks = [...new Set([...Object.keys(byRank).map(Number), ...rankDeltas.map(delta => delta.rank)])]
+              .sort((a, b) => a - b)
+              .map(rank => ({ rank, count: byRank[rank] ?? 0 }))
+              .filter(r => r.count > 0 || (isRecent && rankDeltas.some(delta => delta.rank === r.rank)));
             if (filterRank !== null) {
               const targetRank = filterRank === "unranked" ? 0 : filterRank;
               if ((byRank[targetRank] ?? 0) === 0) return [];
             }
             const total = Object.values(byRank).reduce((a, b) => a + b, 0);
-            const changeEntries = lastChanged[item.unique_name] != null ? changes.get(item.unique_name) : undefined;
-            const rankDeltas = changeEntries?.filter(c => c.rank != null).map(c => ({ rank: c.rank!, delta: c.delta })) ?? [];
             const totalDelta = changeEntries?.find(c => c.rank == null)?.delta ?? rankDeltas.reduce((s, d) => s + d.delta, 0);
             return [(
               <InvModCard key={item.unique_name}

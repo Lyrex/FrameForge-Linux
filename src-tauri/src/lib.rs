@@ -751,6 +751,11 @@ fn get_current_quantities(state: State<AppState>) -> HashMap<String, i64> {
 }
 
 #[tauri::command]
+fn get_player_name(state: State<AppState>) -> Option<String> {
+    state.local_player_name.lock().ok().and_then(|name| name.clone())
+}
+
+#[tauri::command]
 fn get_current_crafting(state: State<AppState>) -> Vec<CraftingJob> {
     state.current_crafting.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
@@ -4967,7 +4972,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         let item_name = path_to_name.get(key.as_str())
                             .cloned()
                             .unwrap_or_else(|| key.split('/').last().unwrap_or("?").to_string());
-                        let _ = db::add_quantity_change(&conn, key, &item_name, old_qty, new_qty);
+                        let _ = db::add_quantity_change(&conn, key, &item_name, old_qty, new_qty, None);
                         changes.push(QuantityChange {
                             id: 0,
                             unique_name: key.clone(),
@@ -4999,6 +5004,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                             let item_name = path_to_name.get(path.as_str())
                                 .cloned()
                                 .unwrap_or_else(|| path.split('/').last().unwrap_or("?").to_string());
+                            let _ = db::add_quantity_change(&conn, path, &item_name, old_count, new_count, Some(rank));
                             changes.push(QuantityChange {
                                 id: 0,
                                 unique_name: path.clone(),
@@ -5254,6 +5260,12 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 // Searching only the first 64 KB misses the current session when the log
                 // has grown large from previous runs.
                 if let Ok(mut f) = std::fs::File::open(&log_path) {
+                    let mut first = Vec::with_capacity(64 * 1024);
+                    let _ = (&mut f).take(64 * 1024).read_to_end(&mut first);
+                    if let Ok(text) = std::str::from_utf8(&first) {
+                        parse_logged_in_name(text, &shared_squad_names2, &ee_ocr_app);
+                    }
+
                     let file_len = f.seek(SeekFrom::End(0)).unwrap_or(0);
                     let read_from = file_len.saturating_sub(1_048_576); // last 1 MB
                     let _ = f.seek(SeekFrom::Start(read_from));
@@ -9914,6 +9926,7 @@ pub fn run() {
             get_all_items,
             get_items_by_paths,
             get_current_quantities,
+            get_player_name,
             get_item_list_status,
             fetch_item_list,
             get_change_log,

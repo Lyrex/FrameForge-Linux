@@ -101,6 +101,11 @@ fn migrate(conn: &Connection) -> Result<()> {
         conn.pragma_update(None, "user_version", 3)?;
     }
 
+    if version < 4 {
+        conn.execute_batch("ALTER TABLE quantity_changes ADD COLUMN rank INTEGER;")?;
+        conn.pragma_update(None, "user_version", 4)?;
+    }
+
     // Prune entries older than 7 days so the log doesn't grow unbounded.
     conn.execute_batch(
         "DELETE FROM quantity_changes WHERE timestamp < unixepoch('now', '-7 days');"
@@ -295,19 +300,20 @@ pub fn add_quantity_change(
     item_name: &str,
     old_qty: i64,
     new_qty: i64,
+    rank: Option<u8>,
 ) -> Result<()> {
     let ts = chrono::Utc::now().timestamp();
     conn.execute(
-        "INSERT INTO quantity_changes (unique_name, item_name, old_qty, new_qty, delta, timestamp)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![unique_name, item_name, old_qty, new_qty, new_qty - old_qty, ts],
+        "INSERT INTO quantity_changes (unique_name, item_name, old_qty, new_qty, delta, timestamp, rank)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![unique_name, item_name, old_qty, new_qty, new_qty - old_qty, ts, rank],
     )?;
     Ok(())
 }
 
 pub fn get_quantity_changes(conn: &Connection, limit: i64) -> Result<Vec<QuantityChange>> {
     let mut stmt = conn.prepare(
-        "SELECT id, unique_name, item_name, old_qty, new_qty, delta, timestamp
+        "SELECT id, unique_name, item_name, old_qty, new_qty, delta, timestamp, rank
          FROM quantity_changes
          ORDER BY id DESC
          LIMIT ?1",
@@ -322,7 +328,7 @@ pub fn get_quantity_changes(conn: &Connection, limit: i64) -> Result<Vec<Quantit
                 new_qty: row.get(4)?,
                 delta: row.get(5)?,
                 timestamp: row.get(6)?,
-                rank: None,
+                rank: row.get(7)?,
             })
         })?
         .filter_map(|r| r.ok())
