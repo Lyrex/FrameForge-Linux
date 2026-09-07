@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { checkRivenNow } from "./App";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import type { RivenAnalysis, RivenStat, SavedRiven } from "./types/rivens";
 import "./RivenAnalyzer.css";
 
@@ -123,7 +124,7 @@ export default function RivenAnalyzer() {
       if (editingId) {
         // Update existing roll
         await invoke("delete_saved_riven_roll", { id: editingId });
-        await invoke("save_riven_roll", {
+        await invoke(TAURI_COMMANDS.SAVE_RIVEN_ROLL, {
           weapon: selectedWeapon,
           label: savedRivens.find(r => r.id === editingId)?.label ?? `${selectedWeapon.charAt(0).toUpperCase() + selectedWeapon.slice(1)} · ${now.getDate()} ${now.toLocaleString("en",{month:"short"})}`,
           statsJson: JSON.stringify(stats),
@@ -133,7 +134,7 @@ export default function RivenAnalyzer() {
         setSaveStatus("Updated!");
       } else {
         const label = `${selectedWeapon.charAt(0).toUpperCase() + selectedWeapon.slice(1)} · ${now.getDate()} ${now.toLocaleString("en",{month:"short"})} ${now.getFullYear()}`;
-        await invoke("save_riven_roll", {
+        await invoke(TAURI_COMMANDS.SAVE_RIVEN_ROLL, {
           weapon: selectedWeapon, label, statsJson: JSON.stringify(stats),
           verdict: analysis?.verdict ?? "", score: analysis?.score ?? 0,
         });
@@ -155,7 +156,7 @@ export default function RivenAnalyzer() {
     const stats = inlineEditStats.filter(s => s.value.trim() !== "");
     try {
       await invoke("delete_saved_riven_roll", { id: r.id });
-      await invoke("save_riven_roll", {
+      await invoke(TAURI_COMMANDS.SAVE_RIVEN_ROLL, {
         weapon: r.weapon,
         label: inlineEditLabel,
         statsJson: JSON.stringify(stats),
@@ -215,7 +216,7 @@ export default function RivenAnalyzer() {
       setRollCount(0);
       inputRef.current?.focus();
     });
-    const unlistenSaved = listen("riven-roll-saved", () => loadSavedRivens());
+    const unlistenSaved = listen(TAURI_EVENTS.RIVEN_ROLL_SAVED, () => loadSavedRivens());
     return () => {
       unlistenReroll.then(fn => fn());
       unlistenUnveil.then(fn => fn());
@@ -278,7 +279,7 @@ export default function RivenAnalyzer() {
         <button
           className="riven-credit"
           title="Open Riven price database on Google Sheets"
-          onClick={() => invoke("plugin:opener|open_url", { url: "https://docs.google.com/spreadsheets/d/1zbaeJBuBn44cbVKzJins_E3hTDpnmvOk8heYN-G8yy8" }).catch(() => {})}
+          onClick={() => invoke(TAURI_COMMANDS.OPEN_URL, { url: "https://docs.google.com/spreadsheets/d/1zbaeJBuBn44cbVKzJins_E3hTDpnmvOk8heYN-G8yy8" }).catch(() => {})}
         >data by 44bananas ↗</button>
         <button className="riven-refresh-btn" onClick={reloadDb} title="Reload database from Google Sheet">↻</button>
         <button className="riven-refresh-btn" title="View session log" onClick={async () => {

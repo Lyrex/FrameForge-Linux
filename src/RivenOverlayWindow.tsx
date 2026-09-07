@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
 import type { RivenAnalysis, RivenAnalysisUpdate, RivenStat } from "./types/rivens";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 
 // Tells App.tsx to run OCR again (for "Check New Roll" / "Start Comparison")
-const triggerNewCheck = () => emit("riven-manual-check", {}).catch(() => {});
+const triggerNewCheck = () => emit(TAURI_EVENTS.RIVEN_MANUAL_CHECK, {}).catch(() => {});
 
 // Save current roll directly from overlay
 async function saveOverlayRoll(
@@ -15,11 +16,11 @@ async function saveOverlayRoll(
   const { invoke } = await import("@tauri-apps/api/core");
   const now = new Date();
   const label = `${weapon.charAt(0).toUpperCase() + weapon.slice(1)} · Roll #${rollCount} · ${now.getDate()} ${now.toLocaleString("en",{month:"short"})}`;
-  await invoke("save_riven_roll", {
+  await invoke(TAURI_COMMANDS.SAVE_RIVEN_ROLL, {
     weapon, label, statsJson: JSON.stringify(stats), verdict, score,
   }).catch(() => {});
   const { emit } = await import("@tauri-apps/api/event");
-  await emit("riven-roll-saved").catch(() => {});
+  await emit(TAURI_EVENTS.RIVEN_ROLL_SAVED).catch(() => {});
 }
 
 import "./RivenOverlayWindow.css";
@@ -81,7 +82,7 @@ export default function RivenOverlayWindow() {
   useEffect(() => {
     const unlistenStart = listen("riven-scanning-start", () => resetToScanning());
 
-    const unlistenUpdate = listen<RivenAnalysisUpdate>("riven-analysis-update", e => {
+    const unlistenUpdate = listen<RivenAnalysisUpdate>(TAURI_EVENTS.RIVEN_ANALYSIS_UPDATE, e => {
       if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
       setAnalysis(e.payload.analysis ?? null);
       setRollCount(e.payload.rollCount);
@@ -96,7 +97,7 @@ export default function RivenOverlayWindow() {
     });
 
     // Tell App.tsx the listener is registered and the pending payload can be sent now.
-    emit("riven-window-ready", {}).catch(() => {});
+    emit(TAURI_EVENTS.RIVEN_WINDOW_READY, {}).catch(() => {});
 
     // Initial hide fallback — same as resetToScanning's timer
     scanTimerRef.current = setTimeout(() => requestHide("emergency-60min"), 3_600_000);

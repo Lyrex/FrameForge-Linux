@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { clampToMonitor, overlayScale } from "./uiScale";
+import { TAURI_EVENTS } from "./constants/tauri";
 import type { RelicPickPayload, RelicPickRelic, RelicPickReward } from "./types/relics";
 import type { RelicPickLines, RelicPickPriority } from "./types/settings";
 import "./RelicPickOverlay.css";
@@ -108,10 +109,10 @@ export default function RelicPickOverlay() {
       } catch {}
       setPayload(e.payload);
     });
-    const unClose = listen("relic-pick-close", () => hide());
+    const unClose = listen(TAURI_EVENTS.RELIC_PICK_CLOSE, () => hide());
     // A scale change does not alter the layout size, so the ResizeObserver never
     // fires. Measure again to resize a window that is already open.
-    const unScale = listen("settings-updated", () => {
+    const unScale = listen(TAURI_EVENTS.SETTINGS_UPDATED, () => {
       const el = rootRef.current;
       if (el) syncSize(Math.ceil(el.getBoundingClientRect().height / overlayScale()));
     });

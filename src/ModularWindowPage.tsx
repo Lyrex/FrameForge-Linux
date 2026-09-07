@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import ModularWindow from "./ModularWindow";
 import type { FissureWatch } from "./types/settings";
 import type { CatalogItem, InventoryItem } from "./types/items";
@@ -65,7 +66,7 @@ export default function ModularWindowPage() {
       popoutSettingsLoadedRef.current = true;
     }).catch(() => {});
     invoke<CatalogItem[]>("get_all_items").then(setCatalog).catch(() => {});
-    invoke<Record<string, number>>("get_current_quantities").then(setQuantities).catch(() => {});
+    invoke<Record<string, number>>(TAURI_COMMANDS.GET_CURRENT_QUANTITIES).then(setQuantities).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -76,7 +77,7 @@ export default function ModularWindowPage() {
   }, []);
 
   useEffect(() => {
-    const unlisten = listen("settings-updated", () => {
+    const unlisten = listen(TAURI_EVENTS.SETTINGS_UPDATED, () => {
       invoke<string>("load_settings").then(json => {
         if (!json) return;
         try {
@@ -97,7 +98,7 @@ export default function ModularWindowPage() {
       console.error("save_settings skipped: settings not loaded yet in pop-out");
       return;
     }
-    invoke("save_settings", { json: JSON.stringify(patch) }).catch((e) => {
+    invoke(TAURI_COMMANDS.SAVE_SETTINGS, { json: JSON.stringify(patch) }).catch((e) => {
       console.error("save_settings failed:", e);
     });
   }, []); // eslint-disable-line

@@ -6,6 +6,7 @@ import { HelpTip } from "./HelpTip";
 import WfmTrading from "./WfmTrading";
 import ItemMarketPopup from "./ItemMarketPopup";
 import { warframeStatImageUrl } from "./constants/urls";
+import { TAURI_COMMANDS } from "./constants/tauri";
 import type { CatalogItem, CraftingJob, InventoryItem, RecipeComponent } from "./types/items";
 import type { MarketFilters } from "./types/filters";
 import type { ModCopy } from "./types/inventory";
@@ -327,7 +328,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
   useEffect(() => {
     if (parentItems.size === 0) return;
     const uniqueNames = Array.from(parentItems.values()).map(p => p.unique_name);
-    invoke<Record<string, RecipeComponent[]>>("get_recipes_bulk", { uniqueNames })
+    invoke<Record<string, RecipeComponent[]>>(TAURI_COMMANDS.GET_RECIPES_BULK, { uniqueNames })
       .then(result => {
         const map = new Map<string, number>();
         for (const comps of Object.values(result)) flattenRecipeCounts(comps, 1, map);

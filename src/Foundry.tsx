@@ -4,6 +4,7 @@ import { ImgCacheDirContext } from "./ImgCacheDir";
 import { HelpTip } from "./HelpTip";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import { WARFRAME_WIKI_BASE, warframeStatImageUrl } from "./constants/urls";
+import { TAURI_COMMANDS } from "./constants/tauri";
 import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeComponentStatus } from "./types/items";
 import type { FoundryFilters } from "./types/filters";
 import type { ViewMode } from "./types/ui";
@@ -485,7 +486,7 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
         <button className={`cc-star ${isTracked ? "tracked" : ""}`}
           onClick={e => { e.stopPropagation(); onTrack(item); }}>{isTracked ? "★" : "☆"}</button>
         <button className="cc-wiki"
-          onClick={e => { e.stopPropagation(); invoke("plugin:opener|open_url", { url:`${WARFRAME_WIKI_BASE}/${item.name.replace(" Blueprint","").replace(/\s+/g,"_")}` }).catch(()=>{}); }}>wiki</button>
+          onClick={e => { e.stopPropagation(); invoke(TAURI_COMMANDS.OPEN_URL, { url:`${WARFRAME_WIKI_BASE}/${item.name.replace(" Blueprint","").replace(/\s+/g,"_")}` }).catch(()=>{}); }}>wiki</button>
         <span className="cc-name">{item.name}</span>
       </div>
 
@@ -670,7 +671,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
     const toLoad = visible.filter(i => !recipes.has(i.unique_name));
     if (toLoad.length === 0) return;
     let cancelled = false;
-    invoke<Record<string, RecipeComponent[]>>("get_recipes_bulk", {
+    invoke<Record<string, RecipeComponent[]>>(TAURI_COMMANDS.GET_RECIPES_BULK, {
       uniqueNames: toLoad.map(i => i.unique_name),
     }).then(result => {
       if (cancelled) return;

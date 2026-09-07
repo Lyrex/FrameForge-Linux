@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { notify, ensurePermission } from "./notify";
 import { formatBytes } from "./formatters";
 import { PREFERENCE_KEYS } from "./constants/preferences";
+import { TAURI_EVENTS } from "./constants/tauri";
 import type { ArchonShard } from "./types/items";
 import type { ChangeLogEntry, ModCopy } from "./types/inventory";
 import type { ClockFormat, FoundryPageSize, RelicOverlayPriority, RelicPickLines, RelicPickPriority, SettingsSnapshot } from "./types/settings";
@@ -224,7 +225,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                         saveAllSettings();
                         if (!next) {
                           import("@tauri-apps/api/event").then(({ emit }) =>
-                            emit("relic-screen", true).catch(() => {})
+                            emit(TAURI_EVENTS.RELIC_SCREEN, true).catch(() => {})
                           );
                         }
                       }}

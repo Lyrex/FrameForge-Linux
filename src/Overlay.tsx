@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { overlayScale } from "./uiScale";
 import { PREFERENCE_KEYS } from "./constants/preferences";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import type { CraftingJob, ShallowRecipeComponent } from "./types/items";
 import type { RelicOverlayPriority } from "./types/settings";
 import "./Overlay.css";
@@ -433,7 +434,7 @@ export default function Overlay() {
 
     // Clear stale rewards when a new fissure starts so the diagnostic div shows
     // while OCR is running instead of the previous fissure's stale cards.
-    const unsubTrigger = listen<null>("relic-trigger", () => {
+    const unsubTrigger = listen<null>(TAURI_EVENTS.RELIC_TRIGGER, () => {
       invoke("log_relic_fe", { msg: "[OV] relic-trigger → clearing rewards" }).catch(() => {});
       setRewards([]);
       prevKey.current = "";
@@ -441,7 +442,7 @@ export default function Overlay() {
 
     invoke("log_relic_fe", { msg: "[OV] registering relic-rewards listener" }).catch(() => {});
     const unsub = listen<{ items: string[]; positions: number[] } | null>(
-      "relic-rewards",
+      TAURI_EVENTS.RELIC_REWARDS,
       async (e) => {
         const payload = e.payload;
         invoke("log_relic_fe", { msg: `[OV] relic-rewards event: items=${payload?.items?.length ?? "null"} dataReady=${dataReady} catalogSize=${Object.keys(sessionCatalogRef.current).length}` }).catch(() => {});
@@ -449,7 +450,7 @@ export default function Overlay() {
           invoke("log_relic_fe", { msg: "[OV] null/empty payload → moving off-screen" }).catch(() => {});
           setRewards([]);
           prevKey.current = "";
-          invoke("move_overlay_offscreen").catch(() => {});
+          invoke(TAURI_COMMANDS.MOVE_OVERLAY_OFFSCREEN).catch(() => {});
           return;
         }
 
@@ -494,7 +495,7 @@ export default function Overlay() {
 
     invoke("log_relic_fe", { msg: "[OV] starting Promise.allSettled for qty/crafting" }).catch(() => {});
     Promise.allSettled([
-      invoke<Record<string, number>>("get_current_quantities"),
+      invoke<Record<string, number>>(TAURI_COMMANDS.GET_CURRENT_QUANTITIES),
       invoke<CraftingJob[]>("get_current_crafting"),
     ]).then(async ([quantitiesR, craftingR]) => {
       if (quantitiesR.status === 'fulfilled') {
