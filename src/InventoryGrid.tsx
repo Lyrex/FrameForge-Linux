@@ -6,7 +6,6 @@ import "./InventoryGrid.css";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-export type { ViewMode } from "./types/ui";
 
 export interface InventoryGridItem {
   unique_name: string;

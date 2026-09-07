@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
 import "./Syndicates.css";
 import type { InventoryItem } from "./types/items";
+import type { SyndicateFilters } from "./types/filters";
 import type { SyndicateItem, SyndicateStore } from "./types/syndicates";
 
 // ── Completion status ─────────────────────────────────────────────────────────
@@ -127,9 +128,6 @@ function StatusBadge({ status }: { status: CompStatus }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export interface SyndicateFilters {
-  activeGroup: SynGroup; activeTab: string; missingOnly: boolean; search: string;
-}
 export const SYNDICATE_FILTERS_DEFAULT: SyndicateFilters = {
   activeGroup: "main", activeTab: "Steel Meridian", missingOnly: false, search: "",
 };

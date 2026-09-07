@@ -1,6 +1,5 @@
 import type { ViewMode } from "./types/ui";
 
-export type { ViewMode } from "./types/ui";
 
 const VIEW_LABELS: Record<ViewMode, string> = {
   "cards":        "Cards (icon + text)",

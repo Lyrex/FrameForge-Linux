@@ -5,7 +5,6 @@ import { useContextMenu, CtxMenu, openWiki, copyWikiLink } from "./CtxMenu";
 import { formatUnixTime } from "./formatters";
 import type { ClockFormat } from "./types/settings";
 import type { ChangeLogEntry } from "./types/inventory";
-export type { ChangeLogEntry } from "./types/inventory";
 import "./ChangeLog.css";
 
 export const CHANGE_BATCH_GAP_SECONDS = 8;

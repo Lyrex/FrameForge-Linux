@@ -6,6 +6,7 @@ import { HelpTip } from "./HelpTip";
 import WfmTrading from "./WfmTrading";
 import ItemMarketPopup from "./ItemMarketPopup";
 import type { CatalogItem, CraftingJob, InventoryItem, RecipeComponent } from "./types/items";
+import type { MarketFilters } from "./types/filters";
 import type { ModCopy } from "./types/inventory";
 import type { BlobRivenEntry, BlobRivenStat, WfmItem, WfmPrice, WfmPriceUpdate } from "./types/market";
 import polMadurai  from "./assets/polarity/madurai.svg";
@@ -18,14 +19,6 @@ import polUmbra    from "./assets/polarity/umbra.svg";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export interface MarketFilters {
-  search: string;
-  ownership:  ("owned" | "notowned")[];
-  conditions: ("dupes" | "itemowned" | "fullset" | "hasparts")[];
-  vault:      ("vaulted" | "unvaulted")[];
-  sortMode:   "plat" | "ducats" | "az" | "za";
-  activeMarketTab: "trading" | "sets" | "mods" | "rivens" | "sisters";
-}
 export const MARKET_FILTERS_DEFAULT: MarketFilters = {
   search: "", ownership: [], conditions: [], vault: [], sortMode: "ducats",
   activeMarketTab: "trading",

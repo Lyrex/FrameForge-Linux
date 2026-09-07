@@ -3,15 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 import "./ModularWindow.css";
 import { TIMER_LABELS, getTimerInfo, fmtMs, matchesWatch } from "./TimerHelper";
 import type { FissureWatch } from "./types/settings";
-import type { CatalogItem, InventoryItem, RecipeComponent } from "./types/items";
-import type { WsFissure, WsStorm } from "./types/worldstate";
+import type { CatalogItem, InventoryItem, RecipeComponent, RecipeComponentStatus } from "./types/items";
+import type { MatchedFissure } from "./types/worldstate";
 import { useWorldState } from "./worldstate";
-
-type CompStatus = "none" | "blueprint" | "part";
 
 function fmt(n: number) { return n.toLocaleString(); }
 
-function compStatus(comp: RecipeComponent, inventory: Record<string, InventoryItem>): CompStatus {
+function compStatus(comp: RecipeComponent, inventory: Record<string, InventoryItem>): RecipeComponentStatus {
   if ((inventory[comp.unique_name]?.quantity ?? 0) >= (comp.count || 1)) return "part";
   const bpUnique = comp.components[0]?.unique_name;
   if (bpUnique && (inventory[bpUnique]?.quantity ?? 0) > 0) return "blueprint";
@@ -405,7 +403,6 @@ export default function ModularWindow({
           Axi: "#e5c04a", Requiem: "#9b6dff", Omnia: "#e0e0e0",
         };
         // Match each source array with explicit variant so checks are unambiguous
-        type MatchedFissure = { f: WsFissure | WsStorm; variant: "normal" | "hard" | "storm" };
         const matched: MatchedFissure[] = [
           ...(worldState?.fissures   ?? []).filter(f => fissureWatches.some(w => matchesWatch(w, f, "normal"))).map(f => ({ f, variant: "normal" as const })),
           ...(worldState?.spFissures ?? []).filter(f => fissureWatches.some(w => matchesWatch(w, f, "hard"))).map(f => ({ f, variant: "hard" as const })),

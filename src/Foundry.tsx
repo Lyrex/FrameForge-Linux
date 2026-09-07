@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo, useCallback, memo, startTransition, useRe
 import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
 import { HelpTip } from "./HelpTip";
-import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent } from "./types/items";
+import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeComponentStatus } from "./types/items";
+import type { FoundryFilters } from "./types/filters";
 import type { ViewMode } from "./types/ui";
 import { ViewToggle } from "./ViewToggle";
 import sentientIcon from "./assets/SentientFactionIcon.webp";
@@ -10,14 +11,6 @@ import formaIcon from "./assets/forma-icon.png";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export interface FoundryFilters {
-  search: string; activeCat: string;
-  filterPrime: boolean; filterNonPrime: boolean; filterVaulted: boolean; filterUnvaulted: boolean;
-  filterMastered: boolean; filterUnmastered: boolean;
-  filterOwned: boolean; filterUnowned: boolean; filterReady: boolean;
-  filterLvlCap: boolean;
-  ignoreFormaKuva: boolean;
-}
 export const FOUNDRY_FILTERS_DEFAULT: FoundryFilters = {
   search: "", activeCat: "Warframes",
   filterPrime: false, filterNonPrime: false, filterVaulted: false, filterUnvaulted: false,
@@ -63,9 +56,7 @@ function collectNeeds(
   }
 }
 
-type CompStatus = "none" | "blueprint" | "part";
-
-function compStatus(comp: RecipeComponent, inventory: Record<string, InventoryItem>): CompStatus {
+function compStatus(comp: RecipeComponent, inventory: Record<string, InventoryItem>): RecipeComponentStatus {
   if ((inventory[comp.unique_name]?.quantity ?? 0) >= (comp.count || 1)) return "part";
   const bpUnique = comp.components[0]?.unique_name;
   if (bpUnique && (inventory[bpUnique]?.quantity ?? 0) > 0) return "blueprint";

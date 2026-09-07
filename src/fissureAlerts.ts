@@ -1,4 +1,4 @@
-import type { WorldState, WsFissure, WsStorm } from "./types/worldstate";
+import type { MatchedFissure, SeenFissures, WorldState, WsFissure, WsStorm } from "./types/worldstate";
 import type { FissureVariant, FissureWatch } from "./types/settings";
 
 // actualVariant is passed explicitly from the caller who knows which array the fissure came from
@@ -29,10 +29,6 @@ export function matchesWatch(
 
   return true;
 }
-export type MatchedFissure = { f: WsFissure | WsStorm; variant: FissureVariant };
-
-export type SeenFissures = Map<string, Set<string>>;
-
 // A watch with no entry in `seen` yet is new, and everything it matches right
 // now is announced: someone adding a watch wants to know what is live, and
 // should not have to wait for the next rotation to find out. `restoredIds`

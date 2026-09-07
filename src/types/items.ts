@@ -34,6 +34,15 @@ export interface RecipeComponent {
   components: RecipeComponent[];
 }
 
+export type RecipeComponentStatus = "none" | "blueprint" | "part";
+
+export interface ShallowRecipeComponent {
+  unique_name: string;
+  name: string;
+  count: number;
+  result_count: number;
+}
+
 export interface ArchonShard {
   type: string;
   tauforged: boolean;

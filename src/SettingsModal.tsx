@@ -5,7 +5,6 @@ import { formatBytes } from "./formatters";
 import type { ArchonShard } from "./types/items";
 import type { ChangeLogEntry, ModCopy } from "./types/inventory";
 import type { ClockFormat, FoundryPageSize, RelicOverlayPriority, RelicPickLines, RelicPickPriority, SettingsSnapshot } from "./types/settings";
-export type { SettingsSnapshot } from "./types/settings";
 import "./SettingsModal.css";
 
 type SettingsTab = "general" | "overlays" | "market" | "accessibility" | "data" | "debugging";

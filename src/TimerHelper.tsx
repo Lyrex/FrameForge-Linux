@@ -3,14 +3,11 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import "./TimerHelper.css";
 import type { InventoryItem } from "./types/items";
 import type { WorldState, WsFissure, WsStorm } from "./types/worldstate";
-export type { WorldState, WsFissure, WsStorm } from "./types/worldstate";
 import { useWorldState } from "./worldstate";
 import { ensurePermission } from "./notify";
 import { matchesWatch } from "./fissureAlerts";
 import type { FissureWatch } from "./types/settings";
 
-// Re-exported so existing TimerHelper imports remain compatible.
-export type { FissureWatch };
 export { matchesWatch };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

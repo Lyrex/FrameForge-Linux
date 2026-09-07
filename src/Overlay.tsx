@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 
 import { overlayScale } from "./uiScale";
-import type { CraftingJob } from "./types/items";
+import type { CraftingJob, ShallowRecipeComponent } from "./types/items";
 import type { RelicOverlayPriority } from "./types/settings";
 import "./Overlay.css";
 
@@ -334,7 +334,6 @@ export default function Overlay() {
         const cat       = sessionCatalogRef.current;
         const setPrefix = setName + " ";
 
-        type RC = { unique_name: string; name: string; count: number; result_count: number };
         let components: ComponentRow[] | null = null;
 
         // The "built item" entry (weapon/warframe entity, not blueprint or part).
@@ -346,7 +345,7 @@ export default function Overlay() {
 
         // Attempt 1: recipe lookup (gives exact ingredient list + correct needed counts)
         if (setEntry) {
-          const recipe = await invoke<RC[]>("get_recipe", { unique_name: setEntry.unique_name }).catch(() => []);
+          const recipe = await invoke<ShallowRecipeComponent[]>("get_recipe", { unique_name: setEntry.unique_name }).catch(() => []);
           if (recipe.length) {
             // Filter out raw resources (Rubedo, Circuits etc.) — show only craftable parts
             const parts = recipe.filter(c => {

@@ -2,21 +2,13 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { HelpTip } from "./HelpTip";
 import type { CatalogItem, InventoryItem } from "./types/items";
+import type { RelicFilters } from "./types/filters";
 import type { DropReward, RelicDrop } from "./types/relics";
 import type { ViewMode } from "./types/ui";
 import { ViewToggle } from "./ViewToggle";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export interface RelicFilters {
-  search: string;
-  tiers: string[];
-  ownership: ("owned" | "notowned")[];
-  vault: ("vaulted" | "unvaulted")[];
-  completion: ("complete" | "incomplete")[];
-  sortMode: "count" | "plat" | "ducats" | "az" | "za";
-  ignoreFormaKuva: boolean;
-}
 export const RELIC_FILTERS_DEFAULT: RelicFilters = {
   search: "", tiers: [], ownership: [], vault: [], completion: [], sortMode: "count",
   ignoreFormaKuva: false,
