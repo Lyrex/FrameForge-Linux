@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 interface CtxMenuItem {
@@ -27,15 +27,15 @@ export function useContextMenu() {
     };
   }, [ctxMenu]);
 
-  const open = (x: number, y: number, items: CtxMenuItem[]) => {
+  const open = useCallback((x: number, y: number, items: CtxMenuItem[]) => {
     const menuW = 180;
     const menuH = items.length * 30 + 8;
     const maxX = window.innerWidth - menuW;
     const maxY = window.innerHeight - menuH;
     setCtxMenu({ x: Math.min(x, maxX), y: Math.min(y, maxY), items });
-  };
+  }, []);
 
-  const close = () => setCtxMenu(null);
+  const close = useCallback(() => setCtxMenu(null), []);
 
   return { ctxMenu, open, close };
 }

@@ -25,7 +25,7 @@ interface InventoryGridProps {
   modCopies: Record<string, { rank: number | null; count: number }[]>;
   favorites: Set<string>;
   lastChanged: Record<string, number>;
-  changes: Map<string, { delta: number; rank?: number | null }[]>;
+  changes: Map<string, { delta: number; rank?: number | null; timestamp: number }[]>;
   crafting: Map<string, { item_name: string }>;
   filterRank: number | "unranked" | null;
   onToggleFavorite: (id: string) => void;
@@ -254,8 +254,10 @@ export default memo(function InventoryGrid({
             const byRank: Record<number, number> = {};
             for (const c of copies) byRank[c.rank ?? 0] = (byRank[c.rank ?? 0] ?? 0) + c.count;
             const changeEntries = lastChanged[item.unique_name] != null ? changes.get(item.unique_name) : undefined;
-            const rankDeltas = changeEntries?.filter(c => c.rank != null).map(c => ({ rank: c.rank!, delta: c.delta })) ?? [];
-            const isRecent = lastChanged[item.unique_name] != null && Date.now() / 1000 - lastChanged[item.unique_name] < 300;
+            const nowSec = Date.now() / 1000;
+            const recentChanges = changeEntries?.filter(change => nowSec - change.timestamp < 300) ?? [];
+            const rankDeltas = recentChanges.filter(c => c.rank != null).map(c => ({ rank: c.rank!, delta: c.delta }));
+            const isRecent = lastChanged[item.unique_name] != null && nowSec - lastChanged[item.unique_name] < 300;
             const ranks = [...new Set([...Object.keys(byRank).map(Number), ...rankDeltas.map(delta => delta.rank)])]
               .sort((a, b) => a - b)
               .map(rank => ({ rank, count: byRank[rank] ?? 0 }))
@@ -265,7 +267,7 @@ export default memo(function InventoryGrid({
               if ((byRank[targetRank] ?? 0) === 0) return [];
             }
             const total = Object.values(byRank).reduce((a, b) => a + b, 0);
-            const totalDelta = changeEntries?.find(c => c.rank == null)?.delta ?? rankDeltas.reduce((s, d) => s + d.delta, 0);
+            const totalDelta = recentChanges.find(c => c.rank == null)?.delta ?? rankDeltas.reduce((s, d) => s + d.delta, 0);
             return [(
               <InvModCard key={item.unique_name}
                 unique_name={item.unique_name} name={item.name}
@@ -280,7 +282,8 @@ export default memo(function InventoryGrid({
           // Normal item card
           const changedAt = lastChanged[item.unique_name];
           const changeEntries = changedAt != null ? changes.get(item.unique_name) : undefined;
-          const recentChange = changeEntries?.find(c => c.rank == null) ?? changeEntries?.[0];
+          const recentChange = changeEntries?.find(change => Date.now() / 1000 - change.timestamp < 300 && change.rank == null)
+            ?? changeEntries?.find(change => Date.now() / 1000 - change.timestamp < 300);
           const craftJob = crafting.get(item.unique_name);
           return [(
             <InvCard key={item.unique_name}

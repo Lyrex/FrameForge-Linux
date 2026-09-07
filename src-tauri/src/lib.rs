@@ -4990,16 +4990,20 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 // Compare current by_rank with previous to find which specific rank changed.
                 if !prev_mods.is_empty() {
                     let ts = chrono::Utc::now().timestamp();
-                    for (path, mc) in &known_mods {
+                    let all_paths: std::collections::HashSet<&String> =
+                        prev_mods.keys().chain(known_mods.keys()).collect();
+                    for path in all_paths {
                         if ignored_paths.contains(path.as_str()) { continue; }
                         let prev = prev_mods.get(path);
-                        let all_ranks: std::collections::HashSet<u8> = match prev {
-                            Some(p) => p.by_rank.keys().chain(mc.by_rank.keys()).cloned().collect(),
-                            None => mc.by_rank.keys().cloned().collect(),
-                        };
+                        let current = known_mods.get(path);
+                        let all_ranks: std::collections::HashSet<u8> = prev.into_iter()
+                            .flat_map(|mods| mods.by_rank.keys())
+                            .chain(current.into_iter().flat_map(|mods| mods.by_rank.keys()))
+                            .cloned()
+                            .collect();
                         for rank in all_ranks {
                             let old_count = prev.map(|p| *p.by_rank.get(&rank).unwrap_or(&0)).unwrap_or(0);
-                            let new_count = *mc.by_rank.get(&rank).unwrap_or(&0);
+                            let new_count = current.map(|mods| *mods.by_rank.get(&rank).unwrap_or(&0)).unwrap_or(0);
                             if old_count == new_count { continue; }
                             let item_name = path_to_name.get(path.as_str())
                                 .cloned()

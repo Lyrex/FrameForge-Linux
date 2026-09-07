@@ -84,9 +84,9 @@ import ModularWindow from "./ModularWindow";
 import ChangeLog, { type ChangeLogEntry } from "./ChangeLog";
 import InventoryGrid from "./InventoryGrid";
 import InventoryBatchPreview from "./InventoryBatchPreview";
-import { type ViewMode, ViewToggle } from "./ViewToggle";
-import SearchBar from "./SearchBar";
-import { HelpTip } from "./HelpTip";
+import InventoryToolbar from "./InventoryToolbar";
+import { INVENTORY_FILTERS_DEFAULT, type InventoryFilters } from "./InventoryFilters";
+import type { ViewMode } from "./ViewToggle";
 import "./App.css";
 import "./images.css";
 import "./InventoryGrid.css";
@@ -537,20 +537,21 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const inventoryReadyRef = useRef(false);
   const [changeLogExpanded, setChangeLogExpanded] = useState(false);
   const [changeLogHeight, setChangeLogHeight] = useState(270);
-  const [category, setCategory] = useState("all");
-  const [search, setSearch] = useState("");
-  const [filterOwned,    setFilterOwned]    = useState(false);
-  const [filterRecent,   setFilterRecent]   = useState(false);
-  const [filterPrime,    setFilterPrime]    = useState(false);
-  const [filterVaulted,  setFilterVaulted]  = useState(false);
-  const [filterUnvaulted,setFilterUnvaulted]= useState(false);
-  const [sortMode, setSortMode] = useState<"qty-desc" | "qty-asc" | "name-asc" | "name-desc" | "recent">("qty-desc");
+  const [inventoryFilters, setInventoryFilters] = useState<InventoryFilters>(INVENTORY_FILTERS_DEFAULT);
+  const { category, search, filterOwned, filterRecent, filterPrime, filterVaulted, filterUnvaulted, filterRank, sortMode } = inventoryFilters;
   const prevSortRef = useRef(sortMode);
   useEffect(() => { if (sortMode !== "recent") prevSortRef.current = sortMode; }, [sortMode]);
-  const [filterRank, setFilterRank] = useState<number | "unranked" | null>(null);
+  const toggleInventoryRecent = useCallback(() => setInventoryFilters(previous => {
+    const filterRecent = !previous.filterRecent;
+    return { ...previous, filterRecent, sortMode: filterRecent ? "recent" : prevSortRef.current };
+  }), []);
   const [inventoryView, setInventoryView] = useState<ViewMode>(() =>
     (localStorage.getItem("ff-view-inventory") as ViewMode | null) ?? "cards"
   );
+  const setInventoryViewPreference = useCallback((view: ViewMode) => {
+    setInventoryView(view);
+    localStorage.setItem("ff-view-inventory", view);
+  }, []);
 
   // ── Per-tab persisted filter state ────────────────────────────────────────
   const [foundryFilters, setFoundryFilters] = useState<FoundryFilters>(FOUNDRY_FILTERS_DEFAULT);
@@ -1841,7 +1842,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
       return b.qty - a.qty || a.name.localeCompare(b.name);
     });
     return out.slice(0, 1000);
-  }, [catalog, inventory, category, search, filterOwned, filterRecent, filterPrime, filterVaulted, filterUnvaulted, filterRank, sortMode, lastChanged, modCopiesMap, changeLog]); // eslint-disable-line
+  }, [catalog, inventory, inventoryFilters, lastChanged, modCopiesMap, changeLog]);
 
   const resetInventoryFilters = ({
     recent,
@@ -1853,14 +1854,13 @@ if (typeof s.autoDiagEnabled === "boolean") {
     categoryId?: string;
   }) => {
     setActiveModule("inventory");
-    setCategory(categoryId);
-    setSearch(searchTerm);
-    setFilterOwned(false);
-    setFilterRecent(recent);
-    setFilterPrime(false);
-    setFilterVaulted(false);
-    setFilterUnvaulted(false);
-    setFilterRank(null);
+    setInventoryFilters(previous => ({
+      ...INVENTORY_FILTERS_DEFAULT,
+      category: categoryId,
+      search: searchTerm,
+      filterRecent: recent,
+      sortMode: recent ? "recent" : previous.sortMode,
+    }));
   };
 
   // Navigate to an item from the changelog — only switches module and sets search,
@@ -1868,11 +1868,22 @@ if (typeof s.autoDiagEnabled === "boolean") {
   const openChangeLogItem = (uniqueName: string) => {
     const item = catalog.find(candidate => candidate.unique_name === uniqueName);
     setActiveModule("inventory");
-    setSearch(item?.name ?? "");
+    setInventoryFilters(previous => ({ ...previous, search: item?.name ?? "" }));
   };
 
   const openRecentChanges = () => resetInventoryFilters({ recent: true });
   const openRecentCategory = (categoryId: string) => resetInventoryFilters({ recent: true, categoryId });
+  const closeInventoryBatchPreview = useCallback(() => setShowInventoryBatchPreview(false), []);
+  const handleInventoryContextMenu = useCallback((e: React.MouseEvent) => {
+    const name = extractItemName(e);
+    if (name) {
+      e.preventDefault();
+      openCtx(e.clientX, e.clientY, [
+        { label: "Open Wiki", action: () => openWiki(name) },
+        { label: "Copy Wiki Link", action: () => copyWikiLink(name) },
+      ]);
+    }
+  }, [openCtx]);
 
   // ─── Render ─────────────────────────────────────────────────────────────────
 
@@ -2580,7 +2591,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                         <span className="settings-row-label">Incoming Batch</span>
                         <span className="settings-row-desc">Preview gained, lost, crafting, and mod rank changes without modifying your inventory.</span>
                       </div>
-                      <button className="btn-secondary" onClick={() => { setShowInventoryBatchPreview(true); setShowSettings(false); }}>Preview</button>
+                      <button className="btn-secondary" onClick={() => setShowInventoryBatchPreview(true)}>Preview</button>
                     </div>
                   </div>
 
@@ -2852,7 +2863,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         </div>
       )}
 
-      {showInventoryBatchPreview && <InventoryBatchPreview onClose={() => setShowInventoryBatchPreview(false)} />}
+      {showInventoryBatchPreview && <InventoryBatchPreview onClose={closeInventoryBatchPreview} />}
 
       <div className="body">
 
@@ -2938,7 +2949,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                   <button
                     key={cat.id}
                     className={`cat-btn ${category === cat.id ? "cat-active" : ""}`}
-                    onClick={() => setCategory(cat.id)}
+                    onClick={() => setInventoryFilters(previous => ({ ...previous, category: cat.id }))}
                   >
                     <span className="cat-label">{cat.label}</span>
                     <span className="cat-count">
@@ -2965,43 +2976,16 @@ if (typeof s.autoDiagEnabled === "boolean") {
                 </div>
               )}
 
-              <div className="toolbar">
-                <SearchBar
-                  placeholder="Search items…"
-                  value={search}
-                  onChange={setSearch}
-                />
-              </div>
-              <div className="filter-bar">
-                <button className={`fchip ${filterOwned?"fchip-on":""}`} onClick={()=>setFilterOwned(v=>!v)}>Owned</button>
-                <button className={`fchip ${filterRecent?"fchip-on":""}`} onClick={()=>setFilterRecent(v=>{ const next = !v; if (next) { setSortMode("recent"); } else { setSortMode(prevSortRef.current); } return next; })}>Changed recently</button>
-                <button className={`fchip ${filterPrime?"fchip-on":""}`} onClick={()=>setFilterPrime(v=>!v)}>Prime</button>
-                <button className={`fchip ${filterVaulted?"fchip-on":""}`} onClick={()=>setFilterVaulted(v=>!v)}>🔒 Vaulted</button>
-                <button className={`fchip ${filterUnvaulted?"fchip-on":""}`} onClick={()=>setFilterUnvaulted(v=>!v)}>🔓 Unvaulted</button>
-                {apiModCopies.length > 0 && (<>
-                  <span className="fbar-sep"/>
-                  <span className="fbar-label">Rank:</span>
-                  <button className={`fchip ${filterRank==="unranked"?"fchip-on":""}`} onClick={()=>setFilterRank(v=>v==="unranked"?null:"unranked")}>Unranked</button>
-                  {availableRanks.map(r=>(
-                    <button key={r} className={`fchip ${filterRank===r?"fchip-on":""}`} onClick={()=>setFilterRank(v=>v===r?null:r)}>R{r}</button>
-                  ))}
-                </>)}
-                <span className="fbar-sep"/>
-                <span className="fbar-label">Sort:</span>
-                <button className={`fchip ${sortMode==="qty-desc"?"fchip-on":""}`} onClick={()=>setSortMode("qty-desc")}>Qty ↓</button>
-                <button className={`fchip ${sortMode==="qty-asc"?"fchip-on":""}`} onClick={()=>setSortMode("qty-asc")}>Qty ↑</button>
-                <button className={`fchip ${sortMode==="name-asc"?"fchip-on":""}`} onClick={()=>setSortMode("name-asc")}>A-Z</button>
-                <button className={`fchip ${sortMode==="name-desc"?"fchip-on":""}`} onClick={()=>setSortMode("name-desc")}>Z-A</button>
-                <span className="item-count-label" style={{marginLeft:"auto"}}>{visibleItems.length} item{visibleItems.length!==1?"s":""}{visibleItems.length===1000?" (capped)":""}</span>
-                <ViewToggle view={inventoryView} onChange={v => { setInventoryView(v); localStorage.setItem("ff-view-inventory", v); }} />
-                <HelpTip items={[
-                  { icon: "★",  label: "★  Mastered",  desc: "Shown above image — item levelled to rank 30" },
-                  { icon: "R5", label: "R{n}  Rank",   desc: "Shown above image — current rank, not yet mastered" },
-                  { icon: "⚒",  label: "⚒  Building",  desc: "Shown on image — currently crafting in Foundry" },
-                  { swatch: "rgba(63,185,80,.5)",  label: "Green border", desc: "Item recently gained" },
-                  { swatch: "rgba(248,81,73,.5)",  label: "Red border",   desc: "Item recently lost or consumed" },
-                ]} />
-              </div>
+              <InventoryToolbar
+                filters={inventoryFilters}
+                onFiltersChange={setInventoryFilters}
+                onToggleRecent={toggleInventoryRecent}
+                availableRanks={availableRanks}
+                showRankFilters={apiModCopies.length > 0}
+                itemCount={visibleItems.length}
+                view={inventoryView}
+                onViewChange={setInventoryViewPreference}
+              />
 
               <InventoryGrid
                 items={visibleItems}
@@ -3016,13 +3000,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                 crafting={craftingMap}
                 filterRank={filterRank}
                 onToggleFavorite={toggleFavorite}
-                onContextMenu={e => {
-                  const name = extractItemName(e);
-                  if (name) { e.preventDefault(); openCtx(e.clientX, e.clientY, [
-                    { label: "Open Wiki", action: () => openWiki(name) },
-                    { label: "Copy Wiki Link", action: () => copyWikiLink(name) },
-                  ]); }
-                }}
+                onContextMenu={handleInventoryContextMenu}
               />
 
             </div>
