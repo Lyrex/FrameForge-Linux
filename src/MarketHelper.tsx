@@ -194,13 +194,13 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
   const set = <K extends keyof MarketFilters>(k: K, v: MarketFilters[K]) => onFiltersChange({ ...filters, [k]: v });
 
   useEffect(() => {
-    invoke<CatalogItem[]>("get_all_items").then(setAllItems).catch(() => {});
+    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS).then(setAllItems).catch(() => {});
   }, [refreshKey]);
 
   // Reflect WFM login state immediately — App.tsx loads the JWT into Rust on startup,
   // so wfm_get_session succeeds even before the Trading tab has been opened.
   useEffect(() => {
-    invoke<[string, string] | null>("wfm_get_session")
+    invoke<[string, string] | null>(TAURI_COMMANDS.WFM_GET_SESSION)
       .then(existing => { if (existing) setWfmUsername(existing[0]); })
       .catch(() => {});
   }, []); // eslint-disable-line
@@ -269,7 +269,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
   useEffect(() => {
     setWfmLoading(true);
     setWfmError(false);
-    invoke<WfmItem[]>("fetch_wfm_items")
+    invoke<WfmItem[]>(TAURI_COMMANDS.FETCH_WFM_ITEMS)
       .then(items => {
         setWfmItems(items);
         if (!items.length) setWfmError(true);
@@ -1387,10 +1387,10 @@ function VeiledSellModal({ category, count, onClose, onSuccess }: VeiledSellModa
     setBusy(true);
     setError(null);
     try {
-      const info = await invoke<{ item: { id: string } }>("wfm_get_item_info", { urlName: slug });
+      const info = await invoke<{ item: { id: string } }>(TAURI_COMMANDS.WFM_GET_ITEM_INFO, { urlName: slug });
       const itemId = info?.item?.id ?? (info as Record<string, Record<string, string>>)?.["data"]?.["id"];
       if (!itemId) throw new Error("Could not find WFM item ID for this riven type.");
-      await invoke("wfm_create_order", { itemId, orderType: "sell", platinum: plat, quantity: qty, visible });
+      await invoke(TAURI_COMMANDS.WFM_CREATE_ORDER, { itemId, orderType: "sell", platinum: plat, quantity: qty, visible });
       onSuccess();
       onClose();
     } catch (e: unknown) {

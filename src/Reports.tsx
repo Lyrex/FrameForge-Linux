@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useContext, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
 import { warframeStatImageUrl } from "./constants/urls";
+import { TAURI_COMMANDS } from "./constants/tauri";
 import type { WfmTopItem } from "./types/market";
 import type { Trade, TradeSession } from "./types/trades";
 import "./Reports.css";
@@ -276,7 +277,7 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat, sys
 
     // Fetch top WFM items in background — first load takes ~15s (rate-limited),
     // subsequent opens within 3 hours are instant from cache.
-    invoke<WfmTopItem[]>("get_wfm_top_items")
+    invoke<WfmTopItem[]>(TAURI_COMMANDS.GET_WFM_TOP_ITEMS)
       .then(items => { setTopItems(items); setTopLoading(false); })
       .catch(() => setTopLoading(false));
   }, []);

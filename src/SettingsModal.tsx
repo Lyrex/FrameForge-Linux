@@ -3,7 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { notify, ensurePermission } from "./notify";
 import { formatBytes } from "./formatters";
 import { PREFERENCE_KEYS } from "./constants/preferences";
-import { TAURI_EVENTS } from "./constants/tauri";
+import { CLOCK_FORMAT_OPTIONS, FOUNDRY_PAGE_SIZE_OPTIONS, RELIC_OVERLAY_PRIORITY_OPTIONS, RELIC_PICK_LINES_OPTIONS, RELIC_PICK_PRIORITY_OPTIONS } from "./constants/settings";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import type { ArchonShard } from "./types/items";
 import type { ChangeLogEntry, ModCopy } from "./types/inventory";
 import type { ClockFormat, FoundryPageSize, RelicOverlayPriority, RelicPickLines, RelicPickPriority, SettingsSnapshot } from "./types/settings";
@@ -98,9 +99,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                         settingsRef.current = { ...settingsRef.current, foundryPageSize: next };
                         saveAllSettings();
                       }}>
-                      <option value={30}>30</option>
-                      <option value={60}>60</option>
-                      <option value={100}>100</option>
+                      {FOUNDRY_PAGE_SIZE_OPTIONS.map(size => <option key={size} value={size}>{size}</option>)}
                     </select>
                   </div>
                 </div>
@@ -248,10 +247,9 @@ export default function SettingsModal(props: SettingsModalProps) {
                         saveAllSettings();
                       }}
                     >
-                      <option value="completion">Item Completion</option>
-                      <option value="setPlat">Most Set Value (plat)</option>
-                      <option value="plat">Most Plat (item)</option>
-                      <option value="ducat">Most Ducats</option>
+                      {RELIC_OVERLAY_PRIORITY_OPTIONS.map(priority => (
+                        <option key={priority} value={priority}>{priority === "completion" ? "Item Completion" : priority === "setPlat" ? "Most Set Value (plat)" : priority === "plat" ? "Most Plat (item)" : "Most Ducats"}</option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -276,7 +274,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                         setMemTriggerEnabled(next);
                         settingsRef.current = { ...settingsRef.current, memTriggerEnabled: next };
                         saveAllSettings();
-                        invoke("set_mem_trigger_enabled", { enabled: next });
+                        invoke(TAURI_COMMANDS.SET_MEM_TRIGGER_ENABLED, { enabled: next });
                       }}
                     >{memTriggerEnabled ? "On" : "Off"}</button>
                   </div>
@@ -298,7 +296,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                         setRelicPickEnabled(next);
                         settingsRef.current = { ...settingsRef.current, relicPickEnabled: next };
                         saveAllSettings();
-                        invoke("set_relic_pick_enabled", { enabled: next });
+                        invoke(TAURI_COMMANDS.SET_RELIC_PICK_ENABLED, { enabled: next });
                       }}
                     >{relicPickEnabled ? "Enabled" : "Disabled"}</button>
                   </div>
@@ -314,9 +312,9 @@ export default function SettingsModal(props: SettingsModalProps) {
                         settingsRef.current = { ...settingsRef.current, relicPickPriority: next };
                         saveAllSettings();
                       }}>
-                      <option value="unowned">Unowned / Mastery</option>
-                      <option value="ducat">Most Ducats (EV)</option>
-                      <option value="platinum">Most Platinum (EV)</option>
+                      {RELIC_PICK_PRIORITY_OPTIONS.map(priority => (
+                        <option key={priority} value={priority}>{priority === "unowned" ? "Unowned / Mastery" : priority === "ducat" ? "Most Ducats (EV)" : "Most Platinum (EV)"}</option>
+                      ))}
                     </select>
                   </div>
                   <div className="settings-row" style={{ marginTop: 8, opacity: relicPickEnabled ? 1 : 0.45, pointerEvents: relicPickEnabled ? "auto" : "none" }}>
@@ -331,9 +329,9 @@ export default function SettingsModal(props: SettingsModalProps) {
                         settingsRef.current = { ...settingsRef.current, relicPickLines: next };
                         saveAllSettings();
                       }}>
-                      <option value="all">All items</option>
-                      <option value="best">Only most valuable</option>
-                      <option value="estimated">Score summary only</option>
+                      {RELIC_PICK_LINES_OPTIONS.map(lines => (
+                        <option key={lines} value={lines}>{lines === "all" ? "All items" : lines === "best" ? "Only most valuable" : "Score summary only"}</option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -472,7 +470,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                       <span className="settings-row-desc">How times are displayed throughout the app.{clockFormat === "auto" ? ` System locale: ${systemLocale}` : ""}</span>
                     </div>
                     <div style={{ display: "flex", gap: 4 }}>
-                      {(["auto", "12h", "24h"] as const).map(f => (
+                      {CLOCK_FORMAT_OPTIONS.map(f => (
                         <button key={f} className="btn-secondary" style={{ minWidth: 44, background: clockFormat === f ? "rgba(56,139,253,.15)" : undefined, borderColor: clockFormat === f ? "var(--accent)" : undefined }}
                           onClick={() => {
                             setClockFormat(f);
@@ -525,7 +523,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                           setLastChanged({});
                           setWfConnected(false);
                           wfConnectedRef.current = false;
-                          invoke("save_api_inventory", { apiQuantities: {}, apiModCopies: [], consumedSuits: [] }).catch(() => {});
+                          invoke(TAURI_COMMANDS.SAVE_API_INVENTORY, { apiQuantities: {}, apiModCopies: [], consumedSuits: [] }).catch(() => {});
                             setItemsRefreshKey(k => k + 1);
                           setClearMsg("Cache cleared.");
                         } catch (e) { setClearMsg(`Error: ${e}`); }

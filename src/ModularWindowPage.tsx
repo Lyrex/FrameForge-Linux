@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
+import { MODULAR_SECTION_ORDER_DEFAULT } from "./constants/settings";
 import ModularWindow from "./ModularWindow";
 import type { FissureWatch } from "./types/settings";
 import type { CatalogItem, InventoryItem } from "./types/items";
@@ -41,11 +42,11 @@ export default function ModularWindowPage() {
     }
     return inv;
   }, [catalog, quantities]);
-  const [sectionOrder, setSectionOrder] = useState<string[]>(["tracking", "favorites", "timers", "fissures"]);
+  const [sectionOrder, setSectionOrder] = useState<string[]>([...MODULAR_SECTION_ORDER_DEFAULT]);
 
   const popoutSettingsLoadedRef = useRef(false);
   useEffect(() => {
-    invoke<string>("load_settings").then(json => {
+    invoke<string>(TAURI_COMMANDS.LOAD_SETTINGS).then(json => {
       // A missing file is a first launch and safe to write to.
       if (!json) { popoutSettingsLoadedRef.current = true; return; }
       try {
@@ -65,12 +66,12 @@ export default function ModularWindowPage() {
       // refuses to overwrite a settings.json that is not a valid JSON object.
       popoutSettingsLoadedRef.current = true;
     }).catch(() => {});
-    invoke<CatalogItem[]>("get_all_items").then(setCatalog).catch(() => {});
+    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS).then(setCatalog).catch(() => {});
     invoke<Record<string, number>>(TAURI_COMMANDS.GET_CURRENT_QUANTITIES).then(setQuantities).catch(() => {});
   }, []);
 
   useEffect(() => {
-    const unlisten = listen<InventoryUpdate>("inventory-update", e => {
+    const unlisten = listen<InventoryUpdate>(TAURI_EVENTS.INVENTORY_UPDATE, e => {
       setQuantities(e.payload.quantities);
     });
     return () => { unlisten.then(fn => fn()); };
@@ -78,7 +79,7 @@ export default function ModularWindowPage() {
 
   useEffect(() => {
     const unlisten = listen(TAURI_EVENTS.SETTINGS_UPDATED, () => {
-      invoke<string>("load_settings").then(json => {
+      invoke<string>(TAURI_COMMANDS.LOAD_SETTINGS).then(json => {
         if (!json) return;
         try {
           const s = JSON.parse(json);

@@ -89,6 +89,20 @@ import InventoryBatchPreview from "./InventoryBatchPreview";
 import InventoryToolbar from "./InventoryToolbar";
 import { INVENTORY_FILTERS_DEFAULT } from "./InventoryFilters";
 import { PREFERENCE_KEYS } from "./constants/preferences";
+import {
+  CLOCK_FORMAT_OPTIONS,
+  DEFAULT_CLOCK_FORMAT,
+  DEFAULT_FOUNDRY_PAGE_SIZE,
+  DEFAULT_RELIC_OVERLAY_PRIORITY,
+  DEFAULT_RELIC_PICK_LINES,
+  DEFAULT_RELIC_PICK_PRIORITY,
+  DEFAULT_RELIC_PICK_REFINEMENT,
+  FOUNDRY_PAGE_SIZE_OPTIONS,
+  MODULAR_SECTION_ORDER_DEFAULT,
+  RELIC_PICK_LINES_OPTIONS,
+  RELIC_PICK_PRIORITY_OPTIONS,
+  RELIC_PICK_REFINEMENT_OPTIONS,
+} from "./constants/settings";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import type { FoundryFilters, InventoryFilters } from "./types/filters";
 import type { ViewMode } from "./types/ui";
@@ -306,18 +320,18 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [fetchMsg, setFetchMsg] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'general' | 'overlays' | 'market' | 'accessibility' | 'data' | 'debugging'>('general');
-  const [foundryPageSize, setFoundryPageSize] = useState<FoundryPageSize>(30);
+  const [foundryPageSize, setFoundryPageSize] = useState<FoundryPageSize>(DEFAULT_FOUNDRY_PAGE_SIZE);
   const [overlayEnabled, setOverlayEnabled] = useState<boolean>(
     () => localStorage.getItem(PREFERENCE_KEYS.OVERLAY_ENABLED) !== "false"
   );
   const [overlayPriority, setOverlayPriority] = useState<RelicOverlayPriority>(
-    () => (localStorage.getItem(PREFERENCE_KEYS.OVERLAY_PRIORITY) ?? "completion") as RelicOverlayPriority
+    () => (localStorage.getItem(PREFERENCE_KEYS.OVERLAY_PRIORITY) ?? DEFAULT_RELIC_OVERLAY_PRIORITY) as RelicOverlayPriority
   );
   const [relicPickEnabled,    setRelicPickEnabled]    = useState<boolean>(true);
   const [memTriggerEnabled,   setMemTriggerEnabled]   = useState<boolean>(false);
-  const [relicPickPriority,   setRelicPickPriority]   = useState<RelicPickPriority>("unowned");
-  const [relicPickRefinement, setRelicPickRefinement] = useState<RelicRefinement>("radiant");
-  const [relicPickLines,      setRelicPickLines]      = useState<RelicPickLines>("all");
+  const [relicPickPriority,   setRelicPickPriority]   = useState<RelicPickPriority>(DEFAULT_RELIC_PICK_PRIORITY);
+  const [relicPickRefinement, setRelicPickRefinement] = useState<RelicRefinement>(DEFAULT_RELIC_PICK_REFINEMENT);
+  const [relicPickLines,      setRelicPickLines]      = useState<RelicPickLines>(DEFAULT_RELIC_PICK_LINES);
   const [clearMsg, setClearMsg] = useState("");
   const [appVersion, setAppVersion] = useState("");
   const [blobLogSize,    setBlobLogSize]    = useState(0);
@@ -338,7 +352,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [colorblindMode, setColorblindMode] = useState(() =>
     localStorage.getItem(PREFERENCE_KEYS.COLORBLIND_MODE) === "true"
   );
-  const [clockFormat, setClockFormat] = useState<ClockFormat>("auto");
+  const [clockFormat, setClockFormat] = useState<ClockFormat>(DEFAULT_CLOCK_FORMAT);
   const [systemLocale, setSystemLocale] = useState("en-US");
   const [itemsRefreshKey, setItemsRefreshKey] = useState(0);
   const [imgCacheDir, setImgCacheDir] = useState("");
@@ -350,7 +364,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [fissureWatches, setFissureWatches] = useState<FissureWatch[]>([]);
   const [fissureNotifications, setFissureNotifications] = useState(true);
   const [modularWidth, setModularWidth] = useState(240);
-  const [modularSectionOrder, setModularSectionOrder] = useState<string[]>(["tracking", "favorites", "timers", "fissures"]);
+  const [modularSectionOrder, setModularSectionOrder] = useState<string[]>([...MODULAR_SECTION_ORDER_DEFAULT]);
   const [modularPopout, setModularPopout] = useState(false);
   const modularWinRef = useRef<WebviewWindow | null>(null);
   const modularWinGeomRef = useRef<{ x?: number; y?: number; w?: number; h?: number }>({});
@@ -364,12 +378,12 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   // Refs so we can read the latest state in the save callback without stale closures
   const settingsLoadedRef = useRef(false);
   const settingsRef = useRef<SettingsSnapshot>({
-    overlayEnabled: true, overlayPriority: "completion", textScale: 1, colorblindMode: false, clockFormat: "auto" as ClockFormat, companionApiEnabled: false, memoryScannerEnabled: false, blobLogEnabled: false, apiLogEnabled: false, autoDiagEnabled: false,
+    overlayEnabled: true, overlayPriority: DEFAULT_RELIC_OVERLAY_PRIORITY, textScale: 1, colorblindMode: false, clockFormat: DEFAULT_CLOCK_FORMAT, companionApiEnabled: false, memoryScannerEnabled: false, blobLogEnabled: false, apiLogEnabled: false, autoDiagEnabled: false,
     tracked: [] as string[], favorites: [] as string[], timerFavorites: [] as string[], fissureWatches: [] as FissureWatch[], fissureNotifications: true, modularWidth: 240,
     modularSectionOrder: ["tracking", "favorites", "timers"] as string[], modularPopout: false,
     wfmInvisibleOnStart: false, wfmInvisibleOnClose: false, wfmAutoInvisible: false, wfmAutoInvisibleMins: 30,
-    relicPickEnabled: true, relicPickPriority: "unowned" as RelicPickPriority, relicPickRefinement: "radiant" as RelicRefinement, relicPickLines: "all" as RelicPickLines,
-    foundryPageSize: 30 as FoundryPageSize,
+    relicPickEnabled: true, relicPickPriority: DEFAULT_RELIC_PICK_PRIORITY, relicPickRefinement: DEFAULT_RELIC_PICK_REFINEMENT, relicPickLines: DEFAULT_RELIC_PICK_LINES,
+    foundryPageSize: DEFAULT_FOUNDRY_PAGE_SIZE,
     memTriggerEnabled: false,
   });
   settingsRef.current = { overlayEnabled, overlayPriority, textScale, colorblindMode, clockFormat, companionApiEnabled, memoryScannerEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled };
@@ -434,20 +448,20 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   // loads instantly rather than running ~2 minutes of API calls on first open.
   useEffect(() => {
     (async () => {
-      const creds = await invoke<[string, string] | null>("wfm_load_credentials").catch(() => null);
+      const creds = await invoke<[string, string] | null>(TAURI_COMMANDS.WFM_LOAD_CREDENTIALS).catch(() => null);
       if (creds) {
-        const session = await invoke<[string, string] | null>("wfm_set_jwt", { jwt: creds[1] }).catch(() => null);
+        const session = await invoke<[string, string] | null>(TAURI_COMMANDS.WFM_SET_JWT, { jwt: creds[1] }).catch(() => null);
         if (session) {
           setWfmLoggedIn(true);
           wfmLoggedInRef.current = true;
           if (wfmInvisibleOnStartRef.current) {
-            invoke("wfm_set_status", { status: "invisible" }).catch(() => {});
+            invoke(TAURI_COMMANDS.WFM_SET_STATUS, { status: "invisible" }).catch(() => {});
           }
         }
       }
     })();
     // Fire-and-forget: populates WFM_TOP_CACHE so the Statistics tab is instant
-    invoke("get_wfm_top_items").catch(() => {});
+    invoke(TAURI_COMMANDS.GET_WFM_TOP_ITEMS).catch(() => {});
     invoke<string>("get_img_cache_dir").then(setImgCacheDir).catch(() => {});
     invoke("prewarm_image_cache").catch(() => {});
   }, []); // eslint-disable-line
@@ -461,7 +475,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
       event.preventDefault();
       if (wfmInvisibleOnCloseRef.current && wfmLoggedInRef.current) {
         await Promise.race([
-          invoke("wfm_set_status", { status: "invisible" }).catch(() => {}),
+          invoke(TAURI_COMMANDS.WFM_SET_STATUS, { status: "invisible" }).catch(() => {}),
           new Promise<void>(resolve => setTimeout(resolve, 8000)),
         ]);
       }
@@ -474,7 +488,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   useEffect(() => {
     if (!wfmAutoInvisible || !wfmLoggedIn) return;
     const id = setTimeout(() => {
-      invoke("wfm_set_status", { status: "invisible" }).catch(() => {});
+      invoke(TAURI_COMMANDS.WFM_SET_STATUS, { status: "invisible" }).catch(() => {});
     }, wfmAutoInvisibleMins * 60 * 1000);
     return () => clearTimeout(id);
   }, [wfmAutoInvisible, wfmAutoInvisibleMins, wfmLoggedIn]);
@@ -493,7 +507,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
       .finally(() => { inventoryRestoredRef.current = true; });
 
     // Load user settings from file — survives reinstalls unlike localStorage
-    invoke<string>("load_settings").then(json => {
+    invoke<string>(TAURI_COMMANDS.LOAD_SETTINGS).then(json => {
       // A missing file is a first launch: nothing to clobber, saving is safe.
       if (!json) { settingsLoadedRef.current = true; return; }
       try {
@@ -523,7 +537,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
           setColorblindMode(s.colorblindMode);
           localStorage.setItem(PREFERENCE_KEYS.COLORBLIND_MODE, String(s.colorblindMode));
         }
-        if (typeof s.clockFormat === "string" && ["auto", "12h", "24h"].includes(s.clockFormat)) {
+        if (typeof s.clockFormat === "string" && CLOCK_FORMAT_OPTIONS.includes(s.clockFormat)) {
           setClockFormat(s.clockFormat as ClockFormat);
         }
         if (Array.isArray(s.tracked)) setTracked(s.tracked);
@@ -550,12 +564,12 @@ if (typeof s.autoDiagEnabled === "boolean") {
         if (typeof s.wfmInvisibleOnClose === "boolean") { setWfmInvisibleOnClose(s.wfmInvisibleOnClose); wfmInvisibleOnCloseRef.current = s.wfmInvisibleOnClose; }
         if (typeof s.wfmAutoInvisible    === "boolean") setWfmAutoInvisible(s.wfmAutoInvisible);
         if (typeof s.wfmAutoInvisibleMins === "number") setWfmAutoInvisibleMins(s.wfmAutoInvisibleMins);
-        if (typeof s.relicPickEnabled    === "boolean") { setRelicPickEnabled(s.relicPickEnabled); invoke("set_relic_pick_enabled", { enabled: s.relicPickEnabled }); }
-        if (typeof s.memTriggerEnabled   === "boolean") { setMemTriggerEnabled(s.memTriggerEnabled); invoke("set_mem_trigger_enabled", { enabled: s.memTriggerEnabled }); }
-        if (["unowned","ducat","platinum"].includes(s.relicPickPriority)) setRelicPickPriority(s.relicPickPriority);
-        if (["intact","exceptional","flawless","radiant"].includes(s.relicPickRefinement)) setRelicPickRefinement(s.relicPickRefinement);
-        if (["all","best","estimated"].includes(s.relicPickLines)) setRelicPickLines(s.relicPickLines);
-        if ([30, 60, 100].includes(s.foundryPageSize)) setFoundryPageSize(s.foundryPageSize);
+        if (typeof s.relicPickEnabled    === "boolean") { setRelicPickEnabled(s.relicPickEnabled); invoke(TAURI_COMMANDS.SET_RELIC_PICK_ENABLED, { enabled: s.relicPickEnabled }); }
+        if (typeof s.memTriggerEnabled   === "boolean") { setMemTriggerEnabled(s.memTriggerEnabled); invoke(TAURI_COMMANDS.SET_MEM_TRIGGER_ENABLED, { enabled: s.memTriggerEnabled }); }
+        if (RELIC_PICK_PRIORITY_OPTIONS.includes(s.relicPickPriority)) setRelicPickPriority(s.relicPickPriority);
+        if (RELIC_PICK_REFINEMENT_OPTIONS.includes(s.relicPickRefinement)) setRelicPickRefinement(s.relicPickRefinement);
+        if (RELIC_PICK_LINES_OPTIONS.includes(s.relicPickLines)) setRelicPickLines(s.relicPickLines);
+        if (FOUNDRY_PAGE_SIZE_OPTIONS.includes(s.foundryPageSize)) setFoundryPageSize(s.foundryPageSize);
       } catch {}
       // Unblock saving even if the file failed to parse, since the backend
       // refuses to overwrite a settings.json that is not a valid JSON object.
@@ -564,7 +578,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
     invoke<string>("get_system_locale").then(loc => { if (loc) setSystemLocale(loc); }).catch(() => {});
     invoke<string | null>("get_player_name").then(name => { if (name) setPlayerName(name); }).catch(() => {});
-    invoke<CatalogItem[]>("get_all_items").then(items => { setCatalog(items); catalogRef.current = items; });
+    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS).then(items => { setCatalog(items); catalogRef.current = items; });
     invoke<Record<string, number>>(TAURI_COMMANDS.GET_CURRENT_QUANTITIES)
       .then(setQuantities)
       .catch(() => {})
@@ -612,7 +626,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
   // ── Inventory update events ────────────────────────────────────────────────
 
   useEffect(() => {
-    const unlisten = listen<InventoryUpdate>("inventory-update", (e) => {
+    const unlisten = listen<InventoryUpdate>(TAURI_EVENTS.INVENTORY_UPDATE, (e) => {
       const p = e.payload;
       setLastInventoryScanAt(p.scanned_at);
       if (!inventoryReadyRef.current) {
@@ -738,7 +752,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
   // Compare before setting to avoid a save → emit → re-read → save loop.
   useEffect(() => {
     const unlisten = listen(TAURI_EVENTS.SETTINGS_UPDATED, () => {
-      invoke<string>("load_settings").then(json => {
+      invoke<string>(TAURI_COMMANDS.LOAD_SETTINGS).then(json => {
         if (!json) return;
         try {
           const s = JSON.parse(json);
@@ -811,7 +825,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
     try {
       const count = await invoke<number>("fetch_item_list", { force: true });
       setItemCount(count);
-      const items = await invoke<CatalogItem[]>("get_all_items");
+      const items = await invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS);
       setCatalog(items);
       catalogRef.current = items;
       const status = await invoke<{ count: number; recipe_count: number }>("get_item_list_status");
@@ -1017,7 +1031,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
   useEffect(() => {
     if (!inventoryRestoredRef.current) return;
     if (Object.keys(apiQuantities).length === 0 && apiModCopies.length === 0 && subsummedWarframes.size === 0) return;
-    invoke("save_api_inventory", {
+    invoke(TAURI_COMMANDS.SAVE_API_INVENTORY, {
       apiQuantities,
       apiModCopies,
       consumedSuits: [...subsummedWarframes],
@@ -1209,7 +1223,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
       if (result && !result.fresh) {
         // Existing window — reset overlay state
-        await emit("riven-scanning-start", {}).catch(() => {});
+        await emit(TAURI_EVENTS.RIVEN_SCANNING_START, {}).catch(() => {});
         windowReady = true;
       } else if (result?.fresh) {
         // Fresh window — send data once its listener signals ready
@@ -1223,7 +1237,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
       try {
         const ocrResult = await invoke<{ weapon: string; positives: string[]; negatives: string[]; rolled_stats: RivenStat[]; is_comparison: boolean; original_rolled_stats: RivenStat[]; raw: string }>("ocr_riven_screen");
         const analysis: RivenAnalysis | null = (ocrResult.weapon || ocrResult.positives.length > 0)
-          ? await invoke<RivenAnalysis | null>("analyze_riven", { weapon: ocrResult.weapon, positives: ocrResult.positives, negatives: ocrResult.negatives }).catch(() => null)
+          ? await invoke<RivenAnalysis | null>(TAURI_COMMANDS.ANALYZE_RIVEN, { weapon: ocrResult.weapon, positives: ocrResult.positives, negatives: ocrResult.negatives }).catch(() => null)
           : null;
         const payload: RivenAnalysisUpdate = { analysis, ocrRaw: ocrResult.raw, weapon: ocrResult.weapon, positives: ocrResult.positives, negatives: ocrResult.negatives, rolledStats: ocrResult.rolled_stats, isComparison: ocrResult.is_comparison, originalStats: ocrResult.original_rolled_stats, rollCount: _rivenRollCount };
         if (windowReady) { await emit(TAURI_EVENTS.RIVEN_ANALYSIS_UPDATE, payload).catch(() => {}); }
@@ -1254,7 +1268,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
     // Close triggers: EE.log (DiegeticArtifactCards HudVis 0) + manual dismiss.
     const unsubClose   = listen("riven-screen-close",   () => rivenWinHide("screen-close"));
-    const unsubHideReq = listen<{ reason?: string }>("riven-overlay-hide", e => rivenWinHide(e.payload?.reason ?? "overlay-hide"));
+    const unsubHideReq = listen<{ reason?: string }>(TAURI_EVENTS.RIVEN_OVERLAY_HIDE, e => rivenWinHide(e.payload?.reason ?? "overlay-hide"));
 
     return () => {
       unsubManual.then(fn => fn());
@@ -1307,13 +1321,13 @@ if (typeof s.autoDiagEnabled === "boolean") {
       if (!enabled) return;
       try {
         const [wx, wy, ww, wh] = await invoke<[number, number, number, number]>("get_warframe_window_rect");
-        invoke("log_relic_fe", { msg: `[APP] relic-trigger: wf(${wx},${wy} ${ww}×${wh})` }).catch(() => {});
+        invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[APP] relic-trigger: wf(${wx},${wy} ${ww}×${wh})` }).catch(() => {});
         await openOverlay(wx, wy, ww, wh, 0.60, 0.30);
       } catch (e) {
         // get_warframe_window_rect failed (Warframe may be in a different state).
         // Fall back to screen dimensions so the overlay still moves on-screen and
         // WebView2 un-freezes its JS before relic-rewards arrives.
-        invoke("log_relic_fe", { msg: `[APP] relic-trigger: wf-rect failed (${e}), falling back to screen dims` }).catch(() => {});
+        invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[APP] relic-trigger: wf-rect failed (${e}), falling back to screen dims` }).catch(() => {});
         const sw = window.screen.width, sh = window.screen.height;
         await openOverlay(0, 0, sw, sh, 0.60, 0.30);
       }
@@ -1326,17 +1340,17 @@ if (typeof s.autoDiagEnabled === "boolean") {
       if (!rewards || rewards.items.length === 0) { closeOverlay(); return; }
       const enabled = localStorage.getItem(PREFERENCE_KEYS.OVERLAY_ENABLED) !== "false";
       if (!enabled) return;
-      invoke("log_relic_fe", { msg: `[APP] relic-rewards: ${rewards.items.length} items, overlayVisible=${overlayVisible}` }).catch(() => {});
+      invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[APP] relic-rewards: ${rewards.items.length} items, overlayVisible=${overlayVisible}` }).catch(() => {});
       // Overlay.tsx already receives this event directly from Rust's global emit.
       // We only need to ensure the overlay window is on-screen; no forwarding needed
       // (forwarding via emitTo caused an infinite feedback loop in Tauri 2).
       if (!overlayVisible) {
         try {
           const [wx, wy, ww, wh] = await invoke<[number, number, number, number]>("get_warframe_window_rect");
-          invoke("log_relic_fe", { msg: `[APP] relic-rewards fallback: wf(${wx},${wy} ${ww}×${wh})` }).catch(() => {});
+          invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[APP] relic-rewards fallback: wf(${wx},${wy} ${ww}×${wh})` }).catch(() => {});
           await openOverlay(wx, wy, ww, wh, 0.54, 0.28);
         } catch (err) {
-          invoke("log_relic_fe", { msg: `[APP] relic-rewards fallback: wf-rect failed (${err}), using screen dims` }).catch(() => {});
+          invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[APP] relic-rewards fallback: wf-rect failed (${err}), using screen dims` }).catch(() => {});
           const sw = window.screen.width, sh = window.screen.height;
           await openOverlay(0, 0, sw, sh, 0.54, 0.28);
         }
@@ -1362,10 +1376,10 @@ if (typeof s.autoDiagEnabled === "boolean") {
   // Rust emits "trade-completed" when "The trade was successful!" is detected in
   // EE.log. One event covers ALL items from both sides of the trade session.
   useEffect(() => {
-    const unlisten = listen<TradeCompletedEvent>("trade-completed", async (e) => {
+    const unlisten = listen<TradeCompletedEvent>(TAURI_EVENTS.TRADE_COMPLETED, async (e) => {
       const p = e.payload;
       const save = (dir: string, name: string, qty: number, plat: number) =>
-        invoke("add_trade", {
+        invoke(TAURI_COMMANDS.ADD_TRADE, {
           withPlayer: p.withPlayer,
           direction:  dir,
           itemName:   name,

@@ -271,24 +271,24 @@ export default function Overlay() {
   }, []);
 
   useEffect(() => {
-    invoke("log_relic_fe", { msg: "[OV] Overlay.tsx useEffect start" }).catch(() => {});
+      invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: "[OV] Overlay.tsx useEffect start" }).catch(() => {});
     type EventPayload = { paths: string[]; positions: number[] };
     let pendingEvent: EventPayload | null = null;
     let dataReady = false;
 
     const processPayload = (paths: string[], positions: number[]) => {
-      invoke("log_relic_fe", { msg: `[OV] processPayload(${paths.length} items)` }).catch(() => {});
+      invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[OV] processPayload(${paths.length} items)` }).catch(() => {});
       const key = paths.join(",");
-      if (key === prevKey.current) { invoke("log_relic_fe", { msg: "[OV] processPayload: duplicate key, skipping" }).catch(() => {}); return; }
+      if (key === prevKey.current) { invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: "[OV] processPayload: duplicate key, skipping" }).catch(() => {}); return; }
 
       const currentCount = rewards.length;
-      if (paths.length <= currentCount && currentCount > 0) { invoke("log_relic_fe", { msg: `[OV] processPayload: count guard (${paths.length}<=${currentCount}), skipping` }).catch(() => {}); return; }
+      if (paths.length <= currentCount && currentCount > 0) { invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[OV] processPayload: count guard (${paths.length}<=${currentCount}), skipping` }).catch(() => {}); return; }
 
       prevKey.current = key;
 
       const byUnique = sessionCatalogRef.current;
       const qty      = quantRef.current;
-      invoke("log_relic_fe", { msg: `[OV] building ${paths.length} base items` }).catch(() => {});
+      invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[OV] building ${paths.length} base items` }).catch(() => {});
       const base: RewardItem[] = paths.map((path, i) => {
         if (path.startsWith("?:")) {
           return {
@@ -312,7 +312,7 @@ export default function Overlay() {
           owned_qty: qty[lk] ?? qty[path] ?? 0,
         };
       });
-      invoke("log_relic_fe", { msg: `[OV] setRewards(${base.length} items)` }).catch(() => {});
+      invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[OV] setRewards(${base.length} items)` }).catch(() => {});
       setRewards(base);
 
       paths.forEach(async (path, i) => {
@@ -347,7 +347,7 @@ export default function Overlay() {
 
         // Attempt 1: recipe lookup (gives exact ingredient list + correct needed counts)
         if (setEntry) {
-          const recipe = await invoke<ShallowRecipeComponent[]>("get_recipe", { unique_name: setEntry.unique_name }).catch(() => []);
+          const recipe = await invoke<ShallowRecipeComponent[]>(TAURI_COMMANDS.GET_RECIPE, { unique_name: setEntry.unique_name }).catch(() => []);
           if (recipe.length) {
             // Filter out raw resources (Rubedo, Circuits etc.) — show only craftable parts
             const parts = recipe.filter(c => {
@@ -435,19 +435,19 @@ export default function Overlay() {
     // Clear stale rewards when a new fissure starts so the diagnostic div shows
     // while OCR is running instead of the previous fissure's stale cards.
     const unsubTrigger = listen<null>(TAURI_EVENTS.RELIC_TRIGGER, () => {
-      invoke("log_relic_fe", { msg: "[OV] relic-trigger → clearing rewards" }).catch(() => {});
+      invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: "[OV] relic-trigger → clearing rewards" }).catch(() => {});
       setRewards([]);
       prevKey.current = "";
     });
 
-    invoke("log_relic_fe", { msg: "[OV] registering relic-rewards listener" }).catch(() => {});
+    invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: "[OV] registering relic-rewards listener" }).catch(() => {});
     const unsub = listen<{ items: string[]; positions: number[] } | null>(
       TAURI_EVENTS.RELIC_REWARDS,
       async (e) => {
         const payload = e.payload;
-        invoke("log_relic_fe", { msg: `[OV] relic-rewards event: items=${payload?.items?.length ?? "null"} dataReady=${dataReady} catalogSize=${Object.keys(sessionCatalogRef.current).length}` }).catch(() => {});
+        invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[OV] relic-rewards event: items=${payload?.items?.length ?? "null"} dataReady=${dataReady} catalogSize=${Object.keys(sessionCatalogRef.current).length}` }).catch(() => {});
         if (!payload || payload.items.length === 0) {
-          invoke("log_relic_fe", { msg: "[OV] null/empty payload → moving off-screen" }).catch(() => {});
+          invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: "[OV] null/empty payload → moving off-screen" }).catch(() => {});
           setRewards([]);
           prevKey.current = "";
           invoke(TAURI_COMMANDS.MOVE_OVERLAY_OFFSCREEN).catch(() => {});
@@ -463,13 +463,13 @@ export default function Overlay() {
             const byUnique: Record<string, any> = {};
             for (const i of items) byUnique[i.unique_name] = i;
             sessionCatalogRef.current = byUnique;
-            invoke("log_relic_fe", { msg: `[OV] session catalog: ${items.length} items for ${payload.items.length} rewards` }).catch(() => {});
+            invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[OV] session catalog: ${items.length} items for ${payload.items.length} rewards` }).catch(() => {});
           } catch (err) {
-            invoke("log_relic_fe", { msg: `[OV] get_items_by_paths failed: ${err}` }).catch(() => {});
+            invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[OV] get_items_by_paths failed: ${err}` }).catch(() => {});
           }
           processPayload(payload.items, payload.positions);
         } else {
-          invoke("log_relic_fe", { msg: "[OV] buffering event (dataReady=false)" }).catch(() => {});
+          invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: "[OV] buffering event (dataReady=false)" }).catch(() => {});
           pendingEvent = { paths: payload.items, positions: payload.positions };
         }
       }
@@ -479,10 +479,10 @@ export default function Overlay() {
     // tauri://created firing (in App.tsx) and this listener being registered.
     // .take() on the Rust side clears the stored value atomically, so there is no
     // double-processing if the listener also receives the event.
-    invoke("log_relic_fe", { msg: "[OV] calling get_pending_relic_rewards" }).catch(() => {});
+    invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: "[OV] calling get_pending_relic_rewards" }).catch(() => {});
     invoke<{ items: string[]; positions: number[] } | null>("get_pending_relic_rewards")
       .then(pending => {
-        invoke("log_relic_fe", { msg: `[OV] pull result: ${pending ? pending.items.length + " items" : "null"}` }).catch(() => {});
+        invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[OV] pull result: ${pending ? pending.items.length + " items" : "null"}` }).catch(() => {});
         if (pending && pending.items.length > 0) {
           if (dataReady) {
             processPayload(pending.items, pending.positions);
@@ -491,9 +491,9 @@ export default function Overlay() {
           }
         }
       })
-      .catch((err) => { invoke("log_relic_fe", { msg: `[OV] pull error: ${err}` }).catch(() => {}); });
+      .catch((err) => { invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[OV] pull error: ${err}` }).catch(() => {}); });
 
-    invoke("log_relic_fe", { msg: "[OV] starting Promise.allSettled for qty/crafting" }).catch(() => {});
+    invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: "[OV] starting Promise.allSettled for qty/crafting" }).catch(() => {});
     Promise.allSettled([
       invoke<Record<string, number>>(TAURI_COMMANDS.GET_CURRENT_QUANTITIES),
       invoke<CraftingJob[]>("get_current_crafting"),
@@ -510,7 +510,7 @@ export default function Overlay() {
         craftingRef.current = byCraft;
       }
       dataReady = true;
-      invoke("log_relic_fe", { msg: `[OV] dataReady=true — pendingEvent=${pendingEvent ? pendingEvent.paths.length + " items" : "null"}` }).catch(() => {});
+      invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[OV] dataReady=true — pendingEvent=${pendingEvent ? pendingEvent.paths.length + " items" : "null"}` }).catch(() => {});
 
       if (pendingEvent) {
         const ev = pendingEvent;
@@ -520,9 +520,9 @@ export default function Overlay() {
           const byUnique: Record<string, any> = {};
           for (const i of items) byUnique[i.unique_name] = i;
           sessionCatalogRef.current = byUnique;
-          invoke("log_relic_fe", { msg: `[OV] pending: session catalog: ${items.length} items` }).catch(() => {});
+          invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[OV] pending: session catalog: ${items.length} items` }).catch(() => {});
         } catch (err) {
-          invoke("log_relic_fe", { msg: `[OV] pending: get_items_by_paths failed: ${err}` }).catch(() => {});
+          invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[OV] pending: get_items_by_paths failed: ${err}` }).catch(() => {});
         }
         processPayload(ev.paths, ev.positions);
       }
@@ -532,7 +532,7 @@ export default function Overlay() {
     // built-item check.  This fixes the race where processPayload ran before the
     // scanner had committed items (all counts showed 0), and ensures warframes
     // that appear in unique_quantities after 2+ consecutive scans flip the card.
-    const unsubInv = listen<{ quantities: Record<string, number> }>("inventory-update", (e) => {
+    const unsubInv = listen<{ quantities: Record<string, number> }>(TAURI_EVENTS.INVENTORY_UPDATE, (e) => {
       const newQty = e.payload?.quantities;
       if (!newQty) return;
       quantRef.current = newQty;

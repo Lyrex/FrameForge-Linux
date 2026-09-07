@@ -4,6 +4,7 @@ import { HelpTip } from "./HelpTip";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import { RELIC_DROP_RATES, RELIC_REFINEMENT_LABELS, RELIC_REFINEMENT_ORDER } from "./constants/relics";
 import { warframeStatImageUrl } from "./constants/urls";
+import { TAURI_COMMANDS } from "./constants/tauri";
 import type { CatalogItem, InventoryItem } from "./types/items";
 import type { RelicFilters } from "./types/filters";
 import type { DropReward, RelicDrop } from "./types/relics";
@@ -438,7 +439,7 @@ function PlannerTab({
 
   // Load WFM items to build name→slug lookup, then fetch cached prices
   useEffect(() => {
-    invoke<{ item_name: string; url_name: string }[]>("fetch_wfm_items")
+    invoke<{ item_name: string; url_name: string }[]>(TAURI_COMMANDS.FETCH_WFM_ITEMS)
       .then(items => {
         const lookup = new Map<string, string>();
         for (const w of items) lookup.set(wfmNorm(w.item_name), w.url_name);
@@ -684,7 +685,7 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
   }, []);
 
   useEffect(() => {
-    invoke<CatalogItem[]>("get_all_items").then(setAllItems).catch(() => {});
+    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS).then(setAllItems).catch(() => {});
   }, [refreshKey]);
 
   useEffect(() => {

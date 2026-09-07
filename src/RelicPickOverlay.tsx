@@ -3,7 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { clampToMonitor, overlayScale } from "./uiScale";
-import { TAURI_EVENTS } from "./constants/tauri";
+import { DEFAULT_RELIC_PICK_LINES, DEFAULT_RELIC_PICK_PRIORITY, RELIC_PICK_LINES_OPTIONS, RELIC_PICK_PRIORITY_OPTIONS } from "./constants/settings";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import type { RelicPickPayload, RelicPickRelic, RelicPickReward } from "./types/relics";
 import type { RelicPickLines, RelicPickPriority } from "./types/settings";
 import "./RelicPickOverlay.css";
@@ -63,8 +64,8 @@ function DucatIcon() {
 
 export default function RelicPickOverlay() {
   const [payload,  setPayload]  = useState<RelicPickPayload | null>(null);
-  const [priority, setPriority] = useState<RelicPickPriority>("unowned");
-  const [lines,    setLines]    = useState<RelicPickLines>("all");
+  const [priority, setPriority] = useState<RelicPickPriority>(DEFAULT_RELIC_PICK_PRIORITY);
+  const [lines,    setLines]    = useState<RelicPickLines>(DEFAULT_RELIC_PICK_LINES);
   // Use a callback ref so the ResizeObserver is set up each time the root div
   // mounts (payload goes null→non-null). A plain useRef+useEffect misses this
   // because the root div doesn't exist yet when the effect runs at mount time.
@@ -100,11 +101,11 @@ export default function RelicPickOverlay() {
       // Reload settings fresh on every show — the main window may have changed them
       // since this overlay was first mounted at app startup.
       try {
-        const json = await invoke<string>("load_settings");
+        const json = await invoke<string>(TAURI_COMMANDS.LOAD_SETTINGS);
         if (json) {
           const s = JSON.parse(json);
-          if (["unowned","ducat","platinum"].includes(s.relicPickPriority)) setPriority(s.relicPickPriority);
-          if (["all","best","estimated"].includes(s.relicPickLines))        setLines(s.relicPickLines);
+          if (RELIC_PICK_PRIORITY_OPTIONS.includes(s.relicPickPriority)) setPriority(s.relicPickPriority);
+          if (RELIC_PICK_LINES_OPTIONS.includes(s.relicPickLines))        setLines(s.relicPickLines);
         }
       } catch {}
       setPayload(e.payload);

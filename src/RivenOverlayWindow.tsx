@@ -31,7 +31,7 @@ import "./RivenOverlayWindow.css";
 // Ask App.tsx to hide this overlay — App.tsx owns the rivenWin reference
 // Tell App.tsx to hide the overlay AND log the reason BEFORE hiding
 const requestHide = (reason: string) => {
-  emit("riven-overlay-hide", { reason }).catch(() => {});
+  emit(TAURI_EVENTS.RIVEN_OVERLAY_HIDE, { reason }).catch(() => {});
 };
 
 function verdictColor(verdict: string): string {
@@ -80,7 +80,7 @@ export default function RivenOverlayWindow() {
   };
 
   useEffect(() => {
-    const unlistenStart = listen("riven-scanning-start", () => resetToScanning());
+    const unlistenStart = listen(TAURI_EVENTS.RIVEN_SCANNING_START, () => resetToScanning());
 
     const unlistenUpdate = listen<RivenAnalysisUpdate>(TAURI_EVENTS.RIVEN_ANALYSIS_UPDATE, e => {
       if (scanTimerRef.current) clearTimeout(scanTimerRef.current);

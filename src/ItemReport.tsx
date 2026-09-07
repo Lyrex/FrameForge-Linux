@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { CatalogItem } from "./types/items";
 import type { SnapshotPoint, TrackedItem } from "./types/inventory";
 import { PREFERENCE_KEYS } from "./constants/preferences";
+import { TAURI_COMMANDS } from "./constants/tauri";
 import "./ItemReport.css";
 
 type Timeframe = "7" | "30" | "90" | "all";
@@ -269,7 +270,7 @@ export default function ItemReport() {
     if (catalog !== null || loadingCatalog) return;
     setLoadingCatalog(true);
     try {
-      const items = await invoke<CatalogItem[]>("get_all_items");
+      const items = await invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS);
       setCatalog(items);
     } finally {
       setLoadingCatalog(false);

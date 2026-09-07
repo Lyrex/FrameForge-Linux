@@ -236,7 +236,7 @@ export default function RivenAnalyzer() {
 
   const runAnalysis = useCallback(async () => {
     if (!selectedWeapon || builtStats.length === 0) { setAnalysis(null); return; }
-    const result = await invoke<RivenAnalysis | null>("analyze_riven", {
+    const result = await invoke<RivenAnalysis | null>(TAURI_COMMANDS.ANALYZE_RIVEN, {
       weapon: selectedWeapon,
       positives: builtStats.filter(s => s.positive).map(s => s.name),
       negatives: builtStats.filter(s => !s.positive).map(s => s.name),

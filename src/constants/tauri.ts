@@ -8,6 +8,10 @@ export const TAURI_EVENTS = {
   RIVEN_WINDOW_READY: "riven-window-ready",
   RIVEN_ANALYSIS_UPDATE: "riven-analysis-update",
   RIVEN_ROLL_SAVED: "riven-roll-saved",
+  INVENTORY_UPDATE: "inventory-update",
+  RIVEN_OVERLAY_HIDE: "riven-overlay-hide",
+  RIVEN_SCANNING_START: "riven-scanning-start",
+  TRADE_COMPLETED: "trade-completed",
 } as const;
 
 export const TAURI_COMMANDS = {
@@ -17,4 +21,22 @@ export const TAURI_COMMANDS = {
   SAVE_RIVEN_ROLL: "save_riven_roll",
   MOVE_OVERLAY_OFFSCREEN: "move_overlay_offscreen",
   OPEN_URL: "plugin:opener|open_url",
+  ADD_TRADE: "add_trade",
+  ANALYZE_RIVEN: "analyze_riven",
+  FETCH_WFM_ITEMS: "fetch_wfm_items",
+  GET_ALL_ITEMS: "get_all_items",
+  GET_CRAFTABLE_ITEMS: "get_craftable_items",
+  GET_RECIPE: "get_recipe",
+  GET_WFM_TOP_ITEMS: "get_wfm_top_items",
+  LOAD_SETTINGS: "load_settings",
+  LOG_RELIC_FE: "log_relic_fe",
+  SAVE_API_INVENTORY: "save_api_inventory",
+  SET_MEM_TRIGGER_ENABLED: "set_mem_trigger_enabled",
+  SET_RELIC_PICK_ENABLED: "set_relic_pick_enabled",
+  WFM_CREATE_ORDER: "wfm_create_order",
+  WFM_GET_ITEM_INFO: "wfm_get_item_info",
+  WFM_GET_SESSION: "wfm_get_session",
+  WFM_LOAD_CREDENTIALS: "wfm_load_credentials",
+  WFM_SET_JWT: "wfm_set_jwt",
+  WFM_SET_STATUS: "wfm_set_status",
 } as const;

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { TAURI_COMMANDS } from "./constants/tauri";
 import "./ModularWindow.css";
 import { TIMER_LABELS, getTimerInfo, fmtMs, matchesWatch } from "./TimerHelper";
 import type { FissureWatch } from "./types/settings";
@@ -100,13 +101,13 @@ export default function ModularWindow({
   const resizeStartWRef = useRef(0);
 
   useEffect(() => {
-    invoke<CatalogItem[]>("get_craftable_items").then(setCraftable).catch(() => {});
+    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_CRAFTABLE_ITEMS).then(setCraftable).catch(() => {});
   }, []);
 
   // Retry if tracked items are present but craftable hasn't loaded (e.g. backend was restarting).
   useEffect(() => {
     if (tracked.length > 0 && craftable.length === 0) {
-      invoke<CatalogItem[]>("get_craftable_items").then(setCraftable).catch(() => {});
+      invoke<CatalogItem[]>(TAURI_COMMANDS.GET_CRAFTABLE_ITEMS).then(setCraftable).catch(() => {});
     }
   }, [tracked, craftable]);
 
@@ -132,7 +133,7 @@ export default function ModularWindow({
     if (toLoad.length === 0) return;
     Promise.all(
       toLoad.map(id =>
-        invoke<RecipeComponent[]>("get_recipe", { uniqueName: id })
+        invoke<RecipeComponent[]>(TAURI_COMMANDS.GET_RECIPE, { uniqueName: id })
           .then(r => [id, r ?? []] as [string, RecipeComponent[]])
           .catch(() => [id, []] as [string, RecipeComponent[]])
       )

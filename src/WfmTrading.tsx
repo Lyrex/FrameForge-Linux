@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ItemMarketPopup from "./ItemMarketPopup";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import type { WfmAuction, WfmItem, WfmManagedOrder, WfmWhisper } from "./types/market";
 import type { TradeCompletedEvent } from "./types/trades";
 import "./WfmTrading.css";
@@ -622,7 +623,7 @@ function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
 
   // Auto-complete a matching whisper when an in-game trade finishes.
   useEffect(() => {
-    const unlisten = listen<TradeCompletedEvent>("trade-completed", (e) => {
+    const unlisten = listen<TradeCompletedEvent>(TAURI_EVENTS.TRADE_COMPLETED, (e) => {
       const { withPlayer, tradeType, offeredItems } = e.payload;
 
       // Phase 1: immediately mark the ghost (synchronous state update)
@@ -747,7 +748,7 @@ function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
     navigator.clipboard.writeText(msg);
     // Auto-log the trade to Statistics
     if (item) {
-      invoke("add_trade", {
+      invoke(TAURI_COMMANDS.ADD_TRADE, {
         withPlayer: from,
         direction: "sold",
         itemName: item,
@@ -771,7 +772,7 @@ function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
         await invokeWfm("wfm_update_order", { orderId, platinum, quantity: originalQty, visible });
       } else {
         // We deleted the listing → re-create it
-        await invokeWfm("wfm_create_order", { itemId, orderType: "sell", platinum, quantity: originalQty, visible });
+        await invokeWfm(TAURI_COMMANDS.WFM_CREATE_ORDER, { itemId, orderType: "sell", platinum, quantity: originalQty, visible });
       }
       // Clear revertInfo after a successful revert so the button disappears
       setWhispers(prev => {
@@ -879,7 +880,7 @@ export default function WfmTrading({ wfmLookup: _wfmLookup, wfmItems, imageMap, 
       if (newQty > 0) {
         await invokeWfm("wfm_update_order", { orderId, platinum, quantity: originalQty, visible });
       } else {
-        await invokeWfm("wfm_create_order", { itemId, orderType: "sell", platinum, quantity: originalQty, visible });
+        await invokeWfm(TAURI_COMMANDS.WFM_CREATE_ORDER, { itemId, orderType: "sell", platinum, quantity: originalQty, visible });
       }
       setListingChangelog(prev => prev.map(e => e.id === entry.id ? { ...e, reverted: true, reverting: false } : e));
     } catch (err) {
@@ -896,7 +897,7 @@ export default function WfmTrading({ wfmLookup: _wfmLookup, wfmItems, imageMap, 
           // WFM dropped our status — silently reapply the last known target
           reconnectingRef.current = true;
           try {
-            await invoke("wfm_set_status", { status: targetStatusRef.current });
+            await invoke(TAURI_COMMANDS.WFM_SET_STATUS, { status: targetStatusRef.current });
             setWfmStatus(targetStatusRef.current);
           } catch {
             setWfmStatus("offline");
@@ -915,14 +916,14 @@ export default function WfmTrading({ wfmLookup: _wfmLookup, wfmItems, imageMap, 
     (async () => {
       let resolvedUser: string | null = null;
 
-      const existing = await invoke<[string, string] | null>("wfm_get_session").catch(() => null);
+      const existing = await invoke<[string, string] | null>(TAURI_COMMANDS.WFM_GET_SESSION).catch(() => null);
       if (existing) {
         [resolvedUser] = existing;
       } else {
-        const creds = await invoke<[string, string] | null>("wfm_load_credentials").catch(() => null);
+        const creds = await invoke<[string, string] | null>(TAURI_COMMANDS.WFM_LOAD_CREDENTIALS).catch(() => null);
         if (creds) {
           try {
-            [resolvedUser] = await invoke<[string, string]>("wfm_set_jwt", { jwt: creds[1] });
+            [resolvedUser] = await invoke<[string, string]>(TAURI_COMMANDS.WFM_SET_JWT, { jwt: creds[1] });
             // Re-save with any newly-fetched CSRF token so it persists across
             // restarts, under the same email it was stored with. Failing here
             // is not worth reporting: nobody asked for it, and the token
@@ -948,7 +949,7 @@ export default function WfmTrading({ wfmLookup: _wfmLookup, wfmItems, imageMap, 
           // Fresh session start — default to invisible so the user controls when they appear.
           setWfmStatus("invisible");
           targetStatusRef.current = "invisible";
-          invoke("wfm_set_status", { status: "invisible" }).catch(() => {});
+          invoke(TAURI_COMMANDS.WFM_SET_STATUS, { status: "invisible" }).catch(() => {});
         }
       }
       setChecking(false);
@@ -1010,7 +1011,7 @@ export default function WfmTrading({ wfmLookup: _wfmLookup, wfmItems, imageMap, 
                 onClick={async () => {
                   setStatusBusy(true); setStatusError("");
                   try {
-                    await invoke("wfm_set_status", { status: s });
+                    await invoke(TAURI_COMMANDS.WFM_SET_STATUS, { status: s });
                     setWfmStatus(s);
                     targetStatusRef.current = s;
                   } catch (e) { setStatusError(String(e)); }

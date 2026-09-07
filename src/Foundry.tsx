@@ -606,9 +606,9 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
   const isFiltered = search !== "" || filterPrime || filterNonPrime || filterVaulted || filterUnvaulted || filterMastered || filterUnmastered || filterOwned || filterUnowned || filterReady || filterLvlCap || ignoreFormaKuva;
 
   useEffect(() => {
-    invoke<CatalogItem[]>("get_craftable_items").then(setCraftable).catch(() => setCraftable([]));
+    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_CRAFTABLE_ITEMS).then(setCraftable).catch(() => setCraftable([]));
     invoke<Record<string, string[]>>("get_relic_drops").then(setRelicDrops).catch(() => {});
-    invoke<Array<{ unique_name: string; name: string; category: string }>>("get_all_items")
+    invoke<Array<{ unique_name: string; name: string; category: string }>>(TAURI_COMMANDS.GET_ALL_ITEMS)
       .then(items => {
         const map: Record<string, string> = {};
         for (const i of items) if (i.category === "Relics") map[i.unique_name] = i.name;
@@ -691,7 +691,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
   // Load recipe for modal item
   useEffect(() => {
     if (!modalItem || recipes.has(modalItem.unique_name)) return;
-    invoke<RecipeComponent[]>("get_recipe", { uniqueName: modalItem.unique_name })
+    invoke<RecipeComponent[]>(TAURI_COMMANDS.GET_RECIPE, { uniqueName: modalItem.unique_name })
       .then(r => setRecipes(prev => new Map(prev).set(modalItem.unique_name, r ?? [])))
       .catch(() => {});
   }, [modalItem]);
