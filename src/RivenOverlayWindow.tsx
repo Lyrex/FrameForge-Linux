@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
 import type { RivenAnalysis, RivenAnalysisUpdate, RivenStat } from "./types/rivens";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
+import type { SaveRivenRollArgs } from "./types/tauri";
 
 // Tells App.tsx to run OCR again (for "Check New Roll" / "Start Comparison")
 const triggerNewCheck = () => emit(TAURI_EVENTS.RIVEN_MANUAL_CHECK, {}).catch(() => {});
@@ -16,9 +17,10 @@ async function saveOverlayRoll(
   const { invoke } = await import("@tauri-apps/api/core");
   const now = new Date();
   const label = `${weapon.charAt(0).toUpperCase() + weapon.slice(1)} · Roll #${rollCount} · ${now.getDate()} ${now.toLocaleString("en",{month:"short"})}`;
-  await invoke(TAURI_COMMANDS.SAVE_RIVEN_ROLL, {
+  const args: SaveRivenRollArgs = {
     weapon, label, statsJson: JSON.stringify(stats), verdict, score,
-  }).catch(() => {});
+  };
+  await invoke(TAURI_COMMANDS.SAVE_RIVEN_ROLL, args).catch(() => {});
   const { emit } = await import("@tauri-apps/api/event");
   await emit(TAURI_EVENTS.RIVEN_ROLL_SAVED).catch(() => {});
 }

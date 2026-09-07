@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { warframeStatImageUrl } from "./constants/urls";
 import { TAURI_COMMANDS } from "./constants/tauri";
-import type { WfmPublicOrder, WfmStatPoint } from "./types/market";
+import type { WfmItemInfo, WfmItemOrders, WfmPublicOrder, WfmStatPoint } from "./types/market";
+import type { WfmCreateOrderArgs } from "./types/tauri";
 import "./ItemMarketPopup.css";
 
 async function invokeWfm<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -153,12 +154,13 @@ function CreateOrderForm({ urlName, itemId, prefillPrice, prefillType, modRank, 
   const submit = async () => {
     setLoading(true); setError("");
     try {
-      const id = itemId ?? (await invokeWfm<{ id: string } | null>(TAURI_COMMANDS.WFM_GET_ITEM_INFO, { urlName }).catch(() => null))?.id;
+      const id = itemId ?? (await invokeWfm<WfmItemInfo | null>(TAURI_COMMANDS.WFM_GET_ITEM_INFO, { urlName }).catch(() => null))?.id;
       if (!id) throw new Error("This item isn't individually listed on warframe.market. Try listing the full set instead.");
-      await invokeWfm(TAURI_COMMANDS.WFM_CREATE_ORDER, {
+      const args: WfmCreateOrderArgs = {
         itemId: id, orderType, platinum: price, quantity: qty, visible,
         modRank: modMaxRank !== null ? modRank : null,
-      });
+      };
+      await invokeWfm(TAURI_COMMANDS.WFM_CREATE_ORDER, args);
       setSuccess(true);
       setTimeout(onDone, 1500);
     } catch (e) { setError(String(e)); }
@@ -227,7 +229,7 @@ export default function ItemMarketPopup({ urlName, displayName, imageName, onClo
 
   // Fetch item info once to determine modMaxRank and itemId
   useEffect(() => {
-    invoke<{ id?: string; modMaxRank?: number } | null>(TAURI_COMMANDS.WFM_GET_ITEM_INFO, { urlName })
+    invoke<WfmItemInfo | null>(TAURI_COMMANDS.WFM_GET_ITEM_INFO, { urlName })
       .then(info => {
         if (info?.id) setItemId(info.id);
         if (info?.modMaxRank !== undefined && info.modMaxRank > 0) setModMaxRank(info.modMaxRank);
@@ -242,7 +244,7 @@ export default function ItemMarketPopup({ urlName, displayName, imageName, onClo
   useEffect(() => {
     setLoadingO(true);
     setOrdersError("");
-    invoke<{ sell: WfmPublicOrder[]; buy: WfmPublicOrder[] }>("wfm_get_item_orders", {
+    invoke<WfmItemOrders>("wfm_get_item_orders", {
       urlName,
       modRank: modMaxRank !== null ? modRank : undefined,
     })

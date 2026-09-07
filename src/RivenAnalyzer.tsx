@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { checkRivenNow } from "./App";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import type { RivenAnalysis, RivenStat, SavedRiven } from "./types/rivens";
+import type { AnalyzeRivenArgs, SaveRivenRollArgs } from "./types/tauri";
 import "./RivenAnalyzer.css";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -124,20 +125,22 @@ export default function RivenAnalyzer() {
       if (editingId) {
         // Update existing roll
         await invoke("delete_saved_riven_roll", { id: editingId });
-        await invoke(TAURI_COMMANDS.SAVE_RIVEN_ROLL, {
+        const args: SaveRivenRollArgs = {
           weapon: selectedWeapon,
           label: savedRivens.find(r => r.id === editingId)?.label ?? `${selectedWeapon.charAt(0).toUpperCase() + selectedWeapon.slice(1)} · ${now.getDate()} ${now.toLocaleString("en",{month:"short"})}`,
           statsJson: JSON.stringify(stats),
           verdict: analysis?.verdict ?? "", score: analysis?.score ?? 0,
-        });
+        };
+        await invoke(TAURI_COMMANDS.SAVE_RIVEN_ROLL, args);
         setEditingId(null);
         setSaveStatus("Updated!");
       } else {
         const label = `${selectedWeapon.charAt(0).toUpperCase() + selectedWeapon.slice(1)} · ${now.getDate()} ${now.toLocaleString("en",{month:"short"})} ${now.getFullYear()}`;
-        await invoke(TAURI_COMMANDS.SAVE_RIVEN_ROLL, {
+        const args: SaveRivenRollArgs = {
           weapon: selectedWeapon, label, statsJson: JSON.stringify(stats),
           verdict: analysis?.verdict ?? "", score: analysis?.score ?? 0,
-        });
+        };
+        await invoke(TAURI_COMMANDS.SAVE_RIVEN_ROLL, args);
         setSaveStatus("Saved!");
       }
       loadSavedRivens();
@@ -156,13 +159,14 @@ export default function RivenAnalyzer() {
     const stats = inlineEditStats.filter(s => s.value.trim() !== "");
     try {
       await invoke("delete_saved_riven_roll", { id: r.id });
-      await invoke(TAURI_COMMANDS.SAVE_RIVEN_ROLL, {
+      const args: SaveRivenRollArgs = {
         weapon: r.weapon,
         label: inlineEditLabel,
         statsJson: JSON.stringify(stats),
         verdict: r.verdict,
         score: r.score,
-      });
+      };
+      await invoke(TAURI_COMMANDS.SAVE_RIVEN_ROLL, args);
       loadSavedRivens();
       setInlineEditId(null);
     } catch {}
@@ -236,11 +240,12 @@ export default function RivenAnalyzer() {
 
   const runAnalysis = useCallback(async () => {
     if (!selectedWeapon || builtStats.length === 0) { setAnalysis(null); return; }
-    const result = await invoke<RivenAnalysis | null>(TAURI_COMMANDS.ANALYZE_RIVEN, {
+    const args: AnalyzeRivenArgs = {
       weapon: selectedWeapon,
       positives: builtStats.filter(s => s.positive).map(s => s.name),
       negatives: builtStats.filter(s => !s.positive).map(s => s.name),
-    });
+    };
+    const result = await invoke<RivenAnalysis | null>(TAURI_COMMANDS.ANALYZE_RIVEN, { ...args });
     setAnalysis(result ?? null);
   }, [selectedWeapon, builtStats]);
 

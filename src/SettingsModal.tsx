@@ -5,9 +5,10 @@ import { formatBytes } from "./formatters";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import { CLOCK_FORMAT_OPTIONS, FOUNDRY_PAGE_SIZE_OPTIONS, RELIC_OVERLAY_PRIORITY_OPTIONS, RELIC_PICK_LINES_OPTIONS, RELIC_PICK_PRIORITY_OPTIONS } from "./constants/settings";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
-import type { ArchonShard } from "./types/items";
+import type { ArchonShard, QuantityMap } from "./types/items";
 import type { ChangeLogEntry, ModCopy } from "./types/inventory";
 import type { ClockFormat, FoundryPageSize, RelicOverlayPriority, RelicPickLines, RelicPickPriority, SettingsSnapshot } from "./types/settings";
+import type { SaveApiInventoryArgs } from "./types/tauri";
 import "./SettingsModal.css";
 
 type SettingsTab = "general" | "overlays" | "market" | "accessibility" | "data" | "debugging";
@@ -28,7 +29,7 @@ export interface SettingsModalProps {
   wfmInvisibleOnStart: boolean; setWfmInvisibleOnStart: Setter<boolean>; wfmInvisibleOnStartRef: MutableRefObject<boolean>; wfmInvisibleOnClose: boolean; setWfmInvisibleOnClose: Setter<boolean>; wfmInvisibleOnCloseRef: MutableRefObject<boolean>;
   wfmAutoInvisible: boolean; setWfmAutoInvisible: Setter<boolean>; wfmAutoInvisibleMins: number; setWfmAutoInvisibleMins: Setter<number>; colorblindMode: boolean; setColorblindMode: Setter<boolean>; textScale: number; setTextScale: Setter<number>;
   clockFormat: ClockFormat; setClockFormat: Setter<ClockFormat>; systemLocale: string; itemCount: number; recipeCount: number; handleFetch: () => Promise<void>; fetching: boolean; fetchMsg: string;
-  setQuantities: Setter<Record<string, number>>; setApiQuantities: Setter<Record<string, number>>; setApiModCopies: Setter<ModCopy[]>; setScannerMods: Setter<ScannerMods>; setMasteryData: Setter<Record<string, number>>; setArchonShards: Setter<ArchonShards>; setFormaData: Setter<Record<string, number>>;
+  setQuantities: Setter<QuantityMap>; setApiQuantities: Setter<QuantityMap>; setApiModCopies: Setter<ModCopy[]>; setScannerMods: Setter<ScannerMods>; setMasteryData: Setter<Record<string, number>>; setArchonShards: Setter<ArchonShards>; setFormaData: Setter<QuantityMap>;
   setChangeLog: Setter<ChangeLogEntry[]>; setLastChanged: Setter<Record<string, number>>; setWfConnected: Setter<boolean>; wfConnectedRef: MutableRefObject<boolean>; setItemsRefreshKey: Setter<number>; setClearMsg: Setter<string>; clearMsg: string;
   blobLogEnabled: boolean; setBlobLogEnabled: Setter<boolean>; blobLogSize: number; setBlobLogSize: Setter<number>; companionApiEnabled: boolean; apiLogEnabled: boolean; setApiLogEnabled: Setter<boolean>; apiLogSize: number; setApiLogSize: Setter<number>;
   setShowInventoryBatchPreview: Setter<boolean>; notifyTestResult: string; setNotifyTestResult: Setter<string>; overlayLogCopied: boolean; setOverlayLogCopied: Setter<boolean>; autoDiagEnabled: boolean; setAutoDiagEnabled: Setter<boolean>;
@@ -523,7 +524,8 @@ export default function SettingsModal(props: SettingsModalProps) {
                           setLastChanged({});
                           setWfConnected(false);
                           wfConnectedRef.current = false;
-                          invoke(TAURI_COMMANDS.SAVE_API_INVENTORY, { apiQuantities: {}, apiModCopies: [], consumedSuits: [] }).catch(() => {});
+                           const args: SaveApiInventoryArgs = { apiQuantities: {}, apiModCopies: [], consumedSuits: [] };
+                           invoke(TAURI_COMMANDS.SAVE_API_INVENTORY, args).catch(() => {});
                             setItemsRefreshKey(k => k + 1);
                           setClearMsg("Cache cleared.");
                         } catch (e) { setClearMsg(`Error: ${e}`); }

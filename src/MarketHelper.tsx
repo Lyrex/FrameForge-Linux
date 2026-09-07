@@ -8,10 +8,11 @@ import ItemMarketPopup from "./ItemMarketPopup";
 import { warframeStatImageUrl } from "./constants/urls";
 import { MARKET_FILTERS_DEFAULT } from "./constants/filters";
 import { TAURI_COMMANDS } from "./constants/tauri";
-import type { CatalogItem, CraftingJob, InventoryItem, RecipeComponent } from "./types/items";
+import type { CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeMap } from "./types/items";
 import type { MarketFilters } from "./types/filters";
 import type { ModCopy } from "./types/inventory";
-import type { BlobRivenEntry, BlobRivenStat, WfmItem, WfmPrice, WfmPriceUpdate } from "./types/market";
+import type { BlobRivenEntry, BlobRivenStat, WfmCachedPrices, WfmItem, WfmItemInfo, WfmPrice, WfmPriceUpdate, WfmRivenAttribute } from "./types/market";
+import type { WfmCreateOrderArgs, WfmCreateRivenAuctionArgs, WfmSession } from "./types/tauri";
 import polMadurai  from "./assets/polarity/madurai.svg";
 import polVazarin  from "./assets/polarity/vazarin.svg";
 import polNaramon  from "./assets/polarity/naramon.svg";
@@ -194,7 +195,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
   // Reflect WFM login state immediately — App.tsx loads the JWT into Rust on startup,
   // so wfm_get_session succeeds even before the Trading tab has been opened.
   useEffect(() => {
-    invoke<[string, string] | null>(TAURI_COMMANDS.WFM_GET_SESSION)
+    invoke<WfmSession | null>(TAURI_COMMANDS.WFM_GET_SESSION)
       .then(existing => { if (existing) setWfmUsername(existing[0]); })
       .catch(() => {});
   }, []); // eslint-disable-line
@@ -218,7 +219,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
 
   // Load prices already cached in inventory_state_cache (survive restarts).
   useEffect(() => {
-    invoke<Record<string, number | null>>("wfm_get_cached_prices")
+    invoke<WfmCachedPrices>("wfm_get_cached_prices")
       .then(cached => {
         if (!cached) return;
         setPrices(prev => {
@@ -241,7 +242,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
     const unlisten = listen<WfmPriceUpdate>(
       "wfm-price-update",
       ({ payload }) => {
-        pendingPrices.current.set(payload.url_name, { url_name: payload.url_name, sell_median: payload.sell_median ?? undefined });
+        pendingPrices.current.set(payload.url_name, { url_name: payload.url_name, sell_median: payload.sell_median ?? undefined, tradeable: payload.tradeable });
         if (!priceRafRef.current) {
           priceRafRef.current = requestAnimationFrame(() => {
             priceRafRef.current = null;
@@ -322,7 +323,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
   useEffect(() => {
     if (parentItems.size === 0) return;
     const uniqueNames = Array.from(parentItems.values()).map(p => p.unique_name);
-    invoke<Record<string, RecipeComponent[]>>(TAURI_COMMANDS.GET_RECIPES_BULK, { uniqueNames })
+    invoke<RecipeMap>(TAURI_COMMANDS.GET_RECIPES_BULK, { uniqueNames })
       .then(result => {
         const map = new Map<string, number>();
         for (const comps of Object.values(result)) flattenRecipeCounts(comps, 1, map);
@@ -620,7 +621,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
               const priceData = prices.get(url);
               return { item: p, qty: inventory[p.unique_name]?.quantity ?? 0,
                 required_count: recipeCountMap.get(p.unique_name) ?? 1,
-                sellMedian: priceData?.sell_median, loading: false, urlName: url };
+                sellMedian: priceData?.sell_median ?? undefined, loading: false, urlName: url };
             });
           return (
             <SetCard key={setKey} setKey={setKey} parts={setParts} parentItem={parent}
@@ -1223,7 +1224,7 @@ function RivenSellModal({ riven, weaponName, disposition, category, onClose, onS
     })),
   ];
   const unmapped = attrs.filter(a => !a.url_name);
-  const validAttrs = attrs.filter(a => !!a.url_name);
+  const validAttrs = attrs.filter((a): a is WfmRivenAttribute => !!a.url_name);
 
   async function handleSubmit() {
     let sp: number, bp: number | null;
@@ -1242,7 +1243,7 @@ function RivenSellModal({ riven, weaponName, disposition, category, onClose, onS
     setError(null);
     const computedName = riven.mod_name || rivenModName(riven);
     try {
-      await invoke("wfm_create_riven_auction", {
+      const args: WfmCreateRivenAuctionArgs = {
         weaponUrlName:       toWfmSlug(weaponName),
         rivenName:           computedName,
         masteryLevel:        riven.lvl_req ?? 0,
@@ -1256,7 +1257,8 @@ function RivenSellModal({ riven, weaponName, disposition, category, onClose, onS
         note,
         visible,
         isDirectSell:        saleType === "direct",
-      });
+      };
+      await invoke("wfm_create_riven_auction", args);
       onSuccess();
       onClose();
     } catch (e: unknown) {
@@ -1381,10 +1383,11 @@ function VeiledSellModal({ category, count, onClose, onSuccess }: VeiledSellModa
     setBusy(true);
     setError(null);
     try {
-      const info = await invoke<{ item: { id: string } }>(TAURI_COMMANDS.WFM_GET_ITEM_INFO, { urlName: slug });
-      const itemId = info?.item?.id ?? (info as Record<string, Record<string, string>>)?.["data"]?.["id"];
+      const info = await invoke<WfmItemInfo>(TAURI_COMMANDS.WFM_GET_ITEM_INFO, { urlName: slug });
+      const itemId = info?.id;
       if (!itemId) throw new Error("Could not find WFM item ID for this riven type.");
-      await invoke(TAURI_COMMANDS.WFM_CREATE_ORDER, { itemId, orderType: "sell", platinum: plat, quantity: qty, visible });
+      const args: WfmCreateOrderArgs = { itemId, orderType: "sell", platinum: plat, quantity: qty, visible };
+      await invoke(TAURI_COMMANDS.WFM_CREATE_ORDER, args);
       onSuccess();
       onClose();
     } catch (e: unknown) {

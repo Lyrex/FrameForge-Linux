@@ -5,8 +5,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { overlayScale } from "./uiScale";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
-import type { CraftingJob, ShallowRecipeComponent } from "./types/items";
+import type { CraftingJob, QuantityMap, ShallowRecipeComponent } from "./types/items";
 import type { RelicOverlayPriority } from "./types/settings";
+import type { PendingRelicRewards, RelicRewardsPayload } from "./types/tauri";
+import type { InventoryUpdate } from "./types/inventory";
 import "./Overlay.css";
 
 interface ComponentRow {
@@ -69,8 +71,8 @@ function resolveOwnedFn(
   uniqueName: string,
   displayName: string,
   cat: Record<string, any>,
-  qty: Record<string, number>,
-  crafting: Record<string, number>,
+  qty: QuantityMap,
+  crafting: QuantityMap,
 ): number {
   const clk = uniqueName.replace("/Lotus/StoreItems/", "/Lotus/");
   const catEntry = cat[clk] ?? cat[uniqueName]
@@ -256,8 +258,8 @@ export default function Overlay() {
 
   const prevKey      = useRef<string>("");
   const sessionCatalogRef = useRef<Record<string, any>>({}); // populated per-session by get_items_by_paths
-  const quantRef     = useRef<Record<string, number>>({});
-  const craftingRef  = useRef<Record<string, number>>({});  // normalized unique_name → crafting count
+  const quantRef     = useRef<QuantityMap>({});
+  const craftingRef  = useRef<QuantityMap>({});  // normalized unique_name → crafting count
 
   // Force document-level transparency — only runs when this overlay window mounts,
   // never in the main app. App.css sets background on html/#root which overrides
@@ -272,8 +274,7 @@ export default function Overlay() {
 
   useEffect(() => {
       invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: "[OV] Overlay.tsx useEffect start" }).catch(() => {});
-    type EventPayload = { paths: string[]; positions: number[] };
-    let pendingEvent: EventPayload | null = null;
+    let pendingEvent: RelicRewardsPayload | null = null;
     let dataReady = false;
 
     const processPayload = (paths: string[], positions: number[]) => {
@@ -441,7 +442,7 @@ export default function Overlay() {
     });
 
     invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: "[OV] registering relic-rewards listener" }).catch(() => {});
-    const unsub = listen<{ items: string[]; positions: number[] } | null>(
+    const unsub = listen<PendingRelicRewards>(
       TAURI_EVENTS.RELIC_REWARDS,
       async (e) => {
         const payload = e.payload;
@@ -470,7 +471,7 @@ export default function Overlay() {
           processPayload(payload.items, payload.positions);
         } else {
           invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: "[OV] buffering event (dataReady=false)" }).catch(() => {});
-          pendingEvent = { paths: payload.items, positions: payload.positions };
+          pendingEvent = payload;
         }
       }
     );
@@ -480,14 +481,14 @@ export default function Overlay() {
     // .take() on the Rust side clears the stored value atomically, so there is no
     // double-processing if the listener also receives the event.
     invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: "[OV] calling get_pending_relic_rewards" }).catch(() => {});
-    invoke<{ items: string[]; positions: number[] } | null>("get_pending_relic_rewards")
+    invoke<PendingRelicRewards>("get_pending_relic_rewards")
       .then(pending => {
         invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[OV] pull result: ${pending ? pending.items.length + " items" : "null"}` }).catch(() => {});
         if (pending && pending.items.length > 0) {
           if (dataReady) {
             processPayload(pending.items, pending.positions);
           } else {
-            pendingEvent = { paths: pending.items, positions: pending.positions };
+            pendingEvent = pending;
           }
         }
       })
@@ -495,14 +496,14 @@ export default function Overlay() {
 
     invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: "[OV] starting Promise.allSettled for qty/crafting" }).catch(() => {});
     Promise.allSettled([
-      invoke<Record<string, number>>(TAURI_COMMANDS.GET_CURRENT_QUANTITIES),
+      invoke<QuantityMap>(TAURI_COMMANDS.GET_CURRENT_QUANTITIES),
       invoke<CraftingJob[]>("get_current_crafting"),
     ]).then(async ([quantitiesR, craftingR]) => {
       if (quantitiesR.status === 'fulfilled') {
         quantRef.current = quantitiesR.value;
       }
       if (craftingR.status === 'fulfilled') {
-        const byCraft: Record<string, number> = {};
+        const byCraft: QuantityMap = {};
         for (const job of craftingR.value) {
           const lk = job.unique_name.replace("/Lotus/StoreItems/", "/Lotus/");
           byCraft[lk] = (byCraft[lk] ?? 0) + 1;
@@ -510,13 +511,13 @@ export default function Overlay() {
         craftingRef.current = byCraft;
       }
       dataReady = true;
-      invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[OV] dataReady=true — pendingEvent=${pendingEvent ? pendingEvent.paths.length + " items" : "null"}` }).catch(() => {});
+      invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[OV] dataReady=true — pendingEvent=${pendingEvent ? pendingEvent.items.length + " items" : "null"}` }).catch(() => {});
 
       if (pendingEvent) {
         const ev = pendingEvent;
         pendingEvent = null;
         try {
-          const items = await invoke<any[]>("get_items_by_paths", { paths: ev.paths });
+          const items = await invoke<any[]>("get_items_by_paths", { paths: ev.items });
           const byUnique: Record<string, any> = {};
           for (const i of items) byUnique[i.unique_name] = i;
           sessionCatalogRef.current = byUnique;
@@ -524,7 +525,7 @@ export default function Overlay() {
         } catch (err) {
           invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[OV] pending: get_items_by_paths failed: ${err}` }).catch(() => {});
         }
-        processPayload(ev.paths, ev.positions);
+        processPayload(ev.items, ev.positions);
       }
     });
 
@@ -532,7 +533,7 @@ export default function Overlay() {
     // built-item check.  This fixes the race where processPayload ran before the
     // scanner had committed items (all counts showed 0), and ensures warframes
     // that appear in unique_quantities after 2+ consecutive scans flip the card.
-    const unsubInv = listen<{ quantities: Record<string, number> }>(TAURI_EVENTS.INVENTORY_UPDATE, (e) => {
+    const unsubInv = listen<InventoryUpdate>(TAURI_EVENTS.INVENTORY_UPDATE, (e) => {
       const newQty = e.payload?.quantities;
       if (!newQty) return;
       quantRef.current = newQty;

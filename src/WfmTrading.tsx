@@ -5,6 +5,7 @@ import ItemMarketPopup from "./ItemMarketPopup";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import type { WfmAuction, WfmItem, WfmManagedOrder, WfmWhisper } from "./types/market";
 import type { TradeCompletedEvent } from "./types/trades";
+import type { AddTradeArgs, WfmCreateOrderArgs, WfmCredentials, WfmSaveCredentialsArgs, WfmSession, WfmSetAuctionVisibleArgs, WfmUpdateOrderArgs } from "./types/tauri";
 import "./WfmTrading.css";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -80,7 +81,7 @@ function LoginPanel({ onLogin }: { onLogin: (u: string) => void }) {
       const username = await invoke<string>("wfm_login", { email, password });
       if (remember) {
         const tokenJson = await invoke<string | null>("wfm_get_jwt").catch(() => null);
-        if (tokenJson) invoke("wfm_save_credentials", { email, token: tokenJson }).catch(() => {});
+        if (tokenJson) invoke("wfm_save_credentials", { email, token: tokenJson } satisfies WfmSaveCredentialsArgs).catch(() => {});
       }
       onLogin(username);
     } catch (e) { setError(String(e)); setLoading(false); }
@@ -284,7 +285,7 @@ function RivensSection({ rivenOrders, itemIdMap, auctionRefreshKey, onEditOrder,
   useEffect(() => { load(); }, [load, auctionRefreshKey]);
 
   const toggleAuctionVisible = (id: string, currentlyVisible: boolean) => {
-    invoke("wfm_set_auction_visible", { auctionId: id, visible: !currentlyVisible })
+    invoke("wfm_set_auction_visible", { auctionId: id, visible: !currentlyVisible } satisfies WfmSetAuctionVisibleArgs)
       .then(() => load())
       .catch((e: unknown) => alert(String(e)));
   };
@@ -297,7 +298,7 @@ function RivensSection({ rivenOrders, itemIdMap, auctionRefreshKey, onEditOrder,
 
   const setAllAuctionsVisible = async (visible: boolean) => {
     await Promise.all(auctions.map(a =>
-      invoke("wfm_set_auction_visible", { auctionId: a.id, visible }).catch(() => {})
+      invoke("wfm_set_auction_visible", { auctionId: a.id, visible } satisfies WfmSetAuctionVisibleArgs).catch(() => {})
     ));
     load();
   };
@@ -453,21 +454,21 @@ function ListingsPanel({ username: _username, itemIdMap, wfmItems, imageMap, auc
   const toggleOrderVisible = async (o: WfmManagedOrder) => {
     const cur = orders.sell.find(x => x.id === o.id) ?? orders.buy.find(x => x.id === o.id);
     if (!cur) return;
-    await invokeWfm("wfm_update_order", { orderId: o.id, platinum: cur.platinum, quantity: cur.quantity, visible: !cur.visible }).catch(() => {});
+    await invokeWfm("wfm_update_order", { orderId: o.id, platinum: cur.platinum, quantity: cur.quantity, visible: !cur.visible } satisfies WfmUpdateOrderArgs).catch(() => {});
     loadOrders();
   };
 
   const setAllOrdersVisible = async (vis: boolean) => {
     const all = [...orders.sell, ...orders.buy];
     await Promise.all(all.map(o =>
-      invokeWfm("wfm_update_order", { orderId: o.id, platinum: o.platinum, quantity: o.quantity, visible: vis }).catch(() => {})
+      invokeWfm("wfm_update_order", { orderId: o.id, platinum: o.platinum, quantity: o.quantity, visible: vis } satisfies WfmUpdateOrderArgs).catch(() => {})
     ));
     loadOrders();
   };
 
   const saveEdit = async () => {
     if (!editing) return;
-    await invokeWfm("wfm_update_order", { orderId: editing.id, platinum: editing.pt, quantity: editing.qty, visible: editing.visible }).catch(() => {});
+    await invokeWfm("wfm_update_order", { orderId: editing.id, platinum: editing.pt, quantity: editing.qty, visible: editing.visible } satisfies WfmUpdateOrderArgs).catch(() => {});
     setEditing(null);
     loadOrders();
   };
@@ -488,7 +489,7 @@ function ListingsPanel({ username: _username, itemIdMap, wfmItems, imageMap, auc
 
   const bulkRivenOrdersVisible = async (vis: boolean) => {
     await Promise.all(rivenOrders.map(o =>
-      invokeWfm("wfm_update_order", { orderId: o.id, platinum: o.platinum, quantity: o.quantity, visible: vis }).catch(() => {})
+      invokeWfm("wfm_update_order", { orderId: o.id, platinum: o.platinum, quantity: o.quantity, visible: vis } satisfies WfmUpdateOrderArgs).catch(() => {})
     ));
     loadOrders();
   };
@@ -690,7 +691,7 @@ function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
               };
 
               if (newQty > 0) {
-                await invokeWfm("wfm_update_order", { orderId: match.id, platinum: match.platinum, quantity: newQty, visible: match.visible });
+                await invokeWfm("wfm_update_order", { orderId: match.id, platinum: match.platinum, quantity: newQty, visible: match.visible } satisfies WfmUpdateOrderArgs);
               } else {
                 await invokeWfm("wfm_delete_order", { orderId: match.id });
               }
@@ -748,7 +749,7 @@ function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
     navigator.clipboard.writeText(msg);
     // Auto-log the trade to Statistics
     if (item) {
-      invoke(TAURI_COMMANDS.ADD_TRADE, {
+      const args: AddTradeArgs = {
         withPlayer: from,
         direction: "sold",
         itemName: item,
@@ -757,7 +758,8 @@ function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
         platinum: price ?? 0,
         source: "wfm",
         notes: "",
-      }).catch(() => {});
+      };
+      invoke(TAURI_COMMANDS.ADD_TRADE, args).catch(() => {});
     }
     setWhispers(prev => prev.filter(w => w.from !== from));
   };
@@ -769,10 +771,10 @@ function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
     try {
       if (newQty > 0) {
         // We reduced qty → restore to original
-        await invokeWfm("wfm_update_order", { orderId, platinum, quantity: originalQty, visible });
+        await invokeWfm("wfm_update_order", { orderId, platinum, quantity: originalQty, visible } satisfies WfmUpdateOrderArgs);
       } else {
         // We deleted the listing → re-create it
-        await invokeWfm(TAURI_COMMANDS.WFM_CREATE_ORDER, { itemId, orderType: "sell", platinum, quantity: originalQty, visible });
+        await invokeWfm(TAURI_COMMANDS.WFM_CREATE_ORDER, { itemId, orderType: "sell", platinum, quantity: originalQty, visible } satisfies WfmCreateOrderArgs);
       }
       // Clear revertInfo after a successful revert so the button disappears
       setWhispers(prev => {
@@ -878,9 +880,9 @@ export default function WfmTrading({ wfmLookup: _wfmLookup, wfmItems, imageMap, 
     try {
       const { orderId, itemId, platinum, originalQty, newQty, visible } = entry.revertInfo;
       if (newQty > 0) {
-        await invokeWfm("wfm_update_order", { orderId, platinum, quantity: originalQty, visible });
+        await invokeWfm("wfm_update_order", { orderId, platinum, quantity: originalQty, visible } satisfies WfmUpdateOrderArgs);
       } else {
-        await invokeWfm(TAURI_COMMANDS.WFM_CREATE_ORDER, { itemId, orderType: "sell", platinum, quantity: originalQty, visible });
+        await invokeWfm(TAURI_COMMANDS.WFM_CREATE_ORDER, { itemId, orderType: "sell", platinum, quantity: originalQty, visible } satisfies WfmCreateOrderArgs);
       }
       setListingChangelog(prev => prev.map(e => e.id === entry.id ? { ...e, reverted: true, reverting: false } : e));
     } catch (err) {
@@ -916,20 +918,20 @@ export default function WfmTrading({ wfmLookup: _wfmLookup, wfmItems, imageMap, 
     (async () => {
       let resolvedUser: string | null = null;
 
-      const existing = await invoke<[string, string] | null>(TAURI_COMMANDS.WFM_GET_SESSION).catch(() => null);
+      const existing = await invoke<WfmSession | null>(TAURI_COMMANDS.WFM_GET_SESSION).catch(() => null);
       if (existing) {
         [resolvedUser] = existing;
       } else {
-        const creds = await invoke<[string, string] | null>(TAURI_COMMANDS.WFM_LOAD_CREDENTIALS).catch(() => null);
+        const creds = await invoke<WfmCredentials | null>(TAURI_COMMANDS.WFM_LOAD_CREDENTIALS).catch(() => null);
         if (creds) {
           try {
-            [resolvedUser] = await invoke<[string, string]>(TAURI_COMMANDS.WFM_SET_JWT, { jwt: creds[1] });
+            [resolvedUser] = await invoke<WfmSession>(TAURI_COMMANDS.WFM_SET_JWT, { jwt: creds[1] });
             // Re-save with any newly-fetched CSRF token so it persists across
             // restarts, under the same email it was stored with. Failing here
             // is not worth reporting: nobody asked for it, and the token
             // already on disk still works.
             const tokenJson = await invoke<string | null>("wfm_get_jwt").catch(() => null);
-            if (tokenJson) await invoke("wfm_save_credentials", { email: creds[0], token: tokenJson }).catch(() => {});
+            if (tokenJson) await invoke("wfm_save_credentials", { email: creds[0], token: tokenJson } satisfies WfmSaveCredentialsArgs).catch(() => {});
           } catch { /* token expired — show login form */ }
         }
       }

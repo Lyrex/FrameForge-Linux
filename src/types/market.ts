@@ -4,14 +4,30 @@ export interface WfmItem {
   url_name: string;
 }
 
+/** Item detail returned by wfm_get_item_info. */
+export interface WfmItemInfo {
+  id: string;
+  modMaxRank?: number;
+}
+
 export interface WfmPrice {
   url_name: string;
-  sell_median?: number;
+  sell_median?: number | null;
+  buy_median?: number | null;
+  tradeable?: boolean;
 }
 
 export interface WfmPriceUpdate {
   url_name: string;
   sell_median: number | null;
+  tradeable: boolean;
+}
+
+export type WfmCachedPrices = Record<string, number | null>;
+
+export interface WfmItemOrders {
+  sell: WfmPublicOrder[];
+  buy: WfmPublicOrder[];
 }
 
 export interface BlobRivenStat {

@@ -26,6 +26,10 @@ export interface CraftingJob {
   completion_ms: number;
 }
 
+export type QuantityMap = Record<string, number>;
+export type RecipeMap = Record<string, RecipeComponent[]>;
+export type RelicDropMap = Record<string, string[]>;
+
 export interface RecipeComponent {
   unique_name: string;
   name: string;

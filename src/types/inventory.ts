@@ -1,4 +1,4 @@
-import type { CraftingJob } from "./items";
+import type { CraftingJob, QuantityMap } from "./items";
 
 export interface ModCopy {
   uniqueName: string;
@@ -23,7 +23,7 @@ export interface ChangeLogEntry {
 }
 
 export interface InventoryUpdate {
-  quantities: Record<string, number>;
+  quantities: QuantityMap;
   crafting: CraftingJob[];
   mastery_rank?: number;
   mastery_data?: Record<string, number>;

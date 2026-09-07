@@ -10,6 +10,7 @@ import type { CatalogItem, InventoryItem } from "./types/items";
 import type { RelicFilters } from "./types/filters";
 import type { DropReward, RelicDrop } from "./types/relics";
 import type { ViewMode } from "./types/ui";
+import type { WfmCachedPrices, WfmItem } from "./types/market";
 import { ViewToggle } from "./ViewToggle";
 
 interface Props {
@@ -433,14 +434,14 @@ function PlannerTab({
 
   // Load WFM items to build name→slug lookup, then fetch cached prices
   useEffect(() => {
-    invoke<{ item_name: string; url_name: string }[]>(TAURI_COMMANDS.FETCH_WFM_ITEMS)
+    invoke<WfmItem[]>(TAURI_COMMANDS.FETCH_WFM_ITEMS)
       .then(items => {
         const lookup = new Map<string, string>();
         for (const w of items) lookup.set(wfmNorm(w.item_name), w.url_name);
         return lookup;
       })
       .then(lookup => {
-        invoke<Record<string, number | null>>("wfm_get_cached_prices")
+        invoke<WfmCachedPrices>("wfm_get_cached_prices")
           .then(raw => {
             const m = new Map<string, number>();
             for (const [slug, price] of Object.entries(raw)) {

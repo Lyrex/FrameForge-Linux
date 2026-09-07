@@ -5,6 +5,7 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { clampToMonitor, overlayScale } from "./uiScale";
 import { DEFAULT_RELIC_PICK_LINES, DEFAULT_RELIC_PICK_PRIORITY, RELIC_PICK_LINES_OPTIONS, RELIC_PICK_PRIORITY_OPTIONS } from "./constants/settings";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
+import type { SettingsFile } from "./types/tauri";
 import type { RelicPickPayload, RelicPickRelic, RelicPickReward } from "./types/relics";
 import type { RelicPickLines, RelicPickPriority } from "./types/settings";
 import "./RelicPickOverlay.css";
@@ -103,7 +104,7 @@ export default function RelicPickOverlay() {
       try {
         const json = await invoke<string>(TAURI_COMMANDS.LOAD_SETTINGS);
         if (json) {
-          const s = JSON.parse(json);
+          const s = JSON.parse(json) as SettingsFile;
           if (RELIC_PICK_PRIORITY_OPTIONS.includes(s.relicPickPriority)) setPriority(s.relicPickPriority);
           if (RELIC_PICK_LINES_OPTIONS.includes(s.relicPickLines))        setLines(s.relicPickLines);
         }

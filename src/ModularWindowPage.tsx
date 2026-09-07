@@ -6,15 +6,16 @@ import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import { MODULAR_SECTION_ORDER_DEFAULT } from "./constants/settings";
 import ModularWindow from "./ModularWindow";
 import type { FissureWatch } from "./types/settings";
-import type { CatalogItem, InventoryItem } from "./types/items";
+import type { CatalogItem, InventoryItem, QuantityMap } from "./types/items";
 import type { InventoryUpdate } from "./types/inventory";
+import type { SettingsFile, SettingsPatch } from "./types/tauri";
 
 export default function ModularWindowPage() {
   const [tracked, setTracked] = useState<string[]>([]);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [timerFavorites, setTimerFavorites] = useState<string[]>([]);
   const [fissureWatches, setFissureWatches] = useState<FissureWatch[]>([]);
-  const [quantities, setQuantities] = useState<Record<string, number>>({});
+  const [quantities, setQuantities] = useState<QuantityMap>({});
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const inventory = useMemo<Record<string, InventoryItem>>(() => {
     const pathToCatalog = new Map<string, CatalogItem>();
@@ -50,7 +51,7 @@ export default function ModularWindowPage() {
       // A missing file is a first launch and safe to write to.
       if (!json) { popoutSettingsLoadedRef.current = true; return; }
       try {
-        const s = JSON.parse(json);
+        const s = JSON.parse(json) as SettingsFile;
         if (Array.isArray(s.tracked)) setTracked(s.tracked);
         if (Array.isArray(s.favorites)) setFavorites(s.favorites);
         if (Array.isArray(s.timerFavorites)) setTimerFavorites(s.timerFavorites);
@@ -67,7 +68,7 @@ export default function ModularWindowPage() {
       popoutSettingsLoadedRef.current = true;
     }).catch(() => {});
     invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS).then(setCatalog).catch(() => {});
-    invoke<Record<string, number>>(TAURI_COMMANDS.GET_CURRENT_QUANTITIES).then(setQuantities).catch(() => {});
+    invoke<QuantityMap>(TAURI_COMMANDS.GET_CURRENT_QUANTITIES).then(setQuantities).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -82,7 +83,7 @@ export default function ModularWindowPage() {
       invoke<string>(TAURI_COMMANDS.LOAD_SETTINGS).then(json => {
         if (!json) return;
         try {
-          const s = JSON.parse(json);
+          const s = JSON.parse(json) as SettingsFile;
           if (Array.isArray(s.tracked)) setTracked(s.tracked);
           if (Array.isArray(s.favorites)) setFavorites(s.favorites);
           if (Array.isArray(s.timerFavorites)) setTimerFavorites(s.timerFavorites);
@@ -94,7 +95,7 @@ export default function ModularWindowPage() {
     return () => { unlisten.then(fn => fn()); };
   }, []);
 
-  const saveModularSettings = useCallback((patch: object) => {
+  const saveModularSettings = useCallback((patch: SettingsPatch) => {
     if (!popoutSettingsLoadedRef.current) {
       console.error("save_settings skipped: settings not loaded yet in pop-out");
       return;

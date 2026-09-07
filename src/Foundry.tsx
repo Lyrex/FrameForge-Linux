@@ -6,7 +6,7 @@ import { PREFERENCE_KEYS } from "./constants/preferences";
 import { FOUNDRY_FILTERS_DEFAULT } from "./constants/filters";
 import { WARFRAME_WIKI_BASE, warframeStatImageUrl } from "./constants/urls";
 import { TAURI_COMMANDS } from "./constants/tauri";
-import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeComponentStatus } from "./types/items";
+import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeComponentStatus, RecipeMap, RelicDropMap } from "./types/items";
 import type { FoundryFilters } from "./types/filters";
 import type { ViewMode } from "./types/ui";
 import { ViewToggle } from "./ViewToggle";
@@ -210,7 +210,7 @@ function ItemImg({ imageName, category, size = 40 }: { imageName?: string; categ
 
 function CompRow({ comp, inventory, relicDrops, relicNames }: {
   comp: RecipeComponent; inventory: Record<string, InventoryItem>;
-  relicDrops: Record<string, string[]>; relicNames: Record<string, string>;
+  relicDrops: RelicDropMap; relicNames: Record<string, string>;
 }) {
   const status = compStatus(comp, inventory);
   const ownedRelics = [...new Set(
@@ -374,7 +374,7 @@ function RecipeModal({ item, recipe, inventory, isTracked, onTrack, onClose, cra
 
 const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops, relicNames, crafting, isTracked, onTrack, onOpen, subsummedWarframes, view }: {
   item: CatalogItem; recipe: RecipeComponent[] | null;
-  inventory: Record<string, InventoryItem>; relicDrops: Record<string, string[]>;
+  inventory: Record<string, InventoryItem>; relicDrops: RelicDropMap;
   relicNames: Record<string, string>;
   crafting: CraftingJob[]; isTracked: boolean;
   onTrack: (item: CatalogItem) => void;
@@ -561,7 +561,7 @@ const CRAFT_CATEGORIES = [
 export default function Foundry({ inventory, refreshKey, crafting, subsummedWarframes = new Set(), tracked, onTrackToggle, filters, onFiltersChange, pageSize = 30 }: Props) {
   const [craftable, setCraftable] = useState<CatalogItem[]>([]);
   const [recipes, setRecipes]     = useState<Map<string, RecipeComponent[]>>(new Map());
-  const [relicDrops, setRelicDrops] = useState<Record<string, string[]>>({});
+  const [relicDrops, setRelicDrops] = useState<RelicDropMap>({});
   const [relicNames, setRelicNames] = useState<Record<string, string>>({});
   const [modalItem, setModalItem] = useState<CatalogItem | null>(null);
   const [inputSearch, setInputSearch] = useState(filters.search);
@@ -597,8 +597,8 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
 
   useEffect(() => {
     invoke<CatalogItem[]>(TAURI_COMMANDS.GET_CRAFTABLE_ITEMS).then(setCraftable).catch(() => setCraftable([]));
-    invoke<Record<string, string[]>>("get_relic_drops").then(setRelicDrops).catch(() => {});
-    invoke<Array<{ unique_name: string; name: string; category: string }>>(TAURI_COMMANDS.GET_ALL_ITEMS)
+    invoke<RelicDropMap>("get_relic_drops").then(setRelicDrops).catch(() => {});
+    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS)
       .then(items => {
         const map: Record<string, string> = {};
         for (const i of items) if (i.category === "Relics") map[i.unique_name] = i.name;
@@ -661,7 +661,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
     const toLoad = visible.filter(i => !recipes.has(i.unique_name));
     if (toLoad.length === 0) return;
     let cancelled = false;
-    invoke<Record<string, RecipeComponent[]>>(TAURI_COMMANDS.GET_RECIPES_BULK, {
+    invoke<RecipeMap>(TAURI_COMMANDS.GET_RECIPES_BULK, {
       uniqueNames: toLoad.map(i => i.unique_name),
     }).then(result => {
       if (cancelled) return;

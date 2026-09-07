@@ -107,12 +107,13 @@ import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import type { FoundryFilters, InventoryFilters } from "./types/filters";
 import type { ViewMode } from "./types/ui";
 import { formatUnixTime } from "./formatters";
-import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem } from "./types/items";
+import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, QuantityMap } from "./types/items";
 import type { ChangeLogEntry, InventoryUpdate, ModCopy } from "./types/inventory";
-import type { RivenAnalysis, RivenAnalysisUpdate, RivenStat } from "./types/rivens";
+import type { RivenAnalysis, RivenAnalysisUpdate } from "./types/rivens";
 import type { ClockFormat, FissureWatch, FoundryPageSize, RelicOverlayPriority, RelicPickLines, RelicPickPriority, RelicRefinement, SettingsSnapshot } from "./types/settings";
 import type { SeenFissures } from "./types/worldstate";
 import type { TradeCompletedEvent } from "./types/trades";
+import type { AddTradeArgs, AnalyzeRivenArgs, BlobStatusPayload, InventoryRewardPayload, ItemListStatus, OcrRivenScreenResult, OverlayWindowBounds, RelicRewardsPayload, SaveApiInventoryArgs, SavedApiInventory, SettingsFile, SettingsPatch, WarframeCredentials, WarframeInventoryRequest, WarframeWindowRect, WfmCredentials, WfmSession } from "./types/tauri";
 import "./App.css";
 import "./images.css";
 import "./InventoryGrid.css";
@@ -228,8 +229,8 @@ export default function App() {
   const { ctxMenu, open: openCtx, close: closeCtx } = useContextMenu();
 
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
-  const [quantities, setQuantities] = useState<Record<string, number>>({});
-  const [apiQuantities, setApiQuantities] = useState<Record<string, number>>({});
+  const [quantities, setQuantities] = useState<QuantityMap>({});
+  const [apiQuantities, setApiQuantities] = useState<QuantityMap>({});
   const [apiModCopies, setApiModCopies] = useState<ModCopy[]>([]);
   const [scannerMods, setScannerMods] = useState<Record<string, { total: number; by_rank: Record<string, number> }>>({});
   const [crafting, setCrafting] = useState<CraftingJob[]>([]);
@@ -274,7 +275,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const wfmInvisibleOnCloseRef  = useRef(false);
   const wfmLoggedInRef          = useRef(false);
   const catalogRef = useRef<CatalogItem[]>([]);
-  const prevApiQtyRef = useRef<Record<string, number>>({});
+  const prevApiQtyRef = useRef<QuantityMap>({});
   const manualCredsRef = useRef<{ accountId: string; nonce: string } | null>(null);
   const [changeLog, setChangeLog] = useState<ChangeLogEntry[]>([]);
   const [changeLogArrivalToken, setChangeLogArrivalToken] = useState(0);
@@ -393,7 +394,8 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
       console.error("save_settings skipped: settings not loaded yet, saving now would clobber the file");
       return;
     }
-    invoke(TAURI_COMMANDS.SAVE_SETTINGS, { json: JSON.stringify(settingsRef.current) }).catch((e) => {
+    const settings: SettingsPatch = { ...settingsRef.current };
+    invoke(TAURI_COMMANDS.SAVE_SETTINGS, { json: JSON.stringify(settings) }).catch((e) => {
       console.error("save_settings failed:", e);
     });
   }, []); // eslint-disable-line
@@ -445,9 +447,9 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   // loads instantly rather than running ~2 minutes of API calls on first open.
   useEffect(() => {
     (async () => {
-      const creds = await invoke<[string, string] | null>(TAURI_COMMANDS.WFM_LOAD_CREDENTIALS).catch(() => null);
+      const creds = await invoke<WfmCredentials | null>(TAURI_COMMANDS.WFM_LOAD_CREDENTIALS).catch(() => null);
       if (creds) {
-        const session = await invoke<[string, string] | null>(TAURI_COMMANDS.WFM_SET_JWT, { jwt: creds[1] }).catch(() => null);
+        const session = await invoke<WfmSession | null>(TAURI_COMMANDS.WFM_SET_JWT, { jwt: creds[1] }).catch(() => null);
         if (session) {
           setWfmLoggedIn(true);
           wfmLoggedInRef.current = true;
@@ -494,7 +496,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
 
   useEffect(() => {
     // Restore all inventory data from the single Rust-side cache file
-    invoke<{ apiQuantities: Record<string, number>; apiModCopies: ModCopy[]; consumedSuits: string[] }>("get_saved_inventory")
+    invoke<SavedApiInventory>("get_saved_inventory")
       .then(data => {
         if (Object.keys(data.apiQuantities).length > 0) setApiQuantities(data.apiQuantities);
         if (data.apiModCopies.length > 0) setApiModCopies(data.apiModCopies);
@@ -508,7 +510,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
       // A missing file is a first launch: nothing to clobber, saving is safe.
       if (!json) { settingsLoadedRef.current = true; return; }
       try {
-        const s = JSON.parse(json);
+        const s = JSON.parse(json) as SettingsFile;
         // companionApiEnabled intentionally not loaded — feature suspended pending DE clarification
         if (typeof s.memoryScannerEnabled === "boolean") setMemoryScannerEnabled(s.memoryScannerEnabled);
         if (typeof s.blobLogEnabled === "boolean") setBlobLogEnabled(s.blobLogEnabled);
@@ -576,7 +578,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
     invoke<string>("get_system_locale").then(loc => { if (loc) setSystemLocale(loc); }).catch(() => {});
     invoke<string | null>("get_player_name").then(name => { if (name) setPlayerName(name); }).catch(() => {});
     invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS).then(items => { setCatalog(items); catalogRef.current = items; });
-    invoke<Record<string, number>>(TAURI_COMMANDS.GET_CURRENT_QUANTITIES)
+    invoke<QuantityMap>(TAURI_COMMANDS.GET_CURRENT_QUANTITIES)
       .then(setQuantities)
       .catch(() => {})
       .finally(() => {
@@ -592,7 +594,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
       for (const c of log) lc[c.unique_name] = Math.max(lc[c.unique_name] ?? 0, c.timestamp);
       setLastChanged(lc);
     });
-    invoke<{ count: number; recipe_count: number }>("get_item_list_status").then(s => {
+    invoke<ItemListStatus>("get_item_list_status").then(s => {
       setItemCount(s.count);
       setRecipeCount(s.recipe_count);
     });
@@ -723,7 +725,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
   // ── Blob processing status ────────────────────────────────────────────────
   useEffect(() => {
-    const unlisten = listen<{ stage: string; detail: string }>("blob-status", e => {
+    const unlisten = listen<BlobStatusPayload>("blob-status", e => {
       const { stage } = e.payload;
       if (stage === "scanning") {
         if (blobDoneTimerRef.current) clearTimeout(blobDoneTimerRef.current);
@@ -752,7 +754,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
       invoke<string>(TAURI_COMMANDS.LOAD_SETTINGS).then(json => {
         if (!json) return;
         try {
-          const s = JSON.parse(json);
+          const s = JSON.parse(json) as SettingsFile;
           const cur = settingsRef.current;
           if (Array.isArray(s.favorites) && JSON.stringify(s.favorites) !== JSON.stringify(cur.favorites))
             setFavorites(s.favorites);
@@ -777,10 +779,11 @@ if (typeof s.autoDiagEnabled === "boolean") {
       if (t) clearTimeout(t);
       t = setTimeout(() => {
         Promise.all([win.outerPosition(), win.outerSize()]).then(([pos, size]) => {
-          invoke(TAURI_COMMANDS.SAVE_SETTINGS, { json: JSON.stringify({
+          const patch: SettingsPatch = {
             windowX: pos.x, windowY: pos.y,
             windowWidth: size.width, windowHeight: size.height,
-          }) }).catch(() => {});
+          };
+          invoke(TAURI_COMMANDS.SAVE_SETTINGS, { json: JSON.stringify(patch) }).catch(() => {});
         }).catch(() => {});
       }, 400);
     };
@@ -825,7 +828,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
       const items = await invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS);
       setCatalog(items);
       catalogRef.current = items;
-      const status = await invoke<{ count: number; recipe_count: number }>("get_item_list_status");
+      const status = await invoke<ItemListStatus>("get_item_list_status");
       setRecipeCount(status.recipe_count);
       setFetchMsg(`Loaded ${count.toLocaleString()} items, ${status.recipe_count.toLocaleString()} recipes`);
       setItemsRefreshKey(k => k + 1);
@@ -847,8 +850,10 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
   // ── Warframe API: process inventory response ──────────────────────────────
 
-  const applyInventoryData = useCallback((data: any) => {
-    const apiQty: Record<string, number> = {};
+  const applyInventoryData = useCallback((raw: unknown) => {
+    // Companion inventory is an evolving external payload; keep it untyped at the transport boundary.
+    const data: any = raw;
+    const apiQty: QuantityMap = {};
     const ownedArrayKeys = [
       "Suits", "LongGuns", "Pistols", "Melee",
       "Sentinels", "SentinelWeapons",
@@ -1028,11 +1033,12 @@ if (typeof s.autoDiagEnabled === "boolean") {
   useEffect(() => {
     if (!inventoryRestoredRef.current) return;
     if (Object.keys(apiQuantities).length === 0 && apiModCopies.length === 0 && subsummedWarframes.size === 0) return;
-    invoke(TAURI_COMMANDS.SAVE_API_INVENTORY, {
+    const args: SaveApiInventoryArgs = {
       apiQuantities,
       apiModCopies,
       consumedSuits: [...subsummedWarframes],
-    }).catch(() => {});
+    };
+    invoke(TAURI_COMMANDS.SAVE_API_INVENTORY, args).catch(() => {});
   }, [apiQuantities, apiModCopies, subsummedWarframes]);
 
   useEffect(() => {
@@ -1163,7 +1169,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
       if (cancelled) return;
       let accountId = "", nonce = "", steamId = "";
       try {
-        [accountId, nonce, steamId] = await invoke<[string, string, string]>("scan_warframe_credentials");
+        [accountId, nonce, steamId] = await invoke<WarframeCredentials>("scan_warframe_credentials");
         // Cache successful auto-scan so fallback works if scan fails next time
         manualCredsRef.current = { accountId, nonce };
       } catch {
@@ -1173,7 +1179,8 @@ if (typeof s.autoDiagEnabled === "boolean") {
         accountId = mc.accountId; nonce = mc.nonce; steamId = "";
       }
       try {
-        const data = await invoke<any>("fetch_warframe_inventory", { accountId, nonce, steamId });
+        const args: WarframeInventoryRequest = { accountId, nonce, steamId };
+        const data = await invoke<unknown>("fetch_warframe_inventory", args);
         if (!cancelled) {
           applyInventoryData(data);
           setWfConnected(true);
@@ -1211,8 +1218,8 @@ if (typeof s.autoDiagEnabled === "boolean") {
       _rivenRollCount++;
       const { emit } = await import("@tauri-apps/api/event");
 
-      let rect: [number, number, number, number] = [0, 0, 0, 800];
-      try { rect = await invoke<[number, number, number, number]>("get_warframe_window_rect"); } catch {}
+      let rect: WarframeWindowRect = [0, 0, 0, 800];
+      try { rect = await invoke<WarframeWindowRect>("get_warframe_window_rect"); } catch {}
       const [wx, wy, , wh] = rect;
       const result = await ensureRivenWindow(wx, wy, wh);
       let pendingPayload: RivenAnalysisUpdate | null = null;
@@ -1232,9 +1239,9 @@ if (typeof s.autoDiagEnabled === "boolean") {
       }
 
       try {
-        const ocrResult = await invoke<{ weapon: string; positives: string[]; negatives: string[]; rolled_stats: RivenStat[]; is_comparison: boolean; original_rolled_stats: RivenStat[]; raw: string }>("ocr_riven_screen");
+        const ocrResult = await invoke<OcrRivenScreenResult>("ocr_riven_screen");
         const analysis: RivenAnalysis | null = (ocrResult.weapon || ocrResult.positives.length > 0)
-          ? await invoke<RivenAnalysis | null>(TAURI_COMMANDS.ANALYZE_RIVEN, { weapon: ocrResult.weapon, positives: ocrResult.positives, negatives: ocrResult.negatives }).catch(() => null)
+          ? await invoke<RivenAnalysis | null>(TAURI_COMMANDS.ANALYZE_RIVEN, { weapon: ocrResult.weapon, positives: ocrResult.positives, negatives: ocrResult.negatives } satisfies AnalyzeRivenArgs).catch(() => null)
           : null;
         const payload: RivenAnalysisUpdate = { analysis, ocrRaw: ocrResult.raw, weapon: ocrResult.weapon, positives: ocrResult.positives, negatives: ocrResult.negatives, rolledStats: ocrResult.rolled_stats, isComparison: ocrResult.is_comparison, originalStats: ocrResult.original_rolled_stats, rollCount: _rivenRollCount };
         if (windowReady) { await emit(TAURI_EVENTS.RIVEN_ANALYSIS_UPDATE, payload).catch(() => {}); }
@@ -1307,7 +1314,8 @@ if (typeof s.autoDiagEnabled === "boolean") {
       const stripH  = Math.min(Math.round(wh * hFrac * overlayScale()), wh - offsetY);
       const stripY  = wy + offsetY;
       try {
-        await invoke("show_overlay_window", { x: wx, y: stripY, w: ww, h: stripH });
+        const bounds: OverlayWindowBounds = { x: wx, y: stripY, w: ww, h: stripH };
+        await invoke("show_overlay_window", bounds);
         overlayVisible = true;
         return true;
       } catch { return false; }
@@ -1317,7 +1325,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
       const enabled = localStorage.getItem(PREFERENCE_KEYS.OVERLAY_ENABLED) !== "false";
       if (!enabled) return;
       try {
-        const [wx, wy, ww, wh] = await invoke<[number, number, number, number]>("get_warframe_window_rect");
+        const [wx, wy, ww, wh] = await invoke<WarframeWindowRect>("get_warframe_window_rect");
         invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[APP] relic-trigger: wf(${wx},${wy} ${ww}×${wh})` }).catch(() => {});
         await openOverlay(wx, wy, ww, wh, 0.60, 0.30);
       } catch (e) {
@@ -1332,7 +1340,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
     const unsubRelic = listen<boolean>(TAURI_EVENTS.RELIC_SCREEN, () => { closeOverlay(); });
 
-    const unsub = listen<{ items: string[]; positions: number[] } | null>(TAURI_EVENTS.RELIC_REWARDS, async (e) => {
+    const unsub = listen<RelicRewardsPayload | null>(TAURI_EVENTS.RELIC_REWARDS, async (e) => {
       const rewards = e.payload;
       if (!rewards || rewards.items.length === 0) { closeOverlay(); return; }
       const enabled = localStorage.getItem(PREFERENCE_KEYS.OVERLAY_ENABLED) !== "false";
@@ -1343,7 +1351,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
       // (forwarding via emitTo caused an infinite feedback loop in Tauri 2).
       if (!overlayVisible) {
         try {
-          const [wx, wy, ww, wh] = await invoke<[number, number, number, number]>("get_warframe_window_rect");
+          const [wx, wy, ww, wh] = await invoke<WarframeWindowRect>("get_warframe_window_rect");
           invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[APP] relic-rewards fallback: wf(${wx},${wy} ${ww}×${wh})` }).catch(() => {});
           await openOverlay(wx, wy, ww, wh, 0.54, 0.28);
         } catch (err) {
@@ -1354,7 +1362,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
       }
     });
 
-    const unsubReward = listen<{ path: string; qty: number }>("inventory-reward", (e) => {
+    const unsubReward = listen<InventoryRewardPayload>("inventory-reward", (e) => {
       const { path, qty } = e.payload;
       setQuantities(prev => ({ ...prev, [path]: qty }));
     });
@@ -1375,8 +1383,8 @@ if (typeof s.autoDiagEnabled === "boolean") {
   useEffect(() => {
     const unlisten = listen<TradeCompletedEvent>(TAURI_EVENTS.TRADE_COMPLETED, async (e) => {
       const p = e.payload;
-      const save = (dir: string, name: string, qty: number, plat: number) =>
-        invoke(TAURI_COMMANDS.ADD_TRADE, {
+      const save = (dir: string, name: string, qty: number, plat: number) => {
+        const args: AddTradeArgs = {
           withPlayer: p.withPlayer,
           direction:  dir,
           itemName:   name,
@@ -1388,7 +1396,9 @@ if (typeof s.autoDiagEnabled === "boolean") {
           sessionId:  p.sessionId,
           tradeType:  p.tradeType,
           timestamp:  p.timestamp,
-        }).catch(() => {});
+        };
+        return invoke(TAURI_COMMANDS.ADD_TRADE, args).catch(() => {});
+      };
 
       if (p.tradeType === "sale") {
         // Gave items, received platinum — put plat on the first row only
@@ -1685,8 +1695,9 @@ if (typeof s.autoDiagEnabled === "boolean") {
             const wfApiClick = (!wfConnected && warframeRunning && companionApiEnabled)
               ? async () => {
                   try {
-                    const [accountId, nonce, steamId] = await invoke<[string, string, string]>("scan_warframe_credentials");
-                    const data = await invoke<any>("fetch_warframe_inventory", { accountId, nonce, steamId });
+                    const [accountId, nonce, steamId] = await invoke<WarframeCredentials>("scan_warframe_credentials");
+                    const args: WarframeInventoryRequest = { accountId, nonce, steamId };
+                    const data = await invoke<unknown>("fetch_warframe_inventory", args);
                     applyInventoryData(data);
                     setWfConnected(true);
                     wfConnectedRef.current = true;
