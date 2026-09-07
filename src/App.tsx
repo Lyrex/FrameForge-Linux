@@ -88,6 +88,7 @@ import InventoryGrid from "./InventoryGrid";
 import InventoryBatchPreview from "./InventoryBatchPreview";
 import InventoryToolbar from "./InventoryToolbar";
 import { INVENTORY_FILTERS_DEFAULT } from "./InventoryFilters";
+import { PREFERENCE_KEYS } from "./constants/preferences";
 import type { FoundryFilters, InventoryFilters } from "./types/filters";
 import type { ViewMode } from "./types/ui";
 import { formatUnixTime } from "./formatters";
@@ -276,11 +277,11 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     return { ...previous, filterRecent, sortMode: filterRecent ? "recent" : prevSortRef.current };
   }), []);
   const [inventoryView, setInventoryView] = useState<ViewMode>(() =>
-    (localStorage.getItem("ff-view-inventory") as ViewMode | null) ?? "cards"
+    (localStorage.getItem(PREFERENCE_KEYS.INVENTORY_VIEW) as ViewMode | null) ?? "cards"
   );
   const setInventoryViewPreference = useCallback((view: ViewMode) => {
     setInventoryView(view);
-    localStorage.setItem("ff-view-inventory", view);
+    localStorage.setItem(PREFERENCE_KEYS.INVENTORY_VIEW, view);
   }, []);
 
   // ── Per-tab persisted filter state ────────────────────────────────────────
@@ -306,10 +307,10 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'general' | 'overlays' | 'market' | 'accessibility' | 'data' | 'debugging'>('general');
   const [foundryPageSize, setFoundryPageSize] = useState<FoundryPageSize>(30);
   const [overlayEnabled, setOverlayEnabled] = useState<boolean>(
-    () => localStorage.getItem("ff-overlay-enabled") !== "false"
+    () => localStorage.getItem(PREFERENCE_KEYS.OVERLAY_ENABLED) !== "false"
   );
   const [overlayPriority, setOverlayPriority] = useState<RelicOverlayPriority>(
-    () => (localStorage.getItem("ff-overlay-priority") ?? "completion") as RelicOverlayPriority
+    () => (localStorage.getItem(PREFERENCE_KEYS.OVERLAY_PRIORITY) ?? "completion") as RelicOverlayPriority
   );
   const [relicPickEnabled,    setRelicPickEnabled]    = useState<boolean>(true);
   const [memTriggerEnabled,   setMemTriggerEnabled]   = useState<boolean>(false);
@@ -329,12 +330,12 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [blobStage, setBlobStage] = useState<"scanning" | "done" | null>(null);
   const blobDoneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [textScale, setTextScale] = useState(() => {
-    const s = parseFloat(localStorage.getItem("ff-text-scale") ?? "1");
+    const s = parseFloat(localStorage.getItem(PREFERENCE_KEYS.TEXT_SCALE) ?? "1");
     document.documentElement.style.setProperty("--ff-scale", s.toString());
     return s;
   });
   const [colorblindMode, setColorblindMode] = useState(() =>
-    localStorage.getItem("ff-colorblind") === "true"
+    localStorage.getItem(PREFERENCE_KEYS.COLORBLIND_MODE) === "true"
   );
   const [clockFormat, setClockFormat] = useState<ClockFormat>("auto");
   const [systemLocale, setSystemLocale] = useState("en-US");
@@ -502,24 +503,24 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
         if (typeof s.apiLogEnabled  === "boolean") setApiLogEnabled(s.apiLogEnabled);
 if (typeof s.autoDiagEnabled === "boolean") {
           setAutoDiagEnabled(s.autoDiagEnabled);
-          localStorage.setItem("ff-auto-diag", String(s.autoDiagEnabled));
+          localStorage.setItem(PREFERENCE_KEYS.AUTO_DIAGNOSTICS, String(s.autoDiagEnabled));
         }
         if (typeof s.overlayEnabled === "boolean") {
           setOverlayEnabled(s.overlayEnabled);
-          localStorage.setItem("ff-overlay-enabled", String(s.overlayEnabled));
+          localStorage.setItem(PREFERENCE_KEYS.OVERLAY_ENABLED, String(s.overlayEnabled));
         }
         if (typeof s.overlayPriority === "string") {
           setOverlayPriority(s.overlayPriority as RelicOverlayPriority);
-          localStorage.setItem("ff-overlay-priority", s.overlayPriority);
+          localStorage.setItem(PREFERENCE_KEYS.OVERLAY_PRIORITY, s.overlayPriority);
         }
         if (typeof s.textScale === "number") {
           setTextScale(s.textScale);
           document.documentElement.style.setProperty("--ff-scale", s.textScale.toString());
-          localStorage.setItem("ff-text-scale", s.textScale.toString());
+          localStorage.setItem(PREFERENCE_KEYS.TEXT_SCALE, s.textScale.toString());
         }
         if (typeof s.colorblindMode === "boolean") {
           setColorblindMode(s.colorblindMode);
-          localStorage.setItem("ff-colorblind", String(s.colorblindMode));
+          localStorage.setItem(PREFERENCE_KEYS.COLORBLIND_MODE, String(s.colorblindMode));
         }
         if (typeof s.clockFormat === "string" && ["auto", "12h", "24h"].includes(s.clockFormat)) {
           setClockFormat(s.clockFormat as ClockFormat);
@@ -1301,7 +1302,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
     };
 
     const unsubTrigger = listen<null>("relic-trigger", async () => {
-      const enabled = localStorage.getItem("ff-overlay-enabled") !== "false";
+      const enabled = localStorage.getItem(PREFERENCE_KEYS.OVERLAY_ENABLED) !== "false";
       if (!enabled) return;
       try {
         const [wx, wy, ww, wh] = await invoke<[number, number, number, number]>("get_warframe_window_rect");
@@ -1322,7 +1323,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
     const unsub = listen<{ items: string[]; positions: number[] } | null>("relic-rewards", async (e) => {
       const rewards = e.payload;
       if (!rewards || rewards.items.length === 0) { closeOverlay(); return; }
-      const enabled = localStorage.getItem("ff-overlay-enabled") !== "false";
+      const enabled = localStorage.getItem(PREFERENCE_KEYS.OVERLAY_ENABLED) !== "false";
       if (!enabled) return;
       invoke("log_relic_fe", { msg: `[APP] relic-rewards: ${rewards.items.length} items, overlayVisible=${overlayVisible}` }).catch(() => {});
       // Overlay.tsx already receives this event directly from Rust's global emit.

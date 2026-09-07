@@ -2,6 +2,7 @@ import { useState, type Dispatch, type MutableRefObject, type SetStateAction } f
 import { invoke } from "@tauri-apps/api/core";
 import { notify, ensurePermission } from "./notify";
 import { formatBytes } from "./formatters";
+import { PREFERENCE_KEYS } from "./constants/preferences";
 import type { ArchonShard } from "./types/items";
 import type { ChangeLogEntry, ModCopy } from "./types/inventory";
 import type { ClockFormat, FoundryPageSize, RelicOverlayPriority, RelicPickLines, RelicPickPriority, SettingsSnapshot } from "./types/settings";
@@ -218,7 +219,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                       onClick={() => {
                         const next = !overlayEnabled;
                         setOverlayEnabled(next);
-                        localStorage.setItem("ff-overlay-enabled", String(next));
+                        localStorage.setItem(PREFERENCE_KEYS.OVERLAY_ENABLED, String(next));
                         settingsRef.current = { ...settingsRef.current, overlayEnabled: next };
                         saveAllSettings();
                         if (!next) {
@@ -241,7 +242,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                       onChange={e => {
                         const next = e.target.value as RelicOverlayPriority;
                         setOverlayPriority(next);
-                        localStorage.setItem("ff-overlay-priority", next);
+                        localStorage.setItem(PREFERENCE_KEYS.OVERLAY_PRIORITY, next);
                         settingsRef.current = { ...settingsRef.current, overlayPriority: next };
                         saveAllSettings();
                       }}
@@ -442,7 +443,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                       onClick={() => {
                         const next = !colorblindMode;
                         setColorblindMode(next);
-                        localStorage.setItem("ff-colorblind", String(next));
+                        localStorage.setItem(PREFERENCE_KEYS.COLORBLIND_MODE, String(next));
                         settingsRef.current = { ...settingsRef.current, colorblindMode: next };
                         saveAllSettings();
                       }}
@@ -459,7 +460,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                         const v = parseFloat(e.target.value);
                         setTextScale(v);
                         document.documentElement.style.setProperty("--ff-scale", v.toString());
-                        localStorage.setItem("ff-text-scale", v.toString());
+                        localStorage.setItem(PREFERENCE_KEYS.TEXT_SCALE, v.toString());
                         settingsRef.current = { ...settingsRef.current, textScale: v };
                         saveAllSettings();
                       }} />
@@ -653,7 +654,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                       onClick={() => {
                         const next = !autoDiagEnabled;
                         setAutoDiagEnabled(next);
-                        localStorage.setItem("ff-auto-diag", String(next));
+                        localStorage.setItem(PREFERENCE_KEYS.AUTO_DIAGNOSTICS, String(next));
                         settingsRef.current = { ...settingsRef.current, autoDiagEnabled: next };
                         saveAllSettings();
                       }}>{autoDiagEnabled ? "On" : "Off"}</button>

@@ -1,13 +1,6 @@
 import type { ViewMode } from "./types/ui";
+import { VIEW_MODE_OPTIONS } from "./constants/ui";
 
-
-const VIEW_LABELS: Record<ViewMode, string> = {
-  "cards":        "Cards (icon + text)",
-  "icons":        "Icon grid",
-  "text-cards":   "Text cards (no icons)",
-  "list":         "List with icon",
-  "list-compact": "Compact list (text only)",
-};
 
 function ViewIcon({ mode }: { mode: ViewMode }) {
   switch (mode) {
@@ -60,13 +53,12 @@ function ViewIcon({ mode }: { mode: ViewMode }) {
 }
 
 export function ViewToggle({ view, onChange }: { view: ViewMode; onChange: (v: ViewMode) => void }) {
-  const modes: ViewMode[] = ["cards", "icons", "text-cards", "list", "list-compact"];
   return (
     <div className="view-toggle">
-      {modes.map(m => (
-        <button key={m} className={`view-btn${view === m ? " view-btn-active" : ""}`}
-          title={VIEW_LABELS[m]} onClick={() => onChange(m)}>
-          <ViewIcon mode={m} />
+      {VIEW_MODE_OPTIONS.map(({ mode, label }) => (
+        <button key={mode} className={`view-btn${view === mode ? " view-btn-active" : ""}`}
+          title={label} onClick={() => onChange(mode)}>
+          <ViewIcon mode={mode} />
         </button>
       ))}
     </div>

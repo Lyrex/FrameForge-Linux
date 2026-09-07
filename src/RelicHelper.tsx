@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { HelpTip } from "./HelpTip";
+import { PREFERENCE_KEYS } from "./constants/preferences";
 import type { CatalogItem, InventoryItem } from "./types/items";
 import type { RelicFilters } from "./types/filters";
 import type { DropReward, RelicDrop } from "./types/relics";
@@ -672,7 +673,7 @@ function PlannerTab({
 export default function RelicHelper({ inventory, refreshKey, colorblindMode = false, filters, onFiltersChange }: Props) {
   const [plannerActive, setPlannerActive] = useState(false);
   const [relicView, setRelicView] = useState<ViewMode>(() =>
-    (localStorage.getItem("ff-view-relic") as ViewMode | null) ?? "cards"
+    (localStorage.getItem(PREFERENCE_KEYS.RELIC_VIEW) as ViewMode | null) ?? "cards"
   );
   const [allItems,    setAllItems]    = useState<CatalogItem[]>([]);
   const [drops,       setDrops]       = useState<RelicDrop[]>([]);
@@ -856,7 +857,7 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
           <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>
             {dropLoading ? "Loading…" : `${visibleDrops.length} relics · ${ownedCount} owned`}
           </span>
-          <ViewToggle view={relicView} onChange={v => { setRelicView(v); localStorage.setItem("ff-view-relic", v); }} />
+          <ViewToggle view={relicView} onChange={v => { setRelicView(v); localStorage.setItem(PREFERENCE_KEYS.RELIC_VIEW, v); }} />
           <HelpTip items={[
             { border: "#e8923a", icon: "C", label: "Common",   desc: "Bronze border — ~25% chance per run" },
             { border: "#c0c0c0", icon: "U", label: "Uncommon", desc: "Silver border — ~11% chance per run" },

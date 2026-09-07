@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { CatalogItem } from "./types/items";
 import type { SnapshotPoint, TrackedItem } from "./types/inventory";
+import { PREFERENCE_KEYS } from "./constants/preferences";
 import "./ItemReport.css";
 
 type Timeframe = "7" | "30" | "90" | "all";
@@ -162,7 +163,7 @@ export default function ItemReport() {
   const [loading, setLoading] = useState(true);
 
   const [cardOrder, setCardOrder] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem("ff-item-report-order") ?? "[]"); }
+    try { return JSON.parse(localStorage.getItem(PREFERENCE_KEYS.ITEM_REPORT_ORDER) ?? "[]"); }
     catch { return []; }
   });
   const [draggingFrom, setDraggingFrom] = useState<string | null>(null);
@@ -198,7 +199,7 @@ export default function ItemReport() {
           order.splice(from, 1);
           order.splice(to, 0, src);
         }
-        localStorage.setItem("ff-item-report-order", JSON.stringify(order));
+        localStorage.setItem(PREFERENCE_KEYS.ITEM_REPORT_ORDER, JSON.stringify(order));
         return order;
       });
     }

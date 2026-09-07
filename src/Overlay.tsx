@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 
 import { overlayScale } from "./uiScale";
+import { PREFERENCE_KEYS } from "./constants/preferences";
 import type { CraftingJob, ShallowRecipeComponent } from "./types/items";
 import type { RelicOverlayPriority } from "./types/settings";
 import "./Overlay.css";
@@ -250,7 +251,7 @@ export default function Overlay() {
   // coordinate measured against the window itself.
   const winW     = (window.innerWidth || 1920) / overlayScale();
   // priority comes from localStorage (shared origin with main window).
-  const priority = (localStorage.getItem("ff-overlay-priority") ?? "completion") as RelicOverlayPriority;
+  const priority = (localStorage.getItem(PREFERENCE_KEYS.OVERLAY_PRIORITY) ?? "completion") as RelicOverlayPriority;
 
   const prevKey      = useRef<string>("");
   const sessionCatalogRef = useRef<Record<string, any>>({}); // populated per-session by get_items_by_paths

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, memo, startTransition, useRe
 import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
 import { HelpTip } from "./HelpTip";
+import { PREFERENCE_KEYS } from "./constants/preferences";
 import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeComponentStatus } from "./types/items";
 import type { FoundryFilters } from "./types/filters";
 import type { ViewMode } from "./types/ui";
@@ -574,7 +575,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
   const [inputSearch, setInputSearch] = useState(filters.search);
   const [page, setPage] = useState(0);
   const [craftView, setCraftView] = useState<ViewMode>(() =>
-    (localStorage.getItem("ff-view-foundry") as ViewMode | null) ?? "cards"
+    (localStorage.getItem(PREFERENCE_KEYS.FOUNDRY_VIEW) as ViewMode | null) ?? "cards"
   );
 
   // Refs so debounce closure always reads latest values without stale captures
@@ -769,7 +770,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
           <button className={`fchip ${filterLvlCap   ? "fchip-on" : ""}`} onClick={() => onFiltersChange({ ...filters, filterLvlCap: !filterLvlCap, ...(!filterLvlCap ? { activeCat: "All" } : {}) })}>Lvl &gt; 30</button>
           {isFiltered && <button className="fchip fchip-reset" onClick={() => onFiltersChange({ ...FOUNDRY_FILTERS_DEFAULT, activeCat })}>Show All</button>}
           <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>{visible.length} items</span>
-          <ViewToggle view={craftView} onChange={v => { setCraftView(v); localStorage.setItem("ff-view-foundry", v); }} />
+          <ViewToggle view={craftView} onChange={v => { setCraftView(v); localStorage.setItem(PREFERENCE_KEYS.FOUNDRY_VIEW, v); }} />
           <HelpTip items={[
             { swatch: "rgba(240,192,64,.5)", icon: "✓✓", label: "Owned",          desc: "Gold border + ✓✓ — item built and in inventory" },
             { swatch: "rgba(56,139,253,.5)", icon: "⚡",  label: "Ready to craft", desc: "Blue border + ⚡ — all parts collected" },
