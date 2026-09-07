@@ -1,33 +1,12 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { HelpTip } from "./HelpTip";
-import type { InventoryItem } from "./App";
-import type { ViewMode } from "./ViewToggle";
+import type { CatalogItem, InventoryItem } from "./types/items";
+import type { DropReward, RelicDrop } from "./types/relics";
+import type { ViewMode } from "./types/ui";
 import { ViewToggle } from "./ViewToggle";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-interface CatalogItem {
-  unique_name: string;
-  name: string;
-  category: string;
-  image_name?: string;
-  vaulted?: boolean | null;
-  ducats?: number | null;
-}
-
-interface DropReward {
-  itemName: string;
-  chance: number;
-  rarity: string; // "Common" | "Uncommon" | "Rare"
-}
-
-interface RelicDrop {
-  tier: string;
-  relicName: string;      // short: "A1 Relic"
-  fullName: string;       // with tier: "Axi A1 Relic" — used for catalog lookup
-  rewards: DropReward[];
-}
 
 export interface RelicFilters {
   search: string;

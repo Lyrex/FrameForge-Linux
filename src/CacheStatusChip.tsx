@@ -1,12 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { CacheStatuses } from "./types/cache";
 
-type Source = "fresh" | "refreshed" | "stale" | "fallback";
-type CacheStatus = { source: Source; last_updated: number | null; warning: string | null };
-type Statuses = Record<string, CacheStatus>;
-
-function overall(statuses: Statuses): "online" | "warn" | "offline" {
+function overall(statuses: CacheStatuses): "online" | "warn" | "offline" {
   const values = Object.values(statuses);
   if (values.length === 0) return "offline";
   if (values.some((s) => s.source === "fallback")) return "offline";
@@ -33,14 +30,14 @@ const DISPLAY: Record<string, string> = {
 };
 
 export default function CacheStatusChip() {
-  const [statuses, setStatuses] = useState<Statuses>({});
+  const [statuses, setStatuses] = useState<CacheStatuses>({});
   const [open, setOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const chipRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    invoke<Statuses>("get_cache_statuses").then(setStatuses).catch(() => {});
-    const unsub = listen<Statuses>("cache-status", (e) => setStatuses(e.payload));
+    invoke<CacheStatuses>("get_cache_statuses").then(setStatuses).catch(() => {});
+    const unsub = listen<CacheStatuses>("cache-status", (e) => setStatuses(e.payload));
     return () => { unsub.then((f) => f()); };
   }, []);
 

@@ -5,7 +5,9 @@ import { listen } from "@tauri-apps/api/event";
 import { HelpTip } from "./HelpTip";
 import WfmTrading from "./WfmTrading";
 import ItemMarketPopup from "./ItemMarketPopup";
-import type { InventoryItem } from "./App";
+import type { CatalogItem, CraftingJob, InventoryItem, RecipeComponent } from "./types/items";
+import type { ModCopy } from "./types/inventory";
+import type { BlobRivenEntry, BlobRivenStat, WfmItem, WfmPrice, WfmPriceUpdate } from "./types/market";
 import polMadurai  from "./assets/polarity/madurai.svg";
 import polVazarin  from "./assets/polarity/vazarin.svg";
 import polNaramon  from "./assets/polarity/naramon.svg";
@@ -15,20 +17,6 @@ import polPenjaga  from "./assets/polarity/penjaga.svg";
 import polUmbra    from "./assets/polarity/umbra.svg";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-interface CatalogItem {
-  unique_name: string;
-  name: string;
-  category: string;
-  image_name?: string;
-  vaulted?: boolean | null;
-  ducats?: number | null;
-}
-
-interface WfmItem { id: string; item_name: string; url_name: string; }
-interface WfmPrice { url_name: string; sell_median?: number; }
-
-interface CraftingJob { unique_name: string; item_name: string; completion_ms: number; }
 
 export interface MarketFilters {
   search: string;
@@ -42,39 +30,6 @@ export const MARKET_FILTERS_DEFAULT: MarketFilters = {
   search: "", ownership: [], conditions: [], vault: [], sortMode: "ducats",
   activeMarketTab: "trading",
 };
-
-interface RecipeComponent {
-  unique_name: string;
-  name: string;
-  count: number;
-  result_count: number;
-  components: RecipeComponent[];
-}
-
-interface BlobRivenStat { tag: string; value: number; }
-interface BlobRivenEntry {
-  item_id:   string;
-  item_type: string;
-  mod_name:  string;   // pre-computed by Rust, persisted in cache
-  /** "unrevealed" | "revealed" | "unlocked" */
-  riven_state: "unrevealed" | "revealed" | "unlocked";
-  compat:    string | null;
-  challenge_type: string | null;
-  challenge_complication: string | null;
-  lvl_req:   number | null;
-  polarity:  string | null;
-  buffs:     BlobRivenStat[];
-  curses:    BlobRivenStat[];
-  mod_rank:  number;
-  count:     number;
-  rerolls:   number;
-}
-
-interface ModCopy {
-  uniqueName: string;
-  rank: number | null;
-  count: number;
-}
 
 interface Props {
   inventory: Record<string, InventoryItem>;
@@ -294,7 +249,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
   const pendingPrices = useRef<Map<string, WfmPrice>>(new Map());
   const priceRafRef   = useRef<number | null>(null);
   useEffect(() => {
-    const unlisten = listen<{ url_name: string; sell_median: number | null }>(
+    const unlisten = listen<WfmPriceUpdate>(
       "wfm-price-update",
       ({ payload }) => {
         pendingPrices.current.set(payload.url_name, { url_name: payload.url_name, sell_median: payload.sell_median ?? undefined });

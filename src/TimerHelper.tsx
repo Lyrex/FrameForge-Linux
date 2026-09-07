@@ -1,67 +1,17 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "./TimerHelper.css";
-import type { InventoryItem } from "./App";
+import type { InventoryItem } from "./types/items";
+import type { WorldState, WsFissure, WsStorm } from "./types/worldstate";
+export type { WorldState, WsFissure, WsStorm } from "./types/worldstate";
 import { useWorldState } from "./worldstate";
 import { ensurePermission } from "./notify";
-import { matchesWatch, type FissureWatch } from "./fissureAlerts";
+import { matchesWatch } from "./fissureAlerts";
+import type { FissureWatch } from "./types/settings";
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-interface WsCycle   { expiry: string; }
-interface WsCetus   extends WsCycle { isDay: boolean; }
-interface WsVallis  extends WsCycle { isWarm: boolean; }
-interface WsCambion extends WsCycle { active: string; }
-interface WsZariman extends WsCycle { active: boolean; }
-
-interface WsSortieVariant { missionType: string; modifier: string; node: string; }
-interface WsSortie   { expiry: string; boss: string; faction: string; variants: WsSortieVariant[]; active: boolean; }
-interface WsMission  { type: string; node: string; }
-interface WsArchon   { expiry: string; boss: string; faction: string; missions: WsMission[]; active: boolean; }
-interface WsManifestItem { name: string; uniqueName?: string; primePrice?: number; regularPrice?: number; ayaPrice?: number; regalAyaPrice?: number; }
-interface WsTrader   { expiry: string; activation: string; character: string; location: string; active: boolean; manifest: WsManifestItem[]; }
-interface WsPrimeResurgence { expiry: string; activation: string; active: boolean; manifest: WsManifestItem[]; }
-interface WsNight    { expiry: string; season: number; active: boolean; }
-export interface WsFissure  { id: string; expiry: string; node: string; missionType: string; enemy: string; tier: string; tierNum: number; isStorm: boolean; isHard: boolean; active: boolean; }
-export interface WsStorm    { id: string; expiry: string; node: string; missionType: string; enemy: string; tier: string; tierNum: number; active: boolean; }
-interface WsAlert    { id: string; expiry: string; missionType: string; faction: string; node: string; rewardItem?: string; rewardCredits: number; }
-interface WsInvasion { id: string; node: string; attacker: string; defender: string; attReward: string; defReward: string; pct: number; }
-interface WsDarvo    { expiry: string; item: string; discount: number; originalPrice: number; salePrice: number; amountTotal: number; amountSold: number; }
-interface WsCircuit  { expiry: string; normalFrames: string[]; hardWeapons: string[]; }
-interface WsSimple   { expiry: string; }
-interface WsBounty   { expiry: string; jobCount: number; }
-interface WsEvent    { expiry: string; label: string; }
-interface WsNews     { message: string; link: string; date: string | number; stream: boolean; primeAccess: boolean; update: boolean; }
-
-// Fissure watches and their matching rules live in fissureAlerts, which stays
-// free of React so the rules can be exercised on their own. Re-exported here
-// so the rest of the app keeps importing them from where it always has.
+// Re-exported so existing TimerHelper imports remain compatible.
 export type { FissureWatch };
 export { matchesWatch };
-
-export interface WorldState {
-  cetus?:          WsCetus;
-  vallis?:         WsVallis;
-  cambion?:        WsCambion;
-  zariman?:        WsZariman;
-  bounties?:       Record<string, WsBounty>;
-  sortie?:         WsSortie;
-  archonHunt?:     WsArchon;
-  voidTrader?:     WsTrader;
-  nightwave?:        WsNight;
-  primeResurgence?:  WsPrimeResurgence;
-  circuit?:        WsCircuit;
-  kahl?:           WsSimple;
-  deepArchimedea?: WsSimple;
-  events?:         WsEvent[];
-  news?:           WsNews[];
-  darvo?:          WsDarvo;
-  alerts?:         WsAlert[];
-  invasions?:      WsInvasion[];
-  fissures?:       WsFissure[];
-  spFissures?:     WsFissure[];
-  voidStorms?:     WsStorm[];
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

@@ -1,42 +1,9 @@
 import { useState, useEffect, useMemo, useContext, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
+import type { WfmTopItem } from "./types/market";
+import type { Trade, TradeSession } from "./types/trades";
 import "./Reports.css";
-
-interface WfmTopItem {
-  name: string;
-  url_name: string;
-  image_name?: string;
-  unit_price: number;
-  daily_volume: number;
-  total_value_7d: number;
-}
-
-interface Trade {
-  id: number;
-  timestamp: string;
-  with_player: string;
-  direction: "sold" | "bought" | "traded-out" | "traded-in";
-  item_name: string;
-  item_url: string;
-  quantity: number;
-  platinum: number;
-  source: string;
-  notes: string;
-  session_id: string;
-  trade_type: string;
-}
-
-interface TradeSession {
-  sessionId: string;
-  withPlayer: string;
-  tradeType: "sale" | "purchase" | "trade";
-  givenItems: { name: string; qty: number }[];
-  givenPlat: number;
-  receivedItems: { name: string; qty: number }[];
-  receivedPlat: number;
-  timestamp: string;
-}
 
 interface CategoryStat {
   category: string;

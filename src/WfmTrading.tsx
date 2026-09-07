@@ -2,40 +2,11 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ItemMarketPopup from "./ItemMarketPopup";
+import type { WfmAuction, WfmItem, WfmManagedOrder, WfmWhisper } from "./types/market";
+import type { TradeCompletedEvent } from "./types/trades";
 import "./WfmTrading.css";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-interface WfmOrder {
-  id: string;
-  itemId?: string;
-  type: "sell" | "buy";
-  platinum: number;
-  quantity: number;
-  visible: boolean;
-  item?: { slug?: string; urlName?: string; url_name?: string; en?: { item_name: string }; i18n?: { en?: { name: string } }; };
-}
-
-interface WfmWhisper {
-  from: string;
-  message: string;
-  item?: string;
-  price?: number;
-  timestamp: string;
-  /** Set when auto-completed by in-game trade detection. Ghost stays visible for 5 min. */
-  completedAt?: number;
-  /** Set after WFM listing is updated so the ghost can offer a Revert button. */
-  revertInfo?: {
-    orderId: string;
-    itemId: string;
-    platinum: number;
-    originalQty: number;
-    newQty: number;       // 0 means the order was deleted
-    visible: boolean;
-  };
-}
-
-interface WfmItemEntry { id: string; item_name: string; url_name: string; }
 
 interface ListingChangeEntry {
   id: string;
@@ -51,38 +22,9 @@ interface ListingChangeEntry {
   reverted?: boolean;
 }
 
-interface WfmRivenAttribute {
-  url_name: string;
-  positive: boolean;
-  value:    number;
-}
-
-interface WfmAuction {
-  id:                 string;
-  starting_price:     number;
-  buyout_price:       number | null;
-  top_bid:            number | null;
-  bids:               number;
-  winner:             { ingame_name: string } | null;
-  is_closed:          boolean;
-  is_direct_sell:     boolean;
-  visible:            boolean;
-  note:               string;
-  minimal_reputation: number;
-  item: {
-    weapon_url_name: string;
-    name:            string;
-    mastery_level:   number;
-    mod_rank:        number;
-    re_rolls:        number;
-    polarity:        string;
-    attributes:      WfmRivenAttribute[];
-  };
-}
-
 interface Props {
   wfmLookup: Map<string, string>;
-  wfmItems: WfmItemEntry[];
+  wfmItems: WfmItem[];
   imageMap: Map<string, string>;
   inventory: Record<string, unknown>;
   onNewWhisper: () => void;
@@ -183,7 +125,7 @@ function LoginPanel({ onLogin }: { onLogin: (u: string) => void }) {
 
 // ── Listings panel ────────────────────────────────────────────────────────────
 
-function orderName(o: WfmOrder, itemIdMap: Map<string, string>): string {
+function orderName(o: WfmManagedOrder, itemIdMap: Map<string, string>): string {
   return (
     o.item?.i18n?.en?.name
     ?? o.item?.en?.item_name
@@ -195,7 +137,7 @@ function orderName(o: WfmOrder, itemIdMap: Map<string, string>): string {
   );
 }
 
-function isRivenOrder(o: WfmOrder, itemIdMap: Map<string, string>): boolean {
+function isRivenOrder(o: WfmManagedOrder, itemIdMap: Map<string, string>): boolean {
   const url = (o.item?.urlName ?? o.item?.url_name ?? o.item?.slug ?? "").toLowerCase();
   const name = orderName(o, itemIdMap).toLowerCase();
   return url.includes("riven") || name.includes("riven");
@@ -316,12 +258,12 @@ function AuctionEditPopup({ auction, onSave, onClose }: {
 }
 
 function RivensSection({ rivenOrders, itemIdMap, auctionRefreshKey, onEditOrder, onDeleteOrder, onToggleOrderVisible, onBulkOrdersVisible }: {
-  rivenOrders: WfmOrder[];
+  rivenOrders: WfmManagedOrder[];
   itemIdMap: Map<string, string>;
   auctionRefreshKey?: number;
-  onEditOrder: (o: WfmOrder) => void;
+  onEditOrder: (o: WfmManagedOrder) => void;
   onDeleteOrder: (id: string) => void;
-  onToggleOrderVisible: (o: WfmOrder) => void;
+  onToggleOrderVisible: (o: WfmManagedOrder) => void;
   onBulkOrdersVisible: (vis: boolean) => Promise<void>;
 }) {
   const [auctions, setAuctions] = useState<WfmAuction[]>([]);
@@ -473,12 +415,12 @@ function RivensSection({ rivenOrders, itemIdMap, auctionRefreshKey, onEditOrder,
 }
 
 function ListingsPanel({ username: _username, itemIdMap, wfmItems, imageMap, auctionRefreshKey, changelog, onUndo }: {
-  username: string; itemIdMap: Map<string, string>; wfmItems: WfmItemEntry[]; imageMap: Map<string, string>;
+  username: string; itemIdMap: Map<string, string>; wfmItems: WfmItem[]; imageMap: Map<string, string>;
   auctionRefreshKey?: number;
   changelog?: ListingChangeEntry[];
   onUndo?: (entry: ListingChangeEntry) => void;
 }) {
-  const [orders, setOrders] = useState<{ sell: WfmOrder[]; buy: WfmOrder[] }>({ sell: [], buy: [] });
+  const [orders, setOrders] = useState<{ sell: WfmManagedOrder[]; buy: WfmManagedOrder[] }>({ sell: [], buy: [] });
   const [loading, setLoading] = useState(true);
   const [search, setSearch]   = useState("");
   const [editing, setEditing] = useState<{ id: string; urlName: string; name: string; imageName?: string; pt: number; qty: number; visible: boolean } | null>(null);
@@ -491,7 +433,7 @@ function ListingsPanel({ username: _username, itemIdMap, wfmItems, imageMap, auc
   const loadOrders = useCallback(async () => {
     setLoading(true);
     try {
-      const all = await invokeWfm<WfmOrder[]>("wfm_get_orders");
+      const all = await invokeWfm<WfmManagedOrder[]>("wfm_get_orders");
       setOrders({
         sell: (all ?? []).filter(o => o.type === "sell"),
         buy:  (all ?? []).filter(o => o.type === "buy"),
@@ -507,7 +449,7 @@ function ListingsPanel({ username: _username, itemIdMap, wfmItems, imageMap, auc
     loadOrders();
   };
 
-  const toggleOrderVisible = async (o: WfmOrder) => {
+  const toggleOrderVisible = async (o: WfmManagedOrder) => {
     const cur = orders.sell.find(x => x.id === o.id) ?? orders.buy.find(x => x.id === o.id);
     if (!cur) return;
     await invokeWfm("wfm_update_order", { orderId: o.id, platinum: cur.platinum, quantity: cur.quantity, visible: !cur.visible }).catch(() => {});
@@ -529,7 +471,7 @@ function ListingsPanel({ username: _username, itemIdMap, wfmItems, imageMap, auc
     loadOrders();
   };
 
-  const startEdit = (o: WfmOrder) => {
+  const startEdit = (o: WfmManagedOrder) => {
     const name = orderName(o, itemIdMap);
     const urlName = nameToUrl.get(name.toLowerCase())
       ?? o.item?.slug ?? o.item?.urlName ?? o.item?.url_name ?? "";
@@ -652,7 +594,7 @@ function ListingsPanel({ username: _username, itemIdMap, wfmItems, imageMap, auc
 
 function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
   username: string;
-  wfmItems: WfmItemEntry[];
+  wfmItems: WfmItem[];
   onListingChange?: (entry: Omit<ListingChangeEntry, "id" | "reverting" | "reverted">) => void;
 }) {
   const [whispers, setWhispers] = useState<WfmWhisper[]>([]);
@@ -680,16 +622,7 @@ function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
 
   // Auto-complete a matching whisper when an in-game trade finishes.
   useEffect(() => {
-    const unlisten = listen<{
-      sessionId: string;
-      withPlayer: string;
-      tradeType: "sale" | "purchase" | "trade";
-      offeredItems: { name: string; qty: number }[];
-      offeredPlat: number;
-      receivedItems: { name: string; qty: number }[];
-      receivedPlat: number;
-      timestamp: string;
-    }>("trade-completed", (e) => {
+    const unlisten = listen<TradeCompletedEvent>("trade-completed", (e) => {
       const { withPlayer, tradeType, offeredItems } = e.payload;
 
       // Phase 1: immediately mark the ghost (synchronous state update)
@@ -725,7 +658,7 @@ function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
       if (tradeType === "sale") {
         (async () => {
           try {
-            const allOrders = await invokeWfm<WfmOrder[]>("wfm_get_orders");
+            const allOrders = await invokeWfm<WfmManagedOrder[]>("wfm_get_orders");
             const sellOrders = (allOrders ?? []).filter(o => o.type === "sell");
             const idMap = itemIdMapRef.current;
 

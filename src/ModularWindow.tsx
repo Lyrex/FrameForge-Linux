@@ -1,24 +1,11 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./ModularWindow.css";
-import { TIMER_LABELS, getTimerInfo, fmtMs, FissureWatch, matchesWatch, WsFissure, WsStorm } from "./TimerHelper";
-import type { InventoryItem } from "./App";
+import { TIMER_LABELS, getTimerInfo, fmtMs, matchesWatch } from "./TimerHelper";
+import type { FissureWatch } from "./types/settings";
+import type { CatalogItem, InventoryItem, RecipeComponent } from "./types/items";
+import type { WsFissure, WsStorm } from "./types/worldstate";
 import { useWorldState } from "./worldstate";
-
-interface CatalogItem {
-  unique_name: string;
-  name: string;
-  category: string;
-  image_name?: string;
-}
-
-interface RecipeComponent {
-  unique_name: string;
-  name: string;
-  count: number;
-  result_count: number;
-  components: RecipeComponent[];
-}
 
 type CompStatus = "none" | "blueprint" | "part";
 

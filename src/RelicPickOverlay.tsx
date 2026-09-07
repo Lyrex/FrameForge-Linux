@@ -3,36 +3,9 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { clampToMonitor, overlayScale } from "./uiScale";
+import type { RelicPickPayload, RelicPickRelic, RelicPickReward } from "./types/relics";
+import type { RelicPickLines, RelicPickPriority } from "./types/settings";
 import "./RelicPickOverlay.css";
-
-type Priority = "unowned" | "ducat" | "platinum";
-type Lines    = "all" | "best" | "estimated";
-
-interface PickReward {
-  name:      string;
-  rarity:    string;   // "Bronze" | "Silver" | "Gold"
-  drop_rate: number;
-  ducats:    number;
-  plat:      number;
-  vaulted:   boolean;
-  owned:     boolean;
-}
-
-interface PickRelic {
-  name:          string;
-  base_name:     string;
-  refinement:    string;
-  count:         number;
-  unowned_score: number;
-  ducat_score:   number;
-  plat_score:    number;
-  rewards:       PickReward[];
-}
-
-interface PickPayload {
-  era:    string;
-  relics: PickRelic[];
-}
 
 const ERA_LABEL: Record<string, string> = {
   LITH: "Lith", MESO: "Meso", NEO: "Neo", AXI: "Axi", ALL: "All Eras",
@@ -53,13 +26,13 @@ function recRefinement(rarity: string): string {
   return "Intact";
 }
 
-function scoreOf(relic: PickRelic, priority: Priority): number {
+function scoreOf(relic: RelicPickRelic, priority: RelicPickPriority): number {
   if (priority === "platinum") return relic.plat_score;
   if (priority === "ducat")    return relic.ducat_score;
   return relic.unowned_score;
 }
 
-function getDisplayRewards(relic: PickRelic, lines: Lines, priority: Priority): PickReward[] {
+function getDisplayRewards(relic: RelicPickRelic, lines: RelicPickLines, priority: RelicPickPriority): RelicPickReward[] {
   const byRarity = [...relic.rewards].sort(
     (a, b) => (REWARD_ORDER[a.rarity] ?? 3) - (REWARD_ORDER[b.rarity] ?? 3)
   );
@@ -88,9 +61,9 @@ function DucatIcon() {
 }
 
 export default function RelicPickOverlay() {
-  const [payload,  setPayload]  = useState<PickPayload | null>(null);
-  const [priority, setPriority] = useState<Priority>("unowned");
-  const [lines,    setLines]    = useState<Lines>("all");
+  const [payload,  setPayload]  = useState<RelicPickPayload | null>(null);
+  const [priority, setPriority] = useState<RelicPickPriority>("unowned");
+  const [lines,    setLines]    = useState<RelicPickLines>("all");
   // Use a callback ref so the ResizeObserver is set up each time the root div
   // mounts (payload goes null→non-null). A plain useRef+useEffect misses this
   // because the root div doesn't exist yet when the effect runs at mount time.
@@ -122,7 +95,7 @@ export default function RelicPickOverlay() {
   };
 
   useEffect(() => {
-    const unOpen = listen<PickPayload>("relic-pick-open", async e => {
+    const unOpen = listen<RelicPickPayload>("relic-pick-open", async e => {
       // Reload settings fresh on every show — the main window may have changed them
       // since this overlay was first mounted at app startup.
       try {

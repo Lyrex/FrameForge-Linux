@@ -2,41 +2,13 @@ import { useState, useEffect, useMemo, useCallback, memo, startTransition, useRe
 import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
 import { HelpTip } from "./HelpTip";
-import type { InventoryItem } from "./App";
-import type { ViewMode } from "./ViewToggle";
+import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent } from "./types/items";
+import type { ViewMode } from "./types/ui";
 import { ViewToggle } from "./ViewToggle";
 import sentientIcon from "./assets/SentientFactionIcon.webp";
 import formaIcon from "./assets/forma-icon.png";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-interface CatalogItem {
-  unique_name: string;
-  name: string;
-  category: string;
-  image_name?: string;
-  vaulted?: boolean | null;
-  mastery_req?: number | null;
-  max_level_cap?: number | null;
-  masterable?: boolean | null;
-  source_type?: string;
-}
-
-interface RecipeComponent {
-  unique_name: string;
-  name: string;
-  count: number;
-  result_count: number;
-  components: RecipeComponent[];
-}
-
-interface CraftingJob {
-  unique_name: string;
-  item_name: string;
-  completion_ms: number;
-}
-
-interface ArchonShard { type: string; tauforged: boolean; color: string; boost?: string; }
 
 export interface FoundryFilters {
   search: string; activeCat: string;

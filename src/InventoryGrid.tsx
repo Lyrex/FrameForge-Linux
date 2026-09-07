@@ -1,12 +1,12 @@
 import { memo } from "react";
 import ItemImg from "./ItemImg";
-import type { ViewMode } from "./ViewToggle";
+import type { ViewMode } from "./types/ui";
 import { fmt, deltaClass, deltaText } from "./utils";
 import "./InventoryGrid.css";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-export type { ViewMode } from "./ViewToggle";
+export type { ViewMode } from "./types/ui";
 
 export interface InventoryGridItem {
   unique_name: string;

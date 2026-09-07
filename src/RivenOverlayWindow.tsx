@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
+import type { RivenAnalysis, RivenAnalysisUpdate, RivenStat } from "./types/rivens";
 
 // Tells App.tsx to run OCR again (for "Check New Roll" / "Start Comparison")
 const triggerNewCheck = () => emit("riven-manual-check", {}).catch(() => {});
@@ -7,7 +8,7 @@ const triggerNewCheck = () => emit("riven-manual-check", {}).catch(() => {});
 // Save current roll directly from overlay
 async function saveOverlayRoll(
   weapon: string,
-  stats: { name: string; value: string; positive: boolean }[],
+  stats: RivenStat[],
   verdict: string, score: number, rollCount: number
 ) {
   if (!weapon || stats.length === 0) return;
@@ -32,27 +33,6 @@ const requestHide = (reason: string) => {
   emit("riven-overlay-hide", { reason }).catch(() => {});
 };
 
-interface AlternativeResult { label: string; matched: string[]; missing: string[]; score: number; verdict: string; }
-
-interface RivenAnalysis {
-  weapon: string;
-  matched_positives: string[];
-  missing_positives: string[];
-  safe_negatives_present: string[];
-  harmful_negatives: string[];
-  total_wanted: number;
-  score: number;
-  verdict: string;
-  notes: string;
-  alternatives: AlternativeResult[];
-}
-
-interface RolledStat {
-  name: string;
-  value: string;
-  positive: boolean;
-}
-
 function verdictColor(verdict: string): string {
   if (verdict.startsWith("GREAT"))    return "#3fb950";
   if (verdict.startsWith("GOOD"))     return "#a8d8a8";
@@ -75,8 +55,8 @@ function ScoreBar({ score }: { score: number }) {
 
 export default function RivenOverlayWindow() {
   const [analysis, setAnalysis]         = useState<RivenAnalysis | null>(null);
-  const [rolledStats, setRolledStats]   = useState<RolledStat[]>([]);
-  const [originalStats, setOriginalStats] = useState<RolledStat[]>([]);
+  const [rolledStats, setRolledStats]   = useState<RivenStat[]>([]);
+  const [originalStats, setOriginalStats] = useState<RivenStat[]>([]);
   const [isComparison, setIsComparison] = useState(false);
   const [ocrRaw, setOcrRaw]             = useState("");
   const [parsedWeapon, setParsedWeapon] = useState("");
@@ -101,15 +81,7 @@ export default function RivenOverlayWindow() {
   useEffect(() => {
     const unlistenStart = listen("riven-scanning-start", () => resetToScanning());
 
-    const unlistenUpdate = listen<{
-      analysis: RivenAnalysis | null;
-      rollCount: number;
-      ocrRaw?: string;
-      weapon?: string;
-      rolledStats?: RolledStat[];
-      originalStats?: RolledStat[];
-      isComparison?: boolean;
-    }>("riven-analysis-update", e => {
+    const unlistenUpdate = listen<RivenAnalysisUpdate>("riven-analysis-update", e => {
       if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
       setAnalysis(e.payload.analysis ?? null);
       setRollCount(e.payload.rollCount);
@@ -151,7 +123,7 @@ export default function RivenOverlayWindow() {
   }
 
   // Classify a rolled stat against the analysis
-  const classifyStat = (stat: RolledStat): "wanted" | "neutral" | "safe_neg" | "harmful" => {
+  const classifyStat = (stat: RivenStat): "wanted" | "neutral" | "safe_neg" | "harmful" => {
     if (!analysis) return "neutral";
     if (!stat.positive) {
       return analysis.safe_negatives_present.includes(stat.name) ? "safe_neg" : "harmful";
@@ -160,7 +132,7 @@ export default function RivenOverlayWindow() {
   };
 
   // Classify an original-roll stat — same logic but uses the full wanted list
-  const classifyOriginalStat = (stat: RolledStat): "wanted" | "neutral" | "safe_neg" | "harmful" => {
+  const classifyOriginalStat = (stat: RivenStat): "wanted" | "neutral" | "safe_neg" | "harmful" => {
     if (!analysis) return "neutral";
     if (!stat.positive) {
       // For original negatives, mark as safe if in the weapon's safe list (same DB)

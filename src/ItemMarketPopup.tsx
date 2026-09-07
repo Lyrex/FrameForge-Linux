@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { WfmPublicOrder, WfmStatPoint } from "./types/market";
 import "./ItemMarketPopup.css";
 
 async function invokeWfm<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -16,16 +17,6 @@ async function invokeWfm<T>(command: string, args?: Record<string, unknown>): Pr
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-interface WfmOrder {
-  id?: string;
-  platinum: number;
-  quantity: number;
-  user: { ingameName: string; reputation: number; status: string };
-  mod_rank?: number;
-}
-
-interface StatPoint { datetime: string; median: number; volume: number; }
 
 interface EditMode {
   pt: number;
@@ -53,7 +44,7 @@ function fmt(n: number) { return Math.round(n).toLocaleString(); }
 
 // ── Sparkline ─────────────────────────────────────────────────────────────────
 
-function Sparkline({ data }: { data: StatPoint[] }) {
+function Sparkline({ data }: { data: WfmStatPoint[] }) {
   const pts = data.slice(-21); // last 3 weeks
   if (pts.length < 2) return null;
   const prices = pts.map(d => d.median);
@@ -99,7 +90,7 @@ function StatusDot({ status }: { status: string }) {
 }
 
 function OrderRow({ o, type, displayName, onList }: {
-  o: WfmOrder; type: "sell" | "buy"; displayName?: string; onList?: (price: number) => void;
+  o: WfmPublicOrder; type: "sell" | "buy"; displayName?: string; onList?: (price: number) => void;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -209,8 +200,8 @@ function CreateOrderForm({ urlName, itemId, prefillPrice, prefillType, modRank, 
 // ── Main popup ────────────────────────────────────────────────────────────────
 
 export default function ItemMarketPopup({ urlName, displayName, imageName, onClose, isLoggedIn, editMode, prefillModRank }: Props) {
-  const [orders, setOrders]     = useState<{ sell: WfmOrder[]; buy: WfmOrder[] } | null>(null);
-  const [stats, setStats]       = useState<StatPoint[]>([]);
+  const [orders, setOrders]     = useState<{ sell: WfmPublicOrder[]; buy: WfmPublicOrder[] } | null>(null);
+  const [stats, setStats]       = useState<WfmStatPoint[]>([]);
   const [loadingO, setLoadingO] = useState(true);
   const [loadingS, setLoadingS] = useState(true);
   const [ordersError, setOrdersError] = useState("");
@@ -240,7 +231,7 @@ export default function ItemMarketPopup({ urlName, displayName, imageName, onClo
         if (info?.modMaxRank !== undefined && info.modMaxRank > 0) setModMaxRank(info.modMaxRank);
       })
       .catch(() => {});
-    invoke<StatPoint[]>("wfm_get_item_statistics", { urlName })
+    invoke<WfmStatPoint[]>("wfm_get_item_statistics", { urlName })
       .then(s => { setStats(Array.isArray(s) ? s : []); setLoadingS(false); })
       .catch(() => setLoadingS(false));
   }, [urlName]); // eslint-disable-line
@@ -249,7 +240,7 @@ export default function ItemMarketPopup({ urlName, displayName, imageName, onClo
   useEffect(() => {
     setLoadingO(true);
     setOrdersError("");
-    invoke<{ sell: WfmOrder[]; buy: WfmOrder[] }>("wfm_get_item_orders", {
+    invoke<{ sell: WfmPublicOrder[]; buy: WfmPublicOrder[] }>("wfm_get_item_orders", {
       urlName,
       modRank: modMaxRank !== null ? modRank : undefined,
     })

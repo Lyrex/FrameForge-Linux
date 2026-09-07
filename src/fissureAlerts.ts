@@ -1,13 +1,5 @@
-import type { WorldState, WsFissure, WsStorm } from "./TimerHelper";
-
-export type FissureVariant = "normal" | "hard" | "storm";
-
-export interface FissureWatch {
-  id: string;
-  tier: string;        // "Any" | "Omnia" | "Lith" | "Meso" | "Neo" | "Axi" | "Requiem"
-  missionType: string; // "Any" | "Rescue" | "Capture" | ...
-  variant: "any" | FissureVariant;
-}
+import type { WorldState, WsFissure, WsStorm } from "./types/worldstate";
+import type { FissureVariant, FissureWatch } from "./types/settings";
 
 // actualVariant is passed explicitly from the caller who knows which array the fissure came from
 export function matchesWatch(

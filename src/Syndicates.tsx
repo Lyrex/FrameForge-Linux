@@ -2,26 +2,8 @@ import { useState, useEffect, useMemo, useContext, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
 import "./Syndicates.css";
-import type { InventoryItem } from "./App";
-
-// ── Types ────────────────────────────────────────────────────────────────────
-
-interface SyndicateItem {
-  unique_name: string;
-  name: string;
-  category: string;
-  image_name?: string;
-  tier: string;
-  ducats?: number;
-  owned: number;
-  result_unique?: string;
-  result_owned: number;
-}
-
-interface SyndicateStore {
-  name: string;
-  items: SyndicateItem[];
-}
+import type { InventoryItem } from "./types/items";
+import type { SyndicateItem, SyndicateStore } from "./types/syndicates";
 
 // ── Completion status ─────────────────────────────────────────────────────────
 // "complete"  = built/owned final item (or mod/sigil in inventory)

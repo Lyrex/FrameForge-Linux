@@ -2,6 +2,10 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import ItemImg from "./ItemImg";
 import SearchBar from "./SearchBar";
 import { useContextMenu, CtxMenu, openWiki, copyWikiLink } from "./CtxMenu";
+import { formatUnixTime } from "./formatters";
+import type { ClockFormat } from "./types/settings";
+import type { ChangeLogEntry } from "./types/inventory";
+export type { ChangeLogEntry } from "./types/inventory";
 import "./ChangeLog.css";
 
 export const CHANGE_BATCH_GAP_SECONDS = 8;
@@ -25,17 +29,6 @@ function clampLogHeight(height: number) {
   return Math.max(getMinLogHeight(), Math.min(getMaxLogHeight(), height));
 }
 
-export interface ChangeLogEntry {
-  id: number;
-  unique_name: string;
-  item_name: string;
-  old_qty: number;
-  new_qty: number;
-  delta: number;
-  timestamp: number;
-  rank?: number | null;
-}
-
 export interface ChangeLogCatalogItem {
   unique_name: string;
   name: string;
@@ -48,7 +41,7 @@ interface ChangeLogProps {
   arrivalToken: number;
   lastScanAt: number | null;
   catalog: ChangeLogCatalogItem[];
-  clockFormat: "auto" | "12h" | "24h";
+  clockFormat: ClockFormat;
   systemLocale: string;
   expanded: boolean;
   height: number;
@@ -71,13 +64,6 @@ function getLatestChangeBatch(changes: ChangeLogEntry[]) {
 
 function fmt(n: number) { return n.toLocaleString(); }
 function deltaText(d: number) { return fmt(Math.abs(d)); }
-function timeStr(ts: number, format: ChangeLogProps["clockFormat"], locale: string) {
-  const opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" };
-  if (format === "12h") opts.hour12 = true;
-  else if (format === "24h") opts.hour12 = false;
-  return new Date(ts * 1000).toLocaleTimeString(locale, opts);
-}
-
 function changeKey(change: ChangeLogEntry) {
   return `${change.id}:${change.unique_name}:${change.timestamp}`;
 }
@@ -104,7 +90,7 @@ function ChangeRow({
       onContextMenu={onContextMenu}
     >
       {onFeedExpand && <button className="log-feed-open" onClick={onFeedExpand} aria-label="Open change log" />}
-      <span className="log-time">{timeStr(change.timestamp, clockFormat, systemLocale)}</span>
+      <span className="log-time">{formatUnixTime(change.timestamp, clockFormat, systemLocale)}</span>
       <div className="inv-row-icon">
         <ItemImg imageName={item?.image_name} category={category} size={20} />
       </div>
@@ -147,7 +133,7 @@ function ChangeLogHeader({
         {negativeChanges > 0 && <span className="log-negative">-{negativeChanges}</span>}
       </span>}
       <span className="log-status-divider" aria-hidden="true">·</span>
-      <span className="log-last-scan">last scan {lastScanAt == null ? "not yet" : timeStr(lastScanAt, clockFormat, systemLocale)}</span>
+      <span className="log-last-scan">last scan {lastScanAt == null ? "not yet" : formatUnixTime(lastScanAt, clockFormat, systemLocale)}</span>
     </div>
   );
 }

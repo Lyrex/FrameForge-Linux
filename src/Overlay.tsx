@@ -3,9 +3,9 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 
 import { overlayScale } from "./uiScale";
+import type { CraftingJob } from "./types/items";
+import type { RelicOverlayPriority } from "./types/settings";
 import "./Overlay.css";
-
-export type PickPriority = "completion" | "plat" | "ducat" | "setPlat";
 
 interface ComponentRow {
   unique_name: string;
@@ -14,12 +14,6 @@ interface ComponentRow {
   owned: number;  // blueprint_qty + built_qty + crafting_qty combined
   plat?: number;
   ducats?: number;
-}
-
-interface CraftingJobTs {
-  unique_name: string;
-  item_name: string;
-  completion_ms: number;
 }
 
 interface RewardItem {
@@ -119,7 +113,7 @@ function resolveOwnedFn(
 }
 
 // ─── Best-pick calculation ────────────────────────────────────────────────────
-function bestPickIndex(items: RewardItem[], priority: PickPriority): number {
+function bestPickIndex(items: RewardItem[], priority: RelicOverlayPriority): number {
   if (items.length === 0) return -1;
 
   const scores = items.map(item => {
@@ -256,7 +250,7 @@ export default function Overlay() {
   // coordinate measured against the window itself.
   const winW     = (window.innerWidth || 1920) / overlayScale();
   // priority comes from localStorage (shared origin with main window).
-  const priority = (localStorage.getItem("ff-overlay-priority") ?? "completion") as PickPriority;
+  const priority = (localStorage.getItem("ff-overlay-priority") ?? "completion") as RelicOverlayPriority;
 
   const prevKey      = useRef<string>("");
   const sessionCatalogRef = useRef<Record<string, any>>({}); // populated per-session by get_items_by_paths
@@ -501,7 +495,7 @@ export default function Overlay() {
     invoke("log_relic_fe", { msg: "[OV] starting Promise.allSettled for qty/crafting" }).catch(() => {});
     Promise.allSettled([
       invoke<Record<string, number>>("get_current_quantities"),
-      invoke<CraftingJobTs[]>("get_current_crafting"),
+      invoke<CraftingJob[]>("get_current_crafting"),
     ]).then(async ([quantitiesR, craftingR]) => {
       if (quantitiesR.status === 'fulfilled') {
         quantRef.current = quantitiesR.value;

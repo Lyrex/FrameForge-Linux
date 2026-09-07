@@ -1,24 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { CatalogItem } from "./types/items";
+import type { SnapshotPoint, TrackedItem } from "./types/inventory";
 import "./ItemReport.css";
-
-interface TrackedItem {
-  unique_name: string;
-  display_name: string;
-  added_at: string;
-}
-
-interface SnapshotPoint {
-  date: string;
-  quantity: number;
-  change: number;
-}
-
-interface CatalogItem {
-  unique_name: string;
-  name: string;
-  category: string;
-}
 
 type Timeframe = "7" | "30" | "90" | "all";
 

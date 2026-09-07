@@ -2,38 +2,10 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { checkRivenNow } from "./App";
+import type { RivenAnalysis, RivenStat, SavedRiven } from "./types/rivens";
 import "./RivenAnalyzer.css";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-interface AlternativeResult {
-  label: string;
-  matched: string[];
-  missing: string[];
-  score: number;
-  verdict: string;
-}
-
-interface RivenAnalysis {
-  weapon: string;
-  matched_positives: string[];
-  missing_positives: string[];
-  safe_negatives_present: string[];
-  harmful_negatives: string[];
-  total_wanted: number;
-  score: number;
-  verdict: string;
-  notes: string;
-  alternatives: AlternativeResult[];
-}
-
-// ── Saved riven types ─────────────────────────────────────────────────────────
-
-interface SavedRiven {
-  id: string; weapon: string; label: string;
-  stats_json: string; verdict: string; score: number; saved_at: string;
-}
-interface StatEntry { name: string; value: string; positive: boolean; useMultiplier?: boolean; }
 
 function verdictColor2(v: string) {
   if (v.startsWith("GREAT")) return "var(--green)";
@@ -88,14 +60,14 @@ export default function RivenAnalyzer() {
   const [_rollCount, setRollCount]     = useState(0);
 
   // Unified stat builder: each stat has a name, value, sign, and format
-  const [builtStats, setBuiltStats]   = useState<StatEntry[]>([]);
+  const [builtStats, setBuiltStats]   = useState<RivenStat[]>([]);
   // editingId: if set, the save button becomes "Update" and targets this saved roll
   const [editingId, setEditingId]     = useState<string | null>(null);
 
   // Inline card edit state
   const [inlineEditId, setInlineEditId]       = useState<string | null>(null);
   const [inlineEditLabel, setInlineEditLabel] = useState("");
-  const [inlineEditStats, setInlineEditStats] = useState<StatEntry[]>([]);
+  const [inlineEditStats, setInlineEditStats] = useState<RivenStat[]>([]);
 
   // Derive positives/negatives for the analysis call
   const positives = builtStats.filter(s => s.positive).map(s => s.name);
@@ -173,7 +145,7 @@ export default function RivenAnalyzer() {
   };
 
   const startInlineEdit = (r: SavedRiven) => {
-    const stats: StatEntry[] = (() => { try { return JSON.parse(r.stats_json); } catch { return []; } })();
+    const stats: RivenStat[] = (() => { try { return JSON.parse(r.stats_json); } catch { return []; } })();
     setInlineEditId(r.id);
     setInlineEditLabel(r.label);
     setInlineEditStats(stats);
@@ -466,7 +438,7 @@ export default function RivenAnalyzer() {
 
           <div className="riven-saved-grid">
             {savedRivens.map(r => {
-              const stats: StatEntry[] = (() => { try { return JSON.parse(r.stats_json); } catch { return []; } })();
+              const stats: RivenStat[] = (() => { try { return JSON.parse(r.stats_json); } catch { return []; } })();
               const isSelected = compareIds.has(r.id);
               const isEditing = inlineEditId === r.id;
               return (
@@ -542,7 +514,7 @@ export default function RivenAnalyzer() {
               <div className="riven-section-label" style={{ marginBottom: 8 }}>Comparison</div>
               <div className="riven-compare-grid">
                 {compareList.map(r => {
-                  const stats: StatEntry[] = (() => { try { return JSON.parse(r.stats_json); } catch { return []; } })();
+                  const stats: RivenStat[] = (() => { try { return JSON.parse(r.stats_json); } catch { return []; } })();
                   return (
                     <div key={r.id} className="riven-compare-col">
                       <div className="riven-compare-label">{r.label}</div>

@@ -2,18 +2,7 @@ import { useState, useEffect, useMemo, useRef, useContext } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
 import "./Weapons.css";
-import type { InventoryItem } from "./App";
-
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-interface WeaponItem {
-  unique_name: string;
-  name: string;
-  category: string;
-  image_name?: string;
-  mastery_req?: number;
-  max_level_cap?: number;
-}
+import type { InventoryItem, WeaponItem } from "./types/items";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

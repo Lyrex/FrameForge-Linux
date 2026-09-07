@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import InventoryGrid from "./InventoryGrid";
-import { ViewToggle, type ViewMode } from "./ViewToggle";
+import { ViewToggle } from "./ViewToggle";
+import type { ViewMode } from "./types/ui";
 import "./InventoryBatchPreview.css";
 
 interface InventoryBatchPreviewProps {
