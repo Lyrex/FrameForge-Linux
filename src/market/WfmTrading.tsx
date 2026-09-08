@@ -2,10 +2,10 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ItemMarketPopup from "./ItemMarketPopup";
-import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
-import type { WfmAuction, WfmItem, WfmManagedOrder, WfmWhisper } from "./types/market";
-import type { TradeCompletedEvent } from "./types/trades";
-import type { AddTradeArgs, WfmCreateOrderArgs, WfmCredentials, WfmSaveCredentialsArgs, WfmSession, WfmSetAuctionVisibleArgs, WfmUpdateOrderArgs } from "./types/tauri";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
+import type { WfmAuction, WfmItem, WfmManagedOrder, WfmWhisper } from "../types/market";
+import type { TradeCompletedEvent } from "../types/trades";
+import type { AddTradeArgs, WfmCreateOrderArgs, WfmCredentials, WfmSaveCredentialsArgs, WfmSession, WfmSetAuctionVisibleArgs, WfmUpdateOrderArgs } from "../types/tauri";
 import "./WfmTrading.css";
 
 // ── Types ─────────────────────────────────────────────────────────────────────

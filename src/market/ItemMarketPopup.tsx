@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { warframeStatImageUrl } from "./constants/urls";
-import { TAURI_COMMANDS } from "./constants/tauri";
-import type { WfmItemInfo, WfmItemOrders, WfmPublicOrder, WfmStatPoint } from "./types/market";
-import type { WfmCreateOrderArgs } from "./types/tauri";
+import { warframeStatImageUrl } from "../constants/urls";
+import { TAURI_COMMANDS } from "../constants/tauri";
+import type { WfmItemInfo, WfmItemOrders, WfmPublicOrder, WfmStatPoint } from "../types/market";
+import type { WfmCreateOrderArgs } from "../types/tauri";
 import "./ItemMarketPopup.css";
 
 async function invokeWfm<T>(command: string, args?: Record<string, unknown>): Promise<T> {

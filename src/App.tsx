@@ -69,7 +69,7 @@ import { getCurrentWindow, availableMonitors, LogicalSize } from "@tauri-apps/ap
 import { ImgCacheDirContext } from "./ImgCacheDir";
 import Foundry from "./Foundry";
 import CacheStatusChip from "./header/CacheStatusChip";
-import MarketHelper from "./MarketHelper";
+import MarketHelper from "./market/MarketHelper";
 import RelicHelper from "./RelicHelper";
 import RivenAnalyzer from "./riven/RivenAnalyzer";
 import RivenOverlayWindow from "./riven/RivenOverlayWindow";
