@@ -6470,10 +6470,10 @@ fn append_to_file(path: &std::path::Path, text: &str) -> std::io::Result<()> {
 
 /// Append text to both the global overlay session log and the per-session diagnostic file.
 /// The diagnostic target is found by picking the most recently modified folder under
-/// %TEMP%\warframe-companion\diagnostics\ that contains an ocr_session_log.txt.
+/// %TEMP%\frameforge\diagnostics\ that contains an ocr_session_log.txt.
 fn append_to_diag(global_log: &std::path::Path, text: &str) {
     let _ = append_to_file(global_log, text);
-    let diag_base = std::env::temp_dir().join("warframe-companion").join("diagnostics");
+    let diag_base = std::env::temp_dir().join("frameforge").join("diagnostics");
     if let Ok(entries) = std::fs::read_dir(&diag_base) {
         let mut folders: Vec<std::path::PathBuf> = entries
             .filter_map(|e| e.ok().map(|d| d.path()))
@@ -7927,7 +7927,7 @@ fn dir_size_bytes(dir: &std::path::Path) -> u64 {
 }
 
 
-/// Return the total size of %TEMP%\warframe-companion\diagnostics\ in bytes.
+/// Return the total size of %TEMP%\frameforge\diagnostics\ in bytes.
 #[tauri::command]
 fn get_diag_folder_size(state: State<AppState>) -> u64 {
     dir_size_bytes(&state.auto_capture_dir)
@@ -8179,7 +8179,7 @@ fn write_bmp(path: &std::path::Path, bgra: &[u8], w: u32, h: u32) -> std::io::Re
 
 /// Capture a diagnostic bundle: scan log + screenshot of the full Warframe window
 /// (including any overlay on top via GDI desktop BitBlt / DXGI fallback).
-/// Saves everything to %TEMP%\warframe-companion\diagnostics\<timestamp>\ and
+/// Saves everything to %TEMP%\frameforge\diagnostics\<timestamp>\ and
 /// returns the folder path so the frontend can show it.
 #[tauri::command]
 async fn save_auto_diag_capture(state: State<'_, AppState>) -> Result<String, String> {

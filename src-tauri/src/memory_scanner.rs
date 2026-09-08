@@ -394,25 +394,49 @@ pub fn dump_inventory_regions(_max_hits: usize) -> Vec<String> {
 
 /// Find the end of the FULL_ACCOUNT blob.
 ///
-/// Tries all known end markers and returns the rightmost match (the true last
-/// field). `HWIDProtectEnabled` was confirmed as the actual final field for
-/// some accounts/regions (raw dump 2026-09); `DeathSquadable` remains as
-/// fallback for accounts where it is still the last field.
+/// A marker field is the true end of the blob only when its boolean value is
+/// immediately followed by `}` (the outer closing brace) with no `,` or further
+/// fields between them. This distinguishes a genuine end-of-object occurrence
+/// from a mid-blob occurrence where the same field name appears earlier in the
+/// JSON with other fields still following it.
+///
+/// All occurrences of each marker are checked; the rightmost valid one wins.
 fn find_blob_end(raw: &[u8]) -> Option<usize> {
     const MARKERS: &[&[u8]] = &[
         b"\"HWIDProtectEnabled\":",
         b"\"DeathSquadable\":",
     ];
+    const BOOL_VALUES: &[&[u8]] = &[b"true", b"false"];
     let mut best: Option<usize> = None;
     for marker in MARKERS {
-        if let Some(key_pos) = memchr::memmem::find(raw, marker) {
-            let after = key_pos + marker.len();
-            if let Some(brace) = raw[after..].iter().position(|&b| b == b'}') {
-                let end = after + brace + 1;
-                if best.map_or(true, |prev| end > prev) {
-                    best = Some(end);
+        let mut search_from = 0;
+        while let Some(rel) = memchr::memmem::find(&raw[search_from..], marker) {
+            let key_pos = search_from + rel;
+            let after_colon = key_pos + marker.len();
+            // Skip optional whitespace after the colon.
+            let val_start = raw[after_colon..].iter()
+                .position(|&b| !matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
+                .map_or(raw.len(), |p| after_colon + p);
+            // Consume the boolean value.
+            if let Some(val_len) = BOOL_VALUES.iter()
+                .find(|v| raw[val_start..].starts_with(*v))
+                .map(|v| v.len())
+            {
+                let val_end = val_start + val_len;
+                // Skip optional whitespace after the value.
+                let after_val = raw[val_end..].iter()
+                    .position(|&b| !matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
+                    .map_or(raw.len(), |p| val_end + p);
+                // Only treat this as a blob end when `}` follows directly —
+                // meaning no comma or additional fields come after the value.
+                if raw.get(after_val) == Some(&b'}') {
+                    let end = after_val + 1;
+                    if best.map_or(true, |prev| end > prev) {
+                        best = Some(end);
+                    }
                 }
             }
+            search_from = key_pos + marker.len();
         }
     }
     best
@@ -1472,7 +1496,7 @@ fn find_warframe_pid() -> Option<u32> {
 
 #[cfg(test)]
 mod seed_tests {
-    use super::{enclosing_object_start, blob_seed_offsets, extract_blob_json, extract_blob_json_ref};
+    use super::{enclosing_object_start, blob_seed_offsets, extract_blob_json, extract_blob_json_ref, find_blob_end};
 
     #[test]
     fn enclosing_finds_outer_brace() {
@@ -1587,6 +1611,38 @@ mod seed_tests {
 
         let overwritten = br#"x"SubscribedToEmails":0,"DeathSquadable":false}"#;
         assert!(matches!(extract_blob_json_ref(overwritten), Some(Cow::Owned(_))));
+    }
+
+    /// A marker that appears mid-blob (followed by `,` and more fields) must not
+    /// be treated as the end of the blob — only occurrences directly followed by
+    /// `}` are valid end positions.
+    #[test]
+    fn mid_blob_marker_is_not_treated_as_end() {
+        // HWIDProtectEnabled appears mid-blob with fields after it; DeathSquadable is absent.
+        // The first `}` after HWIDProtectEnabled's value closes a nested object, not the blob.
+        // find_blob_end must return None here — not a position inside the blob.
+        let raw = br#"{"SubscribedToEmails":0,"HWIDProtectEnabled":false,"MiscItems":[{"ItemType":"/x","ItemCount":1}]}"#;
+        // The outer `}` is the real end; but HWIDProtectEnabled is followed by `,` so it
+        // must be skipped. Neither marker appears as a true last field, so result is None.
+        assert!(find_blob_end(raw).is_none(), "mid-blob marker must not be accepted as blob end");
+    }
+
+    /// When HWIDProtectEnabled is genuinely the last field (directly followed by `}`),
+    /// it must be accepted as the end marker.
+    #[test]
+    fn hwid_marker_accepted_when_last_field() {
+        let raw = br#"{"SubscribedToEmails":0,"MiscItems":[],"HWIDProtectEnabled":false}"#;
+        let end = find_blob_end(raw).expect("HWIDProtectEnabled is last field — must be found");
+        assert_eq!(end, raw.len(), "end position must be the outer closing brace");
+    }
+
+    /// When both markers are present, the rightmost valid one wins.
+    #[test]
+    fn rightmost_valid_marker_wins() {
+        // DeathSquadable comes after HWIDProtectEnabled and is the true last field.
+        let raw = br#"{"HWIDProtectEnabled":true,"DeathSquadable":false}"#;
+        let end = find_blob_end(raw).expect("DeathSquadable is last — must be found");
+        assert_eq!(end, raw.len());
     }
 }
 
