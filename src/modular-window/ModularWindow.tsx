@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { TAURI_COMMANDS } from "./constants/tauri";
-import { TIMER_LABELS } from "./constants/timers";
+import { TAURI_COMMANDS } from "../constants/tauri";
+import { TIMER_LABELS } from "../constants/timers";
 import "./ModularWindow.css";
-import { getTimerInfo, fmtMs, matchesWatch } from "./TimerHelper";
-import type { FissureWatch } from "./types/settings";
-import type { CatalogItem, InventoryItem, RecipeComponent, RecipeComponentStatus } from "./types/items";
-import type { MatchedFissure } from "./types/worldstate";
-import { useWorldState } from "./worldstate";
+import { getTimerInfo, fmtMs, matchesWatch } from "../TimerHelper";
+import type { FissureWatch } from "../types/settings";
+import type { CatalogItem, InventoryItem, RecipeComponent, RecipeComponentStatus } from "../types/items";
+import type { MatchedFissure } from "../types/worldstate";
+import { useWorldState } from "../worldstate";
 
 function fmt(n: number) { return n.toLocaleString(); }
 

@@ -2,13 +2,13 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
-import { MODULAR_SECTION_ORDER_DEFAULT } from "./constants/settings";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
+import { MODULAR_SECTION_ORDER_DEFAULT } from "../constants/settings";
 import ModularWindow from "./ModularWindow";
-import type { FissureWatch } from "./types/settings";
-import type { CatalogItem, InventoryItem, QuantityMap } from "./types/items";
-import type { InventoryUpdate } from "./types/inventory";
-import type { SettingsFile, SettingsPatch } from "./types/tauri";
+import type { FissureWatch } from "../types/settings";
+import type { CatalogItem, InventoryItem, QuantityMap } from "../types/items";
+import type { InventoryUpdate } from "../types/inventory";
+import type { SettingsFile, SettingsPatch } from "../types/tauri";
 
 export default function ModularWindowPage() {
   const [tracked, setTracked] = useState<string[]>([]);

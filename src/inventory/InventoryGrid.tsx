@@ -1,7 +1,7 @@
 import { memo } from "react";
-import ItemImg from "./ItemImg";
-import type { ViewMode } from "./types/ui";
-import { fmt, deltaClass, deltaText } from "./utils";
+import ItemImg from "../ItemImg";
+import type { ViewMode } from "../types/ui";
+import { fmt, deltaClass, deltaText } from "../utils";
 import "./InventoryGrid.css";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
