@@ -4,7 +4,9 @@ import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { applyScale, overlayScale } from "./uiScale";
-import { useContextMenu, CtxMenu, extractItemName, openWiki, copyWikiLink } from "./CtxMenu";
+import { useContextMenu, CtxMenu } from "./shared/CtxMenu";
+import { extractItemName } from "./itemContext";
+import { openWiki, copyWikiLink } from "./wiki";
 
 // ── Riven overlay — module-level window management ────────────────────────────
 // Stored OUTSIDE React so StrictMode remounts don't destroy/recreate the window.

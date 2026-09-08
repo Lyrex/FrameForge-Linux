@@ -1,5 +1,5 @@
-import type { ViewMode } from "./types/ui";
-import { VIEW_MODE_OPTIONS } from "./constants/ui";
+import type { ViewMode } from "../types/ui";
+import { VIEW_MODE_OPTIONS } from "../constants/ui";
 
 
 function ViewIcon({ mode }: { mode: ViewMode }) {

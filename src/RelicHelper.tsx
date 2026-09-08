@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { HelpTip } from "./HelpTip";
+import { HelpTip } from "./shared/HelpTip";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import { RELIC_FILTERS_DEFAULT } from "./constants/filters";
 import { RELIC_DROP_RATES, RELIC_REFINEMENT_LABELS, RELIC_REFINEMENT_ORDER } from "./constants/relics";
@@ -11,7 +11,7 @@ import type { RelicFilters } from "./types/filters";
 import type { DropReward, RelicDrop } from "./types/relics";
 import type { ViewMode } from "./types/ui";
 import type { WfmCachedPrices, WfmItem } from "./types/market";
-import { ViewToggle } from "./ViewToggle";
+import { ViewToggle } from "./shared/ViewToggle";
 
 interface Props {
   inventory: Record<string, InventoryItem>;

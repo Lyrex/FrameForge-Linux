@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, memo, startTransition, useRef, useContext } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
-import { HelpTip } from "./HelpTip";
+import { HelpTip } from "./shared/HelpTip";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import { FOUNDRY_FILTERS_DEFAULT } from "./constants/filters";
 import { WARFRAME_WIKI_BASE, warframeStatImageUrl } from "./constants/urls";
@@ -9,7 +9,7 @@ import { TAURI_COMMANDS } from "./constants/tauri";
 import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeComponentStatus, RecipeMap, RelicDropMap } from "./types/items";
 import type { FoundryFilters } from "./types/filters";
 import type { ViewMode } from "./types/ui";
-import { ViewToggle } from "./ViewToggle";
+import { ViewToggle } from "./shared/ViewToggle";
 import sentientIcon from "./assets/SentientFactionIcon.webp";
 import formaIcon from "./assets/forma-icon.png";
 

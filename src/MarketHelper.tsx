@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, memo, useContext } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ImgCacheDirContext } from "./ImgCacheDir";
 import { listen } from "@tauri-apps/api/event";
-import { HelpTip } from "./HelpTip";
+import { HelpTip } from "./shared/HelpTip";
 import WfmTrading from "./WfmTrading";
 import ItemMarketPopup from "./ItemMarketPopup";
 import { warframeStatImageUrl } from "./constants/urls";

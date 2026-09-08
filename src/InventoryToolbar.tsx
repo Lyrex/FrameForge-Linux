@@ -1,8 +1,8 @@
 import type { Dispatch, SetStateAction } from "react";
-import { HelpTip } from "./HelpTip";
+import { HelpTip } from "./shared/HelpTip";
 import type { InventoryFilters } from "./types/filters";
-import SearchBar from "./SearchBar";
-import { ViewToggle } from "./ViewToggle";
+import SearchBar from "./shared/SearchBar";
+import { ViewToggle } from "./shared/ViewToggle";
 import type { ViewMode } from "./types/ui";
 
 interface InventoryToolbarProps {

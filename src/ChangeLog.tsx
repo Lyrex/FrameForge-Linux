@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import ItemImg from "./ItemImg";
-import SearchBar from "./SearchBar";
-import { useContextMenu, CtxMenu, openWiki, copyWikiLink } from "./CtxMenu";
+import SearchBar from "./shared/SearchBar";
+import { useContextMenu, CtxMenu } from "./shared/CtxMenu";
+import { openWiki, copyWikiLink } from "./wiki";
 import { formatUnixTime } from "./formatters";
 import type { ClockFormat } from "./types/settings";
 import type { ChangeLogEntry } from "./types/inventory";

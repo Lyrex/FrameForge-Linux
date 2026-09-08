@@ -1,12 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { WARFRAME_WIKI_BASE } from "./constants/urls";
 
 interface CtxMenuItem {
   label: string;
   action: () => void;
 }
-
 interface CtxMenuState {
   x: number;
   y: number;
@@ -105,34 +102,4 @@ function HoverItem({ onClick, children }: { onClick: () => void; children: React
       {children}
     </button>
   );
-}
-
-export function extractItemName(e: React.MouseEvent): string | null {
-  const card = (e.target as HTMLElement).closest(".inv-card");
-  if (!card) return null;
-  const nameEl = card.querySelector(".inv-card-name, .inv-row-name");
-  return nameEl?.textContent?.trim() || (card as HTMLElement).title?.split(" (")[0]?.trim() || null;
-}
-
-export function wikiUrl(name: string) {
-  return `${WARFRAME_WIKI_BASE}/Special:Search?search=${encodeURIComponent(name)}`;
-}
-
-export function openWiki(name: string) {
-  openUrl(wikiUrl(name));
-}
-
-export async function copyWikiLink(name: string) {
-  try {
-    await navigator.clipboard.writeText(wikiUrl(name));
-  } catch {
-    const ta = document.createElement("textarea");
-    ta.value = wikiUrl(name);
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand("copy");
-    document.body.removeChild(ta);
-  }
 }
