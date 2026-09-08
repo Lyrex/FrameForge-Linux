@@ -68,7 +68,7 @@ import { getCurrentWindow, availableMonitors, LogicalSize } from "@tauri-apps/ap
 
 import { ImgCacheDirContext } from "./ImgCacheDir";
 import Foundry from "./Foundry";
-import CacheStatusChip from "./CacheStatusChip";
+import CacheStatusChip from "./header/CacheStatusChip";
 import MarketHelper from "./MarketHelper";
 import RelicHelper from "./RelicHelper";
 import RivenAnalyzer from "./riven/RivenAnalyzer";
@@ -90,10 +90,10 @@ import InventoryToolbar from "./inventory/InventoryToolbar";
 import AppNavigation, { type Module } from "./AppNavigation";
 import InventorySidebar from "./inventory/InventorySidebar";
 import CompletionistTabs, { type CompletionistView } from "./completionist/CompletionistTabs";
-import HeaderActions from "./HeaderActions";
+import HeaderActions from "./header/HeaderActions";
 import ErrorBoundary from "./shared/ErrorBoundary";
-import HeaderStatusBadges from "./HeaderStatusBadges";
-import ConnectionStatusChip from "./ConnectionStatusChip";
+import HeaderStatusBadges from "./header/HeaderStatusBadges";
+import ConnectionStatusChip from "./header/ConnectionStatusChip";
 import KeepMountedWhenHidden from "./KeepMountedWhenHidden";
 import { FOUNDRY_FILTERS_DEFAULT, INVENTORY_FILTERS_DEFAULT, MARKET_FILTERS_DEFAULT, RELIC_FILTERS_DEFAULT, SYNDICATE_FILTERS_DEFAULT } from "./constants/filters";
 import { PREFERENCE_KEYS } from "./constants/preferences";
