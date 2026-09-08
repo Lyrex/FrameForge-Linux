@@ -4,7 +4,7 @@ import "./TimerHelper.css";
 import type { InventoryItem } from "./types/items";
 import type { WorldState, WsFissure, WsStorm } from "./types/worldstate";
 import { useWorldState } from "./worldstate";
-import { ensurePermission } from "./notify";
+import { ensurePermission } from "./lib/notify";
 import { matchesWatch } from "./fissureAlerts";
 import type { FissureWatch } from "./types/settings";
 

@@ -1,7 +1,7 @@
 import { useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { notify, ensurePermission } from "./notify";
-import { formatBytes } from "./formatters";
+import { notify, ensurePermission } from "./lib/notify";
+import { formatBytes } from "./lib/formatters";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import { CLOCK_FORMAT_OPTIONS, FOUNDRY_PAGE_SIZE_OPTIONS, RELIC_OVERLAY_PRIORITY_OPTIONS, RELIC_PICK_LINES_OPTIONS, RELIC_PICK_PRIORITY_OPTIONS } from "./constants/settings";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";

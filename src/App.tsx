@@ -3,10 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { applyScale, overlayScale } from "./uiScale";
+import { applyScale, overlayScale } from "./lib/uiScale";
 import { useContextMenu, CtxMenu } from "./shared/CtxMenu";
-import { extractItemName } from "./itemContext";
-import { openWiki, copyWikiLink } from "./wiki";
+import { extractItemName } from "./lib/itemContext";
+import { openWiki, copyWikiLink } from "./lib/wiki";
 
 // ── Riven overlay — module-level window management ────────────────────────────
 // Stored OUTSIDE React so StrictMode remounts don't destroy/recreate the window.
@@ -76,7 +76,7 @@ import RivenOverlayWindow from "./RivenOverlayWindow";
 import RelicPickOverlay from "./RelicPickOverlay";
 import TimerHelper, { fmtMs } from "./TimerHelper";
 import { useWorldState } from "./worldstate";
-import { notify } from "./notify";
+import { notify } from "./lib/notify";
 import { collectNewMatches } from "./fissureAlerts";
 import Statistics from "./Statistics";
 import Syndicates from "./Syndicates";
@@ -108,7 +108,7 @@ import {
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import type { FoundryFilters, InventoryFilters } from "./types/filters";
 import type { ViewMode } from "./types/ui";
-import { formatUnixTime } from "./formatters";
+import { formatUnixTime } from "./lib/formatters";
 import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, QuantityMap } from "./types/items";
 import type { ChangeLogEntry, InventoryUpdate, ModCopy } from "./types/inventory";
 import type { RivenAnalysis, RivenAnalysisUpdate } from "./types/rivens";

@@ -1,5 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { WARFRAME_WIKI_BASE } from "./constants/urls";
+import { WARFRAME_WIKI_BASE } from "../constants/urls";
 
 export function wikiUrl(name: string) {
   return `${WARFRAME_WIKI_BASE}/Special:Search?search=${encodeURIComponent(name)}`;

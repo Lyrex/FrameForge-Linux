@@ -1,5 +1,5 @@
 import { currentMonitor } from "@tauri-apps/api/window";
-import { PREFERENCE_KEYS } from "./constants/preferences";
+import { PREFERENCE_KEYS } from "../constants/preferences";
 
 function read(key: string, fallback: number): number {
   const v = parseFloat(localStorage.getItem(key) ?? "");

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 
-import { overlayScale } from "./uiScale";
+import { overlayScale } from "./lib/uiScale";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import type { CraftingJob, QuantityMap, ShallowRecipeComponent } from "./types/items";
