@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useMemo, useCallback, useRef, Component, ReactNode } from "react";
+﻿import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
@@ -90,8 +90,11 @@ import InventoryToolbar from "./InventoryToolbar";
 import AppNavigation, { type Module } from "./AppNavigation";
 import InventorySidebar from "./InventorySidebar";
 import CompletionistTabs, { type CompletionistView } from "./CompletionistTabs";
-import UpdateBadge from "./UpdateBadge";
 import HeaderActions from "./HeaderActions";
+import ErrorBoundary from "./shared/ErrorBoundary";
+import HeaderStatusBadges from "./HeaderStatusBadges";
+import ConnectionStatusChip from "./ConnectionStatusChip";
+import KeepMountedWhenHidden from "./KeepMountedWhenHidden";
 import { FOUNDRY_FILTERS_DEFAULT, INVENTORY_FILTERS_DEFAULT, MARKET_FILTERS_DEFAULT, RELIC_FILTERS_DEFAULT, SYNDICATE_FILTERS_DEFAULT } from "./constants/filters";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import {
@@ -139,18 +142,6 @@ const IS_ANY_OVERLAY = IS_OVERLAY || IS_MODULAR || IS_RIVEN_OVERLAY || IS_RELIC_
 // out applying the scale from an effect.
 applyScale(IS_ANY_OVERLAY);
 listen(TAURI_EVENTS.SETTINGS_UPDATED, () => applyScale(IS_ANY_OVERLAY));
-
-class ErrorBoundary extends Component<{ children: ReactNode }, { err: string | null }> {
-  constructor(props: any) { super(props); this.state = { err: null }; }
-  static getDerivedStateFromError(e: Error) { return { err: e.message }; }
-  render() {
-    if (this.state.err)
-      return <div style={{ padding: 24, color: "#f85149", fontFamily: "monospace", whiteSpace: "pre-wrap" }}>
-        <strong>Render error:</strong>{"\n"}{this.state.err}
-      </div>;
-    return this.props.children;
-  }
-}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -1641,27 +1632,19 @@ if (typeof s.autoDiagEnabled === "boolean") {
       {/* ── Header ── */}
       <header className="header">
         <span className="header-title">FrameForge</span>
-        {masteryRank !== null && (
-          <span className="mastery-badge" title="Mastery Rank">MR {masteryRank}</span>
-        )}
-        {playerName && (
-          <span className="player-name-badge" title="Logged-in Warframe account">{playerName}</span>
-        )}
-        {pendingUpdate && <UpdateBadge
-          version={pendingUpdate}
-          installing={updateInstalling}
-          onInstall={() => {
+        <HeaderStatusBadges
+          masteryRank={masteryRank}
+          playerName={playerName}
+          pendingUpdate={pendingUpdate}
+          updateInstalling={updateInstalling}
+          inventoryLoaded={blobStage === "done"}
+          onInstallUpdate={() => {
             if (updateInstalling) return;
             setUpdateInstalling(true);
             invoke("install_update").catch(() => setUpdateInstalling(false));
           }}
-          onDismiss={() => setPendingUpdate(null)}
-        />}
-        {blobStage === "done" && (
-          <span className="blob-status-badge blob-status-done" title="Inventory loaded from Warframe memory">
-            Inventory Loaded
-          </span>
-        )}
+          onDismissUpdate={() => setPendingUpdate(null)}
+        />
         <div className="header-right">
           {/* ── Connection status chips ── */}
           {(() => {
@@ -1711,10 +1694,11 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
             return (
               <>
-                <span
-                  className={`conn-chip conn-${scanState}`}
+                <ConnectionStatusChip
+                  label="Memory"
+                  state={scanState}
+                  detail={scanDetail}
                   title={!memoryScannerEnabled ? "Memory scanner disabled — enable in Settings" : warframeRunning ? "Warframe detected — scanning memory" : "Click to recheck for Warframe"}
-                  style={{ cursor: memoryScannerEnabled && !warframeRunning ? "pointer" : undefined }}
                   onClick={
                     !memoryScannerEnabled ? () => setShowSettings(true)
                     : !warframeRunning && monitoring ? () => {
@@ -1723,31 +1707,21 @@ if (typeof s.autoDiagEnabled === "boolean") {
                       }
                     : undefined
                   }
-                >
-                  <span className="conn-dot" />
-                  <span className="conn-label">Memory</span>
-                  <span className="conn-detail">{scanDetail}</span>
-                </span>
-                <span
-                  className={`conn-chip conn-${wfApiState}`}
+                />
+                <ConnectionStatusChip
+                  label="WF API"
+                  state={wfApiState}
+                  detail={wfApiDetail}
                   title={!companionApiEnabled ? "Warframe API disabled — enable in Settings" : wfConnected ? "Warframe API connected — auto-refreshes every 30s" : warframeRunning ? "Click to retry credential scan" : "Waiting for Warframe to start"}
                   onClick={!companionApiEnabled ? () => setShowSettings(true) : wfApiClick}
-                  style={wfApiClick ? { cursor: "pointer" } : undefined}
-                >
-                  <span className="conn-dot" />
-                  <span className="conn-label">WF API</span>
-                  <span className="conn-detail">{wfApiDetail}</span>
-                </span>
-                <span
-                  className={`conn-chip conn-${wfmState}`}
+                />
+                <ConnectionStatusChip
+                  label="WFM"
+                  state={wfmState}
+                  detail={wfmDetail}
                   title={wfmLoggedIn ? "Logged in to warframe.market" : "Not logged in to warframe.market — open the Market tab to log in"}
                   onClick={!wfmLoggedIn ? () => setActiveModule("market") : undefined}
-                  style={!wfmLoggedIn ? { cursor: "pointer" } : undefined}
-                >
-                  <span className="conn-dot" />
-                  <span className="conn-label">WFM</span>
-                  <span className="conn-detail">{wfmDetail}</span>
-                </span>
+                />
                 {overlayStatus && (
                   <span className="conn-chip conn-overlay">
                     <span className="conn-dot" />
@@ -1844,9 +1818,9 @@ if (typeof s.autoDiagEnabled === "boolean") {
         {/* ── Market Helper module ── */}
         {/* Keep mounted at all times so WfmTrading's trade-completed listener
             (auto listing update) fires regardless of which tab is active. */}
-        <div style={{ display: activeModule === "market" ? "contents" : "none" }}>
+        <KeepMountedWhenHidden active={activeModule === "market"}>
           <MarketHelper inventory={inventory} refreshKey={itemsRefreshKey} crafting={crafting} onWfmLoginChange={handleWfmLoginChange} filters={marketFilters} onFiltersChange={setMarketFilters} modCopiesMap={modCopiesMap} />
-        </div>
+        </KeepMountedWhenHidden>
 
         {/* ── Relics module ── */}
         {activeModule === "relics" && (

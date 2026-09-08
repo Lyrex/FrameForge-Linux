@@ -46,7 +46,7 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
   background: rgba(63,185,80,.75); border: 1px solid rgba(63,185,80,.5);
   border-radius: 5px; padding: 2px 5px 2px 8px;
   flex-shrink: 0; letter-spacing: .02em;
-  cursor: pointer; user-select: none;
+  user-select: none;
 }
 .update-badge:hover { background: rgba(63,185,80,.95); }
 .update-badge-dismiss {
@@ -54,6 +54,11 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
   cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px;
   display: flex; align-items: center;
 }
+.update-badge-install {
+  background: none; border: none; color: inherit; cursor: pointer;
+  font: inherit; font-weight: inherit; letter-spacing: inherit; padding: 0;
+}
+.update-badge-install:disabled { cursor: wait; }
 .update-badge-dismiss:hover { color: #fff; }
 .header-right  { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 
@@ -79,6 +84,10 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
   border: 1px solid var(--border); background: rgba(255,255,255,.03);
   color: var(--muted); white-space: nowrap; user-select: none;
 }
+.conn-chip-button { appearance: none; font: inherit; cursor: pointer; text-align: left; }
+.conn-chip-button:focus-visible, .update-badge-install:focus-visible, .update-badge-dismiss:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
 .conn-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--muted); }
 .conn-label { font-weight: 500; color: var(--text); opacity: .7; }
 .conn-detail { color: var(--muted); }
@@ -87,13 +96,13 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .conn-online  .conn-dot { background: #3fb950; box-shadow: 0 0 5px #3fb95066; }
 .conn-online  .conn-detail { color: #3fb950; }
 
-.conn-warn    { border-color: rgba(210,153,34,.3); cursor: pointer; }
+.conn-warn    { border-color: rgba(210,153,34,.3); }
 .conn-warn    .conn-dot { background: #d29922; }
 .conn-warn    .conn-detail { color: #d29922; }
 
 .conn-offline .conn-dot { background: #6e7681; }
 
-.conn-disabled { opacity: .45; cursor: pointer; }
+.conn-disabled { opacity: .45; }
 .conn-disabled .conn-dot { background: #6e7681; }
 
 .conn-overlay { border-color: rgba(100,160,220,.25); }
@@ -133,7 +142,7 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .update-badge {
   font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px;
   background: rgba(63,185,80,.15); color: var(--green); border: 1px solid rgba(63,185,80,.4);
-  cursor: pointer; white-space: nowrap;
+  white-space: nowrap;
 }
 .update-badge:hover { background: rgba(63,185,80,.25); }
 
