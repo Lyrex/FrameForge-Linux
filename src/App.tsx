@@ -78,7 +78,7 @@ import TimerHelper, { fmtMs } from "./TimerHelper";
 import { useWorldState } from "./worldstate";
 import { notify } from "./lib/notify";
 import { collectNewMatches } from "./fissureAlerts";
-import Statistics from "./Statistics";
+import Statistics from "./statistics/Statistics";
 import Overlay from "./relic-overlay/Overlay";
 import ModularWindow from "./modular-window/ModularWindow";
 import ModularWindowPage from "./modular-window/ModularWindowPage";

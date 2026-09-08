@@ -1,10 +1,10 @@
 import { useState, useEffect, useMemo, useContext, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ImgCacheDirContext } from "./ImgCacheDir";
-import { warframeStatImageUrl } from "./constants/urls";
-import { TAURI_COMMANDS } from "./constants/tauri";
-import type { WfmTopItem } from "./types/market";
-import type { Trade, TradeSession } from "./types/trades";
+import { ImgCacheDirContext } from "../ImgCacheDir";
+import { warframeStatImageUrl } from "../constants/urls";
+import { TAURI_COMMANDS } from "../constants/tauri";
+import type { WfmTopItem } from "../types/market";
+import type { Trade, TradeSession } from "../types/trades";
 import "./Reports.css";
 
 interface CategoryStat {
