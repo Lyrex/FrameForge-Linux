@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo, useRef, useContext } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ImgCacheDirContext } from "./ImgCacheDir";
-import { warframeStatImageUrl } from "./constants/urls";
+import { ImgCacheDirContext } from "../ImgCacheDir";
+import { warframeStatImageUrl } from "../constants/urls";
 import "./Weapons.css";
-import type { InventoryItem, WeaponItem } from "./types/items";
+import type { InventoryItem, WeaponItem } from "../types/items";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

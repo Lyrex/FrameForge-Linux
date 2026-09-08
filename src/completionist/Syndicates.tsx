@@ -1,11 +1,11 @@
 import { useState, useEffect, useMemo, useContext, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ImgCacheDirContext } from "./ImgCacheDir";
-import { warframeStatImageUrl } from "./constants/urls";
+import { ImgCacheDirContext } from "../ImgCacheDir";
+import { warframeStatImageUrl } from "../constants/urls";
 import "./Syndicates.css";
-import type { InventoryItem } from "./types/items";
-import type { SyndicateFilters } from "./types/filters";
-import type { SyndicateItem, SyndicateStore } from "./types/syndicates";
+import type { InventoryItem } from "../types/items";
+import type { SyndicateFilters } from "../types/filters";
+import type { SyndicateItem, SyndicateStore } from "../types/syndicates";
 
 // ── Completion status ─────────────────────────────────────────────────────────
 // "complete"  = built/owned final item (or mod/sigil in inventory)

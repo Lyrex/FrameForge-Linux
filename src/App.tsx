@@ -89,7 +89,7 @@ import InventoryBatchPreview from "./inventory/InventoryBatchPreview";
 import InventoryToolbar from "./inventory/InventoryToolbar";
 import AppNavigation, { type Module } from "./AppNavigation";
 import InventorySidebar from "./inventory/InventorySidebar";
-import CompletionistTabs, { type CompletionistView } from "./CompletionistTabs";
+import CompletionistTabs, { type CompletionistView } from "./completionist/CompletionistTabs";
 import HeaderActions from "./HeaderActions";
 import ErrorBoundary from "./shared/ErrorBoundary";
 import HeaderStatusBadges from "./HeaderStatusBadges";
