@@ -2,12 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { clampToMonitor, overlayScale } from "./lib/uiScale";
-import { DEFAULT_RELIC_PICK_LINES, DEFAULT_RELIC_PICK_PRIORITY, RELIC_PICK_LINES_OPTIONS, RELIC_PICK_PRIORITY_OPTIONS } from "./constants/settings";
-import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
-import type { SettingsFile } from "./types/tauri";
-import type { RelicPickPayload, RelicPickRelic, RelicPickReward } from "./types/relics";
-import type { RelicPickLines, RelicPickPriority } from "./types/settings";
+import { clampToMonitor, overlayScale } from "../lib/uiScale";
+import { DEFAULT_RELIC_PICK_LINES, DEFAULT_RELIC_PICK_PRIORITY, RELIC_PICK_LINES_OPTIONS, RELIC_PICK_PRIORITY_OPTIONS } from "../constants/settings";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
+import type { SettingsFile } from "../types/tauri";
+import type { RelicPickPayload, RelicPickRelic, RelicPickReward } from "../types/relics";
+import type { RelicPickLines, RelicPickPriority } from "../types/settings";
 import "./RelicPickOverlay.css";
 
 const ERA_LABEL: Record<string, string> = {
