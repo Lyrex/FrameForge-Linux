@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
-import type { RivenAnalysis, RivenAnalysisUpdate, RivenStat } from "./types/rivens";
-import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
-import type { SaveRivenRollArgs } from "./types/tauri";
+import type { RivenAnalysis, RivenAnalysisUpdate, RivenStat } from "../types/rivens";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
+import type { SaveRivenRollArgs } from "../types/tauri";
 
 // Tells App.tsx to run OCR again (for "Check New Roll" / "Start Comparison")
 const triggerNewCheck = () => emit(TAURI_EVENTS.RIVEN_MANUAL_CHECK, {}).catch(() => {});
