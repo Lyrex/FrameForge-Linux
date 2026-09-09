@@ -3104,7 +3104,7 @@ fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
                     .and_then(|s| s.split(" :").next())
                     .map(|s| s.trim().to_string()).unwrap_or_else(|| "Unknown".to_string());
                 let item = { let p="want to buy "; let s=" for ";
-                    raw.find(p).and_then(|i| { let r=&raw[i+p.len()..]; r.find(s).map(|j| r[..j].to_string()) })
+                    raw.find(p).and_then(|i| { let r=&raw[i+p.len()..]; r.find(s).map(|j| sanitize_chat_item_name(&r[..j])) })
                 };
                 let price: Option<u64> = raw.find(" for ").and_then(|i| {
                     let r=&raw[i+5..]; r.find(" platinum").and_then(|j| r[..j].trim().parse().ok())
@@ -5560,7 +5560,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                         let suffix = " for ";
                         raw.find(prefix).and_then(|i| {
                             let rest = &raw[i+prefix.len()..];
-                            rest.find(suffix).map(|j| rest[..j].to_string())
+                            rest.find(suffix).map(|j| sanitize_chat_item_name(&rest[..j]))
                         })
                     };
                     let price: Option<u64> = raw.find(" for ").and_then(|i| {
@@ -8449,6 +8449,16 @@ fn get_system_locale() -> String {
 
 /// WFCD has a recurring bug where dual-pistol component weapons get the parent's
 /// name prepended. These overrides replace the bad names with the correct ones.
+fn sanitize_chat_item_name(s: &str) -> String {
+    // Warframe's chat item links embed rank pips and other glyphs as Private Use Area
+    // codepoints (U+E000–U+F8FF). These render as boxes in any standard font.
+    s.chars()
+        .filter(|&c| !('\u{E000}'..='\u{F8FF}').contains(&c) && !c.is_control())
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 fn patch_item_name(unique_name: &str, name: &str) -> String {
     match unique_name {
         "/Lotus/Weapons/Tenno/Pistols/Magnum/Magnum"                    => "Magnus".into(),
