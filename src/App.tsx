@@ -89,13 +89,13 @@ import InventoryBatchPreview from "./inventory/InventoryBatchPreview";
 import InventoryToolbar from "./inventory/InventoryToolbar";
 import AppNavigation, { type Module } from "./AppNavigation";
 import InventorySidebar from "./inventory/InventorySidebar";
-import CompletionistTabs, { type CompletionistView } from "./completionist/CompletionistTabs";
+import CompletionistTabs from "./completionist/CompletionistTabs";
 import HeaderActions from "./header/HeaderActions";
 import ErrorBoundary from "./shared/ErrorBoundary";
 import HeaderStatusBadges from "./header/HeaderStatusBadges";
 import ConnectionStatusChip from "./header/ConnectionStatusChip";
 import KeepMountedWhenHidden from "./KeepMountedWhenHidden";
-import { FOUNDRY_FILTERS_DEFAULT, INVENTORY_FILTERS_DEFAULT, MARKET_FILTERS_DEFAULT, RELIC_FILTERS_DEFAULT, SYNDICATE_FILTERS_DEFAULT } from "./constants/filters";
+import { INVENTORY_FILTERS_DEFAULT } from "./constants/filters";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import {
   CLOCK_FORMAT_OPTIONS,
@@ -112,7 +112,7 @@ import {
   RELIC_PICK_REFINEMENT_OPTIONS,
 } from "./constants/settings";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
-import type { FoundryFilters, InventoryFilters } from "./types/filters";
+import type { InventoryFilters } from "./types/filters";
 import type { ViewMode } from "./types/ui";
 import { formatUnixTime } from "./lib/formatters";
 import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, QuantityMap } from "./types/items";
@@ -275,8 +275,6 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [lastInventoryScanAt, setLastInventoryScanAt] = useState<number | null>(null);
   const [inventoryReady, setInventoryReady] = useState(false);
   const inventoryReadyRef = useRef(false);
-  const [changeLogExpanded, setChangeLogExpanded] = useState(false);
-  const [changeLogHeight, setChangeLogHeight] = useState(270);
   const [inventoryFilters, setInventoryFilters] = useState<InventoryFilters>(INVENTORY_FILTERS_DEFAULT);
   const { category, search, filterOwned, filterRecent, filterPrime, filterVaulted, filterUnvaulted, filterRank, sortMode } = inventoryFilters;
   const prevSortRef = useRef(sortMode);
@@ -294,14 +292,6 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   }, []);
 
   // ── Per-tab persisted filter state ────────────────────────────────────────
-  const [foundryFilters, setFoundryFilters] = useState<FoundryFilters>(FOUNDRY_FILTERS_DEFAULT);
-  const [marketFilters, setMarketFilters] = useState(MARKET_FILTERS_DEFAULT);
-  const [relicFilters, setRelicFilters] = useState(RELIC_FILTERS_DEFAULT);
-  const [completionistView, setCompletionistView] = useState<CompletionistView>("syndicates");
-  const [weaponsTab, setWeaponsTab] = useState<"Primary" | "Secondary" | "Melee" | "Operator">("Primary");
-  const [syndicateFilters, setSyndicateFilters] = useState(SYNDICATE_FILTERS_DEFAULT);
-  const [statsTab, setStatsTab] = useState<"trade" | "item">("trade");
-  const [reportsDateRange, setReportsDateRange] = useState<number | "all">(30);
   const [lastChanged, setLastChanged] = useState<Record<string, number>>({});
   const [monitoring, setMonitoring] = useState(false);
   const [warframeRunning, setWarframeRunning] = useState(false);
@@ -1810,7 +1800,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         {/* ── Foundry module ── */}
         {activeModule === "foundry" && (
           <ErrorBoundary>
-            <Foundry inventory={inventory} refreshKey={itemsRefreshKey} crafting={crafting} colorblindMode={colorblindMode} subsummedWarframes={subsummedWarframes} tracked={tracked} onTrackToggle={toggleTracked} filters={foundryFilters} onFiltersChange={setFoundryFilters} pageSize={foundryPageSize} />
+            <Foundry inventory={inventory} refreshKey={itemsRefreshKey} crafting={crafting} colorblindMode={colorblindMode} subsummedWarframes={subsummedWarframes} tracked={tracked} onTrackToggle={toggleTracked} pageSize={foundryPageSize} />
           </ErrorBoundary>
         )}
 
@@ -1818,13 +1808,13 @@ if (typeof s.autoDiagEnabled === "boolean") {
         {/* Keep mounted at all times so WfmTrading's trade-completed listener
             (auto listing update) fires regardless of which tab is active. */}
         <KeepMountedWhenHidden active={activeModule === "market"}>
-          <MarketHelper inventory={inventory} refreshKey={itemsRefreshKey} crafting={crafting} onWfmLoginChange={handleWfmLoginChange} filters={marketFilters} onFiltersChange={setMarketFilters} modCopiesMap={modCopiesMap} />
+          <MarketHelper inventory={inventory} refreshKey={itemsRefreshKey} crafting={crafting} onWfmLoginChange={handleWfmLoginChange} modCopiesMap={modCopiesMap} />
         </KeepMountedWhenHidden>
 
         {/* ── Relics module ── */}
         {activeModule === "relics" && (
           <ErrorBoundary>
-            <RelicHelper inventory={inventory} refreshKey={itemsRefreshKey} colorblindMode={colorblindMode} filters={relicFilters} onFiltersChange={setRelicFilters} />
+            <RelicHelper inventory={inventory} refreshKey={itemsRefreshKey} colorblindMode={colorblindMode} />
           </ErrorBoundary>
         )}
 
@@ -1858,19 +1848,14 @@ if (typeof s.autoDiagEnabled === "boolean") {
         {/* ── Statistics module ── */}
         {activeModule === "statistics" && (
           <ErrorBoundary>
-            <Statistics tab={statsTab} onTabChange={setStatsTab} dateRange={reportsDateRange} onDateRangeChange={setReportsDateRange} clockFormat={clockFormat} systemLocale={systemLocale} />
+            <Statistics clockFormat={clockFormat} systemLocale={systemLocale} />
           </ErrorBoundary>
         )}
 
         {/* ── Completionist module ── */}
         {activeModule === "completionist" && (
           <ErrorBoundary>
-            <CompletionistTabs
-              view={completionistView}
-              onViewChange={setCompletionistView}
-              syndicates={{ inventory, filters: syndicateFilters, onFiltersChange: setSyndicateFilters }}
-              weapons={{ inventory, activeTab: weaponsTab, onTabChange: setWeaponsTab }}
-            />
+            <CompletionistTabs inventory={inventory} />
           </ErrorBoundary>
         )}
 
@@ -1883,10 +1868,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
           catalog={catalog}
           clockFormat={clockFormat}
           systemLocale={systemLocale}
-          expanded={changeLogExpanded}
-          height={changeLogHeight}
-          onExpandedChange={setChangeLogExpanded}
-          onHeightChange={setChangeLogHeight}
           onItemClick={openChangeLogItem}
           onChangeLogClick={openRecentChanges}
           onCategoryClick={openRecentCategory}

@@ -17,8 +17,6 @@ interface Props {
   inventory: Record<string, InventoryItem>;
   refreshKey: number;
   colorblindMode?: boolean;
-  filters: RelicFilters;
-  onFiltersChange: (f: RelicFilters) => void;
 }
 
 // ─── Module-level constants ───────────────────────────────────────────────────
@@ -652,7 +650,8 @@ function PlannerTab({
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function RelicHelper({ inventory, refreshKey, colorblindMode = false, filters, onFiltersChange }: Props) {
+export default function RelicHelper({ inventory, refreshKey, colorblindMode = false }: Props) {
+  const [filters, onFiltersChange] = useState<RelicFilters>(RELIC_FILTERS_DEFAULT);
   const [plannerActive, setPlannerActive] = useState(false);
   const [relicView, setRelicView] = useState<ViewMode>(() =>
     (localStorage.getItem(PREFERENCE_KEYS.RELIC_VIEW) as ViewMode | null) ?? "cards"

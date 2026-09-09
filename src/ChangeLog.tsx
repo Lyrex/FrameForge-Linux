@@ -43,10 +43,6 @@ interface ChangeLogProps {
   catalog: ChangeLogCatalogItem[];
   clockFormat: ClockFormat;
   systemLocale: string;
-  expanded: boolean;
-  height: number;
-  onExpandedChange: (expanded: boolean) => void;
-  onHeightChange: (height: number) => void;
   onItemClick: (uniqueName: string) => void;
   onChangeLogClick: () => void;
   onCategoryClick: (category: string) => void;
@@ -138,7 +134,7 @@ function ChangeLogHeader({
   );
 }
 
-function ChangeLogResizeHandle({ height, onHeightChange }: Pick<ChangeLogProps, "height" | "onHeightChange">) {
+function ChangeLogResizeHandle({ height, onHeightChange }: { height: number; onHeightChange: (height: number) => void }) {
   const resizeFrameRef = useRef<number | null>(null);
   const resizeHeightRef = useRef(height);
   const resizeCleanupRef = useRef<(() => void) | null>(null);
@@ -190,9 +186,11 @@ function ChangeLogResizeHandle({ height, onHeightChange }: Pick<ChangeLogProps, 
 }
 
 export default function ChangeLog({
-  changes, catalog, clockFormat, systemLocale, expanded, height,
-  arrivalToken, lastScanAt, onExpandedChange, onHeightChange, onItemClick, onChangeLogClick, onCategoryClick,
+  changes, catalog, clockFormat, systemLocale,
+  arrivalToken, lastScanAt, onItemClick, onChangeLogClick, onCategoryClick,
 }: ChangeLogProps) {
+  const [expanded, onExpandedChange] = useState(false);
+  const [height, onHeightChange] = useState(270);
   const handledArrivalRef = useRef(0);
   const [showArrival, setShowArrival] = useState(false);
   const [feedIndex, setFeedIndex] = useState<number | null>(null);

@@ -26,8 +26,6 @@ interface Props {
   refreshKey: number;
   crafting: CraftingJob[];
   onWfmLoginChange?: (loggedIn: boolean) => void;
-  filters: MarketFilters;
-  onFiltersChange: (f: MarketFilters) => void;
   modCopiesMap?: Record<string, ModCopy[]>;
 }
 
@@ -173,7 +171,8 @@ function SetCard({ setKey, parts, parentItem, setPrice, setPriceLoading, pricesF
 
 // ─── Market Helper ────────────────────────────────────────────────────────────
 
-export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLoginChange, filters, onFiltersChange, modCopiesMap = {} }: Props) {
+export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLoginChange, modCopiesMap = {} }: Props) {
+  const [filters, onFiltersChange] = useState<MarketFilters>(MARKET_FILTERS_DEFAULT);
   const [allItems, setAllItems]           = useState<CatalogItem[]>([]);
   const [wfmItems, setWfmItems]           = useState<WfmItem[]>([]);
   const [wfmLoading, setWfmLoading]       = useState(false);

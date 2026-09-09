@@ -21,8 +21,6 @@ interface Props {
   subsummedWarframes?: Set<string>;
   tracked: string[];
   onTrackToggle: (id: string) => void;
-  filters: FoundryFilters;
-  onFiltersChange: (f: FoundryFilters) => void;
   pageSize?: number;
 }
 
@@ -558,7 +556,8 @@ const CRAFT_CATEGORIES = [
   "Companions", "Archwing", "Operator Weapons", "Parts", "Blueprints", "Miscellaneous",
 ];
 
-export default function Foundry({ inventory, refreshKey, crafting, subsummedWarframes = new Set(), tracked, onTrackToggle, filters, onFiltersChange, pageSize = 30 }: Props) {
+export default function Foundry({ inventory, refreshKey, crafting, subsummedWarframes = new Set(), tracked, onTrackToggle, pageSize = 30 }: Props) {
+  const [filters, onFiltersChange] = useState<FoundryFilters>(FOUNDRY_FILTERS_DEFAULT);
   const [craftable, setCraftable] = useState<CatalogItem[]>([]);
   const [recipes, setRecipes]     = useState<Map<string, RecipeComponent[]>>(new Map());
   const [relicDrops, setRelicDrops] = useState<RelicDropMap>({});
