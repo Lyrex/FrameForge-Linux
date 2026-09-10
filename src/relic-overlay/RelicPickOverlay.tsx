@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useOverlayWindow } from "../useOverlayWindow";
+import { useOverlayWindow } from "../lib/useOverlayWindow";
 import { DEFAULT_RELIC_PICK_LINES, DEFAULT_RELIC_PICK_PRIORITY, RELIC_PICK_LINES_OPTIONS, RELIC_PICK_PRIORITY_OPTIONS } from "../constants/settings";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import type { SettingsFile } from "../types/tauri";

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ItemMarketPopup from "./ItemMarketPopup";
-import { usePlatformCapabilities } from "../platform";
+import { usePlatformCapabilities } from "../lib/platform";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import type { WfmAuction, WfmItem, WfmManagedOrder, WfmWhisper } from "../types/market";
 import type { TradeCompletedEvent } from "../types/trades";

@@ -3,14 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { verdictColor } from "./rivenTypes";
 import type { GradedRiven, GradedStat } from "./rivenTypes";
-import { formatChallengeName } from "./market/MarketHelper";
-import polMadurai  from "./assets/polarity/madurai.svg";
-import polVazarin  from "./assets/polarity/vazarin.svg";
-import polNaramon  from "./assets/polarity/naramon.svg";
-import polZenurik  from "./assets/polarity/zenurik.svg";
-import polUnairu   from "./assets/polarity/unairu.svg";
-import polPenjaga  from "./assets/polarity/penjaga.svg";
-import polUmbra    from "./assets/polarity/umbra.svg";
+import { formatChallengeName } from "../market/MarketHelper";
+import polMadurai  from "../assets/polarity/madurai.svg";
+import polVazarin  from "../assets/polarity/vazarin.svg";
+import polNaramon  from "../assets/polarity/naramon.svg";
+import polZenurik  from "../assets/polarity/zenurik.svg";
+import polUnairu   from "../assets/polarity/unairu.svg";
+import polPenjaga  from "../assets/polarity/penjaga.svg";
+import polUmbra    from "../assets/polarity/umbra.svg";
 import "./RivenOwned.css";
 
 const POLARITY_DISPLAY: Record<string, { icon: string; name: string }> = {

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useOverlayWindow } from "./useOverlayWindow";
-import { fmtMs } from "./TimerHelper";
+import { useOverlayWindow } from "../lib/useOverlayWindow";
+import { fmtMs } from "../TimerHelper";
 import "./ArbitrationOverlay.css";
 
 interface RunSummary {

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import Sparkline from "../Sparkline";
-import "../Report.css";
+import Sparkline from "../shared/Sparkline";
+import "../shared/Report.css";
 import type { CatalogItem } from "../types/items";
 import type { SnapshotPoint, TrackedItem } from "../types/inventory";
 import { PREFERENCE_KEYS } from "../constants/preferences";

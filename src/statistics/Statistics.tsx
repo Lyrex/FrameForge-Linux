@@ -2,7 +2,7 @@ import { useState } from "react";
 import Reports from "./Reports";
 import ItemReport from "./ItemReport";
 import "./Statistics.css";
-import "../Report.css";
+import "../shared/Report.css";
 
 interface Props {
   clockFormat: "auto" | "12h" | "24h";

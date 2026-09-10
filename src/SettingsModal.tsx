@@ -2,9 +2,9 @@ import { useState, type Dispatch, type MutableRefObject, type SetStateAction } f
 import { invoke } from "@tauri-apps/api/core";
 import { notify, ensurePermission } from "./lib/notify";
 import EeLogSettings from "./EeLogSettings";
-import StatsDataTransfer from "./StatsDataTransfer";
-import UpdateCheckRow from "./UpdateCheck";
-import type { UpdateAvailable } from "./updater";
+import StatsDataTransfer from "./statistics/StatsDataTransfer";
+import UpdateCheckRow from "./update/UpdateCheck";
+import type { UpdateAvailable } from "./update/updater";
 import { formatBytes } from "./lib/formatters";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import { CLOCK_FORMAT_OPTIONS, FOUNDRY_PAGE_SIZE_OPTIONS, RELIC_OVERLAY_PRIORITY_OPTIONS, RELIC_PICK_LINES_OPTIONS, RELIC_PICK_PRIORITY_OPTIONS } from "./constants/settings";

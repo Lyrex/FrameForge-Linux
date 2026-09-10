@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { fmtMs } from "./TimerHelper";
-import { fmtClock, type ClockFormat } from "./clockFormat";
-import { ensurePermission, permissionGranted } from "./lib/notify";
+import { fmtMs } from "../TimerHelper";
+import { fmtClock, type ClockFormat } from "../lib/clockFormat";
+import { ensurePermission, permissionGranted } from "../lib/notify";
 import { clampLead, MAX_LEAD_MINS, MIN_LEAD_MINS, type ScheduleEntry } from "./arbitrationAlerts";
 import { useArbitrationSchedule, clampScheduleDays, SCHEDULE_DAY_OPTIONS } from "./arbitrationSchedule";
 import { tierKey, type TierKey } from "./arbitrationTiers";
 import TierSelect, { TierBadge } from "./TierSelect";
 import ArbitrationHistory from "./ArbitrationHistory";
 import "./Arbitrations.css";
-import "./Report.css";
+import "../shared/Report.css";
 
 // The day header always reads English like the rest of the UI; only the time
 // takes the locale-driven hour cycle.
