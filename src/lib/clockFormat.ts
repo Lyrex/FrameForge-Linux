@@ -11,6 +11,6 @@ export function clockOptions(format: ClockFormat) {
 }
 
 /// `unix` is in seconds, as the app's event timestamps are.
-export function fmtClock(unix: number, format: ClockFormat = "auto", locale = "en-US") {
+export function fmtClock(unix: number, format: ClockFormat = "auto", locale = navigator.language) {
   return new Date(unix * 1000).toLocaleTimeString(locale, clockOptions(format));
 }

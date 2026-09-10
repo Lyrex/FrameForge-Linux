@@ -6,10 +6,9 @@ import "../shared/Report.css";
 
 interface Props {
   clockFormat: "auto" | "12h" | "24h";
-  systemLocale: string;
 }
 
-export default function Statistics({ clockFormat, systemLocale }: Props) {
+export default function Statistics({ clockFormat }: Props) {
   const [tab, setTab] = useState<"trade" | "item">("trade");
   const [dateRange, setDateRange] = useState<number | "all">(30);
 
@@ -23,7 +22,7 @@ export default function Statistics({ clockFormat, systemLocale }: Props) {
           Item Report
         </button>
       </div>
-      {tab === "trade" ? <Reports dateRange={dateRange} onDateRangeChange={setDateRange} clockFormat={clockFormat} systemLocale={systemLocale} /> : <ItemReport />}
+      {tab === "trade" ? <Reports dateRange={dateRange} onDateRangeChange={setDateRange} clockFormat={clockFormat} /> : <ItemReport />}
     </div>
   );
 }

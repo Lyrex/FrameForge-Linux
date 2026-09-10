@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo, useContext, useRef } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ImgCacheDirContext } from "../ImgCacheDir";
-import { warframeStatImageUrl } from "../constants/urls";
+import ItemImg from "../ItemImg";
+import { PlatIcon } from "../shared/icons";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import type { WfmTopItem } from "../types/market";
 import type { Trade, TradeSession } from "../types/trades";
@@ -102,13 +102,13 @@ const BADGE_CLASS: Record<string, string> = {
   sale: "rpt-badge-sale", purchase: "rpt-badge-purchase", trade: "rpt-badge-trade",
 };
 
-function TradeCard({ session, clockFormat, systemLocale }: { session: TradeSession; clockFormat: "auto" | "12h" | "24h"; systemLocale: string }) {
+function TradeCard({ session, clockFormat }: { session: TradeSession; clockFormat: "auto" | "12h" | "24h" }) {
   const date = new Date(session.timestamp);
-  const dateStr = date.toLocaleDateString(systemLocale, { month: "short", day: "numeric", year: "numeric" });
+  const dateStr = date.toLocaleDateString(navigator.language, { month: "short", day: "numeric", year: "numeric" });
   const timeOpts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" };
   if (clockFormat === "12h") timeOpts.hour12 = true;
   else if (clockFormat === "24h") timeOpts.hour12 = false;
-  const timeStr = date.toLocaleTimeString(systemLocale, timeOpts);
+  const timeStr = date.toLocaleTimeString(navigator.language, timeOpts);
 
   return (
     <div className="rpt-session-card">
@@ -167,10 +167,6 @@ function TradeCard({ session, clockFormat, systemLocale }: { session: TradeSessi
 function fmtK(n: number): string {
   if (n >= 10000) return `${(n / 1000).toFixed(1)}K`;
   return n.toLocaleString();
-}
-
-function PlatIcon({ size = 14 }: { size?: number }) {
-  return <img src="/platinum.webp" alt="" width={size} height={size} style={{ objectFit: "contain", flexShrink: 0, verticalAlign: "middle" }} />;
 }
 
 // ── SVG Donut Chart ─────────────────────────────────────────────────────────
@@ -240,31 +236,13 @@ function Legend({ items }: { items: { label: string; color: string; value: numbe
 
 // ── Main component ───────────────────────────────────────────────────────────
 
-function ItemImg({ imageName, size = 28 }: { imageName?: string; size?: number }) {
-  const baseUrl = useContext(ImgCacheDirContext);
-  const [localFailed, setLocalFailed] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const ref = useRef<HTMLImageElement>(null);
-
-  useEffect(() => {
-    if (ref.current?.complete) ref.current.classList.add("img-loaded");
-  }, []);
-
-  if (!imageName || failed)
-    return <span className="img-fallback" style={{ width: size, height: size }} />;
-  const useLocal = Boolean(baseUrl) && !localFailed;
-  const src = useLocal ? `${baseUrl}/${imageName}` : warframeStatImageUrl(imageName);
-  return <img ref={ref} className="img" style={{ width: size, height: size }} src={src} alt="" loading="lazy" onError={() => useLocal ? setLocalFailed(true) : setFailed(true)} onLoad={() => ref.current?.classList.add("img-loaded")} />;
-}
-
 interface Props {
   dateRange: number | "all";
   onDateRangeChange: (r: number | "all") => void;
   clockFormat: "auto" | "12h" | "24h";
-  systemLocale: string;
 }
 
-export default function Reports({ dateRange, onDateRangeChange, clockFormat, systemLocale }: Props) {
+export default function Reports({ dateRange, onDateRangeChange, clockFormat }: Props) {
   const [trades, setTrades]         = useState<Trade[]>([]);
   const [loading, setLoading]       = useState(true);
   const [topItems, setTopItems]     = useState<WfmTopItem[]>([]);
@@ -402,7 +380,7 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat, sys
                     <tr key={item.url_name}>
                       <td>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <ItemImg imageName={item.image_name} size={24} />
+                          <ItemImg imageName={item.image_name} size={24} fallback={<span className="img-fallback" style={{ width: 24, height: 24 }} />} />
                           <span className="rpt-dot" style={{ background: topItemsChartForWfm[i]?.color }} />
                           {item.name}
                         </div>
@@ -458,7 +436,7 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat, sys
               <div className="rpt-empty">
                 <div className="rpt-empty-title">No trades in this period</div>
               </div>
-            ) : sessions.map(s => <TradeCard key={s.sessionId} session={s} clockFormat={clockFormat} systemLocale={systemLocale} />)}
+            ) : sessions.map(s => <TradeCard key={s.sessionId} session={s} clockFormat={clockFormat} />)}
           </div>
         ) : <>
 

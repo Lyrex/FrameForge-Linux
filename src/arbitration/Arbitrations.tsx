@@ -33,7 +33,6 @@ type Props = {
   scheduleDays: number;
   onScheduleDaysChange: (days: number) => void;
   clockFormat: ClockFormat;
-  systemLocale: string;
 };
 
 export default function Arbitrations(props: Props) {
@@ -44,7 +43,7 @@ export default function Arbitrations(props: Props) {
         <button className={tab === "schedule" ? "active" : ""} onClick={() => setTab("schedule")}>Schedule</button>
         <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>Run history</button>
       </div>
-      {tab === "schedule" ? <Schedule {...props} /> : <ArbitrationHistory clockFormat={props.clockFormat} systemLocale={props.systemLocale} />}
+      {tab === "schedule" ? <Schedule {...props} /> : <ArbitrationHistory clockFormat={props.clockFormat} />}
     </div>
   );
 }
@@ -52,7 +51,7 @@ export default function Arbitrations(props: Props) {
 function Schedule({
   favorites, onToggleFavorite, leadMins, onLeadChange, permissionDenied, onPermissionChange,
   tierFilter, onTierFilterChange, alertTiers, onAlertTiersChange, scheduleDays, onScheduleDaysChange,
-  clockFormat, systemLocale,
+  clockFormat,
 }: Props) {
   const { schedule, error, refresh: fetchSchedule } = useArbitrationSchedule(true, scheduleDays);
   const [now, setNow] = useState(() => Date.now());
@@ -225,7 +224,7 @@ function Schedule({
             {header}
             <div className={`timer-row${rowClass(e)}`} title={alertTitle(e)}>
               {star(e)}
-              <span className="arb-time">{fmtClock(e.start, clockFormat, systemLocale)}</span>
+              <span className="arb-time">{fmtClock(e.start, clockFormat)}</span>
               <span className="timer-name">{name(e)}</span>
               <span className="arb-detail">{detail(e)}</span>
               <span className="timer-until">in {fmtMs(e.start * 1000 - now)}</span>

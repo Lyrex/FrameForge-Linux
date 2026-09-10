@@ -81,7 +81,6 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   margin-top: -1px;
 }
-.inv-card-meta { display: flex; gap: 3px; flex-wrap: wrap; justify-content: center; }
 .inv-card-qty      { font-size: 15px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; display: flex; align-items: center; gap: 4px; }
 .inv-card-qty-zero { color: var(--muted); }
 

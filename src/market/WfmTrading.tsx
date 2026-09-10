@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ItemMarketPopup from "./ItemMarketPopup";
 import { usePlatformCapabilities } from "../lib/platform";
+import { useModal } from "../shared/useModal";
+import { fmt } from "../utils";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import type { WfmAuction, WfmItem, WfmManagedOrder, WfmWhisper } from "../types/market";
 import type { TradeCompletedEvent } from "../types/trades";
@@ -35,7 +37,6 @@ interface Props {
   auctionRefreshKey?: number;
 }
 
-function fmt(n: number) { return n.toLocaleString(); }
 
 /** Debug helpers available from the browser console:
  *  window.__wfmDump('/v2/orders/my')   — raw JSON from any authenticated WFM endpoint
@@ -199,8 +200,9 @@ function AuctionEditPopup({ auction, onSave, onClose }: {
 
   const typeChanged = isDirect !== auction.is_direct_sell;
 
+  const modal = useModal(onClose);
   return (
-    <div className="wfm-ae-popup-overlay" onClick={onClose}>
+    <dialog className="wfm-ae-popup-overlay" {...modal}>
       <div className="wfm-ae-popup-card" onClick={e => e.stopPropagation()}>
         <div className="wfm-ae-popup-header">
           <span className="wfm-ae-popup-title">
@@ -267,7 +269,7 @@ function AuctionEditPopup({ auction, onSave, onClose }: {
           <button className="wfm-btn-sm" onClick={onClose}>Cancel</button>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }
 

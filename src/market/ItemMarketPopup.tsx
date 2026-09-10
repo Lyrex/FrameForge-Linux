@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useImgLadder, cdnUrl } from "../ImgCacheDir";
+import ItemImg from "../ItemImg";
+import { useModal } from "../shared/useModal";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import type { WfmItemInfo, WfmItemOrders, WfmPublicOrder, WfmStatPoint } from "../types/market";
 import type { WfmCreateOrderArgs } from "../types/tauri";
@@ -212,20 +213,16 @@ export default function ItemMarketPopup({ urlName, displayName, imageName, onClo
   const [showForm, setShowForm] = useState(false);
   const [prefillPrice, setPrefillPrice] = useState(0);
   const [prefillType, setPrefillType]   = useState<"sell" | "buy">("sell");
-  const thumb = useImgLadder([cdnUrl(imageName)]);
 
   // Mod rank state — lifted here so orders re-fetch when rank changes
   const [modRankInput, setModRankInput] = useState(prefillModRank ?? 0);
   const [modRank, setModRank]           = useState(prefillModRank ?? 0);
   const [modMaxRank, setModMaxRank]     = useState<number | null>(null);
   const [itemId, setItemId]             = useState<string | null>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const handleModRankChange = (r: number) => {
-    setModRankInput(r);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => setModRank(r), 350);
-  };
+  useEffect(() => {
+    const t = setTimeout(() => setModRank(modRankInput), 350);
+    return () => clearTimeout(t);
+  }, [modRankInput]);
 
   // Fetch item info once to determine modMaxRank and itemId
   useEffect(() => {
@@ -264,17 +261,15 @@ export default function ItemMarketPopup({ urlName, displayName, imageName, onClo
     setShowForm(true);
   };
 
+  const modal = useModal(onClose);
   return (
-    <div className="imp-overlay" onClick={onClose}>
+    <dialog className="imp-overlay" {...modal}>
       <div className="imp-modal" onClick={e => e.stopPropagation()}>
 
         {/* ── Header ── */}
         <div className="imp-header">
           <div className="imp-item-identity">
-            {thumb.src
-              ? <img key={thumb.src} className="imp-thumb" src={thumb.src} alt="" onError={thumb.onError} />
-              : <div className="imp-thumb-placeholder">P</div>
-            }
+            <ItemImg imageName={imageName} className="imp-thumb" fallback={<div className="imp-thumb-placeholder">P</div>} />
             <div className="imp-title-group">
               <div className="imp-item-name">{displayName}</div>
               {median48h && <div className="imp-median">48h median <span>{fmt(median48h)}p</span></div>}
@@ -292,7 +287,7 @@ export default function ItemMarketPopup({ urlName, displayName, imageName, onClo
             <span className="imp-rank-label">Showing rank</span>
             <input
               type="number" value={modRankInput} min={0} max={modMaxRank}
-              onChange={e => handleModRankChange(Math.max(0, Math.min(modMaxRank, +e.target.value)))}
+              onChange={e => setModRankInput(Math.max(0, Math.min(modMaxRank, +e.target.value)))}
               className="imp-num-input imp-qty-input"
             />
             <span className="imp-rank-label">/ {modMaxRank}</span>
@@ -364,7 +359,7 @@ export default function ItemMarketPopup({ urlName, displayName, imageName, onClo
               </>
             ) : (
               <CreateOrderForm urlName={urlName} itemId={itemId} prefillPrice={prefillPrice} prefillType={prefillType}
-                modRank={modRankInput} modMaxRank={modMaxRank} onModRankChange={handleModRankChange}
+                modRank={modRankInput} modMaxRank={modMaxRank} onModRankChange={setModRankInput}
                 onDone={() => { setShowForm(false); }} />
             )}
           </div>
@@ -372,6 +367,6 @@ export default function ItemMarketPopup({ urlName, displayName, imageName, onClo
           <div className="imp-login-hint">Log in to warframe.market in the Trading tab to place orders.</div>
         )}
       </div>
-    </div>
+    </dialog>
   );
 }

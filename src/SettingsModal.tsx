@@ -1,4 +1,4 @@
-import { useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useEffect, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { notify, ensurePermission } from "./lib/notify";
 import EeLogSettings from "./EeLogSettings";
@@ -11,7 +11,9 @@ import { CLOCK_FORMAT_OPTIONS, FOUNDRY_PAGE_SIZE_OPTIONS, RELIC_OVERLAY_PRIORITY
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import type { ArchonShard, QuantityMap } from "./types/items";
 import type { ChangeLogEntry } from "./types/inventory";
-import type { ClockFormat, FoundryPageSize, RelicOverlayPriority, RelicPickLines, RelicPickPriority, SettingsSnapshot } from "./types/settings";
+import type { ClockFormat } from "./lib/clockFormat";
+import { useModal } from "./shared/useModal";
+import type { FoundryPageSize, RelicOverlayPriority, RelicPickLines, RelicPickPriority, SettingsSnapshot } from "./types/settings";
 import "./SettingsModal.css";
 
 type SettingsTab = "general" | "overlays" | "market" | "accessibility" | "data" | "debugging";
@@ -20,7 +22,6 @@ type ScannerMods = Record<string, { total: number; by_rank: Record<string, numbe
 type ArchonShards = Record<string, ArchonShard[]>;
 
 export interface SettingsModalProps {
-  open: boolean;
   onClose: () => void;
   settingsTab: SettingsTab;
   setSettingsTab: (tab: SettingsTab) => void;
@@ -31,17 +32,12 @@ export interface SettingsModalProps {
   relicPickLines: RelicPickLines; setRelicPickLines: Setter<RelicPickLines>; wfmLoggedIn: boolean;
   wfmInvisibleOnStart: boolean; setWfmInvisibleOnStart: Setter<boolean>; wfmInvisibleOnStartRef: MutableRefObject<boolean>; wfmInvisibleOnClose: boolean; setWfmInvisibleOnClose: Setter<boolean>; wfmInvisibleOnCloseRef: MutableRefObject<boolean>;
   wfmAutoInvisible: boolean; setWfmAutoInvisible: Setter<boolean>; wfmAutoInvisibleMins: number; setWfmAutoInvisibleMins: Setter<number>; colorblindMode: boolean; setColorblindMode: Setter<boolean>; textScale: number; setTextScale: Setter<number>;
-  clockFormat: ClockFormat; setClockFormat: Setter<ClockFormat>; systemLocale: string; itemCount: number; recipeCount: number; handleFetch: () => Promise<void>; fetching: boolean; fetchMsg: string;
+  clockFormat: ClockFormat; setClockFormat: Setter<ClockFormat>; itemCount: number; recipeCount: number; handleFetch: () => Promise<void>; fetching: boolean; fetchMsg: string;
   setQuantities: Setter<QuantityMap>; setScannerMods: Setter<ScannerMods>; setMasteryData: Setter<Record<string, number>>; setArchonShards: Setter<ArchonShards>; setFormaData: Setter<QuantityMap>;
-  setChangeLog: Setter<ChangeLogEntry[]>; setLastChanged: Setter<Record<string, number>>; setItemsRefreshKey: Setter<number>; setClearMsg: Setter<string>; clearMsg: string;
-  blobLogEnabled: boolean; setBlobLogEnabled: Setter<boolean>; blobLogSize: number; setBlobLogSize: Setter<number>;
-  setShowInventoryBatchPreview: Setter<boolean>; notifyTestResult: string; setNotifyTestResult: Setter<string>; overlayLogCopied: boolean; setOverlayLogCopied: Setter<boolean>; autoDiagEnabled: boolean; setAutoDiagEnabled: Setter<boolean>;
-  diagFolderSize: number; setDiagFolderSize: Setter<number>; diagPath: string | null; diagCapturing: boolean; setDiagCapturing: Setter<boolean>; setDiagPath: Setter<string | null>; reloadDebugSizes: () => void;
-  memoryProbing: boolean; setMemoryProbing: Setter<boolean>; probeSize: number; setProbeSize: Setter<number>; rawScanning: boolean; setRawScanning: Setter<boolean>; rawScanSize: number; setRawScanSize: Setter<number>;
-  relicPickOcrResult: string | null; relicPickOcrTesting: boolean; setRelicPickOcrTesting: Setter<boolean>; setRelicPickOcrResult: Setter<string | null>;
-  relicPickTestResult: string | null; relicPickTestEra: string; setRelicPickTestEra: Setter<string>; setRelicPickTestResult: Setter<string | null>; eeLogTail: string | null; setEeLogTail: Setter<string | null>;
-  debugCatEnabled: boolean; setDebugCatEnabled: Setter<boolean>; unmatchedPathsSize: number; setUnmatchedPathsSize: Setter<number>; appVersion: string;
-  arbOverlayEnabled: boolean; setArbOverlayEnabled: Setter<boolean>; arbOverlayTestResult: string | null; setArbOverlayTestResult: Setter<string | null>;
+  setChangeLog: Setter<ChangeLogEntry[]>; setLastChanged: Setter<Record<string, number>>; setItemsRefreshKey: Setter<number>;
+  blobLogEnabled: boolean; setBlobLogEnabled: Setter<boolean>;
+  setShowInventoryBatchPreview: Setter<boolean>; autoDiagEnabled: boolean; setAutoDiagEnabled: Setter<boolean>;
+  appVersion: string; arbOverlayEnabled: boolean; setArbOverlayEnabled: Setter<boolean>;
   onUpdateFound: (update: UpdateAvailable) => void;
 }
 
@@ -73,15 +69,46 @@ function RefreshAllButton() {
 }
 
 export default function SettingsModal(props: SettingsModalProps) {
-  const { settingsTab, setSettingsTab, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, systemLocale, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setItemsRefreshKey, setClearMsg, clearMsg, blobLogEnabled, setBlobLogEnabled, blobLogSize, setBlobLogSize, setShowInventoryBatchPreview, notifyTestResult, setNotifyTestResult, overlayLogCopied, setOverlayLogCopied, autoDiagEnabled, setAutoDiagEnabled, diagFolderSize, setDiagFolderSize, diagPath, diagCapturing, setDiagCapturing, setDiagPath, reloadDebugSizes, memoryProbing, setMemoryProbing, probeSize, setProbeSize, rawScanning, setRawScanning, rawScanSize, setRawScanSize, relicPickOcrResult, relicPickOcrTesting, setRelicPickOcrTesting, setRelicPickOcrResult, relicPickTestResult, relicPickTestEra, setRelicPickTestEra, setRelicPickTestResult, eeLogTail, setEeLogTail, debugCatEnabled, setDebugCatEnabled, unmatchedPathsSize, setUnmatchedPathsSize, appVersion, arbOverlayEnabled, setArbOverlayEnabled, arbOverlayTestResult, setArbOverlayTestResult, onUpdateFound } = props;
-  if (!props.open) return null;
-  const onClose = props.onClose;
+  const { settingsTab, setSettingsTab, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setItemsRefreshKey, blobLogEnabled, setBlobLogEnabled, setShowInventoryBatchPreview, autoDiagEnabled, setAutoDiagEnabled, appVersion, arbOverlayEnabled, setArbOverlayEnabled, onUpdateFound, onClose } = props;
+  const modal = useModal(onClose);
+  const [clearMsg, setClearMsg] = useState("");
+  const [notifyTestResult, setNotifyTestResult] = useState("");
+  const [overlayLogCopied, setOverlayLogCopied] = useState(false);
+  const [diagCapturing, setDiagCapturing] = useState(false);
+  const [diagPath, setDiagPath] = useState<string | null>(null);
+  const [memoryProbing, setMemoryProbing] = useState(false);
+  const [rawScanning, setRawScanning] = useState(false);
+  const [relicPickOcrTesting, setRelicPickOcrTesting] = useState(false);
+  const [relicPickOcrResult, setRelicPickOcrResult] = useState<string | null>(null);
+  const [relicPickTestEra, setRelicPickTestEra] = useState("LITH");
+  const [relicPickTestResult, setRelicPickTestResult] = useState<string | null>(null);
+  const [arbOverlayTestResult, setArbOverlayTestResult] = useState<string | null>(null);
+  const [eeLogTail, setEeLogTail] = useState<string | null>(null);
+  const [debugCatEnabled, setDebugCatEnabled] = useState(false);
+  const [blobLogSize, setBlobLogSize] = useState(0);
+  const [rawScanSize, setRawScanSize] = useState(0);
+  const [probeSize, setProbeSize] = useState(0);
+  const [unmatchedPathsSize, setUnmatchedPathsSize] = useState(0);
+  const [diagFolderSize, setDiagFolderSize] = useState(0);
+  const reloadDebugSizes = () => {
+    invoke<number>("get_debug_data_size", { which: "blobs"           }).then(setBlobLogSize).catch(() => {});
+    invoke<number>("get_debug_data_size", { which: "raw_scan"        }).then(setRawScanSize).catch(() => {});
+    invoke<number>("get_debug_data_size", { which: "probe"           }).then(setProbeSize).catch(() => {});
+    invoke<number>("get_debug_data_size", { which: "unmatched_paths" }).then(setUnmatchedPathsSize).catch(() => {});
+    invoke<number>("get_diag_folder_size").then(setDiagFolderSize).catch(() => {});
+  };
+  useEffect(() => {
+    if (settingsTab !== "debugging") return;
+    reloadDebugSizes();
+    const id = setInterval(reloadDebugSizes, 60_000);
+    return () => clearInterval(id);
+  }, [settingsTab]); // eslint-disable-line
   return (
-      <div className="settings-overlay" onClick={() => onClose()}>
+      <dialog className="settings-overlay" {...modal}>
         <div className="settings-modal" onClick={e => e.stopPropagation()}>
           <div className="settings-header">
             <span className="settings-title">Settings</span>
-            <button className="craft-detail-close" onClick={() => onClose()}>✕</button>
+            <button className="craft-detail-close" onClick={onClose}>✕</button>
           </div>
 
           <div className="settings-layout">
@@ -467,7 +494,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                   <div className="settings-row" style={{ marginTop: 8 }}>
                     <div className="settings-row-info">
                       <span className="settings-row-label">Clock Format</span>
-                      <span className="settings-row-desc">How times are displayed throughout the app.{clockFormat === "auto" ? ` System locale: ${systemLocale}` : ""}</span>
+                      <span className="settings-row-desc">How times are displayed throughout the app.{clockFormat === "auto" ? ` System locale: ${navigator.language}` : ""}</span>
                     </div>
                     <div style={{ display: "flex", gap: 4 }}>
                       {CLOCK_FORMAT_OPTIONS.map(f => (
@@ -837,7 +864,7 @@ export default function SettingsModal(props: SettingsModalProps) {
             </div>{/* end settings-body */}
           </div>{/* end settings-layout */}
         </div>
-      </div>
+      </dialog>
     );
 
 

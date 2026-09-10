@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { check } from "@tauri-apps/plugin-updater";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useModal } from "../shared/useModal";
 import type { UpdateAvailable } from "./updater";
 import { advance, errorText, noProgress, type DownloadProgress } from "./updateFlow";
 
@@ -21,10 +22,7 @@ export default function UpdateDialog({ update, onDismiss }: Props) {
 
   const dismissable = phase !== "installing";
 
-  // Keyboard focus moves into the dialog so Escape is handled here and stops
-  // before any overlay underneath, which listens on the window, sees it too.
-  const dialog = useRef<HTMLDivElement>(null);
-  useEffect(() => dialog.current?.focus(), []);
+  const modal = useModal(() => { if (dismissable) onDismiss(); });
 
   // Rendered once: every download chunk re-renders the dialog, and the
   // Markdown component parses on each render.
@@ -66,18 +64,8 @@ export default function UpdateDialog({ update, onDismiss }: Props) {
   }
 
   return (
-    <div className="ff-modal-overlay" onClick={() => dismissable && onDismiss()}>
-      <div
-        className="ff-modal"
-        ref={dialog}
-        tabIndex={-1}
-        onClick={e => e.stopPropagation()}
-        onKeyDown={e => {
-          if (e.key !== "Escape" || !dismissable) return;
-          e.stopPropagation();
-          onDismiss();
-        }}
-      >
+    <dialog className="ff-modal-overlay" {...modal}>
+      <div className="ff-modal" onClick={e => e.stopPropagation()}>
         <div className="riven-modal-title">
           FrameForge {update.version} is available
         </div>
@@ -131,6 +119,6 @@ export default function UpdateDialog({ update, onDismiss }: Props) {
           )}
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }

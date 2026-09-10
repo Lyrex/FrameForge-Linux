@@ -22,16 +22,6 @@
   color: var(--text);
 }
 
-.riven-roll-count {
-  font-size: 11px;
-  font-weight: 700;
-  background: rgba(56,139,253,.15);
-  border: 1px solid var(--accent);
-  color: var(--accent);
-  padding: 1px 8px;
-  border-radius: 10px;
-}
-
 .riven-db-status {
   font-size: 10px;
   color: var(--muted);
@@ -162,24 +152,6 @@
   color: var(--green);
 }
 
-.riven-neg-btn.selected-neg {
-  background: rgba(248,81,73,.15);
-  border-color: var(--red);
-  color: var(--red);
-}
-
-/* ── Analysis result ── */
-.riven-result {
-  background: rgba(255,255,255,.03);
-  border: 1px solid rgba(48,54,61,.5);
-  border-radius: 8px;
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  flex-shrink: 0;
-}
-
 .riven-verdict {
   font-size: 16px;
   font-weight: 700;
@@ -303,7 +275,6 @@
   color: var(--text);
   min-width: 160px;
 }
-.riven-value-neg { color: var(--red); }
 .riven-value-input {
   width: 72px;
   background: rgba(0,0,0,.3);
@@ -315,7 +286,6 @@
   text-align: right;
 }
 .riven-value-input:focus { outline: none; border-color: var(--accent); }
-.riven-value-unit { font-size: 11px; color: var(--muted); width: 14px; }
 .riven-save-btn {
   background: rgba(56,139,253,.15);
   border: 1px solid rgba(56,139,253,.4);

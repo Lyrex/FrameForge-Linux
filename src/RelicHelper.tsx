@@ -4,7 +4,8 @@ import { HelpTip } from "./shared/HelpTip";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import { RELIC_FILTERS_DEFAULT } from "./constants/filters";
 import { RELIC_DROP_RATES, RELIC_REFINEMENT_LABELS, RELIC_REFINEMENT_ORDER } from "./constants/relics";
-import { warframeStatImageUrl } from "./constants/urls";
+import ItemImg from "./ItemImg";
+import { toggle, normalizeForWfm } from "./utils";
 import { TAURI_COMMANDS } from "./constants/tauri";
 import type { CatalogItem, InventoryItem } from "./types/items";
 import type { RelicFilters } from "./types/filters";
@@ -20,10 +21,6 @@ interface Props {
 }
 
 // ─── Module-level constants ───────────────────────────────────────────────────
-
-function toggle<T>(arr: T[], val: T): T[] {
-  return arr.includes(val) ? arr.filter(x => x !== val) : [...arr, val];
-}
 
 const RARITY_SORT: Record<string, number> = { Common: 0, Uncommon: 1, Rare: 2 };
 const RARITY_CSS:  Record<string, string> = { Common: "bronze", Uncommon: "silver", Rare: "gold" };
@@ -93,12 +90,10 @@ function parseDropData(raw: any): RelicDrop[] {
 
 // ─── Images ───────────────────────────────────────────────────────────────────
 
-function RelicImg({ src }: { src?: string }) {
-  const [failed, setFailed] = useState(false);
+function RelicImg({ imageName }: { imageName?: string }) {
   const base = { width: 44, height: 44, borderRadius: 6, flexShrink: 0 } as const;
-  if (!src || failed)
-    return <div style={{ ...base, background: "rgba(255,255,255,.06)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#8b949e" }}>R</div>;
-  return <img style={{ ...base, objectFit: "contain" }} src={src} alt="" loading="lazy" onError={() => setFailed(true)} />;
+  return <ItemImg imageName={imageName} size={44} className="" style={{ borderRadius: 6, objectFit: "contain" }}
+    fallback={<div style={{ ...base, background: "rgba(255,255,255,.06)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#8b949e" }}>R</div>} />;
 }
 
 const RARITY_BG: Record<string, string> = {
@@ -108,22 +103,11 @@ const RARITY_BG: Record<string, string> = {
 };
 
 function PartImg({ srcs, rarity }: { srcs: (string | undefined)[]; rarity?: string }) {
-  // Deduplicate so the same failing URL isn't retried
-  const valid = [...new Set(srcs.filter(Boolean) as string[])];
-  const [idx, setIdx] = useState(0);
   const base = { width: 40, height: 40, borderRadius: 4 } as const;
-  const src = valid[idx];
-  if (!src) {
-    const bg = rarity ? (RARITY_BG[rarity] ?? "rgba(255,255,255,.06)") : "rgba(255,255,255,.06)";
-    return <div style={{ ...base, background: bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: "rgba(255,255,255,.3)" }}>?</div>;
-  }
-  // key={src} forces React to unmount/remount the img when src changes,
-  // preventing the broken-image icon from persisting between attempts
-  return <img key={src} style={{ ...base, objectFit: "contain", display: "block" }} src={src} alt=""
-    onError={() => setIdx(i => i + 1)} />;
+  const bg = rarity ? (RARITY_BG[rarity] ?? "rgba(255,255,255,.06)") : "rgba(255,255,255,.06)";
+  return <ItemImg imageName={srcs} className="" style={{ ...base, objectFit: "contain", display: "block" }}
+    fallback={<div style={{ ...base, background: bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: "rgba(255,255,255,.3)" }}>?</div>} />;
 }
-
-const CDN = (name?: string) => name ? warframeStatImageUrl(name) : undefined;
 
 // ─── Reward box ───────────────────────────────────────────────────────────────
 
@@ -246,7 +230,7 @@ function RelicCard({ drop, catalogRelicByName, inventory, ownedPrimeNames, searc
   if (view === "icons") {
     return (
       <div className={`${cardClass} relic-card-icon-only`} title={`${drop.fullName} ×${total}`}>
-        <RelicImg src={CDN(intactCat?.image_name)} />
+        <RelicImg imageName={intactCat?.image_name} />
         <span className="relic-icon-count">×{total}</span>
       </div>
     );
@@ -258,7 +242,7 @@ function RelicCard({ drop, catalogRelicByName, inventory, ownedPrimeNames, searc
       .join(" ");
     return (
       <div className={`${cardClass} relic-card-row`}>
-        {view === "list" && <div className="relic-row-img"><RelicImg src={CDN(intactCat?.image_name)} /></div>}
+        {view === "list" && <div className="relic-row-img"><RelicImg imageName={intactCat?.image_name} /></div>}
         <div className="relic-row-name">{drop.fullName}</div>
         {intactCat?.vaulted && <span className="vault-badge vault-yes" style={{ fontSize: 9 }}>🔒</span>}
         <span className="relic-row-total">×{total}</span>
@@ -298,7 +282,7 @@ function RelicCard({ drop, catalogRelicByName, inventory, ownedPrimeNames, searc
     <div className={cardClass}>
       <div className="relic-card-left">
         <div className="relic-card-icon-row">
-          <RelicImg src={CDN(intactCat?.image_name)} />
+          <RelicImg imageName={intactCat?.image_name} />
           <span className="relic-total">×{total}</span>
           {colorblindMode && allComplete && <span className="relic-cb-relic-check" title="All rewards obtained">✓✓</span>}
         </div>
@@ -333,21 +317,21 @@ function RelicCard({ drop, catalogRelicByName, inventory, ownedPrimeNames, searc
 
           const imageSrcs: (string | undefined)[] = [
             // 1. Catalog item image (direct or parent-prime fallback from findCatalogItem)
-            CDN(imageItem?.image_name),
+            imageItem?.image_name,
             // 2. Parent prime warframe/weapon image
-            CDN(primeImageItem?.image_name),
+            primeImageItem?.image_name,
             // 3. Construct from catalog unique_name: "YareliPrimeBlueprint" → "YareliPrime.png"
             (() => {
               const seg = (catalogItem?.unique_name ?? "").split("/").pop() ?? "";
               const file = seg.replace(/Blueprint$/, "");
-              return file ? warframeStatImageUrl(`${file}.png`) : undefined;
+              return file ? `${file}.png` : undefined;
             })(),
             // 4. Construct from parent prime name: "Yareli Prime" → "YareliPrime.png"
-            primeName ? warframeStatImageUrl(`${primeName.replace(/\s+/g, "")}.png`) : undefined,
+            primeName ? `${primeName.replace(/\s+/g, "")}.png` : undefined,
             // 5. Strip "Blueprint" from item name: "Forma Blueprint" → "Forma.png"
-            warframeStatImageUrl(`${r.itemName.replace(" Blueprint", "").replace(/\s+/g, "")}.png`),
+            `${r.itemName.replace(" Blueprint", "").replace(/\s+/g, "")}.png`,
             // 6. Strip leading count prefix: "2X Forma" → "Forma.png"
-            warframeStatImageUrl(`${r.itemName.replace(/^\d+[xX]\s*/, "").replace(" Blueprint", "").replace(/\s+/g, "")}.png`),
+            `${r.itemName.replace(/^\d+[xX]\s*/, "").replace(" Blueprint", "").replace(/\s+/g, "")}.png`,
           ];
           // Gold: the complete parent prime item is built and in inventory
           // "Burston Prime Barrel" → find "Burston Prime" → check inventory by name
@@ -380,10 +364,6 @@ function RelicCard({ drop, catalogRelicByName, inventory, ownedPrimeNames, searc
 // ─── Planner ─────────────────────────────────────────────────────────────────
 
 type PlannerTier = keyof typeof RELIC_DROP_RATES;
-
-function wfmNorm(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
-}
 
 function computeEV(
   rewards: DropReward[],
@@ -435,7 +415,7 @@ function PlannerTab({
     invoke<WfmItem[]>(TAURI_COMMANDS.FETCH_WFM_ITEMS)
       .then(items => {
         const lookup = new Map<string, string>();
-        for (const w of items) lookup.set(wfmNorm(w.item_name), w.url_name);
+        for (const w of items) lookup.set(normalizeForWfm(w.item_name), w.url_name);
         return lookup;
       })
       .then(lookup => {
@@ -493,9 +473,9 @@ function PlannerTab({
             return cat?.ducats ?? 0;
           }
           // plat: lookup by slug or normalized name
-          const slug = platPrices.get(wfmNorm(r.itemName));
+          const slug = platPrices.get(normalizeForWfm(r.itemName));
           if (slug != null) return slug;
-          return platPrices.get(wfmNorm(r.itemName)) ?? 0;
+          return platPrices.get(normalizeForWfm(r.itemName)) ?? 0;
         });
 
         const evByTier = Object.fromEntries(

@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
-use std::io::{Cursor, Read};
 use tracing::{info, warn};
 
 use crate::cache::{self, Fetched};
@@ -516,33 +515,6 @@ fn strip_tags(s: &str) -> &str {
     } else {
         s.trim()
     }
-}
-
-/// Fetch the LZMA-compressed Warframe public export index and return a map of
-/// endpoint filename → full URL (e.g. "ExportRecipes_en.json!HASH" → full URL).
-#[allow(dead_code)]
-fn fetch_export_index() -> Result<Vec<String>, String> {
-    let index_url = "https://origin.warframe.com/PublicExport/index_en.txt.lzma";
-    let resp = ureq::get(index_url)
-        .header("User-Agent", "FrameForge/3.1.0")
-        .call()
-        .map_err(|e| format!("index fetch: {}", e))?;
-
-    let mut compressed = Vec::new();
-    resp.into_body().into_reader()
-        .read_to_end(&mut compressed)
-        .map_err(|e| format!("index read: {}", e))?;
-
-    // Decompress LZMA1 "alone" format (13-byte header + raw stream)
-    let mut decompressed = Vec::new();
-    lzma_rs::lzma_decompress(&mut Cursor::new(&compressed), &mut decompressed)
-        .map_err(|e| format!("lzma decompress: {}", e))?;
-
-    let text = String::from_utf8_lossy(&decompressed);
-    Ok(text.lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| l.trim().to_string())
-        .collect())
 }
 
 /// One entry from the recipe data: the blueprint consumed + raw ingredients + result count.

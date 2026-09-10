@@ -45,4 +45,3 @@
   row-gap: 12px;
 }
 .debug-table .btn-secondary { white-space: nowrap; text-align: center; }
-.debug-table-gap { grid-column: 1 / -1; height: 0; border-top: 1px solid rgba(48,54,61,.6); margin: 2px 0; }

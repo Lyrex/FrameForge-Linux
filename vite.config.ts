@@ -14,30 +14,6 @@ export default defineConfig(() => ({
     entries: ["src/**/*.{ts,tsx}"],
   },
 
-  build: {
-    // Use terser for more aggressive minification in production builds
-    minify: "terser" as const,
-    terserOptions: {
-      compress: {
-        drop_console: true,
-        drop_debugger: true,
-        passes: 2,
-      },
-      mangle: {
-        // Mangle top-level names (functions, classes, variables)
-        toplevel: true,
-        // Mangle property names that start with _ (private convention)
-        properties: {
-          regex: /^_/,
-        },
-      },
-      format: {
-        // Remove all comments from the output
-        comments: false,
-      },
-    },
-  },
-
   server: {
     port: 1420,
     strictPort: true,

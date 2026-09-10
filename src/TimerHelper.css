@@ -67,13 +67,6 @@
 }
 .timer-row:hover { background: rgba(255,255,255,.03); }
 
-.timer-block {
-  border-bottom: 1px solid rgba(48,54,61,.35);
-}
-.timer-block .timer-row {
-  border-bottom: none;
-}
-
 /* ── Star button ── */
 .timer-star {
   background: none;
@@ -100,23 +93,12 @@
   text-overflow: ellipsis;
 }
 
-.timer-state {
-  font-size: 11px;
-  font-weight: 600;
-  flex-shrink: 0;
-  padding: 1px 6px;
-  border-radius: 3px;
-  background: rgba(255,255,255,.07);
-  color: var(--muted);
-}
-
 /* State colour variants */
 .st-day    { color: #f0c040; background: rgba(240,192,64,.12); }
 .st-night  { color: #6eb6ff; background: rgba(110,182,255,.12); }
 .st-warm   { color: #ff8c5a; background: rgba(255,140,90,.12); }
 .st-cold   { color: #6eb6ff; background: rgba(110,182,255,.12); }
 .st-fass   { color: #ff6b4a; background: rgba(255,107,74,.12); }
-.st-vome   { color: #a8c8ff; background: rgba(168,200,255,.12); }
 .st-duviri   { color: #c084fc; background: rgba(192,132,252,.12); }
 .st-joy      { color: #f0c040; background: rgba(240,192,64,.12); }
 .st-anger    { color: #f87171; background: rgba(248,113,113,.12); }
@@ -147,23 +129,6 @@
   max-width: 130px;
 }
 
-/* ── Sublists (sortie/archon missions) ── */
-.timer-sublist {
-  padding: 0 12px 5px 36px;
-}
-
-.timer-subrow {
-  display: flex;
-  gap: 8px;
-  padding: 1px 0;
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.sub-node { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sub-type { flex-shrink: 0; color: var(--text); }
-.sub-mod  { flex-shrink: 0; color: #f0c040; font-size: 10px; }
-
 /* ── Fissures ── */
 .fissure-tabs {
   display: flex;
@@ -185,8 +150,6 @@
   background: rgba(255,255,255,.1);
   color: var(--text);
 }
-
-.timer-fissure { gap: 8px; }
 
 .fissure-tier {
   font-size: 11px;
@@ -288,31 +251,6 @@
 }
 
 .timer-inv-row.inv-owned .timer-inv-name { color: var(--green); }
-
-/* ── Inventory toggle button ── */
-.timer-inv-toggle {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--muted);
-  padding: 2px 4px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  border-radius: 3px;
-  transition: background .1s, color .1s;
-}
-.timer-inv-toggle svg { width: 10px; height: 6px; }
-.timer-inv-toggle:hover { background: rgba(255,255,255,.08); color: var(--text); }
-
-/* ── Inventory dropdown ── */
-.timer-inventory {
-  max-height: 240px;
-  overflow-y: auto;
-  padding: 2px 8px 6px 28px;
-  background: rgba(0,0,0,.18);
-  border-top: 1px solid rgba(48,54,61,.3);
-}
 
 .timer-inv-row {
   display: flex;
@@ -763,12 +701,6 @@
   border-left: 2px solid var(--accent);
 }
 
-/* ── Invasions ── */
-.timer-invasion {
-  border-bottom: 1px solid rgba(48,54,61,.35);
-  padding-bottom: 2px;
-}
-
 .invasion-bar-wrap {
   height: 3px;
   background: rgba(255,255,255,.08);
@@ -784,16 +716,6 @@
 }
 .invasion-att { color: #f85149; }
 .invasion-def { color: #6eb6ff; }
-
-.timer-fissure-node {
-  font-size: 11px;
-  color: var(--muted);
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
 /* ── News & Promotions tiles ── */
 .news-tile {

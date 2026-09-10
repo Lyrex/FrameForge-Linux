@@ -23,10 +23,6 @@ export function fmtMs(ms: number): string {
   return `${m}m ${s}s`;
 }
 
-export function fmtExpiry(expiry: string, now: number): string {
-  return fmtMs(new Date(expiry).getTime() - now);
-}
-
 function nextUtcMidnight(): string {
   const n = new Date();
   return new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate() + 1)).toISOString();

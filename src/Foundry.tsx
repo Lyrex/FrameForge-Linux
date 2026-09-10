@@ -1,10 +1,12 @@
-import { useState, useEffect, useMemo, useCallback, memo, startTransition, useRef, useContext } from "react";
+import { useState, useEffect, useMemo, useCallback, memo, startTransition, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ImgCacheDirContext } from "./ImgCacheDir";
+import ItemImg from "./ItemImg";
+import { useModal } from "./shared/useModal";
+import { fmt } from "./utils";
 import { HelpTip } from "./shared/HelpTip";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import { FOUNDRY_FILTERS_DEFAULT } from "./constants/filters";
-import { WARFRAME_WIKI_BASE, warframeStatImageUrl } from "./constants/urls";
+import { WARFRAME_WIKI_BASE } from "./constants/urls";
 import { TAURI_COMMANDS } from "./constants/tauri";
 import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeComponentStatus, RecipeMap, RelicDropMap } from "./types/items";
 import type { FoundryFilters } from "./types/filters";
@@ -26,7 +28,6 @@ interface Props {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function fmt(n: number) { return n.toLocaleString(); }
 
 function collectNeeds(
   nodes: RecipeComponent[],
@@ -177,33 +178,6 @@ function ownsRelicVariant(relicUnique: string, inventory: Record<string, Invento
   return RELIC_SUFFIXES.some(s => (inventory[`${base}${s}`]?.quantity ?? 0) > 0);
 }
 
-// ─── Item image ───────────────────────────────────────────────────────────────
-
-function ItemImg({ imageName, category, size = 40 }: { imageName?: string; category: string; size?: number }) {
-  const baseUrl = useContext(ImgCacheDirContext);
-  const [localFailed, setLocalFailed] = useState(false);
-  const [cdnFailed,   setCdnFailed]   = useState(false);
-  const ref = useRef<HTMLImageElement>(null);
-  const style = { width: size, height: size, flexShrink: 0 };
-
-  useEffect(() => {
-    if (ref.current?.complete) ref.current.classList.add("img-loaded");
-  }, []);
-
-  if (!imageName || cdnFailed)
-    return <span className="img-fallback" style={{ ...style, fontSize: size * 0.35 }}>{category[0].toUpperCase()}</span>;
-  const useLocal = Boolean(baseUrl) && !localFailed;
-  const src = useLocal
-    ? `${baseUrl}/${imageName}`
-    : warframeStatImageUrl(imageName);
-  return (
-    <img ref={ref} className="img" style={style} src={src}
-      alt="" loading="lazy"
-      onError={() => useLocal ? setLocalFailed(true) : setCdnFailed(true)}
-      onLoad={() => ref.current?.classList.add("img-loaded")} />
-  );
-}
-
 // ─── Comp row (used inside modal tree) ───────────────────────────────────────
 
 function CompRow({ comp, inventory, relicDrops, relicNames }: {
@@ -295,8 +269,9 @@ function RecipeModal({ item, recipe, inventory, isTracked, onTrack, onClose, cra
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [recipe, inventory]);
 
+  const modal = useModal(onClose);
   return (
-    <div className="craft-modal-overlay" onClick={onClose}>
+    <dialog className="craft-modal-overlay" {...modal}>
       <div className="craft-modal" onClick={e => e.stopPropagation()}>
 
         {/* Header */}
@@ -364,7 +339,7 @@ function RecipeModal({ item, recipe, inventory, isTracked, onTrack, onClose, cra
           </>
         )}
       </div>
-    </div>
+    </dialog>
   );
 }
 
@@ -700,14 +675,6 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
   }, [craftable]);
 
   const modalRecipe = modalItem ? (recipes.get(modalItem.unique_name) ?? null) : null;
-
-  // Close modal on Escape
-  useEffect(() => {
-    if (!modalItem) return;
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") setModalItem(null); };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [modalItem]);
 
   return (
     <div className="foundry">

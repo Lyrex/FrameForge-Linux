@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import InventoryGrid from "./InventoryGrid";
 import { ViewToggle } from "../shared/ViewToggle";
+import { useModal } from "../shared/useModal";
 import type { ViewMode } from "../types/ui";
 import "./InventoryBatchPreview.css";
 
@@ -24,9 +25,8 @@ export default function InventoryBatchPreview({ onClose }: InventoryBatchPreview
   const [view, setView] = useState<ViewMode>("cards");
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
   const [previewState, setPreviewState] = useState<PreviewState>("all");
-  const dialogRef = useRef<HTMLElement>(null);
+  const modal = useModal(onClose);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
   const now = Math.floor(Date.now() / 1000);
   const expired = previewState === "expired";
   const changeTimestamp = now - (expired ? 301 : 0);
@@ -45,38 +45,11 @@ export default function InventoryBatchPreview({ onClose }: InventoryBatchPreview
     ["preview-mod-gained", [{ rank: 3, delta: 3, timestamp: changeTimestamp }]],
   ]);
 
-  useEffect(() => {
-    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    closeButtonRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab" || !dialogRef.current) return;
-      const focusable = dialogRef.current.querySelectorAll<HTMLElement>("button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])");
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      previousFocusRef.current?.focus();
-    };
-  }, [onClose]);
+  useEffect(() => closeButtonRef.current?.focus(), []);
 
   return (
-    <div className="inventory-preview-overlay" onClick={onClose}>
-      <section ref={dialogRef} className="inventory-preview" onClick={event => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Inventory change preview">
+    <dialog className="inventory-preview-overlay" aria-label="Inventory change preview" {...modal}>
+      <section className="inventory-preview" onClick={event => event.stopPropagation()}>
         <header className="inventory-preview-header">
           <div>
             <strong>Incoming inventory batch preview</strong>
@@ -125,6 +98,6 @@ export default function InventoryBatchPreview({ onClose }: InventoryBatchPreview
           })}
         />
       </section>
-    </div>
+    </dialog>
   );
 }

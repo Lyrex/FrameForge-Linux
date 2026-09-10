@@ -17,14 +17,6 @@ export interface SavedApiInventory extends Record<string, unknown> {
   consumedSuits: string[];
 }
 
-export type SaveApiInventoryArgs = SavedApiInventory;
-
-export interface WarframeInventoryRequest extends Record<string, unknown> {
-  accountId: WarframeCredentials[0];
-  nonce: WarframeCredentials[1];
-  steamId: WarframeCredentials[2];
-}
-
 export interface OverlayWindowBounds extends Record<string, unknown> {
   x: number;
   y: number;
@@ -35,11 +27,6 @@ export interface OverlayWindowBounds extends Record<string, unknown> {
 export interface InventoryRewardPayload extends Record<string, unknown> {
   path: string;
   qty: number;
-}
-
-export interface ConsoleLoginSuccessPayload extends Record<string, unknown> {
-  accountId: string;
-  nonce: string;
 }
 
 export interface OcrRivenScreenResult {

@@ -1,4 +1,4 @@
-use crate::arbitration::{EndReason, Event, MissionType, Parser as ArbitrationParser, Run, Vitus};
+use crate::arbitration::{EndReason, Event, MissionType, Parser as ArbitrationParser, Run};
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -391,11 +391,6 @@ pub fn get_trades(conn: &Connection) -> Result<Vec<Trade>> {
     Ok(rows)
 }
 
-pub fn delete_trade(conn: &Connection, id: i64) -> Result<()> {
-    conn.execute("DELETE FROM trades WHERE id = ?1", params![id])?;
-    Ok(())
-}
-
 pub fn add_quantity_change(
     conn: &Connection,
     unique_name: &str,
@@ -469,20 +464,6 @@ fn stored_timestamp(t: chrono::DateTime<chrono::Utc>) -> String {
     t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-/// Puts a filter bound in the same shape as the column. A bare `YYYY-MM-DD`
-/// is taken as the whole day, which is what a date picker means by it and
-/// what a plain text comparison would otherwise get wrong at the upper end.
-fn bound(raw: &str, day_end: bool) -> String {
-    if let Ok(t) = chrono::DateTime::parse_from_rfc3339(raw) {
-        return stored_timestamp(t.with_timezone(&chrono::Utc));
-    }
-    if chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").is_ok() {
-        let time = if day_end { "T23:59:59.999Z" } else { "T00:00:00.000Z" };
-        return format!("{raw}{time}");
-    }
-    raw.to_string()
-}
-
 /// Returns false when the database already had this run.
 pub fn store_arbitration_run(conn: &Connection, run: &Run) -> Result<bool> {
     let changed = conn.execute(
@@ -517,75 +498,6 @@ pub fn store_arbitration_run(conn: &Connection, run: &Run) -> Result<bool> {
         ],
     )?;
     Ok(changed > 0)
-}
-
-/// `from` and `to` accept either a full RFC-3339 timestamp or a bare
-/// `YYYY-MM-DD`; both are normalised to the column's own form before the
-/// comparison. Runs from a log with no boot-time header have no wall clock and
-/// so fall outside any date range.
-#[derive(Debug, Default, Clone)]
-pub struct RunQuery {
-    pub from: Option<String>,
-    pub to: Option<String>,
-    pub node: Option<String>,
-    pub mission_type: Option<String>,
-}
-
-// TODO: expose over IPC once the run history view grows date/node/mission filters.
-#[allow(dead_code)]
-pub fn get_arbitration_runs(conn: &Connection, query: &RunQuery) -> Result<Vec<Run>> {
-    let mut stmt = conn.prepare(
-        "SELECT started_at, run_start_sec, run_end_sec, mission_name, node,
-                sol_node, mission_type, mission_type_raw, end_reason,
-                duration_sec, rotations, waves, waves_per_rotation, kills,
-                drone_kills, host_telemetry, vitus_mean, vitus_std,
-                vitus_per_minute
-         FROM arbitration_runs
-         WHERE deleted = 0
-           AND (?1 IS NULL OR started_at >= ?1)
-           AND (?2 IS NULL OR started_at <= ?2)
-           AND (?3 IS NULL OR node = ?3)
-           AND (?4 IS NULL OR mission_type = ?4)
-         ORDER BY started_at, run_start_sec",
-    )?;
-    let from = query.from.as_deref().map(|raw| bound(raw, false));
-    let to = query.to.as_deref().map(|raw| bound(raw, true));
-    let rows = stmt
-        .query_map(
-            params![from, to, query.node, query.mission_type],
-            |row| {
-                let started_at: Option<String> = row.get(0)?;
-                let mission_type: String = row.get(6)?;
-                let end_reason: String = row.get(8)?;
-                Ok(Run {
-                    started_at: started_at
-                        .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok())
-                        .map(|t| t.with_timezone(&chrono::Utc)),
-                    run_start_sec: row.get(1)?,
-                    run_end_sec: row.get(2)?,
-                    mission_name: row.get(3)?,
-                    node: row.get(4)?,
-                    sol_node: row.get(5)?,
-                    mission_type: MissionType::from_stored(&mission_type),
-                    mission_type_raw: row.get(7)?,
-                    end_reason: EndReason::from_stored(&end_reason),
-                    duration_sec: row.get(9)?,
-                    rotations: row.get(10)?,
-                    waves: row.get(11)?,
-                    waves_per_rotation: row.get(12)?,
-                    kills: row.get(13)?,
-                    drone_kills: row.get(14)?,
-                    host_telemetry: row.get(15)?,
-                    vitus: Vitus {
-                        mean: row.get(16)?,
-                        std: row.get(17)?,
-                        per_minute: row.get(18)?,
-                    },
-                })
-            },
-        )?
-        .collect::<Result<Vec<_>>>()?;
-    Ok(rows)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1054,8 +966,48 @@ mod arbitration_storage_tests {
         stored
     }
 
-    fn stored(conn: &Connection) -> Vec<crate::arbitration::Run> {
-        get_arbitration_runs(conn, &RunQuery::default()).expect("read succeeds")
+    fn stored(conn: &Connection) -> Vec<Run> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT started_at, run_start_sec, run_end_sec, mission_name, node,
+                        sol_node, mission_type, mission_type_raw, end_reason,
+                        duration_sec, rotations, waves, waves_per_rotation, kills,
+                        drone_kills, host_telemetry, vitus_mean, vitus_std,
+                        vitus_per_minute
+                 FROM arbitration_runs
+                 WHERE deleted = 0
+                 ORDER BY started_at, run_start_sec",
+            )
+            .expect("statement compiles");
+        stmt.query_map([], |row| {
+            let started_at: Option<String> = row.get(0)?;
+            let mission_type: String = row.get(6)?;
+            let end_reason: String = row.get(8)?;
+            Ok(Run {
+                started_at: started_at
+                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok())
+                    .map(|t| t.with_timezone(&chrono::Utc)),
+                run_start_sec: row.get(1)?,
+                run_end_sec: row.get(2)?,
+                mission_name: row.get(3)?,
+                node: row.get(4)?,
+                sol_node: row.get(5)?,
+                mission_type: MissionType::from_stored(&mission_type),
+                mission_type_raw: row.get(7)?,
+                end_reason: EndReason::from_stored(&end_reason),
+                duration_sec: row.get(9)?,
+                rotations: row.get(10)?,
+                waves: row.get(11)?,
+                waves_per_rotation: row.get(12)?,
+                kills: row.get(13)?,
+                host_telemetry: row.get(15)?,
+                drone_kills: row.get(14)?,
+                vitus: crate::arbitration::Vitus { mean: row.get(16)?, std: row.get(17)?, per_minute: row.get(18)? },
+            })
+        })
+        .expect("query runs")
+        .collect::<Result<Vec<_>>>()
+        .expect("rows decode")
     }
 
     #[test]
@@ -1186,72 +1138,6 @@ mod arbitration_storage_tests {
 
         assert_eq!(watch(&conn, SURVIVAL, 4096), 0);
         assert_eq!(stored(&conn).len(), 1);
-    }
-
-    #[test]
-    fn runs_are_queryable_by_date_range_node_and_mission_type() {
-        let conn = db("query");
-        watch(&conn, DEFENSE, 4096);
-        watch(&conn, SURVIVAL, 4096);
-        assert_eq!(stored(&conn).len(), 2);
-
-        let query = |q: RunQuery| {
-            get_arbitration_runs(&conn, &q)
-                .expect("read succeeds")
-                .into_iter()
-                .map(|r| r.node)
-                .collect::<Vec<_>>()
-        };
-
-        assert_eq!(
-            query(RunQuery { node: Some("Mot (Void)".into()), ..Default::default() }),
-            vec!["Mot (Void)"]
-        );
-        assert_eq!(
-            query(RunQuery { mission_type: Some("defense".into()), ..Default::default() }),
-            vec!["Stöfler (Lua)"]
-        );
-
-        let earliest = stored(&conn)
-            .iter()
-            .map(|r| r.started_at.expect("the fixtures carry a boot header"))
-            .min()
-            .expect("two runs are stored");
-        assert_eq!(
-            query(RunQuery { from: Some(stored_timestamp(earliest)), ..Default::default() }).len(),
-            2
-        );
-        assert!(query(RunQuery { to: Some("2000-01-01T00:00:00Z".into()), ..Default::default() }).is_empty());
-    }
-
-    /// A bound written the way anything but chrono writes it — `Z` rather than
-    /// `+00:00`, or a bare date — has to select the same rows. Compared as raw
-    /// text these forms sort against each other, not with each other.
-    #[test]
-    fn a_bound_in_any_iso_form_selects_the_same_runs() {
-        let conn = db("bounds");
-        watch(&conn, DEFENSE, 4096);
-        let run = stored(&conn).remove(0);
-        let at = run.started_at.expect("the fixture carries a boot header");
-        let day = at.format("%Y-%m-%d").to_string();
-
-        let count = |q: RunQuery| get_arbitration_runs(&conn, &q).expect("read succeeds").len();
-
-        for from in [
-            at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            at.to_rfc3339(),
-            day.clone(),
-        ] {
-            assert_eq!(count(RunQuery { from: Some(from.clone()), ..Default::default() }), 1, "from {from}");
-        }
-        // Upper bounds are where the raw text comparison goes wrong: `Z` sorts
-        // above `+00:00`, and a bare date sorts below every time on that date.
-        assert_eq!(count(RunQuery { to: Some(at.to_rfc3339()), ..Default::default() }), 1);
-        assert_eq!(count(RunQuery { to: Some(day.clone()), ..Default::default() }), 1);
-        assert_eq!(
-            count(RunQuery { from: Some(day.clone()), to: Some(day), ..Default::default() }),
-            1
-        );
     }
 
     /// The parser has already consumed the lines behind a queued run, so a

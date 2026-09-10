@@ -1,6 +1,5 @@
-import { useContext, useState, useRef, useEffect } from "react";
-import { ImgCacheDirContext } from "./ImgCacheDir";
-import { warframeStatImageUrl } from "./constants/urls";
+import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
+import { cdnUrl, useImgLadder } from "./ImgCacheDir";
 
 function BlueprintIcon() {
   return (
@@ -17,28 +16,34 @@ function BlueprintIcon() {
   );
 }
 
-export default function ItemImg({ imageName, category, size = 32 }: { imageName?: string; category: string; size?: number }) {
-  const baseUrl = useContext(ImgCacheDirContext);
-  const [localFailed, setLocalFailed] = useState(false);
-  const [failed, setFailed] = useState(false);
+interface Props {
+  imageName?: string | (string | undefined)[];
+  category?: string;
+  size?: number;
+  className?: string;
+  style?: CSSProperties;
+  fallback?: ReactNode;
+}
+
+const toUrl = (n?: string) => n?.startsWith("http") || n?.startsWith("/") ? n : cdnUrl(n);
+
+export default function ItemImg({ imageName, category = "?", size, className = "img", style, fallback }: Props) {
+  const { src, onError } = useImgLadder((Array.isArray(imageName) ? imageName : [imageName]).map(toUrl));
   const ref = useRef<HTMLImageElement>(null);
-  const style = { width: size, height: size, flexShrink: 0 as const };
+  const box = size === undefined ? style : { width: size, height: size, flexShrink: 0 as const, ...style };
 
   useEffect(() => {
     if (ref.current?.complete) ref.current.classList.add("img-loaded");
-  }, []);
+  }, [src]);
 
-  if (!imageName || failed) {
+  if (!src) {
+    if (fallback !== undefined) return fallback;
     if (category === "Blueprints") return <BlueprintIcon />;
-    return <span className="img-fallback" style={{ ...style, fontSize: size * 0.35 }}>{category[0].toUpperCase()}</span>;
+    return <span className="img-fallback" style={{ ...box, fontSize: size && size * 0.35 }}>{category[0].toUpperCase()}</span>;
   }
-  if (imageName.startsWith("http") || imageName.startsWith("/")) {
-    return <img ref={ref} className="img" style={style} src={imageName} alt="" loading="lazy" onError={() => setFailed(true)} onLoad={() => ref.current?.classList.add("img-loaded")} />;
-  }
-  const useLocal = Boolean(baseUrl) && !localFailed;
-  const src = useLocal ? `${baseUrl}/${imageName}` : warframeStatImageUrl(imageName);
+  // key remounts the element per candidate so a broken-image icon never lingers.
   return (
-    <img ref={ref} className="img" style={style} src={src} alt="" loading="lazy"
-      onError={() => useLocal ? setLocalFailed(true) : setFailed(true)} onLoad={() => ref.current?.classList.add("img-loaded")} />
+    <img key={src} ref={ref} className={className} style={box} src={src} alt="" loading="lazy"
+      onError={onError} onLoad={() => ref.current?.classList.add("img-loaded")} />
   );
 }

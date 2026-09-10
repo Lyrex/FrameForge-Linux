@@ -1,5 +1,5 @@
+import type { ClockFormat } from "../lib/clockFormat";
 import type {
-  ClockFormat,
   FoundryPageSize,
   RelicOverlayPriority,
   RelicPickLines,
