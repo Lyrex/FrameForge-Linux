@@ -2,14 +2,11 @@ import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ALL_STATS, verdictColor } from "./rivenTypes";
+import { PlatIcon } from "../shared/icons";
 import type { AuctionQuery, GradedAuction, GradedStat } from "./rivenTypes";
 import "./RivenSearch.css";
 
 const POLARITIES = ["madurai", "vazarin", "naramon"];
-
-function PlatIcon({ size = 12 }: { size?: number }) {
-  return <img src="/platinum.webp" alt="plat" width={size} height={size} style={{ objectFit: "contain", flexShrink: 0 }} />;
-}
 
 function StatRow({ stat }: { stat: GradedStat }) {
   return (
@@ -201,7 +198,7 @@ export default function RivenSearch() {
                   </div>
 
                   <div className="riven-card-meta">
-                    {a.buyout_price !== null && <span className="rs-price"><PlatIcon />{a.buyout_price} buyout</span>}
+                    {a.buyout_price !== null && <span className="rs-price"><PlatIcon size={12} />{a.buyout_price} buyout</span>}
                     {a.starting_price !== null && <span>start {a.starting_price}</span>}
                     {a.top_bid !== null && <span>top bid {a.top_bid}</span>}
                     <span>{a.seller_name} <span className={`rs-dot rs-dot-${a.seller_status}`} />{a.seller_status}</span>

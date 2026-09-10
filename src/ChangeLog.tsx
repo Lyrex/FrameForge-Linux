@@ -3,8 +3,8 @@ import ItemImg from "./ItemImg";
 import SearchBar from "./shared/SearchBar";
 import { useContextMenu, CtxMenu } from "./shared/CtxMenu";
 import { openWiki, copyWikiLink } from "./lib/wiki";
-import { formatUnixTime } from "./lib/formatters";
-import type { ClockFormat } from "./types/settings";
+import { fmtClock, type ClockFormat } from "./lib/clockFormat";
+import { fmt } from "./utils";
 import type { ChangeLogEntry } from "./types/inventory";
 import "./ChangeLog.css";
 
@@ -42,7 +42,6 @@ interface ChangeLogProps {
   lastScanAt: number | null;
   catalog: ChangeLogCatalogItem[];
   clockFormat: ClockFormat;
-  systemLocale: string;
   onItemClick: (uniqueName: string) => void;
   onChangeLogClick: () => void;
   onCategoryClick: (category: string) => void;
@@ -58,19 +57,17 @@ function getLatestChangeBatch(changes: ChangeLogEntry[]) {
   return batch;
 }
 
-function fmt(n: number) { return n.toLocaleString(); }
 function deltaText(d: number) { return fmt(Math.abs(d)); }
 function changeKey(change: ChangeLogEntry) {
   return `${change.id}:${change.unique_name}:${change.timestamp}`;
 }
 
 function ChangeRow({
-  change, item, clockFormat, systemLocale, onItemClick, onCategoryClick, onFeedExpand, onContextMenu, timeBreak = false, feed = false,
+  change, item, clockFormat, onItemClick, onCategoryClick, onFeedExpand, onContextMenu, timeBreak = false, feed = false,
 }: {
   change: ChangeLogEntry;
   item?: ChangeLogCatalogItem;
   clockFormat: ChangeLogProps["clockFormat"];
-  systemLocale: string;
   onItemClick: () => void;
   onCategoryClick: (category: string) => void;
   onFeedExpand?: () => void;
@@ -86,7 +83,7 @@ function ChangeRow({
       onContextMenu={onContextMenu}
     >
       {onFeedExpand && <button className="log-feed-open" onClick={onFeedExpand} aria-label="Open change log" />}
-      <span className="log-time">{formatUnixTime(change.timestamp, clockFormat, systemLocale)}</span>
+      <span className="log-time">{fmtClock(change.timestamp, clockFormat)}</span>
       <div className="inv-row-icon">
         <ItemImg imageName={item?.image_name} category={category} size={20} />
       </div>
@@ -108,7 +105,7 @@ function ChangeRow({
 
 function ChangeLogHeader({
   expanded, showArrival, arrivalToken, positiveChanges, negativeChanges, lastScanAt,
-  clockFormat, systemLocale, onExpandedChange, onChangeLogClick,
+  clockFormat, onExpandedChange, onChangeLogClick,
 }: {
   expanded: boolean;
   showArrival: boolean;
@@ -117,7 +114,6 @@ function ChangeLogHeader({
   negativeChanges: number;
   lastScanAt: number | null;
   clockFormat: ChangeLogProps["clockFormat"];
-  systemLocale: string;
   onExpandedChange: (expanded: boolean) => void;
   onChangeLogClick: () => void;
 }) {
@@ -129,7 +125,7 @@ function ChangeLogHeader({
         {negativeChanges > 0 && <span className="log-negative">-{negativeChanges}</span>}
       </span>}
       <span className="log-status-divider" aria-hidden="true">·</span>
-      <span className="log-last-scan">last scan {lastScanAt == null ? "not yet" : formatUnixTime(lastScanAt, clockFormat, systemLocale)}</span>
+      <span className="log-last-scan">last scan {lastScanAt == null ? "not yet" : fmtClock(lastScanAt, clockFormat)}</span>
     </div>
   );
 }
@@ -186,7 +182,7 @@ function ChangeLogResizeHandle({ height, onHeightChange }: { height: number; onH
 }
 
 export default function ChangeLog({
-  changes, catalog, clockFormat, systemLocale,
+  changes, catalog, clockFormat,
   arrivalToken, lastScanAt, onItemClick, onChangeLogClick, onCategoryClick,
 }: ChangeLogProps) {
   const [expanded, onExpandedChange] = useState(false);
@@ -279,7 +275,6 @@ export default function ChangeLog({
         negativeChanges={negativeChanges}
         lastScanAt={lastScanAt}
         clockFormat={clockFormat}
-        systemLocale={systemLocale}
         onExpandedChange={onExpandedChange}
         onChangeLogClick={onChangeLogClick}
       />
@@ -291,7 +286,6 @@ export default function ChangeLog({
           change={feedChange}
           item={feedItem}
           clockFormat={clockFormat}
-          systemLocale={systemLocale}
           onItemClick={() => onItemClick(feedChange.unique_name)}
           onCategoryClick={onCategoryClick}
           onFeedExpand={() => onExpandedChange(true)}
@@ -319,7 +313,6 @@ export default function ChangeLog({
                   change={change}
                   item={item}
                   clockFormat={clockFormat}
-                  systemLocale={systemLocale}
                   onItemClick={() => onItemClick(change.unique_name)}
                   onCategoryClick={onCategoryClick}
                   onContextMenu={handleContextMenu}

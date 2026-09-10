@@ -1836,3 +1836,13 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .relic-text-reward.relic-rarity-rare { color: #f0c040; }
 .relic-text-reward.relic-rarity-uncommon { color: #c0c0c0; }
 .relic-text-reward.relic-rarity-common { color: var(--muted); }
+
+/* The overlay class draws the full-screen box; the dialog only supplies the top layer. */
+dialog { border: 0; padding: 0; width: auto; height: auto; max-width: none; max-height: none; background: transparent; color: inherit; }
+dialog::backdrop { background: transparent; }
+
+.ctx-menu { position: fixed; z-index: 999; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; min-width: 160px; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+.ctx-menu:hover { border-color: rgba(56,139,253,.5); }
+.ctx-menu-sep { height: 1px; background: var(--border); }
+.ctx-menu-item { display: block; width: 100%; text-align: left; background: none; border: none; padding: 6px 14px; color: var(--text); cursor: default; white-space: nowrap; }
+.ctx-menu-item:hover { background: rgba(56,139,253,.15); }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { WorldState } from "./types/worldstate";
 
@@ -14,11 +14,11 @@ type Snapshot = { worldState: WorldState | null; error: string };
 let current: Snapshot = { worldState: null, error: "" };
 let inFlight: Promise<void> | null = null;
 let timer: ReturnType<typeof setInterval> | null = null;
-const subscribers = new Set<(s: Snapshot) => void>();
+const subscribers = new Set<() => void>();
 
 function publish(next: Snapshot) {
   current = next;
-  for (const notify of subscribers) notify(next);
+  for (const notify of subscribers) notify();
 }
 
 function fetchOnce(): Promise<void> {
@@ -29,25 +29,22 @@ function fetchOnce(): Promise<void> {
   return inFlight;
 }
 
-export function useWorldState(): Snapshot & { refresh: () => void } {
-  const [snapshot, setSnapshot] = useState(current);
-
-  useEffect(() => {
-    subscribers.add(setSnapshot);
-    if (subscribers.size === 1) {
-      fetchOnce();
-      timer = setInterval(fetchOnce, POLL_MS);
-    } else {
-      setSnapshot(current);
+function subscribe(notify: () => void) {
+  subscribers.add(notify);
+  if (subscribers.size === 1) {
+    fetchOnce();
+    timer = setInterval(fetchOnce, POLL_MS);
+  }
+  return () => {
+    subscribers.delete(notify);
+    if (subscribers.size === 0 && timer) {
+      clearInterval(timer);
+      timer = null;
     }
-    return () => {
-      subscribers.delete(setSnapshot);
-      if (subscribers.size === 0 && timer) {
-        clearInterval(timer);
-        timer = null;
-      }
-    };
-  }, []);
+  };
+}
 
+export function useWorldState(): Snapshot & { refresh: () => void } {
+  const snapshot = useSyncExternalStore(subscribe, () => current);
   return { ...snapshot, refresh: fetchOnce };
 }

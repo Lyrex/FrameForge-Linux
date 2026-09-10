@@ -17,12 +17,12 @@ const RANGES: { label: string; value: number | "all" }[] = [
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const fmtRate = (r: number | null) => (r === null ? "—" : r.toFixed(2));
-const fmtDate = (iso: string | null, format: ClockFormat, locale: string) => {
+const fmtDate = (iso: string | null, format: ClockFormat) => {
   if (iso === null) return "unknown time";
   const when = new Date(iso);
   // The month name stays English; only the time follows the hour format.
   const date = when.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  return `${date}, ${fmtClock(when.getTime() / 1000, format, locale)}`;
+  return `${date}, ${fmtClock(when.getTime() / 1000, format)}`;
 };
 const endLabel: Record<Exclude<RunRecord["end_reason"], "mission_end">, string> = {
   aborted: "aborted", new_mission: "left early", unterminated: "unfinished",
@@ -50,7 +50,7 @@ function BreakdownTable({ label, rows, name }: { label: string; rows: Breakdown[
 
 // ── Run history tab ────────────────────────────────────────────────────────────
 
-export default function ArbitrationHistory({ clockFormat, systemLocale }: { clockFormat: ClockFormat; systemLocale: string }) {
+export default function ArbitrationHistory({ clockFormat }: { clockFormat: ClockFormat }) {
   const [runs, setRuns] = useState<RunRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>({ days: 30, missionType: "all" });
@@ -153,7 +153,7 @@ export default function ArbitrationHistory({ clockFormat, systemLocale }: { cloc
       <div className="arb-runs">
         {shown.map(run => (
           <div className={`arb-run${completed(run) ? "" : " arb-run-incomplete"}`} key={run.uid}>
-            <span className="arb-run-when">{fmtDate(run.started_at, clockFormat, systemLocale)}</span>
+            <span className="arb-run-when">{fmtDate(run.started_at, clockFormat)}</span>
             <span className="arb-run-main">
               <span className="timer-name"><TierBadge tier={run.tier} />{run.node}</span>
               <span className="arb-muted">

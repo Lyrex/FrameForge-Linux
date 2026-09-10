@@ -101,7 +101,6 @@ import HeaderActions from "./header/HeaderActions";
 import ErrorBoundary from "./shared/ErrorBoundary";
 import HeaderStatusBadges from "./header/HeaderStatusBadges";
 import ConnectionStatusChip from "./header/ConnectionStatusChip";
-import KeepMountedWhenHidden from "./KeepMountedWhenHidden";
 import { INVENTORY_FILTERS_DEFAULT } from "./constants/filters";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import {
@@ -124,7 +123,8 @@ import type { ViewMode } from "./types/ui";
 import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, QuantityMap } from "./types/items";
 import type { ChangeLogEntry, InventoryUpdate, ModCopy } from "./types/inventory";
 import type { RivenAnalysis, RivenAnalysisUpdate } from "./types/rivens";
-import type { ClockFormat, FissureWatch, FoundryPageSize, RelicOverlayPriority, RelicPickLines, RelicPickPriority, RelicRefinement, SettingsSnapshot } from "./types/settings";
+import type { ClockFormat } from "./lib/clockFormat";
+import type { FissureWatch, FoundryPageSize, RelicOverlayPriority, RelicPickLines, RelicPickPriority, RelicRefinement, SettingsSnapshot } from "./types/settings";
 import type { SeenFissures } from "./types/worldstate";
 import type { TradeCompletedEvent } from "./types/trades";
 import type { AddTradeArgs, AnalyzeRivenArgs, BlobStatusPayload, InventoryRewardPayload, ItemListStatus, OcrRivenScreenResult, OverlayWindowBounds, RelicRewardsPayload, SettingsFile, SettingsPatch, WarframeWindowRect, WfmCredentials, WfmSession } from "./types/tauri";
@@ -141,7 +141,6 @@ const IS_MODULAR       = _params.has("modular")      || _hash === "#modular"    
 const IS_RIVEN_OVERLAY      = _params.has("rivenoverlay")      || _hash === "#rivenoverlay"      || _winLabel === "riven-overlay";
 const IS_RELIC_PICK_OVERLAY = _params.has("relicpickoverlay") || _hash === "#relicpickoverlay" || _winLabel === "relic-pick-overlay";
 const IS_ARBITRATION_OVERLAY = _params.has("arbitrationoverlay") || _hash === "#arbitrationoverlay" || _winLabel === "arbitration-overlay";
-const IS_OVERLAY_TEST       = _params.has("overlaytest")       || _hash === "#overlaytest"       || _winLabel === "overlay-test";
 const IS_ANY_OVERLAY = IS_OVERLAY || IS_MODULAR || IS_RIVEN_OVERLAY || IS_RELIC_PICK_OVERLAY || IS_ARBITRATION_OVERLAY;
 
 // Overlay windows return from the router before any hook can run, which rules
@@ -177,41 +176,7 @@ const CATEGORIES = [
 
 // RelicAndRivenTab is kept but now just shows RelicHelper — Rivens moved to own tab
 
-// ── Isolated overlay test page ────────────────────────────────────────────────
-// Rendered when window URL contains ?overlaytest.
-// No data loading, no events — pure window-creation smoke test.
-function OverlayTestPage() {
-  useEffect(() => {
-    [document.documentElement, document.body, document.getElementById('root')]
-      .forEach(el => el?.style.setProperty('background', 'transparent', 'important'));
-  }, []);
-
-  return (
-    <div style={{
-      width: '100vw', height: '100vh', boxSizing: 'border-box',
-      background: '#00cc55',
-      border: '4px solid #00ff88',
-      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-      gap: 12, fontFamily: 'sans-serif', color: '#fff',
-    }}>
-      <div style={{ fontSize: 22, fontWeight: 700, textShadow: '0 2px 6px #000' }}>
-        FrameForge Overlay Test
-      </div>
-      <div style={{ fontSize: 13, opacity: 0.85 }}>If you see green: window + React are working</div>
-      <button
-        onClick={() => getCurrentWindow().close().catch(() => {})}
-        style={{ marginTop: 8, padding: '8px 24px', cursor: 'pointer', fontSize: 14,
-          background: '#00ff88', color: '#000', border: 'none', borderRadius: 6, fontWeight: 700 }}
-      >
-        Close
-      </button>
-    </div>
-  );
-}
-
 export default function App() {
-  // Isolated overlay test — no data, no events, just proves the window appears.
-  if (IS_OVERLAY_TEST) return <OverlayTestPage />;
   // If we're the overlay window, render only the overlay UI
   if (IS_OVERLAY) return <Overlay />;
   if (IS_RIVEN_OVERLAY) return <RivenOverlayWindow />;
@@ -230,21 +195,8 @@ export default function App() {
   const [masteryRank, setMasteryRank] = useState<number | null>(null);
   const [masteryData, setMasteryData] = useState<Record<string, number>>({});
   const [playerName, setPlayerName] = useState<string | null>(null);
-  const [memoryProbing, setMemoryProbing] = useState(false);
   const [poking, setPoking] = useState(false);
-  const [rawScanning, setRawScanning] = useState(false);
-  const [diagCapturing, setDiagCapturing] = useState(false);
-  const [notifyTestResult, setNotifyTestResult] = useState("");
-  const [relicPickOcrTesting, setRelicPickOcrTesting] = useState(false);
-  const [relicPickOcrResult, setRelicPickOcrResult] = useState<string | null>(null);
-  const [relicPickTestEra, setRelicPickTestEra] = useState("LITH");
-  const [relicPickTestResult, setRelicPickTestResult] = useState<string | null>(null);
-  const [arbOverlayTestResult, setArbOverlayTestResult] = useState<string | null>(null);
-  const [eeLogTail, setEeLogTail] = useState<string | null>(null);
-  const [diagPath, setDiagPath] = useState<string | null>(null);
   const [autoDiagEnabled, setAutoDiagEnabled] = useState(false);
-  const [diagFolderSize, setDiagFolderSize] = useState<number>(0);
-  const [overlayLogCopied, setOverlayLogCopied] = useState(false);
   const [memoryScannerEnabled, setMemoryScannerEnabled] = useState(false);
 const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [wfmLoggedIn, setWfmLoggedIn] = useState(false);
@@ -308,16 +260,10 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [relicPickPriority,   setRelicPickPriority]   = useState<RelicPickPriority>(DEFAULT_RELIC_PICK_PRIORITY);
   const [relicPickRefinement, setRelicPickRefinement] = useState<RelicRefinement>(DEFAULT_RELIC_PICK_REFINEMENT);
   const [relicPickLines,      setRelicPickLines]      = useState<RelicPickLines>(DEFAULT_RELIC_PICK_LINES);
-  const [clearMsg, setClearMsg] = useState("");
   const [appVersion, setAppVersion] = useState("");
   const [updateAvailable, setUpdateAvailable] = useState<UpdateAvailable | null>(null);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
-  const [blobLogSize,    setBlobLogSize]    = useState(0);
-  const [rawScanSize,    setRawScanSize]    = useState(0);
-  const [probeSize,      setProbeSize]      = useState(0);
-  const [debugCatEnabled,    setDebugCatEnabled]    = useState(false);
   const [showInventoryBatchPreview, setShowInventoryBatchPreview] = useState(false);
-  const [unmatchedPathsSize, setUnmatchedPathsSize] = useState(0);
   // "scanning" while blob capture is running, "done" briefly after it finishes
   const [blobStage, setBlobStage] = useState<"scanning" | "done" | null>(null);
   const blobDoneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -330,7 +276,6 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     localStorage.getItem(PREFERENCE_KEYS.COLORBLIND_MODE) === "true"
   );
   const [clockFormat, setClockFormat] = useState<ClockFormat>(DEFAULT_CLOCK_FORMAT);
-  const [systemLocale, setSystemLocale] = useState("en-US");
   const [itemsRefreshKey, setItemsRefreshKey] = useState(0);
   const [imgCacheDir, setImgCacheDir] = useState("");
 
@@ -404,18 +349,6 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   }, [blobLogEnabled]); // eslint-disable-line
 
   // ── Debug data sizes — reload when the Debugging settings tab opens ─────────
-  const reloadDebugSizes = useCallback(() => {
-    invoke<number>("get_debug_data_size", { which: "blobs"           }).then(setBlobLogSize).catch(() => {});
-    invoke<number>("get_debug_data_size", { which: "raw_scan"        }).then(setRawScanSize).catch(() => {});
-    invoke<number>("get_debug_data_size", { which: "probe"           }).then(setProbeSize).catch(() => {});
-    invoke<number>("get_debug_data_size", { which: "unmatched_paths" }).then(setUnmatchedPathsSize).catch(() => {});
-    invoke<number>("get_diag_folder_size").then(setDiagFolderSize).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    if (showSettings && settingsTab === "debugging") reloadDebugSizes();
-  }, [showSettings, settingsTab]); // eslint-disable-line
-
   // ── Log watcher — always start regardless of memory scanner toggle ─────────
   // EE.log is plain file I/O (not memory reading) — handles riven detection,
   // trade completion, and WFM whisper detection unconditionally.
@@ -559,7 +492,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
       settingsLoadedRef.current = true;
     }).catch(() => {});
 
-    invoke<string>("get_system_locale").then(loc => { if (loc) setSystemLocale(loc); }).catch(() => {});
     invoke<string | null>("get_player_name").then(name => { if (name) setPlayerName(name); }).catch(() => {});
     invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS).then(items => { setCatalog(items); catalogRef.current = items; });
     invoke<QuantityMap>(TAURI_COMMANDS.GET_CURRENT_QUANTITIES)
@@ -571,7 +503,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
           setInventoryReady(true);
         }
       });
-    invoke<number>("get_diag_folder_size").then(setDiagFolderSize).catch(() => {});
     invoke<ChangeLogEntry[]>("get_change_log", { limit: 200 }).then(log => {
       setChangeLog(log);
       const lc: Record<string, number> = {};
@@ -597,13 +528,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
   }, []);
 
   // Refresh diagnostics folder size every minute so the Clear button stays current.
-  useEffect(() => {
-    const id = setInterval(() => {
-      invoke<number>("get_diag_folder_size").then(setDiagFolderSize).catch(() => {});
-    }, 60_000);
-    return () => clearInterval(id);
-  }, []);
-
   // ── Inventory update events ────────────────────────────────────────────────
 
   useEffect(() => {
@@ -1513,14 +1437,13 @@ if (typeof s.autoDiagEnabled === "boolean") {
             onOpenExternalUrl={url => invoke(TAURI_COMMANDS.OPEN_URL, { url }).catch(() => {})}
             onOpenSettings={() => {
               setShowSettings(true);
-              setClearMsg("");
               getVersion().then(version => setAppVersion(version)).catch(() => {});
             }}
           />
         </div>
       </header>
 
-      <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} {...{ settingsTab, setSettingsTab, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, systemLocale, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setItemsRefreshKey, setClearMsg, clearMsg, blobLogEnabled, setBlobLogEnabled, blobLogSize, setBlobLogSize, setShowInventoryBatchPreview, notifyTestResult, setNotifyTestResult, overlayLogCopied, setOverlayLogCopied, autoDiagEnabled, setAutoDiagEnabled, diagFolderSize, setDiagFolderSize, diagPath, diagCapturing, setDiagCapturing, setDiagPath, reloadDebugSizes, memoryProbing, setMemoryProbing, probeSize, setProbeSize, rawScanning, setRawScanning, rawScanSize, setRawScanSize, relicPickOcrResult, relicPickOcrTesting, setRelicPickOcrTesting, setRelicPickOcrResult, relicPickTestResult, relicPickTestEra, setRelicPickTestEra, setRelicPickTestResult, eeLogTail, setEeLogTail, debugCatEnabled, setDebugCatEnabled, unmatchedPathsSize, setUnmatchedPathsSize, appVersion, arbOverlayEnabled, setArbOverlayEnabled, arbOverlayTestResult, setArbOverlayTestResult }} onUpdateFound={u => { setUpdateAvailable(u); setShowUpdateDialog(true); }} />
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} {...{ settingsTab, setSettingsTab, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setItemsRefreshKey, blobLogEnabled, setBlobLogEnabled, setShowInventoryBatchPreview, autoDiagEnabled, setAutoDiagEnabled, appVersion, arbOverlayEnabled, setArbOverlayEnabled }} onUpdateFound={u => { setUpdateAvailable(u); setShowUpdateDialog(true); }} />}
       {showUpdateDialog && updateAvailable && (
         <UpdateDialog update={updateAvailable} onDismiss={() => setShowUpdateDialog(false)} />
       )}
@@ -1598,9 +1521,9 @@ if (typeof s.autoDiagEnabled === "boolean") {
         {/* ── Market Helper module ── */}
         {/* Keep mounted at all times so WfmTrading's trade-completed listener
             (auto listing update) fires regardless of which tab is active. */}
-        <KeepMountedWhenHidden active={activeModule === "market"}>
+        <div style={{ display: activeModule === "market" ? "contents" : "none" }}>
           <MarketHelper inventory={inventory} refreshKey={itemsRefreshKey} crafting={crafting} onWfmLoginChange={handleWfmLoginChange} modCopiesMap={modCopiesMap} />
-        </KeepMountedWhenHidden>
+        </div>
 
         {/* ── Relics module ── */}
         {activeModule === "relics" && (
@@ -1637,7 +1560,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
               scheduleDays={arbScheduleDays}
               onScheduleDaysChange={setArbScheduleDays}
               clockFormat={clockFormat}
-              systemLocale={systemLocale}
             />
           </ErrorBoundary>
         )}
@@ -1663,7 +1585,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         {/* ── Statistics module ── */}
         {activeModule === "statistics" && (
           <ErrorBoundary>
-            <Statistics clockFormat={clockFormat} systemLocale={systemLocale} />
+            <Statistics clockFormat={clockFormat} />
           </ErrorBoundary>
         )}
 
@@ -1682,7 +1604,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
           lastScanAt={lastInventoryScanAt}
           catalog={catalog}
           clockFormat={clockFormat}
-          systemLocale={systemLocale}
           onItemClick={openChangeLogItem}
           onChangeLogClick={openRecentChanges}
           onCategoryClick={openRecentCategory}

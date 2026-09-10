@@ -1,7 +1,6 @@
-import { useState, useEffect, useMemo, useRef, useContext } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ImgCacheDirContext } from "../ImgCacheDir";
-import { warframeStatImageUrl } from "../constants/urls";
+import ItemImg from "../ItemImg";
 import "./Weapons.css";
 import type { InventoryItem, WeaponItem } from "../types/items";
 
@@ -41,34 +40,6 @@ function effectiveCap(item: WeaponItem): number {
 
 // ── Image ─────────────────────────────────────────────────────────────────────
 
-function WeaponImg({ imageName, name }: { imageName?: string; name: string }) {
-  const baseUrl = useContext(ImgCacheDirContext);
-  const [localFailed, setLocalFailed] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const ref = useRef<HTMLImageElement>(null);
-
-  useEffect(() => {
-    if (ref.current?.complete) ref.current.classList.add("img-loaded");
-  }, []);
-
-  if (!imageName || failed) {
-    return <div className="img-fallback">{name[0]?.toUpperCase() ?? "?"}</div>;
-  }
-  const useLocal = Boolean(baseUrl) && !localFailed;
-  const src = useLocal ? `${baseUrl}/${imageName}` : warframeStatImageUrl(imageName);
-  return (
-    <img
-      ref={ref}
-      className="img"
-      src={src}
-      alt=""
-      loading="lazy"
-      onError={() => useLocal ? setLocalFailed(true) : setFailed(true)}
-      onLoad={() => ref.current?.classList.add("img-loaded")}
-    />
-  );
-}
-
 // ── Item row ──────────────────────────────────────────────────────────────────
 
 function WeaponRow({ item, rank }: { item: WeaponItem; rank: number }) {
@@ -78,7 +49,7 @@ function WeaponRow({ item, rank }: { item: WeaponItem; rank: number }) {
 
   return (
     <div className={`wpn-item ${mastered ? "wpn-mastered" : rank > 0 ? "wpn-partial" : "wpn-none"}`}>
-      <WeaponImg imageName={item.image_name} name={item.name} />
+      <ItemImg imageName={item.image_name} fallback={<div className="img-fallback">{item.name[0]?.toUpperCase() ?? "?"}</div>} />
       <span className="wpn-name">{item.name}</span>
       {item.mastery_req != null && item.mastery_req > 0 && (
         <span className="wpn-mr" title={`Mastery Rank ${item.mastery_req} required`}>MR{item.mastery_req}</span>
