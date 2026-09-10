@@ -1,3 +1,4 @@
+import type { TierKey } from "../arbitration/arbitrationTiers";
 export type ClockFormat = "auto" | "12h" | "24h";
 export type RelicOverlayPriority = "completion" | "plat" | "ducat" | "setPlat";
 export type RelicPickPriority = "unowned" | "ducat" | "platinum";
@@ -15,6 +16,8 @@ export interface FissureWatch {
 }
 
 export interface SettingsSnapshot {
+  arbitrationFavorites: string[]; arbitrationLeadMins: number; arbitrationOverlayEnabled: boolean;
+  arbitrationTierFilter: TierKey[]; arbitrationAlertTiers: TierKey[]; arbitrationScheduleDays: number;
   overlayEnabled: boolean; overlayPriority: RelicOverlayPriority; textScale: number; colorblindMode: boolean;
   clockFormat: ClockFormat; companionApiEnabled: boolean; memoryScannerEnabled: boolean;
   blobLogEnabled: boolean; apiLogEnabled: boolean; autoDiagEnabled: boolean; tracked: string[];

@@ -17,6 +17,7 @@ type ScannerMods = Record<string, { total: number; by_rank: Record<string, numbe
 type ArchonShards = Record<string, ArchonShard[]>;
 
 export interface SettingsModalProps {
+  arbOverlayEnabled: boolean; setArbOverlayEnabled: Setter<boolean>;
   open: boolean;
   onClose: () => void;
   settingsTab: SettingsTab;
@@ -54,7 +55,8 @@ function BulkPriceRefreshButton() {
 }
 
 export default function SettingsModal(props: SettingsModalProps) {
-  const { settingsTab, setSettingsTab, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, systemLocale, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setApiQuantities, setApiModCopies, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setWfConnected, wfConnectedRef, setItemsRefreshKey, setClearMsg, clearMsg, blobLogEnabled, setBlobLogEnabled, blobLogSize, setBlobLogSize, companionApiEnabled, apiLogEnabled, setApiLogEnabled, apiLogSize, setApiLogSize, setShowInventoryBatchPreview, notifyTestResult, setNotifyTestResult, overlayLogCopied, setOverlayLogCopied, autoDiagEnabled, setAutoDiagEnabled, diagFolderSize, setDiagFolderSize, diagPath, diagCapturing, setDiagCapturing, setDiagPath, reloadDebugSizes, memoryProbing, setMemoryProbing, probeSize, setProbeSize, rawScanning, setRawScanning, rawScanSize, setRawScanSize, memRelicDebugRunning, setMemRelicDebugRunning, relicPickOcrResult, relicPickOcrTesting, setRelicPickOcrTesting, setRelicPickOcrResult, relicPickTestResult, relicPickTestEra, setRelicPickTestEra, setRelicPickTestResult, eeLogTail, setEeLogTail, debugCatEnabled, setDebugCatEnabled, unmatchedPathsSize, setUnmatchedPathsSize, appVersion } = props;
+  const { settingsTab, setSettingsTab, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, systemLocale, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setApiQuantities, setApiModCopies, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setWfConnected, wfConnectedRef, setItemsRefreshKey, setClearMsg, clearMsg, blobLogEnabled, setBlobLogEnabled, blobLogSize, setBlobLogSize, companionApiEnabled, apiLogEnabled, setApiLogEnabled, apiLogSize, setApiLogSize, setShowInventoryBatchPreview, notifyTestResult, setNotifyTestResult, overlayLogCopied, setOverlayLogCopied, autoDiagEnabled, setAutoDiagEnabled, diagFolderSize, setDiagFolderSize, diagPath, diagCapturing, setDiagCapturing, setDiagPath, reloadDebugSizes, memoryProbing, setMemoryProbing, probeSize, setProbeSize, rawScanning, setRawScanning, rawScanSize, setRawScanSize, memRelicDebugRunning, setMemRelicDebugRunning, relicPickOcrResult, relicPickOcrTesting, setRelicPickOcrTesting, setRelicPickOcrResult, relicPickTestResult, relicPickTestEra, setRelicPickTestEra, setRelicPickTestResult, eeLogTail, setEeLogTail, debugCatEnabled, setDebugCatEnabled, unmatchedPathsSize, setUnmatchedPathsSize, appVersion, arbOverlayEnabled, setArbOverlayEnabled } = props;
+  const [arbOverlayTestResult, setArbOverlayTestResult] = useState<string | null>(null);
   if (!props.open) return null;
   const onClose = props.onClose;
   return (
@@ -334,6 +336,27 @@ export default function SettingsModal(props: SettingsModalProps) {
                         <option key={lines} value={lines}>{lines === "all" ? "All items" : lines === "best" ? "Only most valuable" : "Score summary only"}</option>
                       ))}
                     </select>
+                  </div>
+                </div>
+
+                <div className="settings-section">
+                  <div className="settings-section-title">Arbitration Summary Overlay</div>
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <span className="settings-row-label">Enable Overlay</span>
+                      <span className="settings-row-desc">Briefly show a completed arbitration run's numbers over the game. Runs are recorded either way.</span>
+                    </div>
+                    <button
+                      className="btn-secondary"
+                      style={{ minWidth: 64, background: arbOverlayEnabled ? "rgba(56,139,253,.15)" : undefined, borderColor: arbOverlayEnabled ? "var(--accent)" : undefined }}
+                      onClick={() => {
+                        const next = !arbOverlayEnabled;
+                        setArbOverlayEnabled(next);
+                        settingsRef.current = { ...settingsRef.current, arbitrationOverlayEnabled: next };
+                        saveAllSettings();
+                        invoke("set_arbitration_overlay_enabled", { enabled: next });
+                      }}
+                    >{arbOverlayEnabled ? "Enabled" : "Disabled"}</button>
                   </div>
                 </div>
 
@@ -788,6 +811,21 @@ export default function SettingsModal(props: SettingsModalProps) {
                       setRelicPickTestResult(null);
                       try { setRelicPickTestResult(await invoke<string>("test_relic_pick_overlay", { era: relicPickTestEra })); }
                       catch (e) { setRelicPickTestResult(`Error: ${e}`); }
+                    }}>Launch</button>
+
+                    <div className="settings-row-info">
+                      <span className="settings-row-label">Test Arbitration Summary Overlay</span>
+                      <span className="settings-row-desc">
+                        Fire the post-run overlay with a sample run. Ignores the enable setting.
+                        {arbOverlayTestResult && <span style={{ display: "block", marginTop: 2, color: "var(--accent)", fontSize: 11 }}>{arbOverlayTestResult}</span>}
+                      </span>
+                    </div>
+                    <div />
+                    <div />
+                    <button className="btn-secondary" onClick={async () => {
+                      setArbOverlayTestResult(null);
+                      try { setArbOverlayTestResult(await invoke<string>("test_arbitration_overlay")); }
+                      catch (e) { setArbOverlayTestResult(`Error: ${e}`); }
                     }}>Launch</button>
 
                     {/* EE.log tail — reveals what string to trigger on */}

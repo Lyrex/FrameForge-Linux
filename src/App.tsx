@@ -1,4 +1,9 @@
-﻿import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import ArbitrationOverlay from "./arbitration/ArbitrationOverlay";
+import Arbitrations from "./arbitration/Arbitrations";
+import { clampLead, runAlertPass, DEFAULT_LEAD_MINS, EVAL_INTERVAL_MS, type AlertRule, type ScheduleEntry } from "./arbitration/arbitrationAlerts";
+import { sanitizeTierKeys, TIER_KEYS, type TierKey } from "./arbitration/arbitrationTiers";
+import { clampScheduleDays, DEFAULT_SCHEDULE_DAYS, useArbitrationSchedule } from "./arbitration/arbitrationSchedule";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
@@ -135,7 +140,8 @@ const IS_MODULAR       = _params.has("modular")      || _hash === "#modular"    
 const IS_RIVEN_OVERLAY      = _params.has("rivenoverlay")      || _hash === "#rivenoverlay"      || _winLabel === "riven-overlay";
 const IS_RELIC_PICK_OVERLAY = _params.has("relicpickoverlay") || _hash === "#relicpickoverlay" || _winLabel === "relic-pick-overlay";
 const IS_OVERLAY_TEST       = _params.has("overlaytest")       || _hash === "#overlaytest"       || _winLabel === "overlay-test";
-const IS_ANY_OVERLAY = IS_OVERLAY || IS_MODULAR || IS_RIVEN_OVERLAY || IS_RELIC_PICK_OVERLAY;
+const IS_ARBITRATION_OVERLAY = _params.has("arbitrationoverlay") || _hash === "#arbitrationoverlay" || _winLabel === "arbitration-overlay";
+const IS_ANY_OVERLAY = IS_ARBITRATION_OVERLAY || IS_OVERLAY || IS_MODULAR || IS_RIVEN_OVERLAY || IS_RELIC_PICK_OVERLAY;
 
 // Overlay windows return from the router before any hook can run, which rules
 // out applying the scale from an effect.
@@ -212,6 +218,7 @@ export default function App() {
   // Isolated overlay test — no data, no events, just proves the window appears.
   if (IS_OVERLAY_TEST) return <OverlayTestPage />;
   // If we're the overlay window, render only the overlay UI
+  if (IS_ARBITRATION_OVERLAY) return <ArbitrationOverlay />;
   if (IS_OVERLAY) return <Overlay />;
   if (IS_RIVEN_OVERLAY) return <RivenOverlayWindow />;
   if (IS_RELIC_PICK_OVERLAY) return <RelicPickOverlay />;
@@ -344,6 +351,14 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [timerFavorites, setTimerFavorites] = useState<string[]>([]);
   const [fissureWatches, setFissureWatches] = useState<FissureWatch[]>([]);
   const [fissureNotifications, setFissureNotifications] = useState(true);
+  const [arbFavorites, setArbFavorites] = useState<string[]>([]);
+  const [arbLeadMins, setArbLeadMins] = useState(DEFAULT_LEAD_MINS);
+  // The filter starts wide and the alert rule starts empty: showing every hour
+  // is what a browser is for, while alerting is opt-in.
+  const [arbTierFilter, setArbTierFilter] = useState<TierKey[]>([...TIER_KEYS]);
+  const [arbAlertTiers, setArbAlertTiers] = useState<TierKey[]>([]);
+  const [arbScheduleDays, setArbScheduleDays] = useState(DEFAULT_SCHEDULE_DAYS);
+  const [arbOverlayEnabled, setArbOverlayEnabled] = useState(false);
   const [modularWidth, setModularWidth] = useState(240);
   const [modularSectionOrder, setModularSectionOrder] = useState<string[]>([...MODULAR_SECTION_ORDER_DEFAULT]);
   const [modularPopout, setModularPopout] = useState(false);
@@ -359,7 +374,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   // Refs so we can read the latest state in the save callback without stale closures
   const settingsLoadedRef = useRef(false);
   const settingsRef = useRef<SettingsSnapshot>({
-    overlayEnabled: true, overlayPriority: DEFAULT_RELIC_OVERLAY_PRIORITY, textScale: 1, colorblindMode: false, clockFormat: DEFAULT_CLOCK_FORMAT, companionApiEnabled: false, memoryScannerEnabled: false, blobLogEnabled: false, apiLogEnabled: false, autoDiagEnabled: false,
+    arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, arbitrationOverlayEnabled: arbOverlayEnabled, arbitrationTierFilter: arbTierFilter, arbitrationAlertTiers: arbAlertTiers, arbitrationScheduleDays: arbScheduleDays, overlayEnabled: true, overlayPriority: DEFAULT_RELIC_OVERLAY_PRIORITY, textScale: 1, colorblindMode: false, clockFormat: DEFAULT_CLOCK_FORMAT, companionApiEnabled: false, memoryScannerEnabled: false, blobLogEnabled: false, apiLogEnabled: false, autoDiagEnabled: false,
     tracked: [] as string[], favorites: [] as string[], timerFavorites: [] as string[], fissureWatches: [] as FissureWatch[], fissureNotifications: true, modularWidth: 240,
     modularSectionOrder: ["tracking", "favorites", "timers"] as string[], modularPopout: false,
     wfmInvisibleOnStart: false, wfmInvisibleOnClose: false, wfmAutoInvisible: false, wfmAutoInvisibleMins: 30,
@@ -367,7 +382,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     foundryPageSize: DEFAULT_FOUNDRY_PAGE_SIZE,
     memTriggerEnabled: false,
   });
-  settingsRef.current = { overlayEnabled, overlayPriority, textScale, colorblindMode, clockFormat, companionApiEnabled, memoryScannerEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled };
+  settingsRef.current = { arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, arbitrationOverlayEnabled: arbOverlayEnabled, arbitrationTierFilter: arbTierFilter, arbitrationAlertTiers: arbAlertTiers, arbitrationScheduleDays: arbScheduleDays, overlayEnabled, overlayPriority, textScale, colorblindMode, clockFormat, companionApiEnabled, memoryScannerEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled };
 
   const saveAllSettings = useCallback(() => {
     // Until the on-disk settings have been applied, settingsRef still holds
@@ -524,6 +539,15 @@ if (typeof s.autoDiagEnabled === "boolean") {
         }
         if (Array.isArray(s.tracked)) setTracked(s.tracked);
         if (Array.isArray(s.favorites)) setFavorites(s.favorites);
+        if (Array.isArray(s.arbitrationFavorites)) setArbFavorites(s.arbitrationFavorites.filter((x: unknown) => typeof x === "string"));
+        if (typeof s.arbitrationLeadMins === "number") setArbLeadMins(clampLead(s.arbitrationLeadMins));
+        const storedFilter = sanitizeTierKeys(s.arbitrationTierFilter);
+        if (storedFilter) setArbTierFilter(storedFilter);
+        const storedAlertTiers = sanitizeTierKeys(s.arbitrationAlertTiers);
+        if (storedAlertTiers) setArbAlertTiers(storedAlertTiers);
+        if (typeof s.arbitrationScheduleDays === "number") setArbScheduleDays(clampScheduleDays(s.arbitrationScheduleDays));
+        if (typeof s.arbitrationOverlayEnabled === "boolean") { setArbOverlayEnabled(s.arbitrationOverlayEnabled); invoke("set_arbitration_overlay_enabled", { enabled: s.arbitrationOverlayEnabled }); }
+        if (Array.isArray(s.arbitrationAlertsFired)) arbFiredRef.current = s.arbitrationAlertsFired.filter((x: unknown) => typeof x === "string");
         if (Array.isArray(s.timerFavorites)) setTimerFavorites(s.timerFavorites);
         if (Array.isArray(s.fissureWatches)) {
           setFissureWatches(s.fissureWatches);
@@ -1026,7 +1050,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
   useEffect(() => {
     if (settingsLoadedRef.current) saveAllSettings();
-  }, [tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, memoryScannerEnabled, companionApiEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, modularSectionOrder, modularPopout]); // eslint-disable-line
+  }, [tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbFavorites, arbLeadMins, arbTierFilter, arbAlertTiers, arbScheduleDays, modularWidth, memoryScannerEnabled, companionApiEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, modularSectionOrder, modularPopout]); // eslint-disable-line
 
   // ── Watched fissure notifications ──────────────────────────────────────────
   //
@@ -1084,6 +1108,85 @@ if (typeof s.autoDiagEnabled === "boolean") {
       void notify(`${fresh.length} new fissures`, shown.join("\n"));
     }
   }, [worldState, fissureWatches, fissureNotifications]);
+
+  // ── Arbitration alerts ─────────────────────────────────────────────────────
+  //
+  // Here rather than in Arbitrations, for the same reason the fissure alerts
+  // are: that module is unmounted whenever another one is on screen.
+
+  // Persisted, so a restart inside the lead window does not alert a second
+  // time for the same hour.
+  const arbFiredRef = useRef<string[]>([]);
+  const arbFiredDirtyRef = useRef(false);
+  const arbAlertsOn = arbFavorites.length > 0 || arbAlertTiers.length > 0;
+
+  const { schedule: arbSchedule, error: arbScheduleError } = useArbitrationSchedule(arbAlertsOn);
+
+  // The loop reads its inputs from here rather than from the effect closure, so
+  // starring a node changes what the next tick sees without tearing the timer
+  // down and starting a fresh pass on top of one already running. This effect
+  // has to stay above the loop's own, which reads the ref on its first tick.
+  const arbInputsRef = useRef({ entries: [] as ScheduleEntry[], rule: {} as AlertRule, leadMins: DEFAULT_LEAD_MINS });
+  useEffect(() => {
+    arbInputsRef.current = {
+      entries: arbSchedule?.entries ?? [],
+      rule: { favorites: arbFavorites, tiers: arbAlertTiers },
+      leadMins: arbLeadMins,
+    };
+  });
+
+  // A pass outlives its tick whenever the notification IPC is slow, and two
+  // passes reading the same fired state would raise one occurrence twice.
+  const arbCheckingRef = useRef(false);
+
+  // Held here so a denial survives Arbitrations' unmount, but written only by
+  // that module: it raises the prompt on a gesture and shows the warning.
+  const [arbPermissionDenied, setArbPermissionDenied] = useState(false);
+
+  useEffect(() => {
+    if (arbAlertsOn && arbScheduleError) {
+      console.error("arbitration schedule unavailable, alerts paused:", arbScheduleError);
+    }
+  }, [arbAlertsOn, arbScheduleError]);
+
+  useEffect(() => {
+    const check = async () => {
+      // Loading settings must finish before a pass can replace persisted keys.
+      if (!settingsLoadedRef.current || arbCheckingRef.current) return;
+      arbCheckingRef.current = true;
+      try {
+        const { entries, rule, leadMins } = arbInputsRef.current;
+        const nowMs = Date.now();
+        const fired = await runAlertPass(
+          entries, rule, leadMins, arbFiredRef.current, nowMs / 1000,
+          e => notify(
+            `Arbitration — ${e.node}${e.region ? ` (${e.region})` : ""}`,
+            `${[e.mission_type, e.faction].filter(Boolean).join(" · ")} — ${e.start * 1000 > nowMs
+              ? `starts in ${fmtMs(e.start * 1000 - nowMs)}`
+              : `under way, ${fmtMs(e.end * 1000 - nowMs)} left`}`,
+          ));
+        if (fired !== null) {
+          arbFiredRef.current = fired;
+          arbFiredDirtyRef.current = true;
+        }
+        // Keep successful handoffs in memory even if saving fails, then retry
+        // persistence on the next pass without raising the same alert again.
+        if (arbFiredDirtyRef.current) {
+          await invoke("save_settings", { json: JSON.stringify({ arbitrationAlertsFired: arbFiredRef.current }) });
+          arbFiredDirtyRef.current = false;
+        }
+      } catch (e) {
+        console.error("saving arbitration alert state failed", e);
+      } finally {
+        arbCheckingRef.current = false;
+      }
+    };
+
+    // Persistence retries must continue after the last alert rule is removed.
+    void check();
+    const poll = setInterval(check, EVAL_INTERVAL_MS);
+    return () => clearInterval(poll);
+  }, [arbAlertsOn]);
 
   // ── Modular pop-out window ─────────────────────────────────────────────────
   useEffect(() => {
@@ -1732,7 +1835,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         </div>
       </header>
 
-      <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} {...{ settingsTab, setSettingsTab, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, systemLocale, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setApiQuantities, setApiModCopies, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setWfConnected, wfConnectedRef, setItemsRefreshKey, setClearMsg, clearMsg, blobLogEnabled, setBlobLogEnabled, blobLogSize, setBlobLogSize, companionApiEnabled, apiLogEnabled, setApiLogEnabled, apiLogSize, setApiLogSize, setShowInventoryBatchPreview, notifyTestResult, setNotifyTestResult, overlayLogCopied, setOverlayLogCopied, autoDiagEnabled, setAutoDiagEnabled, diagFolderSize, setDiagFolderSize, diagPath, diagCapturing, setDiagCapturing, setDiagPath, reloadDebugSizes, memoryProbing, setMemoryProbing, probeSize, setProbeSize, rawScanning, setRawScanning, rawScanSize, setRawScanSize, memRelicDebugRunning, setMemRelicDebugRunning, relicPickOcrResult, relicPickOcrTesting, setRelicPickOcrTesting, setRelicPickOcrResult, relicPickTestResult, relicPickTestEra, setRelicPickTestEra, setRelicPickTestResult, eeLogTail, setEeLogTail, debugCatEnabled, setDebugCatEnabled, unmatchedPathsSize, setUnmatchedPathsSize, appVersion }} />
+      <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} {...{ settingsTab, setSettingsTab, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, systemLocale, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setApiQuantities, setApiModCopies, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setWfConnected, wfConnectedRef, setItemsRefreshKey, setClearMsg, clearMsg, blobLogEnabled, setBlobLogEnabled, blobLogSize, setBlobLogSize, companionApiEnabled, apiLogEnabled, setApiLogEnabled, apiLogSize, setApiLogSize, setShowInventoryBatchPreview, notifyTestResult, setNotifyTestResult, overlayLogCopied, setOverlayLogCopied, autoDiagEnabled, setAutoDiagEnabled, diagFolderSize, setDiagFolderSize, diagPath, diagCapturing, setDiagCapturing, setDiagPath, reloadDebugSizes, memoryProbing, setMemoryProbing, probeSize, setProbeSize, rawScanning, setRawScanning, rawScanSize, setRawScanSize, memRelicDebugRunning, setMemRelicDebugRunning, relicPickOcrResult, relicPickOcrTesting, setRelicPickOcrTesting, setRelicPickOcrResult, relicPickTestResult, relicPickTestEra, setRelicPickTestEra, setRelicPickTestResult, eeLogTail, setEeLogTail, debugCatEnabled, setDebugCatEnabled, unmatchedPathsSize, setUnmatchedPathsSize, appVersion, arbOverlayEnabled, setArbOverlayEnabled }} />
 
       {showInventoryBatchPreview && <InventoryBatchPreview onClose={closeInventoryBatchPreview} />}
 
@@ -1841,6 +1944,29 @@ if (typeof s.autoDiagEnabled === "boolean") {
               fissureNotifications={fissureNotifications}
               onFissureNotificationsChange={setFissureNotifications}
               inventory={inventory}
+            />
+          </ErrorBoundary>
+        )}
+
+        {/* ── Arbitrations module ── */}
+        {activeModule === "arbitrations" && (
+          <ErrorBoundary>
+            <Arbitrations
+              favorites={arbFavorites}
+              onToggleFavorite={id => setArbFavorites(prev =>
+                prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+              )}
+              leadMins={arbLeadMins}
+              onLeadChange={setArbLeadMins}
+              permissionDenied={arbPermissionDenied}
+              onPermissionChange={setArbPermissionDenied}
+              tierFilter={arbTierFilter}
+              onTierFilterChange={setArbTierFilter}
+              alertTiers={arbAlertTiers}
+              onAlertTiersChange={setArbAlertTiers}
+              scheduleDays={arbScheduleDays}
+              onScheduleDaysChange={setArbScheduleDays}
+              clockFormat={clockFormat} systemLocale={systemLocale}
             />
           </ErrorBoundary>
         )}
