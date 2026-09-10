@@ -70,23 +70,14 @@
         "skipTaskbar": true,
         "resizable": false,
         "focus": false
-      },
-      {
-        "label": "overlay-test",
-        "url": "index.html?overlaytest",
-        "title": "FF Overlay Test",
-        "width": 480,
-        "height": 220,
-        "x": 0,
-        "y": -3000,
-        "visible": false,
-        "decorations": true,
-        "resizable": true,
-        "skipTaskbar": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
     }
   },
   "bundle": {

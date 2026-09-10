@@ -197,8 +197,6 @@ pub struct AppState {
     pub last_ocr_frame: Arc<Mutex<Option<OcrFrame>>>,
     /// Local image cache directory — craftable item images downloaded here on first run.
     pub img_cache_dir: PathBuf,
-    /// Port of the local HTTP image server (set in setup hook, 0 until started).
-    pub img_server_port: Mutex<u16>,
     /// Local Warframe account name extracted from EE.log "Logged in NAME".
     /// Used to filter the player's own name from OCR captures and to display in the UI.
     pub local_player_name: Arc<Mutex<Option<String>>>,
@@ -7326,31 +7324,9 @@ fn looks_like_image(data: &[u8]) -> bool {
         || (data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP")
 }
 
-/// Whether a fully read cached file is a complete image. The header identifies
-/// the format; the trailer is what a download cut short by a dropped connection
-/// loses, and a truncated file keeps its header.
-fn image_complete(data: &[u8]) -> bool {
-    if !looks_like_image(data) {
-        return false;
-    }
-    if data.starts_with(b"\x89PNG") {
-        // A PNG ends with the IEND chunk: its name followed by a 4-byte CRC.
-        return data.len() >= 12 && data[data.len() - 8..data.len() - 4] == *b"IEND";
-    }
-    if data.starts_with(&[0xFF, 0xD8]) {
-        return data.ends_with(&[0xFF, 0xD9]);
-    }
-    if data.starts_with(b"GIF8") {
-        return data.ends_with(&[0x3B]);
-    }
-    // WEBP: the RIFF size field counts everything after the first 8 bytes.
-    let size = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
-    data.len() >= size.saturating_add(8)
-}
-
 /// Whether the cached file at `path` is worth serving. Reads only the header —
-/// this runs once per catalogued image on every startup — so truncation past
-/// the header slips through here and is caught at serve time instead.
+/// this runs once per catalogued image on every startup. Downloads land via
+/// rename, so a file with a valid header is a whole file.
 fn cached_image_ok(path: &std::path::Path) -> bool {
     use std::io::Read;
     let mut buf = [0u8; 12];
@@ -7360,65 +7336,9 @@ fn cached_image_ok(path: &std::path::Path) -> bool {
         && looks_like_image(&buf)
 }
 
-/// Minimal HTTP file server for the local image cache.
-/// Accepts GET /{filename} and serves files from `cache_dir`.
-async fn serve_image_files(listener: tokio::net::TcpListener, cache_dir: PathBuf) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let cache_dir = Arc::new(cache_dir);
-    loop {
-        let Ok((mut stream, _)) = listener.accept().await else { continue };
-        let dir = Arc::clone(&cache_dir);
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; 512];
-            let n = match stream.read(&mut buf).await {
-                Ok(n) if n > 0 => n,
-                _ => return,
-            };
-            let req = std::str::from_utf8(&buf[..n]).unwrap_or("");
-            let filename = match req.lines().next()
-                .and_then(|l| l.strip_prefix("GET /"))
-                .and_then(|l| l.split_whitespace().next())
-            {
-                Some(f) if !f.is_empty() && !f.contains("..") && !f.contains('/') && !f.contains('\\') => f,
-                _ => {
-                    let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n").await;
-                    return;
-                }
-            };
-            let path = dir.join(filename);
-            match tokio::fs::read(&path).await {
-                // A corrupt file is thrown away rather than served: the 404
-                // sends the caller to the CDN, and the next prewarm refetches it.
-                Ok(data) if !image_complete(&data) => {
-                    let _ = tokio::fs::remove_file(&path).await;
-                    let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n").await;
-                }
-                Ok(data) => {
-                    let mime = if filename.ends_with(".png") { "image/png" }
-                        else if filename.ends_with(".jpg") || filename.ends_with(".jpeg") { "image/jpeg" }
-                        else if filename.ends_with(".webp") { "image/webp" }
-                        else { "application/octet-stream" };
-                    let header = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: public, max-age=86400\r\n\r\n",
-                        mime, data.len()
-                    );
-                    let _ = stream.write_all(header.as_bytes()).await;
-                    let _ = stream.write_all(&data).await;
-                }
-                Err(_) => {
-                    let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n").await;
-                }
-            }
-        });
-    }
-}
-
-/// Returns the base URL of the local image server, e.g. "http://127.0.0.1:51234".
-/// Frontend uses this as `${baseUrl}/${imageName}` to load cached images from disk.
 #[tauri::command]
 fn get_img_cache_dir(state: State<AppState>) -> String {
-    let port = *state.img_server_port.lock().unwrap();
-    format!("http://127.0.0.1:{}", port)
+    state.img_cache_dir.to_string_lossy().into_owned()
 }
 
 /// Download images for all craftable items that aren't already cached to disk.
@@ -7468,7 +7388,12 @@ async fn prewarm_image_cache(state: tauri::State<'_, AppState>) -> Result<(), St
                         let mut buf = Vec::new();
                         if resp.into_body().into_reader().take(5 * 1024 * 1024).read_to_end(&mut buf).is_ok() && looks_like_image(&buf) {
                             let _ = std::fs::create_dir_all(&*dir);
-                            let _ = std::fs::write(dir.join(&name), buf);
+                            // A dropped connection would otherwise leave a
+                            // truncated file under the real name.
+                            let part = dir.join(format!("{name}.part"));
+                            if std::fs::write(&part, buf).is_ok() {
+                                let _ = std::fs::rename(&part, dir.join(&name));
+                            }
                         }
                     }
                 })
@@ -8545,7 +8470,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             auction_ids: Mutex::new(initial_auction_ids),
             auction_ids_path,
             img_cache_dir,
-            img_server_port: Mutex::new(0),
             local_player_name: Arc::new(Mutex::new(None)),
             pending_relic_rewards: Mutex::new(None),
             relics_run_prices: Mutex::new(initial_relics_run_prices),
@@ -8572,23 +8496,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ocr::use_bundled_tessdata(&dir);
             }
 
-            // Spin up a tiny local HTTP server that serves cached item images from disk.
-            // This is more reliable than convertFileSrc (which needs assetProtocol scope).
-            // Bind the std listener here (sync) to get the port, then convert to tokio
-            // inside the spawned async block where the tokio runtime is active.
-            {
-                let img_cache_dir = app.state::<AppState>().img_cache_dir.clone();
-                let std_listener = std::net::TcpListener::bind("127.0.0.1:0")
-                    .map_err(|e| e.to_string())?;
-                let port = std_listener.local_addr().map_err(|e| e.to_string())?.port();
-                *app.state::<AppState>().img_server_port.lock().unwrap() = port;
-                tauri::async_runtime::spawn(async move {
-                    std_listener.set_nonblocking(true).ok();
-                    if let Ok(tokio_listener) = tokio::net::TcpListener::from_std(std_listener) {
-                        serve_image_files(tokio_listener, img_cache_dir).await;
-                    }
-                });
-            }
+            // The cache directory is not under any Tauri path variable, so
+            // the asset scope cannot be declared in tauri.conf.json.
+            let img_cache_dir = app.state::<AppState>().img_cache_dir.clone();
+            app.asset_protocol_scope()
+                .allow_directory(&img_cache_dir, false)
+                .map_err(|e| e.to_string())?;
 
             if let Some(window) = app.get_webview_window("main") {
                 let icon = tauri::image::Image::from_bytes(
