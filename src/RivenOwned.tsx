@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { verdictColor } from "./rivenTypes";
 import type { GradedRiven, GradedStat } from "./rivenTypes";
-import { formatChallengeName } from "./MarketHelper";
+import { formatChallengeName } from "./market/MarketHelper";
 import polMadurai  from "./assets/polarity/madurai.svg";
 import polVazarin  from "./assets/polarity/vazarin.svg";
 import polNaramon  from "./assets/polarity/naramon.svg";

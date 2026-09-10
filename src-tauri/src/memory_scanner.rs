@@ -180,15 +180,36 @@ pub fn xp_to_rank(xp: i64, path: &str) -> u32 {
 
 /// Offset just past the FULL_ACCOUNT blob's closing brace, from the rightmost
 /// [`END_MARKERS`] hit.
+///
+/// A marker key counts only when its boolean value is followed directly by
+/// `}`: the same key also appears mid-blob with fields after it, and the
+/// first `}` after that copy closes a nested object, not the blob.
 fn find_blob_end(raw: &[u8]) -> Option<usize> {
+    const BOOL_VALUES: &[&[u8]] = &[b"true", b"false"];
+    let skip_ws = |from: usize| {
+        raw[from..]
+            .iter()
+            .position(|&b| !matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
+            .map_or(raw.len(), |p| from + p)
+    };
     let mut best: Option<usize> = None;
     for marker in END_MARKERS {
-        let Some(key_pos) = memmem::find(raw, marker) else { continue };
-        let after = key_pos + marker.len();
-        let Some(brace) = memchr::memchr(b'}', &raw[after..]) else { continue };
-        let end = after + brace + 1;
-        if best.is_none_or(|prev| end > prev) {
-            best = Some(end);
+        let mut search_from = 0;
+        while let Some(rel) = memmem::find(&raw[search_from..], marker) {
+            let key_pos = search_from + rel;
+            search_from = key_pos + marker.len();
+            let val_start = skip_ws(search_from);
+            let Some(val_len) = BOOL_VALUES
+                .iter()
+                .find(|v| raw[val_start..].starts_with(v))
+                .map(|v| v.len())
+            else { continue };
+            let after_val = skip_ws(val_start + val_len);
+            if raw.get(after_val) != Some(&b'}') { continue }
+            let end = after_val + 1;
+            if best.is_none_or(|prev| end > prev) {
+                best = Some(end);
+            }
         }
     }
     best
@@ -302,7 +323,7 @@ pub fn compute_riven_mod_name(buffs: &[BlobRivenStat]) -> String {
     }
     if buffs.is_empty() { return String::new(); }
     let mut sorted: Vec<&BlobRivenStat> = buffs.iter().collect();
-    sorted.sort_by(|a, b| b.value.cmp(&a.value));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.value));
     let Some((hi_p, _))  = parts(&sorted[0].tag)                   else { return String::new(); };
     let Some((_, lo_s))  = parts(&sorted[sorted.len() - 1].tag)    else { return String::new(); };
     if sorted.len() >= 3 {
@@ -384,7 +405,7 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
     let json: serde_json::Value = serde_json::from_slice(&json_bytes)
         .map_err(|e| {
             let head: String = json_bytes[..json_bytes.len().min(48)]
-                .iter().map(|&b| if b >= 0x20 && b < 0x7f { b as char } else { '.' }).collect();
+                .iter().map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' }).collect();
             debug!(target: "frameforge::blob_parse", error = %e, head = ?head, "JSON error");
         })
         .ok()?;
@@ -1396,7 +1417,7 @@ pub(crate) fn sync_marker_is_new(newest: Option<f64>) -> bool {
 
 #[cfg(test)]
 mod seed_tests {
-    use super::{enclosing_object_start, blob_seed_offsets, extract_blob_json, extract_blob_json_at};
+    use super::{enclosing_object_start, blob_seed_offsets, extract_blob_json, extract_blob_json_at, find_blob_end};
     use std::borrow::Cow;
 
     #[test]
@@ -1480,6 +1501,24 @@ mod seed_tests {
     }
 
     #[test]
+    fn mid_blob_marker_is_not_treated_as_end() {
+        let raw = br#"{"SubscribedToEmails":0,"HWIDProtectEnabled":false,"MiscItems":[{"ItemType":"/x","ItemCount":1}]}"#;
+        assert!(find_blob_end(raw).is_none());
+    }
+
+    #[test]
+    fn marker_accepted_when_last_field() {
+        let raw = br#"{"SubscribedToEmails":0,"MiscItems":[],"HWIDProtectEnabled":false}"#;
+        assert_eq!(find_blob_end(raw), Some(raw.len()));
+    }
+
+    #[test]
+    fn rightmost_valid_marker_wins() {
+        let raw = br#"{"HWIDProtectEnabled":true,"DeathSquadable":false}"#;
+        assert_eq!(find_blob_end(raw), Some(raw.len()));
+    }
+
+    #[test]
     fn blob_json_stops_at_the_closing_brace_of_the_object() {
         // A stitched scan buffer: the blob, then the rest of the memory region
         // it happened to end in.
@@ -1496,7 +1535,7 @@ mod seed_tests {
     fn blob_json_reinstates_the_opening_brace_when_it_was_overwritten() {
         let mut raw = br#"x"SubscribedToEmails":0,"DeathSquadable":false}"#.to_vec();
         let blob_len = raw.len();
-        raw.extend(std::iter::repeat(0xABu8).take(1024));
+        raw.extend(std::iter::repeat_n(0xABu8, 1024));
 
         let json = extract_blob_json(&raw).expect("end marker present");
         assert_eq!(json.len(), blob_len);

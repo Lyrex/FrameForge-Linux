@@ -12,6 +12,9 @@ pub struct QuantityChange {
     pub new_qty: i64,
     pub delta: i64,
     pub timestamp: i64,
+    /// Rank of the mod/arcane that changed (None for regular items).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rank: Option<u8>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -183,6 +186,20 @@ fn migrate(conn: &Connection) -> Result<()> {
             )?;
         }
         conn.pragma_update(None, "user_version", 6)?;
+    }
+
+    // Guarded like `deleted`: a database that came from upstream already has
+    // the column at user_version 4.
+    if version < 7 {
+        let has_rank: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('quantity_changes') WHERE name = 'rank'",
+            [],
+            |r| r.get::<_, i64>(0).map(|n| n > 0),
+        )?;
+        if !has_rank {
+            conn.execute_batch("ALTER TABLE quantity_changes ADD COLUMN rank INTEGER;")?;
+        }
+        conn.pragma_update(None, "user_version", 7)?;
     }
 
     // An older build inserts '' for uid; repair after a downgrade and upgrade.
@@ -385,19 +402,20 @@ pub fn add_quantity_change(
     item_name: &str,
     old_qty: i64,
     new_qty: i64,
+    rank: Option<u8>,
 ) -> Result<()> {
     let ts = chrono::Utc::now().timestamp();
     conn.execute(
-        "INSERT INTO quantity_changes (unique_name, item_name, old_qty, new_qty, delta, timestamp)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![unique_name, item_name, old_qty, new_qty, new_qty - old_qty, ts],
+        "INSERT INTO quantity_changes (unique_name, item_name, old_qty, new_qty, delta, timestamp, rank)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![unique_name, item_name, old_qty, new_qty, new_qty - old_qty, ts, rank],
     )?;
     Ok(())
 }
 
 pub fn get_quantity_changes(conn: &Connection, limit: i64) -> Result<Vec<QuantityChange>> {
     let mut stmt = conn.prepare(
-        "SELECT id, unique_name, item_name, old_qty, new_qty, delta, timestamp
+        "SELECT id, unique_name, item_name, old_qty, new_qty, delta, timestamp, rank
          FROM quantity_changes
          ORDER BY id DESC
          LIMIT ?1",
@@ -412,6 +430,7 @@ pub fn get_quantity_changes(conn: &Connection, limit: i64) -> Result<Vec<Quantit
                 new_qty: row.get(4)?,
                 delta: row.get(5)?,
                 timestamp: row.get(6)?,
+                rank: row.get(7)?,
             })
         })?
         .filter_map(|r| r.ok())
