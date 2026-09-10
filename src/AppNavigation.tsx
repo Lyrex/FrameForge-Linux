@@ -28,6 +28,10 @@ export default function AppNavigation({ activeModule, onModuleChange }: AppNavig
         <img src="/timers-icon.png" alt="" style={{ width: 24, height: 24, objectFit: "contain" }} />
         <span className="module-label">Timers</span>
       </button>
+      <button className={`module-btn ${activeModule === "arbitrations" ? "module-active" : ""}`} onClick={() => onModuleChange("arbitrations")} title="Arbitrations">
+        <span aria-hidden style={{ width: 24, height: 24, lineHeight: "24px", fontSize: 20, textAlign: "center" }}>⚖</span>
+        <span className="module-label">Arbitrations</span>
+      </button>
       <button className={`module-btn ${activeModule === "statistics" ? "module-active" : ""}`} onClick={() => onModuleChange("statistics")} title="Statistics">
         <img src="/statistics-icon.png" alt="" style={{ width: 24, height: 24, objectFit: "contain" }} />
         <span className="module-label">Statistics</span>

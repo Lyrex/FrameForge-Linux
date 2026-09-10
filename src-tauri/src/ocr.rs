@@ -8,7 +8,7 @@
 
 /// Compute average pixel brightness from a BGRA buffer (sampled every 64 pixels).
 fn avg_brightness(pixels: &[u8]) -> u32 {
-    let sum: u32 = pixels.chunks_exact(4).step_by(64)
+    let sum: u32 = pixels.as_chunks::<4>().0.iter().step_by(64)
         .map(|p| (p[0] as u32 + p[1] as u32 + p[2] as u32) / 3)
         .sum();
     sum / (pixels.len() / 4 / 64).max(1) as u32
@@ -1623,11 +1623,11 @@ fn capture_warframe_bgra() -> Result<(Vec<u8>, u32, u32), String> {
     // MSB-first servers hand back R, G, B — rare, but a wrong guess would make
     // the rarity-bar colour tests match the wrong hues, so handle both orders.
     if conn.get_setup().image_byte_order() == xcb::x::ImageOrder::MsbFirst {
-        for px in pixels.chunks_exact_mut(4) {
+        for px in pixels.as_chunks_mut::<4>().0 {
             px.swap(0, 2);
         }
     }
-    for px in pixels.chunks_exact_mut(4) {
+    for px in pixels.as_chunks_mut::<4>().0 {
         px[3] = 255;
     }
     Ok((pixels, width, height))
@@ -1725,7 +1725,10 @@ const WORD_GAP: f32 = 0.07;
 ///
 /// Each returned entry is `(text, x_centre, y_centre)`, averaged over the words
 /// that make up that sub-line.
-fn assemble_ocr_lines(engine_lines: &[Vec<OcrWord>]) -> (String, Vec<(String, f32, f32)>) {
+/// Full recognised text plus `(text, centre x, centre y)` per line segment.
+type OcrLines = (String, Vec<(String, f32, f32)>);
+
+fn assemble_ocr_lines(engine_lines: &[Vec<OcrWord>]) -> OcrLines {
     let mut full = String::new();
     let mut lines_out: Vec<(String, f32, f32)> = Vec::new();
 
@@ -1782,7 +1785,7 @@ pub fn run_ocr(
     img_w: u32,
     img_h: u32,
     layout: OcrLayout,
-) -> Result<(String, Vec<(String, f32, f32)>), String> {
+) -> Result<OcrLines, String> {
     let expected = (img_w as usize) * (img_h as usize);
     if pixels_bgra.len() < expected * 4 {
         return Err(format!(
@@ -1804,7 +1807,7 @@ pub fn run_ocr(
     }
 
     let luminance: Vec<u8> = pixels_bgra[..expected * 4]
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|px| {
             ((px[2] as u32 * 299 + px[1] as u32 * 587 + px[0] as u32 * 114) / 1000).min(255) as u8
         })
@@ -1853,7 +1856,7 @@ fn recognize_samples(
     img_w: u32,
     img_h: u32,
     layout: OcrLayout,
-) -> Result<(String, Vec<(String, f32, f32)>), String> {
+) -> Result<OcrLines, String> {
     use tesseract::{PageSegMode, Tesseract};
 
     let mut engine = Tesseract::new(BUNDLED_TESSDATA.get().map(String::as_str), Some("eng"))
@@ -1911,7 +1914,7 @@ const UI_TEXT_COLOURS: &[(u8, u8, u8)] = &[
 fn ui_text_mask(pixels_bgra: &[u8]) -> Option<Vec<u8>> {
     let mut matched = false;
     let mask: Vec<u8> = pixels_bgra
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|px| {
             let is_ui_text = UI_TEXT_COLOURS
                 .iter()
@@ -1934,6 +1937,9 @@ fn ui_text_mask(pixels_bgra: &[u8]) -> Option<Vec<u8>> {
 /// `extract_reward_items_twophase` uses line index as a stand-in for screen
 /// position — sparse-text mode makes no ordering promise, so the order is
 /// imposed here instead.
+/// `(top, left, word)` in pixels, so sorting orders words within a line.
+type PlacedWord = (i32, i32, OcrWord);
+
 fn parse_tesseract_tsv(tsv: &str, img_w: u32, img_h: u32) -> Vec<Vec<OcrWord>> {
     // Zero dimensions would make every fraction a division by zero; the callers
     // reject sub-4-pixel rects, so this only guards against a degenerate BMP.
@@ -1943,7 +1949,7 @@ fn parse_tesseract_tsv(tsv: &str, img_w: u32, img_h: u32) -> Vec<Vec<OcrWord>> {
 
     // Keyed by (block, paragraph, line) so words from two different text regions
     // that happen to share a baseline stay in separate lines.
-    let mut lines: std::collections::BTreeMap<(i32, i32, i32), Vec<(i32, i32, OcrWord)>> =
+    let mut lines: std::collections::BTreeMap<(i32, i32, i32), Vec<PlacedWord>> =
         std::collections::BTreeMap::new();
 
     for row in tsv.lines() {
@@ -2123,7 +2129,7 @@ mod tesseract_tests {
             // 80% of the game window. Bar detection reads absolute proportions,
             // so a full-height frame would not exercise the real geometry.
             let mut bgra = image.rgba().to_vec();
-            for px in bgra.chunks_exact_mut(4) {
+            for px in bgra.as_chunks_mut::<4>().0 {
                 px.swap(0, 2);
             }
             let cap_h = ((full_h as f32 * 0.80) as u32).max(1);

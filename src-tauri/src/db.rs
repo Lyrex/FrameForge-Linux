@@ -531,6 +531,8 @@ pub struct RunQuery {
     pub mission_type: Option<String>,
 }
 
+// TODO: expose over IPC once the run history view grows date/node/mission filters.
+#[allow(dead_code)]
 pub fn get_arbitration_runs(conn: &Connection, query: &RunQuery) -> Result<Vec<Run>> {
     let mut stmt = conn.prepare(
         "SELECT started_at, run_start_sec, run_end_sec, mission_name, node,

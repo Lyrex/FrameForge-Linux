@@ -682,7 +682,7 @@ static LAST_BLOB_DIGEST: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 /// were reparsed, or they're identical to what the previous cycle already
 /// sent and there's nothing new to do.
 pub(crate) enum CachedBlobScan {
-    Fresh(usize, BlobInventory),
+    Fresh(usize, Box<BlobInventory>),
     Unchanged,
 }
 
@@ -901,7 +901,7 @@ pub(crate) fn scan_cached_blob(
         return Some(CachedBlobScan::Unchanged);
     }
     match parse_full_account_blob(&stitched) {
-        Some(inventory) => Some(CachedBlobScan::Fresh(cached_addr, inventory)),
+        Some(inventory) => Some(CachedBlobScan::Fresh(cached_addr, Box::new(inventory))),
         None => {
             forget_blob_digest();
             None
@@ -987,7 +987,7 @@ pub(crate) fn stitch_blobs(
         };
         let n = buf.len();
         bytes_read += n as u64;
-        let chunk = &buf[..];
+        let chunk = buf;
         regions_read += 1;
 
         // ── Step 1: append this chunk to every active scan and check for completion ──
@@ -1239,7 +1239,7 @@ pub(crate) fn probe_outcome(
                 stackable = inventory.stackable_items.len(),
                 "probe hit"
             );
-            blob_tx.send(inventory).ok();
+            blob_tx.send(*inventory).ok();
             ScanOutcome::Updated
         }
         Some(CachedBlobScan::Unchanged) => ScanOutcome::Unchanged,
@@ -1247,19 +1247,6 @@ pub(crate) fn probe_outcome(
     }
 }
 
-/// One monitor tick: re-read the blob from its remembered address, and check
-/// whether the game has logged an inventory sync since the last tick.
-///
-/// Never falls back to a full region walk. `capture_all_blobs` does that, which
-/// makes it unusable as a poll: probing at 1-2 Hz would mean walking memory at
-/// 1-2 Hz for as long as the cached address stays stale. Splitting the two lets
-/// the caller poll cheaply and decide for itself when a miss is worth the walk.
-///
-/// The marker is read first and every tick, because it is what tells the blob
-/// scan it has something to look at. The scan itself runs only when `force` or
-/// that marker says so; between syncs it can only ever conclude that nothing
-/// moved. `None` means it was not scanned this tick, which is not the same as
-/// a miss.
 // ─── Inventory-sync marker, read from memory rather than from EE.log ──────────
 //
 // Warframe composes its log lines in process memory long before they reach
@@ -1524,7 +1511,7 @@ mod seed_tests {
         // it happened to end in.
         let mut raw = br#"{"SubscribedToEmails":0,"DeathSquadable":false}"#.to_vec();
         let blob_len = raw.len();
-        raw.extend(std::iter::repeat(0xABu8).take(1_000_000));
+        raw.extend(std::iter::repeat_n(0xABu8, 1_000_000));
 
         let json = extract_blob_json(&raw).expect("end marker present");
         assert_eq!(json.len(), blob_len);

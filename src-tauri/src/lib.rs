@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -1662,7 +1662,7 @@ fn scan_wfm_top_items(wfm: &Wfm, arcane_candidates: &[ArcaneCandidate]) -> Vec<W
         }
     }
 
-    out.sort_by(|a, b| b.total_value_7d.cmp(&a.total_value_7d));
+    out.sort_by_key(|e| std::cmp::Reverse(e.total_value_7d));
     out.truncate(10);
     out
 }
@@ -1855,7 +1855,7 @@ async fn factory_reset(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     // Delete user state that isn't the DB.
     let _ = std::fs::remove_file(data_dir.join("auction_ids.json"));
     // Wipe the entire cache tree — everything in it refetches on next launch.
-    let _ = std::fs::remove_dir_all(&cache_dir);
+    let _ = std::fs::remove_dir_all(cache_dir);
 
     // Ask the next launch to delete the DB once it can (before opening a connection).
     let marker = std::env::temp_dir().join("frameforge_factory_reset");
@@ -3266,7 +3266,7 @@ fn read_riven_flag_byte(pid: u32) -> Option<bool> {
 
     // Read failure means the mapping moved or access was lost, not that the
     // screen closed — fail open so an active overlay is never dismissed.
-    Some(memory_scanner_linux::read_process_byte(pid, flag_va).map_or(true, |byte| byte != 0))
+    Some(memory_scanner_linux::read_process_byte(pid, flag_va).is_none_or(|byte| byte != 0))
 }
 
 /// Background thread: polls the riven validity flag every 200 ms and emits
@@ -5047,7 +5047,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                             if old_count == new_count { continue; }
                             let item_name = path_to_name.get(path.as_str())
                                 .cloned()
-                                .unwrap_or_else(|| path.split('/').last().unwrap_or("?").to_string());
+                                .unwrap_or_else(|| path.split('/').next_back().unwrap_or("?").to_string());
                             let _ = db::add_quantity_change(&conn, path, &item_name, old_count, new_count, Some(rank));
                             changes.push(QuantityChange {
                                 id: 0,
@@ -5141,13 +5141,13 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
 
                 let walk_in_flight = blob_scan_active.load(Ordering::SeqCst);
                 let probe_due = last_probe_time
-                    .map_or(true, |t: std::time::Instant| t.elapsed() >= PROBE_INTERVAL);
+                    .is_none_or(|t: std::time::Instant| t.elapsed() >= PROBE_INTERVAL);
 
                 let mut should_capture = false;
                 if probe_due && !walk_in_flight {
                     last_probe_time = Some(std::time::Instant::now());
                     let stitch_due = last_blob_probe
-                        .map_or(true, |t: std::time::Instant| t.elapsed() >= BLOB_PROBE_FALLBACK)
+                        .is_none_or(|t: std::time::Instant| t.elapsed() >= BLOB_PROBE_FALLBACK)
                         || blob_sync_pending.load(Ordering::SeqCst)
                         || !memory_scanner::has_cached_blob();
                     let (outcome, sync_marker) = match last_pid {
@@ -8098,7 +8098,7 @@ async fn prewarm_image_cache(state: tauri::State<'_, AppState>) -> Result<(), St
                     let url = format!("https://cdn.warframestat.us/img/{}", name);
                     if let Ok(resp) = agent.get(&url).call() {
                         let mut buf = Vec::new();
-                        if resp.into_body().into_reader().read_to_end(&mut buf).is_ok() && looks_like_image(&buf) {
+                        if resp.into_body().into_reader().take(5 * 1024 * 1024).read_to_end(&mut buf).is_ok() && looks_like_image(&buf) {
                             let _ = std::fs::create_dir_all(&*dir);
                             let _ = std::fs::write(dir.join(&name), buf);
                         }
@@ -8239,7 +8239,7 @@ fn write_bmp(path: &std::path::Path, bgra: &[u8], w: u32, h: u32) -> std::io::Re
     // Pixel data: drop alpha channel (BGRA → BGR), pad each row to 4-byte boundary.
     let pad = [0u8; 4];
     for row in bgra.chunks_exact(w as usize * 4) {
-        for px in row.chunks_exact(4) {
+        for px in row.as_chunks::<4>().0 {
             f.write_all(&px[..3])?; // B, G, R
         }
         if padding > 0 { f.write_all(&pad[..padding])?; }
@@ -8913,7 +8913,7 @@ fn persist_complete_inventory(
     blob: &memory_scanner::BlobInventory,
     previous_unique: &HashMap<String, i64>,
     cache: &InventoryStateCache,
-    path: &PathBuf,
+    path: &Path,
 ) -> bool {
     // Parsing checks required sections; an empty unique section can still be incomplete.
     // Reject before writing so a partial scan cannot become the restart baseline.
@@ -8945,7 +8945,7 @@ fn compare_inventory_quantities(
             id: 0,
             unique_name: key.clone(),
             item_name: names.get(key).cloned()
-                .unwrap_or_else(|| key.split('/').last().unwrap_or("?").to_string()),
+                .unwrap_or_else(|| key.split('/').next_back().unwrap_or("?").to_string()),
             old_qty, new_qty, delta: new_qty - old_qty, timestamp, rank: None,
         })
     }).collect()
