@@ -32,7 +32,7 @@ sed -i "0,/^version = \".*\"/s//version = \"$new\"/" "$root/src-tauri/Cargo.toml
 
 # The README's title names the current release; the other versions in its
 # prose are worked examples and stay as written.
-sed -i "s/Companion \`v[^\`]*\`/Companion \`v$new\`/" "$root/README.md"
+sed -i "s/FrameForge \`v[^\`]*\`/FrameForge \`v$new\`/" "$root/README.md"
 
 # Resync the lock file's warframe-companion entry from the manifest. Offline:
 # only the workspace member's version changes, no dependency needs resolving.
