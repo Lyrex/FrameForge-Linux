@@ -43,7 +43,7 @@ if [[ ! "$pubkey" =~ ^[A-Za-z0-9+/]+=*$ ]]; then
     exit 1
 fi
 
-readme_version=$(grep -m1 -oE "Companion \`v$scheme\`" "$root/README.md" | grep -oE "$scheme" || true)
+readme_version=$(grep -m1 -oE "FrameForge \`v$scheme\`" "$root/README.md" | grep -oE "$scheme" || true)
 if [ "$readme_version" != "$cargo_version" ]; then
     echo "::error::README says '$readme_version' but the tree is at $cargo_version"
     exit 1

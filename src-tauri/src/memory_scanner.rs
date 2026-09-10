@@ -180,15 +180,36 @@ pub fn xp_to_rank(xp: i64, path: &str) -> u32 {
 
 /// Offset just past the FULL_ACCOUNT blob's closing brace, from the rightmost
 /// [`END_MARKERS`] hit.
+///
+/// A marker key counts only when its boolean value is followed directly by
+/// `}`: the same key also appears mid-blob with fields after it, and the
+/// first `}` after that copy closes a nested object, not the blob.
 fn find_blob_end(raw: &[u8]) -> Option<usize> {
+    const BOOL_VALUES: &[&[u8]] = &[b"true", b"false"];
+    let skip_ws = |from: usize| {
+        raw[from..]
+            .iter()
+            .position(|&b| !matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
+            .map_or(raw.len(), |p| from + p)
+    };
     let mut best: Option<usize> = None;
     for marker in END_MARKERS {
-        let Some(key_pos) = memmem::find(raw, marker) else { continue };
-        let after = key_pos + marker.len();
-        let Some(brace) = memchr::memchr(b'}', &raw[after..]) else { continue };
-        let end = after + brace + 1;
-        if best.is_none_or(|prev| end > prev) {
-            best = Some(end);
+        let mut search_from = 0;
+        while let Some(rel) = memmem::find(&raw[search_from..], marker) {
+            let key_pos = search_from + rel;
+            search_from = key_pos + marker.len();
+            let val_start = skip_ws(search_from);
+            let Some(val_len) = BOOL_VALUES
+                .iter()
+                .find(|v| raw[val_start..].starts_with(v))
+                .map(|v| v.len())
+            else { continue };
+            let after_val = skip_ws(val_start + val_len);
+            if raw.get(after_val) != Some(&b'}') { continue }
+            let end = after_val + 1;
+            if best.is_none_or(|prev| end > prev) {
+                best = Some(end);
+            }
         }
     }
     best
@@ -302,7 +323,7 @@ pub fn compute_riven_mod_name(buffs: &[BlobRivenStat]) -> String {
     }
     if buffs.is_empty() { return String::new(); }
     let mut sorted: Vec<&BlobRivenStat> = buffs.iter().collect();
-    sorted.sort_by(|a, b| b.value.cmp(&a.value));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.value));
     let Some((hi_p, _))  = parts(&sorted[0].tag)                   else { return String::new(); };
     let Some((_, lo_s))  = parts(&sorted[sorted.len() - 1].tag)    else { return String::new(); };
     if sorted.len() >= 3 {
@@ -384,7 +405,7 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
     let json: serde_json::Value = serde_json::from_slice(&json_bytes)
         .map_err(|e| {
             let head: String = json_bytes[..json_bytes.len().min(48)]
-                .iter().map(|&b| if b >= 0x20 && b < 0x7f { b as char } else { '.' }).collect();
+                .iter().map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' }).collect();
             debug!(target: "frameforge::blob_parse", error = %e, head = ?head, "JSON error");
         })
         .ok()?;
@@ -661,7 +682,7 @@ static LAST_BLOB_DIGEST: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 /// were reparsed, or they're identical to what the previous cycle already
 /// sent and there's nothing new to do.
 pub(crate) enum CachedBlobScan {
-    Fresh(usize, BlobInventory),
+    Fresh(usize, Box<BlobInventory>),
     Unchanged,
 }
 
@@ -880,7 +901,7 @@ pub(crate) fn scan_cached_blob(
         return Some(CachedBlobScan::Unchanged);
     }
     match parse_full_account_blob(&stitched) {
-        Some(inventory) => Some(CachedBlobScan::Fresh(cached_addr, inventory)),
+        Some(inventory) => Some(CachedBlobScan::Fresh(cached_addr, Box::new(inventory))),
         None => {
             forget_blob_digest();
             None
@@ -966,7 +987,7 @@ pub(crate) fn stitch_blobs(
         };
         let n = buf.len();
         bytes_read += n as u64;
-        let chunk = &buf[..];
+        let chunk = buf;
         regions_read += 1;
 
         // ── Step 1: append this chunk to every active scan and check for completion ──
@@ -1218,7 +1239,7 @@ pub(crate) fn probe_outcome(
                 stackable = inventory.stackable_items.len(),
                 "probe hit"
             );
-            blob_tx.send(inventory).ok();
+            blob_tx.send(*inventory).ok();
             ScanOutcome::Updated
         }
         Some(CachedBlobScan::Unchanged) => ScanOutcome::Unchanged,
@@ -1226,19 +1247,6 @@ pub(crate) fn probe_outcome(
     }
 }
 
-/// One monitor tick: re-read the blob from its remembered address, and check
-/// whether the game has logged an inventory sync since the last tick.
-///
-/// Never falls back to a full region walk. `capture_all_blobs` does that, which
-/// makes it unusable as a poll: probing at 1-2 Hz would mean walking memory at
-/// 1-2 Hz for as long as the cached address stays stale. Splitting the two lets
-/// the caller poll cheaply and decide for itself when a miss is worth the walk.
-///
-/// The marker is read first and every tick, because it is what tells the blob
-/// scan it has something to look at. The scan itself runs only when `force` or
-/// that marker says so; between syncs it can only ever conclude that nothing
-/// moved. `None` means it was not scanned this tick, which is not the same as
-/// a miss.
 // ─── Inventory-sync marker, read from memory rather than from EE.log ──────────
 //
 // Warframe composes its log lines in process memory long before they reach
@@ -1396,7 +1404,7 @@ pub(crate) fn sync_marker_is_new(newest: Option<f64>) -> bool {
 
 #[cfg(test)]
 mod seed_tests {
-    use super::{enclosing_object_start, blob_seed_offsets, extract_blob_json, extract_blob_json_at};
+    use super::{enclosing_object_start, blob_seed_offsets, extract_blob_json, extract_blob_json_at, find_blob_end};
     use std::borrow::Cow;
 
     #[test]
@@ -1480,12 +1488,30 @@ mod seed_tests {
     }
 
     #[test]
+    fn mid_blob_marker_is_not_treated_as_end() {
+        let raw = br#"{"SubscribedToEmails":0,"HWIDProtectEnabled":false,"MiscItems":[{"ItemType":"/x","ItemCount":1}]}"#;
+        assert!(find_blob_end(raw).is_none());
+    }
+
+    #[test]
+    fn marker_accepted_when_last_field() {
+        let raw = br#"{"SubscribedToEmails":0,"MiscItems":[],"HWIDProtectEnabled":false}"#;
+        assert_eq!(find_blob_end(raw), Some(raw.len()));
+    }
+
+    #[test]
+    fn rightmost_valid_marker_wins() {
+        let raw = br#"{"HWIDProtectEnabled":true,"DeathSquadable":false}"#;
+        assert_eq!(find_blob_end(raw), Some(raw.len()));
+    }
+
+    #[test]
     fn blob_json_stops_at_the_closing_brace_of_the_object() {
         // A stitched scan buffer: the blob, then the rest of the memory region
         // it happened to end in.
         let mut raw = br#"{"SubscribedToEmails":0,"DeathSquadable":false}"#.to_vec();
         let blob_len = raw.len();
-        raw.extend(std::iter::repeat(0xABu8).take(1_000_000));
+        raw.extend(std::iter::repeat_n(0xABu8, 1_000_000));
 
         let json = extract_blob_json(&raw).expect("end marker present");
         assert_eq!(json.len(), blob_len);
@@ -1496,7 +1522,7 @@ mod seed_tests {
     fn blob_json_reinstates_the_opening_brace_when_it_was_overwritten() {
         let mut raw = br#"x"SubscribedToEmails":0,"DeathSquadable":false}"#.to_vec();
         let blob_len = raw.len();
-        raw.extend(std::iter::repeat(0xABu8).take(1024));
+        raw.extend(std::iter::repeat_n(0xABu8, 1024));
 
         let json = extract_blob_json(&raw).expect("end marker present");
         assert_eq!(json.len(), blob_len);

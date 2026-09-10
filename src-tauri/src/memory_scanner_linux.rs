@@ -891,15 +891,13 @@ mod tests {
         // mapped here. process_vm_readv reports this as EFAULT, which read()
         // retries through /proc/pid/mem. Either shape must reach the caller
         // as a skip rather than a panic.
-        match process.read(0x1000, &mut buffer) {
-            Ok(read) => assert_eq!(read, 0, "no bytes can come from an unmapped page"),
-            Err(_) => {}
+        if let Ok(read) = process.read(0x1000, &mut buffer) {
+            assert_eq!(read, 0, "no bytes can come from an unmapped page");
         }
     }
 
     #[test]
     fn linux_reader_returns_leading_bytes_when_the_read_crosses_into_a_hole() {
-        use std::ffi::c_void;
 
         let page = 4096;
         // Two adjacent anonymous pages, then revoke access to the second: the
@@ -922,7 +920,7 @@ mod tests {
         unsafe {
             std::ptr::write_bytes(mapped as *mut u8, 0xAB, page);
             assert_eq!(
-                libc::mprotect(mapped.add(page) as *mut c_void, page, libc::PROT_NONE),
+                libc::mprotect(mapped.add(page), page, libc::PROT_NONE),
                 0,
                 "second page must become unreadable"
             );

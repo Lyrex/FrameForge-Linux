@@ -1,6 +1,11 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import ItemImg from "./ItemImg";
-import SearchBar from "./SearchBar";
+import SearchBar from "./shared/SearchBar";
+import { useContextMenu, CtxMenu } from "./shared/CtxMenu";
+import { openWiki, copyWikiLink } from "./lib/wiki";
+import { formatUnixTime } from "./lib/formatters";
+import type { ClockFormat } from "./types/settings";
+import type { ChangeLogEntry } from "./types/inventory";
 import "./ChangeLog.css";
 
 export const CHANGE_BATCH_GAP_SECONDS = 8;
@@ -24,16 +29,6 @@ function clampLogHeight(height: number) {
   return Math.max(getMinLogHeight(), Math.min(getMaxLogHeight(), height));
 }
 
-export interface ChangeLogEntry {
-  id: number;
-  unique_name: string;
-  item_name: string;
-  old_qty: number;
-  new_qty: number;
-  delta: number;
-  timestamp: number;
-}
-
 export interface ChangeLogCatalogItem {
   unique_name: string;
   name: string;
@@ -46,12 +41,8 @@ interface ChangeLogProps {
   arrivalToken: number;
   lastScanAt: number | null;
   catalog: ChangeLogCatalogItem[];
-  clockFormat: "auto" | "12h" | "24h";
+  clockFormat: ClockFormat;
   systemLocale: string;
-  expanded: boolean;
-  height: number;
-  onExpandedChange: (expanded: boolean) => void;
-  onHeightChange: (height: number) => void;
   onItemClick: (uniqueName: string) => void;
   onChangeLogClick: () => void;
   onCategoryClick: (category: string) => void;
@@ -69,19 +60,12 @@ function getLatestChangeBatch(changes: ChangeLogEntry[]) {
 
 function fmt(n: number) { return n.toLocaleString(); }
 function deltaText(d: number) { return fmt(Math.abs(d)); }
-function timeStr(ts: number, format: ChangeLogProps["clockFormat"], locale: string) {
-  const opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" };
-  if (format === "12h") opts.hour12 = true;
-  else if (format === "24h") opts.hour12 = false;
-  return new Date(ts * 1000).toLocaleTimeString(locale, opts);
-}
-
 function changeKey(change: ChangeLogEntry) {
   return `${change.id}:${change.unique_name}:${change.timestamp}`;
 }
 
 function ChangeRow({
-  change, item, clockFormat, systemLocale, onItemClick, onCategoryClick, onFeedExpand, timeBreak = false, feed = false,
+  change, item, clockFormat, systemLocale, onItemClick, onCategoryClick, onFeedExpand, onContextMenu, timeBreak = false, feed = false,
 }: {
   change: ChangeLogEntry;
   item?: ChangeLogCatalogItem;
@@ -90,6 +74,7 @@ function ChangeRow({
   onItemClick: () => void;
   onCategoryClick: (category: string) => void;
   onFeedExpand?: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
   timeBreak?: boolean;
   feed?: boolean;
 }) {
@@ -98,14 +83,16 @@ function ChangeRow({
   return (
     <div
       className={`inv-card inv-card-row log-item-row${feed ? " log-feed-row" : ""}${timeBreak ? " log-time-break" : ""}`}
+      onContextMenu={onContextMenu}
     >
       {onFeedExpand && <button className="log-feed-open" onClick={onFeedExpand} aria-label="Open change log" />}
-      <span className="log-time">{timeStr(change.timestamp, clockFormat, systemLocale)}</span>
+      <span className="log-time">{formatUnixTime(change.timestamp, clockFormat, systemLocale)}</span>
       <div className="inv-row-icon">
         <ItemImg imageName={item?.image_name} category={category} size={20} />
       </div>
       <div className="inv-row-name log-name-group">
         <button className="log-name-link" onClick={e => { e.stopPropagation(); onItemClick(); }}>{name}</button>
+        {change.rank != null && <span className="log-rank-badge">R{change.rank}</span>}
         <button className="log-cat log-category-link" onClick={e => { e.stopPropagation(); onCategoryClick(category); }}>{category}</button>
       </div>
       <div className="inv-row-qty log-change-qty">
@@ -142,12 +129,12 @@ function ChangeLogHeader({
         {negativeChanges > 0 && <span className="log-negative">-{negativeChanges}</span>}
       </span>}
       <span className="log-status-divider" aria-hidden="true">·</span>
-      <span className="log-last-scan">last scan {lastScanAt == null ? "not yet" : timeStr(lastScanAt, clockFormat, systemLocale)}</span>
+      <span className="log-last-scan">last scan {lastScanAt == null ? "not yet" : formatUnixTime(lastScanAt, clockFormat, systemLocale)}</span>
     </div>
   );
 }
 
-function ChangeLogResizeHandle({ height, onHeightChange }: Pick<ChangeLogProps, "height" | "onHeightChange">) {
+function ChangeLogResizeHandle({ height, onHeightChange }: { height: number; onHeightChange: (height: number) => void }) {
   const resizeFrameRef = useRef<number | null>(null);
   const resizeHeightRef = useRef(height);
   const resizeCleanupRef = useRef<(() => void) | null>(null);
@@ -199,9 +186,11 @@ function ChangeLogResizeHandle({ height, onHeightChange }: Pick<ChangeLogProps, 
 }
 
 export default function ChangeLog({
-  changes, catalog, clockFormat, systemLocale, expanded, height,
-  arrivalToken, lastScanAt, onExpandedChange, onHeightChange, onItemClick, onChangeLogClick, onCategoryClick,
+  changes, catalog, clockFormat, systemLocale,
+  arrivalToken, lastScanAt, onItemClick, onChangeLogClick, onCategoryClick,
 }: ChangeLogProps) {
+  const [expanded, onExpandedChange] = useState(false);
+  const [height, onHeightChange] = useState(270);
   const handledArrivalRef = useRef(0);
   const [showArrival, setShowArrival] = useState(false);
   const [feedIndex, setFeedIndex] = useState<number | null>(null);
@@ -209,6 +198,21 @@ export default function ChangeLog({
   const [search, setSearch] = useState("");
   const catalogById = useMemo(() => new Map(catalog.map(item => [item.unique_name, item])), [catalog]);
   const latestBatch = useMemo(() => getLatestChangeBatch(changes), [changes]);
+  const { ctxMenu, open: openCtx, close: closeCtx } = useContextMenu();
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    const card = (e.target as HTMLElement).closest(".inv-card");
+    if (!card) return;
+    const nameEl = card.querySelector(".log-name-link");
+    const name = nameEl?.textContent?.trim();
+    if (name) {
+      e.preventDefault();
+      openCtx(e.clientX, e.clientY, [
+        { label: "Open Wiki", action: () => openWiki(name) },
+        { label: "Copy Wiki Link", action: () => copyWikiLink(name) },
+      ]);
+    }
+  };
   const filteredChanges = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     if (!query) return changes;
@@ -291,6 +295,7 @@ export default function ChangeLog({
           onItemClick={() => onItemClick(feedChange.unique_name)}
           onCategoryClick={onCategoryClick}
           onFeedExpand={() => onExpandedChange(true)}
+          onContextMenu={handleContextMenu}
           feed
         />
       </div>}
@@ -317,6 +322,7 @@ export default function ChangeLog({
                   systemLocale={systemLocale}
                   onItemClick={() => onItemClick(change.unique_name)}
                   onCategoryClick={onCategoryClick}
+                  onContextMenu={handleContextMenu}
                   timeBreak={index > 0 && filteredChanges[index - 1].timestamp - change.timestamp > CHANGE_BATCH_GAP_SECONDS}
                 />
               );
@@ -327,6 +333,7 @@ export default function ChangeLog({
           </div>
         </div>
       )}
+      {ctxMenu && <CtxMenu state={ctxMenu} onClose={closeCtx} />}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { fmtMs } from "./TimerHelper";
 import { fmtClock, type ClockFormat } from "./clockFormat";
-import { ensurePermission, permissionGranted } from "./notify";
+import { ensurePermission, permissionGranted } from "./lib/notify";
 import { clampLead, MAX_LEAD_MINS, MIN_LEAD_MINS, type ScheduleEntry } from "./arbitrationAlerts";
 import { useArbitrationSchedule, clampScheduleDays, SCHEDULE_DAY_OPTIONS } from "./arbitrationSchedule";
 import { tierKey, type TierKey } from "./arbitrationTiers";

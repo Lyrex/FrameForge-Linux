@@ -8,7 +8,7 @@
 
 /// Compute average pixel brightness from a BGRA buffer (sampled every 64 pixels).
 fn avg_brightness(pixels: &[u8]) -> u32 {
-    let sum: u32 = pixels.chunks_exact(4).step_by(64)
+    let sum: u32 = pixels.as_chunks::<4>().0.iter().step_by(64)
         .map(|p| (p[0] as u32 + p[1] as u32 + p[2] as u32) / 3)
         .sum();
     sum / (pixels.len() / 4 / 64).max(1) as u32
@@ -170,7 +170,7 @@ pub fn to_bmp(pixels_bgra: &[u8], width: u32, height: u32) -> Vec<u8> {
             bmp.push(pixels_bgra[i + 1]);
             bmp.push(pixels_bgra[i + 2]);
         }
-        for _ in 0..padding { bmp.push(0); }
+        bmp.extend(std::iter::repeat_n(0, padding as usize));
     }
     bmp
 }
@@ -223,7 +223,7 @@ fn word_found_in_set(
     if catalog_word.len() >= 6 {
         let suffix_len = (catalog_word.len() / 2).max(5); // half the word, min 5 chars
         let suffix = &catalog_word[catalog_word.len() - suffix_len..];
-        if ocr_words.iter().any(|w| w.find(suffix).map_or(false, |p| p != 1)) { return true; }
+        if ocr_words.iter().any(|w| w.find(suffix).is_some_and(|p| p != 1)) { return true; }
     }
 
     // Edit budget by word length. 4 chars is the shortest word this fuzzy-matches
@@ -398,7 +398,7 @@ fn find_rarity_bars(pixels: &[u8], pix_w: u32, pix_h: u32) -> (Option<(Vec<f32>,
                 while xi < scan_w && !lit[xi] { xi += 1; }
                 let gap_len = xi - gap_start;
                 if gap_len <= bridge && gap_start > 0 && xi < scan_w {
-                    for gxi in gap_start..xi { lit[gxi] = true; }
+                    lit[gap_start..xi].fill(true);
                 }
             } else {
                 xi += 1;
@@ -413,8 +413,8 @@ fn find_rarity_bars(pixels: &[u8], pix_w: u32, pix_h: u32) -> (Option<(Vec<f32>,
     let mut bands: Vec<(usize, usize)> = Vec::new();
     let mut in_band = false;
     let mut band_start = 0usize;
-    for xi in 0..scan_w {
-        match (lit[xi], in_band) {
+    for (xi, &is_lit) in lit.iter().enumerate().take(scan_w) {
+        match (is_lit, in_band) {
             (true,  false) => { band_start = xi; in_band = true; }
             (false, true)  => {
                 if xi - band_start >= min_band { bands.push((band_start, xi)); }
@@ -796,6 +796,18 @@ fn score_item(display_name: &str, words: &std::collections::HashSet<String>) -> 
 
 // ─── Reward item extraction ───────────────────────────────────────────────────
 
+struct MatchParams<'a> {
+    pixels: &'a [u8],
+    pix_w: u32,
+    pix_h: u32,
+    raw_full: &'a str,
+    ocr_lines: &'a [(String, f32, f32)],
+    catalog: &'a [(String, String)],
+    capture_info: &'a str,
+    hint_squad_size: Option<usize>,
+    player_names: &'a [String],
+}
+
 /// Relic reward detection.
 ///
 /// 1. Find rarity bars → card X positions + bar Y (reliable visual anchor).
@@ -805,12 +817,9 @@ fn score_item(display_name: &str, words: &std::collections::HashSet<String>) -> 
 /// 5. Full-frame fallback if bar detection fails.
 #[tracing::instrument(level = "info", skip_all)]
 pub fn extract_reward_items_twophase(
-    pixels: &[u8], pix_w: u32, pix_h: u32, _game_h: u32,
-    catalog: &[(String, String)],
-    capture_info: &str,
-    hint_squad_size: Option<usize>,
-    player_names: &[String],
+    params: super::OcrParams<'_>,
 ) -> (bool, bool, Vec<String>, Vec<f32>, String) {
+    let super::OcrParams { pixels, pix_w, pix_h, game_h: _game_h, catalog, capture_info, hint_squad_size, player_names } = params;
 
     // ── 1. Raw OCR ────────────────────────────────────────────────────────────
     let engine_output = run_ocr(pixels, pix_w, pix_h, OcrLayout::Scattered);
@@ -851,10 +860,10 @@ pub fn extract_reward_items_twophase(
         }
     }
 
-    match_reward_items(
-        pixels, pix_w, pix_h, &raw_full, &ocr_lines,
+    match_reward_items(MatchParams {
+        pixels, pix_w, pix_h, raw_full: &raw_full, ocr_lines: &ocr_lines,
         catalog, capture_info, hint_squad_size, player_names,
-    )
+    })
 }
 
 /// Post-OCR reward matching: rarity bars → card columns → catalog match → fill.
@@ -865,14 +874,9 @@ pub fn extract_reward_items_twophase(
 /// probes; pass the captured frame, or an empty slice when replaying recorded
 /// lines (bar detection then returns no bars and the text path is exercised).
 fn match_reward_items(
-    pixels: &[u8], pix_w: u32, pix_h: u32,
-    raw_full: &str,
-    ocr_lines: &[(String, f32, f32)],
-    catalog: &[(String, String)],
-    capture_info: &str,
-    hint_squad_size: Option<usize>,
-    player_names: &[String],
+    params: MatchParams<'_>,
 ) -> (bool, bool, Vec<String>, Vec<f32>, String) {
+    let MatchParams { pixels, pix_w, pix_h, raw_full, ocr_lines, catalog, capture_info, hint_squad_size, player_names } = params;
 
     // ── 2. Find card positions from rarity bars ───────────────────────────────
     // Rarity bars are always present regardless of Owned/Crafted labels.
@@ -1619,11 +1623,11 @@ fn capture_warframe_bgra() -> Result<(Vec<u8>, u32, u32), String> {
     // MSB-first servers hand back R, G, B — rare, but a wrong guess would make
     // the rarity-bar colour tests match the wrong hues, so handle both orders.
     if conn.get_setup().image_byte_order() == xcb::x::ImageOrder::MsbFirst {
-        for px in pixels.chunks_exact_mut(4) {
+        for px in pixels.as_chunks_mut::<4>().0 {
             px.swap(0, 2);
         }
     }
-    for px in pixels.chunks_exact_mut(4) {
+    for px in pixels.as_chunks_mut::<4>().0 {
         px[3] = 255;
     }
     Ok((pixels, width, height))
@@ -1721,7 +1725,10 @@ const WORD_GAP: f32 = 0.07;
 ///
 /// Each returned entry is `(text, x_centre, y_centre)`, averaged over the words
 /// that make up that sub-line.
-fn assemble_ocr_lines(engine_lines: &[Vec<OcrWord>]) -> (String, Vec<(String, f32, f32)>) {
+/// Full recognised text plus `(text, centre x, centre y)` per line segment.
+type OcrLines = (String, Vec<(String, f32, f32)>);
+
+fn assemble_ocr_lines(engine_lines: &[Vec<OcrWord>]) -> OcrLines {
     let mut full = String::new();
     let mut lines_out: Vec<(String, f32, f32)> = Vec::new();
 
@@ -1778,7 +1785,7 @@ pub fn run_ocr(
     img_w: u32,
     img_h: u32,
     layout: OcrLayout,
-) -> Result<(String, Vec<(String, f32, f32)>), String> {
+) -> Result<OcrLines, String> {
     let expected = (img_w as usize) * (img_h as usize);
     if pixels_bgra.len() < expected * 4 {
         return Err(format!(
@@ -1800,7 +1807,7 @@ pub fn run_ocr(
     }
 
     let luminance: Vec<u8> = pixels_bgra[..expected * 4]
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|px| {
             ((px[2] as u32 * 299 + px[1] as u32 * 587 + px[0] as u32 * 114) / 1000).min(255) as u8
         })
@@ -1849,7 +1856,7 @@ fn recognize_samples(
     img_w: u32,
     img_h: u32,
     layout: OcrLayout,
-) -> Result<(String, Vec<(String, f32, f32)>), String> {
+) -> Result<OcrLines, String> {
     use tesseract::{PageSegMode, Tesseract};
 
     let mut engine = Tesseract::new(BUNDLED_TESSDATA.get().map(String::as_str), Some("eng"))
@@ -1907,7 +1914,7 @@ const UI_TEXT_COLOURS: &[(u8, u8, u8)] = &[
 fn ui_text_mask(pixels_bgra: &[u8]) -> Option<Vec<u8>> {
     let mut matched = false;
     let mask: Vec<u8> = pixels_bgra
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|px| {
             let is_ui_text = UI_TEXT_COLOURS
                 .iter()
@@ -1930,6 +1937,9 @@ fn ui_text_mask(pixels_bgra: &[u8]) -> Option<Vec<u8>> {
 /// `extract_reward_items_twophase` uses line index as a stand-in for screen
 /// position — sparse-text mode makes no ordering promise, so the order is
 /// imposed here instead.
+/// `(top, left, word)` in pixels, so sorting orders words within a line.
+type PlacedWord = (i32, i32, OcrWord);
+
 fn parse_tesseract_tsv(tsv: &str, img_w: u32, img_h: u32) -> Vec<Vec<OcrWord>> {
     // Zero dimensions would make every fraction a division by zero; the callers
     // reject sub-4-pixel rects, so this only guards against a degenerate BMP.
@@ -1939,7 +1949,7 @@ fn parse_tesseract_tsv(tsv: &str, img_w: u32, img_h: u32) -> Vec<Vec<OcrWord>> {
 
     // Keyed by (block, paragraph, line) so words from two different text regions
     // that happen to share a baseline stay in separate lines.
-    let mut lines: std::collections::BTreeMap<(i32, i32, i32), Vec<(i32, i32, OcrWord)>> =
+    let mut lines: std::collections::BTreeMap<(i32, i32, i32), Vec<PlacedWord>> =
         std::collections::BTreeMap::new();
 
     for row in tsv.lines() {
@@ -2119,7 +2129,7 @@ mod tesseract_tests {
             // 80% of the game window. Bar detection reads absolute proportions,
             // so a full-height frame would not exercise the real geometry.
             let mut bgra = image.rgba().to_vec();
-            for px in bgra.chunks_exact_mut(4) {
+            for px in bgra.as_chunks_mut::<4>().0 {
                 px.swap(0, 2);
             }
             let cap_h = ((full_h as f32 * 0.80) as u32).max(1);
@@ -2128,9 +2138,10 @@ mod tesseract_tests {
             // The squad size is what the live path gets from EE.log; the corpus
             // has no player names to filter out.
             let hint_squad = spec["reward_count"].as_u64().map(|n| n as usize);
-            let (_, _, items, _, diag) = extract_reward_items_twophase(
-                &bgra, width, cap_h, full_h, &catalog, file, hint_squad, &[],
-            );
+            let (_, _, items, _, diag) = extract_reward_items_twophase(crate::OcrParams {
+                pixels: &bgra, pix_w: width, pix_h: cap_h, game_h: full_h,
+                catalog: &catalog, capture_info: file, hint_squad_size: hint_squad, player_names: &[],
+            });
 
             let mut got: Vec<String> = items.iter().map(|n| fold(n)).collect();
             let mut want: Vec<String> = spec["items"]
@@ -2277,10 +2288,10 @@ mod tests {
         // were rejected. The phantom is produced by the text fill, not the bars.
         let pixels = vec![0u8; 8 * 8 * 4];
 
-        let (_complete, _skip, items, _positions, diag) = match_reward_items(
-            &pixels, 8, 8, &raw_full, &ocr_lines,
-            &catalog, "replay", None, &player_names,
-        );
+        let (_complete, _skip, items, _positions, diag) = match_reward_items(MatchParams {
+            pixels: &pixels, pix_w: 8, pix_h: 8, raw_full: &raw_full, ocr_lines: &ocr_lines,
+            catalog: &catalog, capture_info: "replay", hint_squad_size: None, player_names: &player_names,
+        });
 
         // The catalog carries a distinct "2X Forma Blueprint"; either spelling is
         // the same real card.
