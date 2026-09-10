@@ -5485,7 +5485,7 @@ dependencies = [
 
 [[package]]
 name = "warframe-companion"
-version = "4.2.4"
+version = "4.2.5"
 dependencies = [
  "chrono",
  "dirs",
