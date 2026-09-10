@@ -184,7 +184,6 @@ export default function ItemReport() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -219,9 +218,8 @@ export default function ItemReport() {
   }, []);
 
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => setDebouncedQuery(searchQuery), 150);
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+    const t = setTimeout(() => setDebouncedQuery(searchQuery), 150);
+    return () => clearTimeout(t);
   }, [searchQuery]);
 
   const openSearch = useCallback(async () => {

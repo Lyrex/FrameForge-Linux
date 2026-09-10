@@ -52,28 +52,16 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
   user-select: none;
 }
 .update-badge:hover { background: rgba(63,185,80,.95); }
-.update-badge-dismiss {
-  background: none; border: none; color: rgba(255,255,255,.65);
-  cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px;
-  display: flex; align-items: center;
-}
-.update-badge-dismiss:hover { color: #fff; }
 .header-right  { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 
 .blob-status-badge {
   font-size: 11px; font-weight: 600; border-radius: 5px;
   padding: 2px 9px; flex-shrink: 0; letter-spacing: .02em;
 }
-.blob-status-scanning {
-  color: #64b5f6; background: rgba(100,181,246,.10);
-  border: 1px solid rgba(100,181,246,.30);
-  animation: blob-pulse 1.4s ease-in-out infinite;
-}
 .blob-status-done {
   color: #3fb950; background: rgba(63,185,80,.10);
   border: 1px solid rgba(63,185,80,.30);
 }
-@keyframes blob-pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
 
 /* Connection status chips */
 .conn-chip {
@@ -107,23 +95,6 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .conn-overlay .conn-dot { background: #9ecaed; animation: pulse-ocr 1.2s ease-in-out infinite; }
 .conn-overlay .conn-detail { color: #9ecaed; font-family: monospace; }
 @keyframes pulse-ocr { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
-
-.btn-monitor {
-  padding: 5px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 12px;
-  transition: all .15s;
-}
-.btn-monitor.active { border-color: var(--green); color: var(--green); }
-.btn-monitor:hover  { border-color: var(--accent); color: var(--accent); }
-.btn-wf-connect { padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); cursor: pointer; font-size: 12px; transition: all .15s; }
-.btn-wf-connect:hover:not(:disabled) { border-color: #f0c040; color: #f0c040; }
-.btn-wf-connect.connected { border-color: #f0c040; color: #f0c040; cursor: default; }
-.btn-wf-connect:disabled { opacity: .6; cursor: wait; }
 
 /* Text scaling — zoom re-renders glyphs at the scaled size (crisp); the old
    transform: scale() rasterized at layout size then stretched the bitmap,
@@ -174,15 +145,6 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 }
 .foundry-cb-owned { background: rgba(240,192,64,.2); color: #f0c040; border: 1px solid rgba(240,192,64,.4); }
 .foundry-cb-ready { background: rgba(56,139,253,.2); color: #6ea8fe; border: 1px solid rgba(56,139,253,.4); }
-
-/* Wiki button on Foundry cards */
-.craft-wiki-btn {
-  margin-left: auto; font-size: 8px; font-weight: 700; padding: 1px 4px;
-  border-radius: 3px; border: 1px solid rgba(56,139,253,.3);
-  background: rgba(56,139,253,.08); color: #6ea8fe; cursor: pointer;
-  flex-shrink: 0; transition: all .1s;
-}
-.craft-wiki-btn:hover { background: rgba(56,139,253,.2); color: #a8c8ff; }
 
 .btn-icon-brand {
   display: flex; align-items: center; justify-content: center;
@@ -328,16 +290,6 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 }
 .search-box:focus { border-color: var(--accent); }
 
-.toggle-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  cursor: pointer;
-  white-space: nowrap;
-  font-size: 12px;
-}
-.toggle-label input { accent-color: var(--accent); }
 .item-count-label { color: var(--muted); font-size: 11px; white-space: nowrap; }
 
 /* ── Filter bar ── */
@@ -373,9 +325,6 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 
 /* ── Inventory card grid (see InventoryGrid.css) ── */
 
-/* ── Item list (legacy, kept for safety) ── */
-.item-list { flex: 1; overflow-y: auto; padding: 4px 0; }
-
 .empty-msg { padding: 40px 24px; color: var(--muted); text-align: center; line-height: 1.6; }
 
 /* ── View toggle (shared across Inventory / Foundry / Relics) ── */
@@ -390,53 +339,6 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 }
 .view-btn:hover { color: var(--text); background: rgba(255,255,255,.06); }
 .view-btn-active { color: var(--accent); border-color: rgba(56,139,253,.4); background: rgba(56,139,253,.08); }
-
-.item-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 16px;
-  border-bottom: 1px solid rgba(48,54,61,.5);
-  transition: background .1s;
-}
-.item-row:hover  { background: rgba(255,255,255,.03); }
-.item-zero       { opacity: .4; }
-.item-gained     { border-left: 2px solid var(--green); background: rgba(63,185,80,.04); }
-.item-lost       { border-left: 2px solid var(--red);   background: rgba(248,81,73,.04); }
-
-/* .item-img, .item-img-fallback removed — now in images.css */
-.item-name { flex: 1; color: var(--text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; display: flex; flex-direction: column; justify-content: center; gap: 1px; }
-.item-rank-info { font-size: 10px; color: var(--accent); opacity: 0.85; white-space: nowrap; }
-
-.item-cat-badge {
-  font-size: 10px;
-  color: var(--muted);
-  background: rgba(255,255,255,.06);
-  padding: 1px 6px;
-  border-radius: 4px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.crafting-badge {
-  font-size: 11px; font-weight: 600; flex-shrink: 0;
-  padding: 2px 7px; border-radius: 4px;
-  color: #e07b00; background: rgba(224,123,0,.15);
-  border: 1px solid rgba(224,123,0,.3);
-  white-space: nowrap;
-}
-.crafting-done { color: var(--green); background: rgba(63,185,80,.12); border-color: rgba(63,185,80,.3); }
-
-.item-qty    { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--text); min-width: 70px; text-align: right; flex-shrink: 0; }
-.qty-zero    { color: var(--muted); }
-
-.rank-badge {
-  font-size: 10px; font-weight: 600; flex-shrink: 0;
-  padding: 1px 7px; border-radius: 4px;
-  color: #c09040; background: rgba(192,144,64,.15);
-  border: 1px solid rgba(192,144,64,.35);
-  white-space: nowrap;
-}
 
 /* ── Relic Helper ── */
 .relic-helper { display: flex; flex-direction: column; flex: 1; overflow: hidden; min-height: 0; }
@@ -672,7 +574,6 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 }
 .module-btn:hover  { background: rgba(255,255,255,.06); color: var(--text); }
 .module-active     { color: var(--accent) !important; background: rgba(56,139,253,.12) !important; }
-.module-icon       { font-size: 20px; line-height: 1; }
 .module-label {
   font-size: 9px;
   font-weight: 600;
@@ -829,12 +730,6 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
   font-size: 10px; color: var(--accent); padding: 0 6px; text-align: center;
   font-style: italic; opacity: 0.85;
 }
-.craft-acquired-badge {
-  display: inline-flex; align-items: center;
-  padding: 1px 5px; border-radius: 4px; font-size: 9px;
-  background: rgba(100,180,255,.12); color: #64b4ff;
-  border: 1px solid rgba(100,180,255,.3); cursor: help;
-}
 .craft-row-acquired-tag {
   color: #64b4ff; font-size: 10px; font-style: italic; cursor: help;
 }
@@ -852,11 +747,6 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .vault-yes { color: #ff6b6b; background: rgba(255,107,107,.15); border: 1px solid rgba(255,107,107,.35); }
 .vault-no  { color: #4ecdc4; background: rgba(78,205,196,.12); border: 1px solid rgba(78,205,196,.3); }
 
-/* Right: (legacy reference kept for modal) */
-.craft-card-right { display: none; }
-.craft-foundry-badge {
-  font-size: 18px; flex-shrink: 0;
-}
 /* Compact single-icon tags — keep full color, minimal width */
 .craft-icon-tag {
   display: inline-flex; align-items: center; justify-content: center;
@@ -868,7 +758,6 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .craft-icon-rank    { background: rgba(255,255,255,.07);color: var(--muted); font-size: 8px; }
 .craft-icon-foundry  { background: rgba(224,123,0,.15);  color: #e07b00; }
 .craft-icon-kuva     { background: rgba(157,108,255,.15);color: #9d6cff; }
-.craft-icon-helminth { background: rgba(95,191,79,.12);  border-color: rgba(95,191,79,.35); padding: 1px; display: flex; align-items: center; justify-content: center; }
 .craft-icon-archon   { border: 1px solid rgba(180,140,255,.4); background: rgba(25,12,50,.7); cursor: help; width: auto; }
 .craft-icon-forma    { position: relative; width: 22px; height: 22px; padding: 0; cursor: help; background: transparent; border: none; overflow: visible; }
 .craft-icon-forma-img-wrap { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
@@ -880,12 +769,6 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
   text-shadow: 0 0 4px #000, 0 0 2px #000;
   line-height: 1; pointer-events: none;
 }
-.craft-kuva-tag {
-  font-size: 9px; font-weight: 700; color: #9d6cff;
-  background: rgba(157,108,255,.15); border: 1px solid rgba(157,108,255,.3);
-  border-radius: 3px; padding: 1px 4px; flex-shrink: 0;
-}
-.craft-card-loading { font-size: 11px; color: var(--muted); padding: 2px 0; }
 
 /* ── Recipe modal ── */
 .craft-modal-overlay {
@@ -916,7 +799,6 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .craft-kuva-icon { font-size: 20px; flex-shrink: 0; }
 
 /* Component rows */
-.comp-rows { display: flex; flex-direction: column; gap: 2px; }
 .comp-row {
   display: flex; align-items: center; justify-content: space-between;
   height: 21px; padding: 0 5px; border-radius: 3px; border: 1px solid transparent;
@@ -958,46 +840,7 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 }
 .craft-detail-close:hover { color: var(--text); background: rgba(255,255,255,.06); }
 
-/* Tracking panel */
-.foundry-tracking {
-  width: 240px; flex-shrink: 0; display: flex; flex-direction: column;
-  overflow: hidden; min-height: 0;
-}
-.tracking-header-row {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 12px 6px; flex-shrink: 0; border-bottom: 1px solid var(--border);
-}
-.tracking-title { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
-.tracking-empty { padding: 16px 12px; font-size: 12px; color: var(--muted); text-align: center; }
-
-/* Tracked item rows */
-.foundry-tracked-list { overflow-y: auto; flex-shrink: 0; max-height: 38%; border-bottom: 1px solid var(--border); }
-.tracking-item {
-  display: flex; align-items: center; gap: 6px; padding: 5px 8px 5px 10px;
-  border-bottom: 1px solid rgba(48,54,61,.35); cursor: pointer; transition: background .1s;
-}
-.tracking-item:hover { background: rgba(255,255,255,.03); }
-.tracking-item-name {
-  flex: 1; font-size: 12px; color: var(--text); min-width: 0;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.tracking-item-status { font-size: 11px; font-weight: 700; flex-shrink: 0; width: 14px; text-align: center; }
-.tracking-owned .tracking-item-name { color: #f0c040; }
-.tracking-owned .tracking-item-status { color: #f0c040; }
-.tracking-ready .tracking-item-name  { color: var(--green); }
-.tracking-ready .tracking-item-status { color: var(--green); }
-.foundry-untrack-btn {
-  background: none; border: none; cursor: pointer; color: var(--muted);
-  font-size: 13px; padding: 0; flex-shrink: 0; line-height: 1;
-}
-.foundry-untrack-btn:hover { color: var(--red); }
-
 /* Requirements header + toggle */
-.tracking-req-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 6px 12px 4px; flex-shrink: 0;
-}
-.tracking-req-title { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .tracking-toggle { display: flex; gap: 2px; }
 .tracking-toggle-btn {
   padding: 2px 7px; border-radius: 4px; border: 1px solid var(--border);
@@ -1005,20 +848,8 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 }
 .tracking-toggle-btn:hover { border-color: var(--accent); color: var(--accent); }
 .tracking-toggle-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(56,139,253,.1); }
-.tracking-all-good { padding: 8px 12px; font-size: 11px; color: var(--green); }
-
-/* Requirements list */
-.foundry-totals-list { flex: 1; overflow-y: auto; min-height: 0; }
-.foundry-total-row {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 3px 12px; border-bottom: 1px solid rgba(48,54,61,.3); gap: 8px; font-size: 11px;
-}
-.total-ok { opacity: .45; }
-.foundry-total-name { flex: 1; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.foundry-total-counts { display: flex; align-items: center; gap: 3px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
 
 /* Shared detail styles */
-.foundry-detail-title { font-size: 13px; font-weight: 600; color: var(--text); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .foundry-track-btn-large {
   padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border);
   background: none; color: var(--muted); cursor: pointer; font-size: 11px;
@@ -1026,7 +857,6 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 }
 .foundry-track-btn-large:hover { border-color: #f0c040; color: #f0c040; }
 .foundry-track-btn-large.tracked { border-color: #f0c040; color: #f0c040; background: rgba(240,192,64,.1); }
-.foundry-toggle { display: flex; gap: 4px; }
 .toggle-btn { padding: 3px 10px; border-radius: 6px; border: 1px solid var(--border); background: none; color: var(--muted); cursor: pointer; font-size: 11px; transition: all .15s; }
 .toggle-btn:hover { border-color: var(--accent); color: var(--accent); }
 .toggle-active { border-color: var(--accent) !important; color: var(--accent) !important; background: rgba(56,139,253,.1) !important; }
@@ -1076,7 +906,6 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
 /* ── Market Helper ── */
-.market-helper { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 .market-tab-strip { display: flex; gap: 2px; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .market-tab-strip button { background: none; border: 1px solid rgba(48,54,61,.6); color: var(--muted); font-size: 12px; padding: 3px 14px; border-radius: 4px; cursor: pointer; transition: background .1s, color .1s, border-color .1s; }
 .market-tab-strip button:hover { background: rgba(255,255,255,.06); color: var(--text); }
@@ -1086,461 +915,9 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .market-part-clickable { cursor: pointer; transition: background .1s; }
 .market-part-clickable:hover { background: rgba(56,139,253,.08); }
 .market-tab-badge { display: inline-flex; align-items: center; justify-content: center; background: var(--red); color: #fff; font-size: 10px; font-weight: 700; border-radius: 10px; min-width: 16px; height: 16px; padding: 0 4px; margin-left: 4px; vertical-align: middle; }
-.market-header { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-.market-summary { display: flex; align-items: center; gap: 8px; padding: 5px 14px; background: rgba(255,255,255,.02); border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 12px; color: var(--muted); }
-.market-grid { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-
-.market-card { display: flex; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-.market-card-left { width: 120px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 8px; border-right: 1px solid var(--border); background: rgba(255,255,255,.02); }
-.market-set-name { font-size: 11px; font-weight: 600; color: var(--text); text-align: center; line-height: 1.3; }
-.market-set-status { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 10px; }
-.market-complete   { color: var(--green); background: rgba(63,185,80,.12); }
-.market-incomplete { color: var(--red);   background: rgba(248,81,73,.12); }
-.market-dupes      { color: #f0c040;      background: rgba(240,192,64,.12); }
-.market-set-price  { display: flex; align-items: center; gap: 3px; font-size: 13px; font-weight: 700; color: #c8a8ff; margin-top: 4px; }
-.market-price-label { font-size: 9px; color: var(--muted); }
-.market-price-loading { font-size: 11px; color: var(--muted); }
-.market-fetch-btn { padding: 3px 8px; border-radius: 5px; border: 1px solid var(--border); background: none; color: var(--accent); cursor: pointer; font-size: 10px; }
-.market-fetch-btn:hover { background: rgba(56,139,253,.1); }
-
-.market-card-right { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.market-part-row { display: flex; align-items: center; gap: 6px; padding: 5px 10px; border-bottom: 1px solid rgba(48,54,61,.4); }
-.market-part-row.part-missing { opacity: .45; }
-.market-ducat-icon { font-size: 12px; color: #c8a8ff; flex-shrink: 0; }
-.market-ducat-val  { font-size: 11px; color: #c8a8ff; font-weight: 600; min-width: 28px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.market-part-plat  { font-size: 11px; color: #aaa; min-width: 38px; text-align: right; flex-shrink: 0; display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
-.plat-icon   { font-size: 13px; color: #c8a8ff; }
-.plat-icon-sm { font-size: 11px; color: #c8a8ff; }
-
-.market-qty { font-size: 12px; font-weight: 700; min-width: 20px; text-align: center; flex-shrink: 0; border-radius: 4px; padding: 1px 4px; }
-.qty-missing  { color: var(--red);   background: rgba(248,81,73,.12); }
-.qty-have-one { color: var(--text);  background: rgba(255,255,255,.06); }
-.qty-dupe     { color: #f0c040;      background: rgba(240,192,64,.15); }
-
-.market-part-name { flex: 1; font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.market-totals-row { padding: 4px 10px; font-size: 10px; color: var(--muted); background: rgba(255,255,255,.02); }
-
-/* ── Market Helper ── */
-.market-helper { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-.market-header  { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-.market-summary { display: flex; align-items: center; gap: 6px; padding: 5px 14px; background: rgba(255,255,255,.02); border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 12px; color: var(--muted); }
-.market-grid    { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-
-.market-card          { display: flex; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-.market-card-complete { border-color: rgba(63,185,80,.4); }
-.market-card-left     { width: 130px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 12px 8px; border-right: 1px solid var(--border); background: rgba(255,255,255,.02); }
-.market-set-name      { font-size: 11px; font-weight: 600; color: var(--text); text-align: center; line-height: 1.3; }
-.market-set-badges    { display: flex; flex-direction: column; gap: 3px; align-items: center; }
-.mset-badge  { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 10px; }
-.mset-complete { color: var(--green); background: rgba(63,185,80,.12); }
-.mset-parts    { color: var(--muted); background: rgba(255,255,255,.06); }
-.mset-dupes    { color: #f0c040; background: rgba(240,192,64,.12); }
-
-.market-set-price-box { margin-top: 4px; display: flex; flex-direction: column; align-items: center; }
-.market-set-price     { display: flex; align-items: center; gap: 4px; }
-.market-price-big     { font-size: 16px; font-weight: 700; color: #b39ddb; }
-.market-price-lbl     { font-size: 9px; color: var(--muted); }
-.market-price-spin    { font-size: 11px; color: var(--muted); }
-.market-price-na      { font-size: 10px; color: var(--muted); }
-.market-fetch-btn     { padding: 3px 8px; border-radius: 5px; border: 1px solid var(--border); background: none; color: var(--accent); cursor: pointer; font-size: 10px; }
-.market-fetch-btn:hover { background: rgba(56,139,253,.1); }
-
-.market-card-right  { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.market-part-row    { display: flex; align-items: center; gap: 6px; padding: 5px 10px; border-bottom: 1px solid rgba(48,54,61,.35); }
-.market-part-row.part-missing { opacity: .4; }
-
-.mpart-ducat     { display: flex; align-items: center; gap: 3px; flex-shrink: 0; }
-.mpart-ducat-val { font-size: 11px; color: #f0c040; font-weight: 600; min-width: 26px; font-variant-numeric: tabular-nums; }
-.mpart-plat      { display: flex; align-items: center; gap: 2px; font-size: 11px; color: #b39ddb; font-weight: 600; min-width: 36px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
-
-.mpart-qty       { font-size: 12px; font-weight: 700; min-width: 22px; text-align: center; flex-shrink: 0; border-radius: 4px; padding: 1px 4px; }
-.mqty-zero { color: var(--red);   background: rgba(248,81,73,.12); }
-.mqty-one  { color: var(--text);  background: rgba(255,255,255,.06); }
-.mqty-dupe { color: #f0c040;      background: rgba(240,192,64,.15); }
-
-.mpart-name   { flex: 1; font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mpart-totals { padding: 4px 10px; font-size: 10px; color: var(--muted); background: rgba(255,255,255,.02); display: flex; align-items: center; gap: 4px; }
-
-/* ── Market Helper ── */
-.market-helper { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-.market-header  { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
-.market-summary { display: flex; align-items: center; gap: 6px; padding: 4px 12px; background: rgba(255,255,255,.02); border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 11px; color: var(--muted); }
-
-/* Grid — same pattern as Foundry */
-.market-grid {
-  flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px; min-height: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
-  gap: 6px;
-  align-content: start;
-}
-
-/* Card — horizontal: left image + right rows */
-.market-card {
-  display: flex; background: var(--surface); border: 1px solid var(--border);
-  border-radius: 8px; overflow: hidden; min-height: 100px; min-width: 0;
-}
-.market-card-complete { border-color: rgba(63,185,80,.35); }
-
-/* Left panel */
-.market-card-left {
-  width: 90px; flex-shrink: 0; display: flex; flex-direction: column;
-  align-items: center; gap: 3px; padding: 8px 5px;
-  border-right: 1px solid var(--border); background: rgba(255,255,255,.02);
-}
-.market-set-name   { font-size: 9px; font-weight: 600; color: var(--text); text-align: center; line-height: 1.25; }
-.market-set-badges { display: flex; flex-direction: column; gap: 2px; align-items: center; width: 100%; }
-.mset-badge { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 8px; white-space: nowrap; }
-.mset-complete { color: var(--green); background: rgba(63,185,80,.12); }
-.mset-parts    { color: var(--muted); background: rgba(255,255,255,.06); }
-.mset-dupes    { color: #f0c040;      background: rgba(240,192,64,.12); }
-
-.market-set-price-box { margin-top: 3px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
-.market-set-price     { display: flex; align-items: center; gap: 3px; }
-.market-price-big     { font-size: 13px; font-weight: 700; color: #b39ddb; }
-.market-price-lbl     { font-size: 8px; color: var(--muted); }
-.market-price-spin    { font-size: 10px; color: var(--muted); }
-.market-price-na      { font-size: 9px; color: var(--muted); }
-.market-fetch-btn     { padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); background: none; color: var(--accent); cursor: pointer; font-size: 9px; }
-.market-fetch-btn:hover { background: rgba(56,139,253,.1); }
-
-/* Right panel — component rows */
-.market-card-right { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
-.market-part-row   { display: flex; align-items: center; gap: 4px; padding: 3px 8px; border-bottom: 1px solid rgba(48,54,61,.3); min-width: 0; }
 .market-part-row:last-child { border-bottom: none; }
-.market-part-row.part-missing { opacity: .4; }
-
-.mpart-ducat     { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
-.mpart-ducat-val { font-size: 10px; color: #f0c040; font-weight: 600; min-width: 22px; font-variant-numeric: tabular-nums; }
-.mpart-plat      { display: flex; align-items: center; gap: 2px; font-size: 10px; color: #b39ddb; font-weight: 600; min-width: 30px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
-
-.mpart-qty  { font-size: 11px; font-weight: 700; min-width: 18px; text-align: center; flex-shrink: 0; border-radius: 3px; padding: 0 3px; }
-.mqty-zero  { color: var(--red);  background: rgba(248,81,73,.12); }
-.mqty-one   { color: var(--text); background: rgba(255,255,255,.06); }
-.mqty-dupe  { color: #f0c040;     background: rgba(240,192,64,.15); }
-
-.mpart-name   { flex: 1; font-size: 10px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.mpart-totals { padding: 3px 8px; font-size: 9px; color: var(--muted); background: rgba(255,255,255,.02); display: flex; align-items: center; gap: 3px; }
-
-/* ── Market Helper ── */
-.market-helper { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-.market-header  { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
-.market-summary { display: flex; align-items: center; gap: 6px; padding: 4px 12px; background: rgba(255,255,255,.02); border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 11px; color: var(--muted); }
-
-.market-grid {
-  flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px; min-height: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
-  gap: 6px;
-  align-content: start;
-}
-
-/* Card — no overflow:hidden so rows aren't clipped */
-.market-card {
-  display: flex; background: var(--surface); border: 1px solid var(--border);
-  border-radius: 8px; min-height: 90px; min-width: 0;
-}
-.market-card-complete { border-color: rgba(63,185,80,.35); }
-
-.market-card-left {
-  width: 90px; flex-shrink: 0; display: flex; flex-direction: column;
-  align-items: center; gap: 3px; padding: 8px 5px;
-  border-right: 1px solid var(--border); border-radius: 8px 0 0 8px;
-  background: rgba(255,255,255,.02);
-}
-.market-set-name   { font-size: 9px; font-weight: 600; color: var(--text); text-align: center; line-height: 1.25; }
-.market-set-badges { display: flex; flex-direction: column; gap: 2px; align-items: center; width: 100%; }
-.mset-badge { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 8px; white-space: nowrap; }
-.mset-complete { color: var(--green); background: rgba(63,185,80,.12); }
-.mset-parts    { color: var(--muted); background: rgba(255,255,255,.06); }
-.mset-dupes    { color: #f0c040;      background: rgba(240,192,64,.12); }
-
-.market-set-price-box { margin-top: 3px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
-.market-set-price { display: flex; align-items: center; gap: 3px; }
-.market-price-big { font-size: 13px; font-weight: 700; color: #b39ddb; }
-.market-price-lbl { font-size: 8px; color: var(--muted); }
-.market-price-spin { font-size: 10px; color: var(--muted); }
-.market-price-na   { font-size: 9px; color: var(--muted); }
-.market-fetch-btn  { padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); background: none; color: var(--accent); cursor: pointer; font-size: 9px; }
-.market-fetch-btn:hover { background: rgba(56,139,253,.1); }
-
-.market-card-right { flex: 1; display: flex; flex-direction: column; min-width: 0; border-radius: 0 8px 8px 0; overflow: hidden; }
-.market-part-row   { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid rgba(48,54,61,.3); min-width: 0; }
-.market-part-row.part-missing { opacity: .4; }
-
-.mpart-icon      { width: 14px; height: 14px; flex-shrink: 0; object-fit: contain; }
-.mpart-ducat     { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
-.mpart-ducat-val { font-size: 10px; color: #f0c040; font-weight: 600; min-width: 22px; font-variant-numeric: tabular-nums; }
-.mpart-plat      { display: flex; align-items: center; gap: 2px; font-size: 10px; color: #b39ddb; font-weight: 600; min-width: 30px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
-
-.mpart-qty  { font-size: 11px; font-weight: 700; min-width: 18px; text-align: center; flex-shrink: 0; border-radius: 3px; padding: 0 3px; }
-.mqty-zero  { color: var(--red);  background: rgba(248,81,73,.12); }
-.mqty-one   { color: var(--text); background: rgba(255,255,255,.06); }
-.mqty-dupe  { color: #f0c040;     background: rgba(240,192,64,.15); }
-
-.mpart-name   { flex: 1; font-size: 10px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.mpart-totals { padding: 3px 8px; font-size: 9px; color: var(--muted); background: rgba(255,255,255,.02); display: flex; align-items: center; gap: 3px; margin-top: auto; }
-
-/* ── Market Helper ── */
-.market-helper { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-.market-header  { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
-.market-summary { display: flex; align-items: center; gap: 6px; padding: 4px 12px; background: rgba(255,255,255,.02); border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 11px; color: var(--muted); }
-.market-grid { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px; min-height: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px,100%), 1fr)); gap: 6px; align-content: start; }
-
-.market-card          { display: flex; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; min-height: 90px; min-width: 0; }
-.market-card-complete { border-color: rgba(63,185,80,.35); }
-.market-card-left     { width: 90px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 8px 5px; border-right: 1px solid var(--border); border-radius: 8px 0 0 8px; background: rgba(255,255,255,.02); }
-.market-set-name      { font-size: 9px; font-weight: 600; color: var(--text); text-align: center; line-height: 1.25; }
-.market-set-badges    { display: flex; flex-direction: column; gap: 2px; align-items: center; width: 100%; }
-.mset-badge    { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 8px; white-space: nowrap; }
-.mset-complete { color: var(--green); background: rgba(63,185,80,.12); }
-.mset-parts    { color: var(--muted); background: rgba(255,255,255,.06); }
-.mset-dupes    { color: #f0c040;      background: rgba(240,192,64,.12); }
-.market-set-price-box { margin-top: 3px; display: flex; flex-direction: column; align-items: center; }
-.market-set-price { display: flex; align-items: center; gap: 3px; }
-.market-price-big { font-size: 13px; font-weight: 700; color: #b39ddb; }
-.market-price-lbl { font-size: 8px; color: var(--muted); }
-.market-price-spin { font-size: 9px; color: var(--muted); }
-.market-price-na   { font-size: 9px; color: var(--muted); }
-
-/* Right: rows */
-.market-card-right { flex: 1; display: flex; flex-direction: column; min-width: 0; border-radius: 0 8px 8px 0; }
-.market-part-row   { display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-bottom: 1px solid rgba(48,54,61,.3); min-width: 0; }
-.market-part-row.part-missing { opacity: .4; }
-
-/* Row layout: DucatIcon DucatAmt / PlatIcon PlatAmt / Name Qty */
-.mpart-ducat-val  { font-size: 10px; color: #f0c040; font-weight: 600; min-width: 20px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
-.mpart-sep        { font-size: 10px; color: var(--border); flex-shrink: 0; }
-.mpart-plat-val   { font-size: 10px; color: #b39ddb; font-weight: 600; min-width: 24px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
-.mpart-name       { flex: 1; font-size: 10px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.mpart-qty  { font-size: 11px; font-weight: 700; min-width: 18px; text-align: center; flex-shrink: 0; border-radius: 3px; padding: 0 3px; }
-.mqty-zero  { color: var(--red);  background: rgba(248,81,73,.12); }
-.mqty-one   { color: var(--text); background: rgba(255,255,255,.06); }
-.mqty-dupe  { color: #f0c040;     background: rgba(240,192,64,.15); }
-.mpart-totals { padding: 3px 8px; font-size: 9px; color: var(--muted); background: rgba(255,255,255,.02); display: flex; align-items: center; gap: 3px; }
-
-/* ── Market Helper ── */
-.market-helper { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-.market-header  { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
-.market-summary { display: flex; align-items: center; gap: 6px; padding: 4px 12px; background: rgba(255,255,255,.02); border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 11px; color: var(--muted); }
-
-.market-grid {
-  flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px; min-height: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(300px,100%), 1fr));
-  gap: 6px;
-  align-content: start;
-  align-items: start;        /* each card sizes to its own content */
-}
-
-/* Card — flex row, grows with content */
-.market-card          { display: flex; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
-.market-card-complete { border-color: rgba(63,185,80,.4); }
-
-/* Left panel — fixed width, stretches to card height */
-.market-card-left {
-  width: 90px; flex-shrink: 0; display: flex; flex-direction: column;
-  align-items: center; gap: 3px; padding: 8px 5px;
-  border-right: 1px solid var(--border); border-radius: 8px 0 0 8px;
-  background: rgba(255,255,255,.02);
-}
-.market-set-name   { font-size: 9px; font-weight: 600; color: var(--text); text-align: center; line-height: 1.3; }
-.market-set-badges { display: flex; flex-direction: column; gap: 2px; align-items: center; }
-.mset-badge    { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 8px; white-space: nowrap; }
-.mset-complete { color: var(--green); background: rgba(63,185,80,.12); }
-.mset-parts    { color: var(--muted); background: rgba(255,255,255,.06); }
-.mset-dupes    { color: #f0c040;      background: rgba(240,192,64,.12); }
-
-.market-set-price-box { margin-top: auto; padding-top: 4px; display: flex; flex-direction: column; align-items: center; }
-.market-set-price { display: flex; align-items: center; gap: 3px; }
-.market-price-big { font-size: 13px; font-weight: 700; color: #b39ddb; }
-.market-price-lbl { font-size: 8px; color: var(--muted); }
-.market-price-spin { font-size: 9px; color: var(--muted); }
-.market-price-na   { font-size: 9px; color: var(--muted); }
-
-/* Right panel — grows to fit all rows */
-.market-card-right { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-
-/* Component row */
-.market-part-row {
-  display: flex; align-items: center; gap: 5px;
-  padding: 5px 8px; border-bottom: 1px solid rgba(48,54,61,.3);
-}
-.market-part-row:last-child { border-bottom: none; }
-.market-part-row.part-missing { opacity: .4; }
-
-/* DucatAmt / PlatAmt / Name Qty */
-.mpart-ducat-val { font-size: 10px; color: #f0c040; font-weight: 600; min-width: 20px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.mpart-sep       { font-size: 10px; color: rgba(255,255,255,.2); flex-shrink: 0; }
-.mpart-plat-val  { font-size: 10px; color: #b39ddb; font-weight: 600; min-width: 24px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.mpart-name      { flex: 1; font-size: 10px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.mpart-qty  { font-size: 11px; font-weight: 700; min-width: 18px; text-align: center; flex-shrink: 0; border-radius: 3px; padding: 0 3px; }
-.mqty-zero  { color: var(--red);  background: rgba(248,81,73,.12); }
-.mqty-one   { color: var(--text); background: rgba(255,255,255,.06); }
-.mqty-dupe  { color: #f0c040;     background: rgba(240,192,64,.15); }
-.mpart-totals { padding: 3px 8px; font-size: 9px; color: var(--muted); background: rgba(255,255,255,.02); display: flex; align-items: center; gap: 3px; border-top: 1px solid rgba(48,54,61,.3); }
-
-/* ── Market Helper ── */
-.market-helper  { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-.market-header  { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
-.market-summary { display: flex; align-items: center; gap: 6px; padding: 4px 12px; background: rgba(255,255,255,.02); border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 11px; color: var(--muted); }
-
-/* Multi-column masonry — each card sizes to its own content, no row-sync clipping */
-.market-grid {
-  flex: 1; overflow-y: auto; padding: 8px; min-height: 0;
-  column-count: 2;
-  column-gap: 6px;
-}
 @media (max-width: 600px) { .market-grid { column-count: 1; } }
 
-/* Card — break-inside:avoid keeps entire card in one column */
-.market-card {
-  display: flex; background: var(--surface); border: 1px solid var(--border);
-  border-radius: 8px; margin-bottom: 6px; break-inside: avoid;
-}
-.market-card-complete { border-color: rgba(63,185,80,.4); }
-
-/* Left panel */
-.market-card-left {
-  width: 90px; flex-shrink: 0; display: flex; flex-direction: column;
-  align-items: center; gap: 3px; padding: 8px 5px;
-  border-right: 1px solid var(--border); border-radius: 8px 0 0 8px;
-  background: rgba(255,255,255,.02);
-}
-.market-set-name   { font-size: 9px; font-weight: 600; color: var(--text); text-align: center; line-height: 1.3; }
-.market-set-badges { display: flex; flex-direction: column; gap: 2px; align-items: center; }
-.mset-badge    { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 8px; white-space: nowrap; }
-.mset-complete { color: var(--green); background: rgba(63,185,80,.12); }
-.mset-parts    { color: var(--muted); background: rgba(255,255,255,.06); }
-.mset-dupes    { color: #f0c040;      background: rgba(240,192,64,.12); }
-.market-set-price-box { margin-top: auto; padding-top: 4px; display: flex; flex-direction: column; align-items: center; }
-.market-set-price     { display: flex; align-items: center; gap: 3px; }
-.market-price-big     { font-size: 13px; font-weight: 700; color: #b39ddb; }
-.market-price-lbl     { font-size: 8px; color: var(--muted); }
-.market-price-spin    { font-size: 9px; color: var(--muted); }
-.market-price-na      { font-size: 9px; color: var(--muted); }
-
-/* Right panel */
-.market-card-right { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.market-part-row   { display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-bottom: 1px solid rgba(48,54,61,.28); }
-.market-part-row:last-of-type { border-bottom: none; }
-.market-part-row.part-missing { opacity: .4; }
-
-.mpart-ducat-val { font-size: 10px; color: #f0c040; font-weight: 600; min-width: 20px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.mpart-sep       { font-size: 10px; color: rgba(255,255,255,.18); flex-shrink: 0; }
-.mpart-plat-val  { font-size: 10px; color: #b39ddb; font-weight: 600; min-width: 24px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.mpart-name      { flex: 1; font-size: 10px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.mpart-qty  { font-size: 11px; font-weight: 700; min-width: 18px; text-align: center; flex-shrink: 0; border-radius: 3px; padding: 0 3px; }
-.mqty-zero  { color: var(--red);  background: rgba(248,81,73,.12); }
-.mqty-one   { color: var(--text); background: rgba(255,255,255,.06); }
-.mqty-dupe  { color: #f0c040;     background: rgba(240,192,64,.15); }
-.mpart-totals { padding: 3px 8px; font-size: 9px; color: var(--muted); background: rgba(255,255,255,.02); display: flex; align-items: center; gap: 3px; border-top: 1px solid rgba(48,54,61,.3); }
-
-/* ── Market Helper ── */
-.market-helper  { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-.market-header  { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
-.market-summary { display: flex; align-items: center; gap: 6px; padding: 4px 12px; background: rgba(255,255,255,.02); border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 11px; color: var(--muted); }
-
-/* Two independent columns — cards never clip because columns don't sync row heights */
-.market-grid {
-  flex: 1; overflow-y: auto; padding: 8px; min-height: 0;
-  display: flex; gap: 6px;
-}
-.market-col { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-
-/* Card */
-.market-card          { display: flex; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
-.market-card-complete { border-color: rgba(63,185,80,.4); }
-
-/* Left panel */
-.market-card-left {
-  width: 90px; flex-shrink: 0; display: flex; flex-direction: column;
-  align-items: center; gap: 3px; padding: 8px 5px;
-  border-right: 1px solid var(--border); border-radius: 8px 0 0 8px;
-  background: rgba(255,255,255,.02);
-}
-.market-set-name   { font-size: 9px; font-weight: 600; color: var(--text); text-align: center; line-height: 1.3; }
-.market-set-badges { display: flex; flex-direction: column; gap: 2px; align-items: center; }
-.mset-badge    { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 8px; white-space: nowrap; }
-.mset-complete { color: var(--green); background: rgba(63,185,80,.12); }
-.mset-parts    { color: var(--muted); background: rgba(255,255,255,.06); }
-.mset-dupes    { color: #f0c040;      background: rgba(240,192,64,.12); }
-.market-set-price-box { margin-top: auto; padding-top: 4px; display: flex; flex-direction: column; align-items: center; }
-.market-set-price     { display: flex; align-items: center; gap: 3px; }
-.market-price-big     { font-size: 13px; font-weight: 700; color: #b39ddb; }
-.market-price-lbl     { font-size: 8px; color: var(--muted); }
-.market-price-spin    { font-size: 9px; color: var(--muted); }
-.market-price-na      { font-size: 9px; color: var(--muted); }
-
-/* Right panel */
-.market-card-right { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.market-part-row   { display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-bottom: 1px solid rgba(48,54,61,.28); }
-.market-part-row:last-of-type { border-bottom: none; }
-.market-part-row.part-missing { opacity: .4; }
-
-.mpart-ducat-val { font-size: 10px; color: #f0c040; font-weight: 600; min-width: 20px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.mpart-sep       { font-size: 10px; color: rgba(255,255,255,.18); flex-shrink: 0; }
-.mpart-plat-val  { font-size: 10px; color: #b39ddb; font-weight: 600; min-width: 24px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.mpart-name      { flex: 1; font-size: 10px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.mpart-qty  { font-size: 11px; font-weight: 700; min-width: 18px; text-align: center; flex-shrink: 0; border-radius: 3px; padding: 0 3px; }
-.mqty-zero  { color: var(--red);  background: rgba(248,81,73,.12); }
-.mqty-one   { color: var(--text); background: rgba(255,255,255,.06); }
-.mqty-dupe  { color: #f0c040;     background: rgba(240,192,64,.15); }
-.mpart-totals { padding: 3px 8px; font-size: 9px; color: var(--muted); background: rgba(255,255,255,.02); display: flex; align-items: center; gap: 3px; border-top: 1px solid rgba(48,54,61,.3); }
-
-/* ── Market Helper ── */
-.market-helper  { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-.market-header  { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
-.market-summary { display: flex; align-items: center; gap: 6px; padding: 4px 12px; background: rgba(255,255,255,.02); border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 11px; color: var(--muted); }
-
-.market-grid {
-  flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px; min-height: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
-  gap: 6px;
-  align-content: start;
-}
-.market-card {
-  display: flex; background: var(--surface); border: 1px solid var(--border);
-  border-radius: 8px; align-self: start;
-}
-.market-card-complete { border-color: rgba(63,185,80,.4); }
-
-.market-card-left {
-  width: 90px; flex-shrink: 0; display: flex; flex-direction: column;
-  align-items: center; gap: 3px; padding: 8px 5px;
-  border-right: 1px solid var(--border); border-radius: 8px 0 0 8px;
-  background: rgba(255,255,255,.02);
-}
-.market-set-name   { font-size: 9px; font-weight: 600; color: var(--text); text-align: center; line-height: 1.3; }
-.market-set-badges { display: flex; flex-direction: column; gap: 2px; align-items: center; }
-.mset-badge    { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 8px; white-space: nowrap; }
-.mset-complete { color: var(--green); background: rgba(63,185,80,.12); }
-.mset-parts    { color: var(--muted); background: rgba(255,255,255,.06); }
-.mset-dupes    { color: #f0c040;      background: rgba(240,192,64,.12); }
-.market-set-price-box { margin-top: auto; padding-top: 4px; display: flex; flex-direction: column; align-items: center; }
-.market-set-price { display: flex; align-items: center; gap: 3px; }
-.market-price-big { font-size: 13px; font-weight: 700; color: #b39ddb; }
-.market-price-lbl { font-size: 8px; color: var(--muted); }
-.market-price-spin { font-size: 9px; color: var(--muted); }
-.market-price-na   { font-size: 9px; color: var(--muted); }
-
-.market-card-right { flex: 1; min-width: 0; display: flex; flex-direction: column; border-radius: 0 8px 8px 0; }
-.market-part-row   { display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-bottom: 1px solid rgba(48,54,61,.28); }
-.market-part-row:last-of-type { border-bottom: none; }
-.market-part-row.part-missing { opacity: .4; }
-
-.mpart-ducat-val { font-size: 10px; color: #f0c040; font-weight: 600; min-width: 20px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.mpart-sep       { font-size: 10px; color: rgba(255,255,255,.18); flex-shrink: 0; }
-.mpart-plat-val  { font-size: 10px; color: #b39ddb; font-weight: 600; min-width: 24px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.mpart-name      { flex: 1; font-size: 10px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.mpart-qty  { font-size: 11px; font-weight: 700; min-width: 18px; text-align: center; flex-shrink: 0; border-radius: 3px; padding: 0 3px; }
-.mqty-zero  { color: var(--red);  background: rgba(248,81,73,.12); }
-.mqty-one   { color: var(--text); background: rgba(255,255,255,.06); }
-.mqty-dupe  { color: #f0c040;     background: rgba(240,192,64,.15); }
-.mpart-totals { padding: 3px 8px; font-size: 9px; color: var(--muted); background: rgba(255,255,255,.02); display: flex; align-items: center; gap: 3px; border-top: 1px solid rgba(48,54,61,.3); }
-
-/* ── Market Helper ── */
 .market-helper  { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 .market-header  { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
 .market-summary { display: flex; align-items: center; gap: 6px; padding: 4px 12px; background: rgba(255,255,255,.02); border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: 11px; color: var(--muted); }
@@ -1690,35 +1067,9 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .mod-rank-chips { display: flex; flex-wrap: wrap; gap: 2px; justify-content: center; }
 .mod-rank-chip { font-size: 10px; font-weight: 700; color: #d4a843; background: rgba(212,168,67,.12); padding: 1px 5px; border-radius: 3px; cursor: pointer; transition: background .15s; }
 .mod-rank-chip:hover { background: rgba(212,168,67,.3); }
-.mod-qty-badge { font-size: 10px; font-weight: 600; padding: 1px 4px; border-radius: 3px; }
 .mod-plat-cell { display: flex; align-items: center; gap: 2px; font-size: 10px; color: var(--accent); white-space: nowrap; }
 .mods-pagination { display: flex; align-items: center; gap: 10px; justify-content: center; padding: 8px; border-top: 1px solid var(--border); flex-shrink: 0; }
 .mods-page-info { font-size: 12px; color: var(--muted); }
-
-/* ── Active riven auctions section ── */
-.riven-auctions-list { display: flex; flex-direction: column; gap: 5px; }
-.riven-auction-row { background: rgba(255,255,255,.03); border: 1px solid var(--border); border-radius: 5px; padding: 6px 10px; display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.riven-auction-name { font-weight: 600; color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.riven-auction-price { color: var(--accent); white-space: nowrap; }
-.riven-auction-meta { color: var(--muted); font-size: 11px; white-space: nowrap; }
-.riven-auction-del { background: none; border: 1px solid rgba(248,81,73,.4); color: #f85149; font-size: 11px; padding: 2px 6px; border-radius: 3px; cursor: pointer; transition: background .1s; white-space: nowrap; }
-.riven-auction-del:hover { background: rgba(248,81,73,.12); }
-.riven-section-refresh { background: none; border: none; color: var(--muted); font-size: 11px; cursor: pointer; padding: 0 2px; margin-left: auto; transition: color .1s; }
-.riven-section-refresh:hover { color: var(--text); }
-.riven-auction-hidden { opacity: 0.5; }
-.riven-auction-vis { cursor: pointer; font-size: 14px; line-height: 1; flex-shrink: 0; user-select: none; transition: opacity .1s; }
-.riven-auction-vis:hover { opacity: 0.7; }
-
-/* Auction card */
-.wfm-auction-card { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
-.wfm-auction-card:last-child { border-bottom: none; }
-.wfm-auction-card-header { display: flex; align-items: center; gap: 6px; }
-.wfm-auction-card-header .wfm-order-name { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wfm-auction-card-details { display: flex; gap: 10px; flex-wrap: wrap; padding-left: 22px; }
-.wfm-auction-stat { font-size: 11px; color: var(--muted); white-space: nowrap; }
-.wfm-auction-label { color: var(--muted); opacity: 0.7; margin-right: 2px; }
-.wfm-auction-topbid { color: var(--accent); }
-.wfm-auction-bidder { color: var(--text); }
 
 /* ── Foundry view modes ── */
 
@@ -1836,3 +1187,13 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .relic-text-reward.relic-rarity-rare { color: #f0c040; }
 .relic-text-reward.relic-rarity-uncommon { color: #c0c0c0; }
 .relic-text-reward.relic-rarity-common { color: var(--muted); }
+
+/* The overlay class draws the full-screen box; the dialog only supplies the top layer. */
+dialog { border: 0; padding: 0; width: auto; height: auto; max-width: none; max-height: none; background: transparent; color: inherit; }
+dialog::backdrop { background: transparent; }
+
+.ctx-menu { position: fixed; z-index: 999; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; min-width: 160px; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+.ctx-menu:hover { border-color: rgba(56,139,253,.5); }
+.ctx-menu-sep { height: 1px; background: var(--border); }
+.ctx-menu-item { display: block; width: 100%; text-align: left; background: none; border: none; padding: 6px 14px; color: var(--text); cursor: default; white-space: nowrap; }
+.ctx-menu-item:hover { background: rgba(56,139,253,.15); }

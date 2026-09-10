@@ -1,11 +1,13 @@
-import { useState, useEffect, useMemo, useRef, memo, useContext } from "react";
+import { useState, useEffect, useMemo, useRef, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ImgCacheDirContext } from "../ImgCacheDir";
+import ItemImg from "../ItemImg";
+import { PlatIcon, DucatIcon } from "../shared/icons";
+import { useModal } from "../shared/useModal";
+import { fmt, toggle, normalizeForWfm } from "../utils";
 import { listen } from "@tauri-apps/api/event";
 import { HelpTip } from "../shared/HelpTip";
 import WfmTrading from "./WfmTrading";
 import ItemMarketPopup from "./ItemMarketPopup";
-import { warframeStatImageUrl } from "../constants/urls";
 import { MARKET_FILTERS_DEFAULT } from "../constants/filters";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import type { CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeMap } from "../types/items";
@@ -31,22 +33,8 @@ interface Props {
   modCopiesMap?: Record<string, ModCopy[]>;
 }
 
-function toggle<T>(arr: T[], val: T): T[] {
-  return arr.includes(val) ? arr.filter(x => x !== val) : [...arr, val];
-}
-
-// ─── Icons ────────────────────────────────────────────────────────────────────
-
-function PlatIcon({ size = 14 }: { size?: number }) {
-  return <img src="/platinum.webp" alt="plat" width={size} height={size} style={{ objectFit: "contain", flexShrink: 0 }} />;
-}
-function DucatIcon({ size = 14 }: { size?: number }) {
-  return <img src="/ducats.webp" alt="ducat" width={size} height={size} style={{ objectFit: "contain", flexShrink: 0 }} />;
-}
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function fmt(n: number) { return n.toLocaleString(); }
 function fmtPt(n: number) { return Math.round(n).toString(); }
 
 function setName(itemName: string): string {
@@ -60,10 +48,6 @@ function partLabel(itemName: string, set: string): string {
   return itemName.startsWith(set) ? itemName.slice(set.length).trim() || itemName : itemName;
 }
 
-function normalizeForWfm(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
-}
-
 function flattenRecipeCounts(comps: RecipeComponent[], multiplier: number, out: Map<string, number>): void {
   for (const c of comps) {
     const total = multiplier * c.count;
@@ -72,19 +56,10 @@ function flattenRecipeCounts(comps: RecipeComponent[], multiplier: number, out: 
   }
 }
 
-function ItemImg({ imageName, size = 32 }: { imageName?: string; size?: number }) {
-  const baseUrl = useContext(ImgCacheDirContext);
-  const [localFailed, setLocalFailed] = useState(false);
-  const [cdnFailed,   setCdnFailed]   = useState(false);
+function MarketImg({ imageName, size }: { imageName?: string; size: number }) {
   const s = { width: size, height: size, objectFit: "contain" as const, flexShrink: 0, borderRadius: 4 };
-  if (!imageName || cdnFailed)
-    return <span style={{ ...s, background: "rgba(255,255,255,.06)", border: "1px solid #30363d", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * .3, color: "#8b949e" }}>P</span>;
-  const useLocal = Boolean(baseUrl) && !localFailed;
-  const src = useLocal
-    ? `${baseUrl}/${imageName}`
-    : warframeStatImageUrl(imageName);
-  return <img style={s} src={src} alt="" loading="lazy"
-    onError={() => useLocal ? setLocalFailed(true) : setCdnFailed(true)} />;
+  return <ItemImg imageName={imageName} size={size} className="" style={s}
+    fallback={<span style={{ ...s, background: "rgba(255,255,255,.06)", border: "1px solid #30363d", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * .3, color: "#8b949e" }}>P</span>} />;
 }
 
 // ─── Set card ─────────────────────────────────────────────────────────────────
@@ -110,7 +85,7 @@ function SetCard({ setKey, parts, parentItem, setPrice, setPriceLoading, pricesF
     <div className={`market-card${isComplete ? " market-card-complete" : ""}`}>
       <div className={`market-card-left${onCardClick ? " market-card-clickable" : ""}`} onClick={onCardClick} title={onCardClick ? "View orders & prices" : undefined}>
         <div style={{ position: "relative", display: "inline-block" }}>
-          <ItemImg imageName={parentItem?.image_name} size={64} />
+          <MarketImg imageName={parentItem?.image_name} size={64} />
           {isCrafting && (
             <span style={{ position: "absolute", top: -4, right: -6, fontSize: 13 }} title="Building in Foundry">⚒</span>
           )}
@@ -776,7 +751,7 @@ function ModsTab({ allItems, inventory, wfmLookup, prices, modCopiesMap, onOpenP
                 {isArcane ? "Arcane" : "Mod"}
               </span>
               <div className="mod-card-img">
-                <ItemImg imageName={item.image_name ?? undefined} size={56} />
+                <MarketImg imageName={item.image_name ?? undefined} size={56} />
               </div>
               <div className="mod-card-name">{item.name}</div>
               <div className="mod-card-footer">
@@ -1266,8 +1241,9 @@ export function RivenSellModal({ riven, weaponName, disposition, category, onClo
     }
   }
 
+  const modal = useModal(onClose);
   return (
-    <div className="riven-modal-overlay" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <dialog className="riven-modal-overlay" {...modal}>
       <div className="riven-modal">
         <div className="riven-modal-title">
           Post Riven Auction
@@ -1350,7 +1326,7 @@ export function RivenSellModal({ riven, weaponName, disposition, category, onClo
           {busy ? "Posting…" : saleType === "direct" ? "Post Direct Sale on warframe.market" : "Post Auction on warframe.market"}
         </button>
       </div>
-    </div>
+    </dialog>
   );
 }
 
@@ -1395,8 +1371,9 @@ function VeiledSellModal({ category, count, onClose, onSuccess }: VeiledSellModa
     }
   }
 
+  const modal = useModal(onClose);
   return (
-    <div className="riven-modal-overlay" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <dialog className="riven-modal-overlay" {...modal}>
       <div className="riven-modal">
         <div className="riven-modal-title">
           Sell Unrevealed Riven
@@ -1438,7 +1415,7 @@ function VeiledSellModal({ category, count, onClose, onSuccess }: VeiledSellModa
           {busy ? "Listing…" : "Create Sell Order on warframe.market"}
         </button>
       </div>
-    </div>
+    </dialog>
   );
 }
 

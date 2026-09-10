@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { CacheStatuses } from "../types/cache";
+import { useClickOutside } from "../shared/useClickOutside";
 
 function overall(statuses: CacheStatuses): "online" | "warn" | "offline" {
   const values = Object.values(statuses);
@@ -46,16 +47,7 @@ export default function CacheStatusChip() {
     return () => { clearInterval(timer); unsub.then((f) => f()); };
   }, []);
 
-  useEffect(() => {
-    if (!open) return;
-    const handle = (e: MouseEvent) => {
-      if (chipRef.current && !chipRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handle);
-    return () => document.removeEventListener("mousedown", handle);
-  }, [open]);
+  useClickOutside(chipRef, () => setOpen(false), open);
 
   const state = overall(statuses);
 

@@ -8,8 +8,8 @@ import type { FissureWatch } from "../types/settings";
 import type { CatalogItem, InventoryItem, RecipeComponent, RecipeComponentStatus } from "../types/items";
 import type { MatchedFissure } from "../types/worldstate";
 import { useWorldState } from "../worldstate";
+import { fmt } from "../utils";
 
-function fmt(n: number) { return n.toLocaleString(); }
 
 function compStatus(comp: RecipeComponent, inventory: Record<string, InventoryItem>): RecipeComponentStatus {
   if ((inventory[comp.unique_name]?.quantity ?? 0) >= (comp.count || 1)) return "part";

@@ -86,8 +86,7 @@ fn parse_linux_maps(maps: &str) -> Vec<LinuxRegion> {
             // unlike every earlier field may contain spaces, so it is taken as
             // the rest of the line rather than as a single token. The kernel's
             // " (deleted)" suffix — how a Wine prefix updated under a running
-            // game shows up — is not part of the path and would otherwise
-            // defeat the `warframe.x64.exe` match in `linux_game_image_span`.
+            // game shows up — is not part of the path.
             let path = fields.nth(3).map(|name| {
                 let offset = name.as_ptr() as usize - line.as_ptr() as usize;
                 let path = line[offset..].trim_end();
@@ -602,17 +601,6 @@ fn walk_linux_regions(
     walk_regions(&process, regions, accept, deadline, visit)
 }
 
-/// Read a single byte from the game process, used for the riven validity flag.
-/// `None` means the process or the address is not readable.
-pub fn read_process_byte(pid: u32, address: usize) -> Option<u8> {
-    let process = LinuxProcess::open(pid).ok()?;
-    let mut byte = [0u8; 1];
-    match process.read(address, &mut byte) {
-        Ok(1) => Some(byte[0]),
-        _ => None,
-    }
-}
-
 /// Raw text context around every occurrence of a set of known strings, capped
 /// at `max_hits`. Used to reverse-engineer the actual JSON format for inventory
 /// items without any parsing assumptions.
@@ -714,103 +702,6 @@ pub fn raw_scan_pass(out: &mut impl std::io::Write) -> Result<usize, String> {
 // ==============================================================================
 // Riven validity flag
 // ==============================================================================
-
-/// Address span of the game's own module.
-///
-/// Wine does not leave the executable's code file-backed — only the PE headers
-/// and one data section keep the pathname, while `.text` becomes a large
-/// anonymous executable mapping wedged between them. So the module is
-/// identified by the span its named mappings bracket, not by file backing.
-fn linux_game_image_span(regions: &[LinuxRegion]) -> Option<std::ops::Range<usize>> {
-    regions
-        .iter()
-        .filter(|region| {
-            region
-                .path
-                .as_deref()
-                .is_some_and(|path| path.to_ascii_lowercase().ends_with("warframe.x64.exe"))
-        })
-        .map(|region| region.start..region.start + region.len)
-        .reduce(|span, next| span.start.min(next.start)..span.end.max(next.end))
-}
-
-/// Locate the byte the game sets while a riven reroll's A/B selection screen is
-/// up. Non-zero = selection pending, which is the same event the EE.log
-/// `omegarerollselection.swf` line reports.
-///
-/// This is not the Pattern D-2 scan. That pattern matches exactly one
-/// site under Proton, and the byte it resolves to reads 1 in the orbiter, in
-/// the mod segment and on the reroll screen alike, so it cannot drive the
-/// watcher. The signature below was found by diffing the game's writable
-/// statics across those states against the live game, and the surviving byte
-/// was confirmed to be 0 everywhere except while the A/B screen is up.
-///
-/// It matches the store the game publishes the state with:
-///
-/// ```text
-/// 44 87 35 <disp32>    xchg dword ptr [rip+disp], r14d
-/// 41 83 fe 01          cmp  r14d, 1
-/// ```
-///
-/// Only the displacement varies, and it appeared exactly once in the whole
-/// process, so the first match is taken.
-///
-/// ponytail: a byte signature tracks one game build. If riven detection stops
-/// working after an update, re-run `examples/riven_flag_hunt.rs` to find the
-/// flag again rather than guessing at the pattern.
-pub fn find_riven_validity_va(pid: u32) -> Option<usize> {
-    const STORE: [u8; 3] = [0x44, 0x87, 0x35];
-    const COMPARE: [u8; 4] = [0x41, 0x83, 0xfe, 0x01];
-    // Bytes from the start of the store up to the end of its displacement,
-    // which is where the RIP-relative address is measured from.
-    const STORE_LEN: usize = 7;
-
-    let regions = linux_process_regions(pid).ok()?;
-    let span = linux_game_image_span(&regions)?;
-    let process = LinuxProcess::open(pid).ok()?;
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let mut result = None;
-
-    // The game's code is one mapping well under the walk's chunk size, so a
-    // signature cannot be split across two chunks here.
-    let walk = walk_regions(
-        &process,
-        regions,
-        |region| region.executable && span.contains(&region.start),
-        deadline,
-        |address, data| {
-            // STORE has no self-border (no proper suffix of it is also a
-            // prefix), so a match can never start inside a previous match's
-            // span. find_iter's non-overlapping search cannot skip a real hit.
-            let Some(limit) = data.len().checked_sub(STORE_LEN + COMPARE.len()) else {
-                return true;
-            };
-            // `limit` is the last index where the full signature still fits,
-            // so it is itself in bounds.
-            for index in memmem::find_iter(data, &STORE) {
-                if index > limit {
-                    break;
-                }
-                if data[index + STORE_LEN..index + STORE_LEN + COMPARE.len()] != COMPARE {
-                    continue;
-                }
-                let displacement = i32::from_le_bytes(
-                    data[index + STORE.len()..index + STORE_LEN]
-                        .try_into()
-                        .expect("displacement is four bytes"),
-                ) as i64;
-                let flag = (address + index + STORE_LEN) as i64 + displacement;
-                if flag > 0x10000 && flag < 0x7fff_ffff_ffff {
-                    result = Some(flag as usize);
-                    return false;
-                }
-            }
-            true
-        },
-    );
-    walk.ok()?;
-    result
-}
 
 #[cfg(test)]
 mod tests {
@@ -1512,10 +1403,10 @@ mod tests {
 
     /// A Steam library folder with a space in its name, plus the " (deleted)"
     /// suffix an in-place game update leaves behind, are both shapes the game
-    /// image really appears in, and either one silently breaks the span match
-    /// if the pathname is read as a single whitespace token.
+    /// image really appears in, and either one mangles the path if the
+    /// pathname is read as a single whitespace token.
     #[test]
-    fn game_image_span_survives_spaced_and_deleted_pathnames() {
+    fn maps_pathnames_keep_spaces_and_drop_deleted_suffix() {
         let maps = "\
 1000-2000 r--p 0 08:01 1 /mnt/Games Drive/steamapps/common/Warframe/Warframe.x64.exe\n\
 2000-5000 r-xp 1000 08:01 1 /mnt/Games Drive/steamapps/common/Warframe/Warframe.x64.exe (deleted)\n\
@@ -1527,7 +1418,6 @@ mod tests {
             Some("/mnt/Games Drive/steamapps/common/Warframe/Warframe.x64.exe")
         );
         assert_eq!(regions[1].path.as_deref(), regions[0].path.as_deref());
-        assert_eq!(linux_game_image_span(&regions), Some(0x1000..0x5000));
     }
 
     #[test]

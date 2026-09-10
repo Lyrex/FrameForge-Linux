@@ -9,17 +9,6 @@ export function openWiki(name: string) {
   openUrl(wikiUrl(name));
 }
 
-export async function copyWikiLink(name: string) {
-  try {
-    await navigator.clipboard.writeText(wikiUrl(name));
-  } catch {
-    const ta = document.createElement("textarea");
-    ta.value = wikiUrl(name);
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand("copy");
-    document.body.removeChild(ta);
-  }
+export function copyWikiLink(name: string) {
+  return navigator.clipboard.writeText(wikiUrl(name));
 }

@@ -41,15 +41,6 @@ body { background: transparent; overflow: hidden; }
   flex: 1;
 }
 
-.rov-roll {
-  font-size: 11px;
-  font-weight: 600;
-  background: rgba(56,139,253,.18);
-  color: #58a6ff;
-  border-radius: 4px;
-  padding: 2px 7px;
-}
-
 .rov-compare-btn {
   background: rgba(56,139,253,.15);
   border: 1px solid rgba(56,139,253,.35);
@@ -216,12 +207,6 @@ body { background: transparent; overflow: hidden; }
   letter-spacing: .5px;
   margin-bottom: 4px;
 }
-.rov-stat-original {
-  background: rgba(255,255,255,.02);
-  opacity: 0.75;
-}
-.rov-stat-original .rov-stat-icon { color: rgba(139,148,158,.4); }
-.rov-stat-original .rov-stat-name { color: rgba(230,237,243,.55); }
 
 /* Also label the new roll section when in comparison mode */
 .rov-new-roll-label {

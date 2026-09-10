@@ -1,7 +1,6 @@
-import { useState, useEffect, useMemo, useContext, useRef } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ImgCacheDirContext } from "../ImgCacheDir";
-import { warframeStatImageUrl } from "../constants/urls";
+import ItemImg from "../ItemImg";
 import "./Syndicates.css";
 import type { InventoryItem } from "../types/items";
 import type { SyndicateFilters } from "../types/filters";
@@ -83,40 +82,6 @@ const GROUP_LABELS: Record<SynGroup, string> = {
   other:     "Other",
   lab:       "Research Labs",
 };
-
-// ── Image component ───────────────────────────────────────────────────────────
-
-function SynItemImg({ imageName, category }: { imageName?: string; category: string }) {
-  const baseUrl = useContext(ImgCacheDirContext);
-  const [localFailed, setLocalFailed] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const ref = useRef<HTMLImageElement>(null);
-
-  useEffect(() => {
-    if (ref.current?.complete) ref.current.classList.add("img-loaded");
-  }, []);
-
-  if (!imageName || failed) {
-    return (
-      <div className="img-fallback">
-        {category[0]?.toUpperCase() ?? "?"}
-      </div>
-    );
-  }
-  const useLocal = Boolean(baseUrl) && !localFailed;
-  const src = useLocal ? `${baseUrl}/${imageName}` : warframeStatImageUrl(imageName);
-  return (
-    <img
-      ref={ref}
-      className="img"
-      src={src}
-      alt=""
-      loading="lazy"
-      onError={() => useLocal ? setLocalFailed(true) : setFailed(true)}
-      onLoad={() => ref.current?.classList.add("img-loaded")}
-    />
-  );
-}
 
 // ── Status badge ─────────────────────────────────────────────────────────────
 
@@ -316,7 +281,7 @@ export default function Syndicates({ inventory, filters, onFiltersChange }: Prop
                       key={item.unique_name}
                       className={`syn-item ${status === "none" ? "missing" : ""} status-row-${status}`.trim()}
                     >
-                      <SynItemImg imageName={item.image_name} category={item.category} />
+                      <ItemImg imageName={item.image_name} fallback={<div className="img-fallback">{item.category[0]?.toUpperCase() ?? "?"}</div>} />
                       <div className="syn-item-info">
                         <div className="syn-item-name">{item.name}</div>
                         <div className="syn-item-cat">{item.category}</div>

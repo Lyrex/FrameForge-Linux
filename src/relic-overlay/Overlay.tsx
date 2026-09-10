@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 
 import { overlayScale } from "../lib/uiScale";
+import { PlatIcon, DucatIcon } from "../shared/icons";
 import { PREFERENCE_KEYS } from "../constants/preferences";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import type { CraftingJob, QuantityMap, ShallowRecipeComponent } from "../types/items";
@@ -142,14 +143,6 @@ function bestPickIndex(items: RewardItem[], priority: RelicOverlayPriority): num
   let best = 0;
   for (let i = 1; i < scores.length; i++) if ((scores[i] ?? 0) > (scores[best] ?? 0)) best = i;
   return (scores[best] ?? 0) > 0 ? best : -1;
-}
-
-// ─── Icons ────────────────────────────────────────────────────────────────────
-function PlatIcon({ size = 14 }: { size?: number }) {
-  return <img src="/platinum.webp" alt="p" width={size} height={size} style={{ objectFit: "contain", flexShrink: 0, verticalAlign: "middle" }} />;
-}
-function DucatIcon({ size = 14 }: { size?: number }) {
-  return <img src="/ducats.webp" alt="d" width={size} height={size} style={{ objectFit: "contain", flexShrink: 0, verticalAlign: "middle" }} />;
 }
 
 // ─── Column layout ────────────────────────────────────────────────────────────

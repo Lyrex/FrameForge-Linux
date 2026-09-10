@@ -5,6 +5,8 @@
 // the frontend: the backend already resolved the weapon, ran the stat formula and
 // scored the roll, and these types are what it hands over.
 
+import type { RivenAnalysis } from "../types/rivens";
+
 /** Which stage of unlocking a riven is at. Mirrors `RivenState` in the scanner. */
 export type RivenState = "unrevealed" | "revealed" | "unlocked";
 
@@ -40,29 +42,6 @@ export interface GradedStat {
   position: number;
   unit: StatUnit;
   positive: boolean;
-}
-
-/** One alternative build from the wanted-stats database, scored against the roll. */
-export interface AlternativeResult {
-  label: string;
-  matched: string[];
-  missing: string[];
-  score: number;
-  verdict: string;
-}
-
-/** The analyzer's judgement of a roll. Absent when the weapon has no wanted-stats entry. */
-export interface RivenAnalysis {
-  weapon: string;
-  matched_positives: string[];
-  missing_positives: string[];
-  safe_negatives_present: string[];
-  harmful_negatives: string[];
-  total_wanted: number;
-  score: number;
-  verdict: string;
-  notes: string;
-  alternatives: AlternativeResult[];
 }
 
 /**

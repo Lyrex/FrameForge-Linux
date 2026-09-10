@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useOverlayWindow } from "../lib/useOverlayWindow";
+import { PlatIcon, DucatIcon } from "../shared/icons";
 import { DEFAULT_RELIC_PICK_LINES, DEFAULT_RELIC_PICK_PRIORITY, RELIC_PICK_LINES_OPTIONS, RELIC_PICK_PRIORITY_OPTIONS } from "../constants/settings";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import type { SettingsFile } from "../types/tauri";
@@ -54,14 +55,7 @@ function getDisplayRewards(relic: RelicPickRelic, lines: RelicPickLines, priorit
     .sort((a, b) => b.drop_rate - a.drop_rate);
 }
 
-function PlatIcon() {
-  return <img src="/platinum.webp" alt="p" width={11} height={11}
-    style={{ objectFit: "contain", flexShrink: 0, verticalAlign: "middle", marginBottom: 1 }} />;
-}
-function DucatIcon() {
-  return <img src="/ducats.webp" alt="d" width={11} height={11}
-    style={{ objectFit: "contain", flexShrink: 0, verticalAlign: "middle", marginBottom: 1 }} />;
-}
+const tinyIcon = { size: 11, style: { marginBottom: 1 } };
 
 export default function RelicPickOverlay() {
   const [payload,  setPayload]  = useState<RelicPickPayload | null>(null);
@@ -133,9 +127,9 @@ export default function RelicPickOverlay() {
 
                 {lines === "estimated" ? (
                   <div className="rpo-estimated">
-                    <span>{relic.plat_score.toFixed(0)}</span><PlatIcon />
+                    <span>{relic.plat_score.toFixed(0)}</span><PlatIcon {...tinyIcon} />
                     <span className="rpo-est-sep"> · </span>
-                    <span>{relic.ducat_score.toFixed(0)}</span><DucatIcon />
+                    <span>{relic.ducat_score.toFixed(0)}</span><DucatIcon {...tinyIcon} />
                     <span className="rpo-est-sep"> · </span>
                     <span>{relic.rewards.filter(r => !r.owned).length}/{relic.rewards.length} new</span>
                   </div>
@@ -150,12 +144,12 @@ export default function RelicPickOverlay() {
                         <span className="rpo-reward-name">{reward.name}</span>
                         {reward.plat > 0 && (
                           <span className="rpo-plat-val">
-                            {reward.plat}<PlatIcon />
+                            {reward.plat}<PlatIcon {...tinyIcon} />
                           </span>
                         )}
                         {reward.ducats > 0 && (
                           <span className="rpo-ducat-val">
-                            {reward.ducats}<DucatIcon />
+                            {reward.ducats}<DucatIcon {...tinyIcon} />
                           </span>
                         )}
                         <span className={`rpo-rec rpo-rec-${recRefinement(reward.rarity).toLowerCase()}`}>

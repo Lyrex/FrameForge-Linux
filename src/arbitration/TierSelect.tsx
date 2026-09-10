@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
+import { useClickOutside } from "../shared/useClickOutside";
 import { TIER_KEYS, TIER_LABELS, type TierKey } from "./arbitrationTiers";
 
 type Props = {
@@ -27,21 +28,7 @@ export default function TierSelect({ label, selected, onChange }: Props) {
 
   // A click anywhere else is a dismissal, including on the other picker: two
   // popovers open at once would overlap.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  useClickOutside(rootRef, () => setOpen(false), open);
 
   const toggle = (key: TierKey) =>
     onChange(

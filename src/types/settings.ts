@@ -1,5 +1,5 @@
 import type { TierKey } from "../arbitration/arbitrationTiers";
-export type ClockFormat = "auto" | "12h" | "24h";
+import type { ClockFormat } from "../lib/clockFormat";
 export type RelicOverlayPriority = "completion" | "plat" | "ducat" | "setPlat";
 export type RelicPickPriority = "unowned" | "ducat" | "platinum";
 export type RelicRefinement = "intact" | "exceptional" | "flawless" | "radiant";

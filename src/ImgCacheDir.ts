@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 
-/** Base URL of the local image server (the img_cache folder in the user cache directory).
+/** Absolute path of the img_cache folder in the user cache directory.
  *  Empty string = not yet known (images fall back to CDN). Set once on app startup. */
 export const ImgCacheDirContext = createContext<string>("");
 
@@ -10,14 +11,12 @@ export function cdnUrl(imageName?: string): string | undefined {
   return imageName ? CDN_PREFIX + imageName : undefined;
 }
 
-/** Put the locally cached copy of every CDN image in front of the CDN one.
- *  The image server 404s a file whose bytes are not an image, so a corrupt
- *  cache entry costs one failed request and then loads from the CDN. */
-export function cdnCandidates(baseUrl: string, urls: (string | undefined)[]): string[] {
+/** Put the locally cached copy of every CDN image in front of the CDN one. */
+export function cdnCandidates(cacheDir: string, urls: (string | undefined)[]): string[] {
   const out: string[] = [];
   for (const url of urls) {
     if (!url) continue;
-    if (baseUrl && url.startsWith(CDN_PREFIX)) out.push(`${baseUrl}/${url.slice(CDN_PREFIX.length)}`);
+    if (cacheDir && url.startsWith(CDN_PREFIX)) out.push(convertFileSrc(`${cacheDir}/${url.slice(CDN_PREFIX.length)}`));
     out.push(url);
   }
   return [...new Set(out)];
