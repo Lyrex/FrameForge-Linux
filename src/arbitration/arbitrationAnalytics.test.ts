@@ -1,4 +1,4 @@
-// Run with: node --experimental-strip-types --test src/arbitrationAnalytics.test.ts
+// Run with: node --experimental-strip-types --test src/arbitration/arbitrationAnalytics.test.ts
 
 import assert from "node:assert/strict";
 import { test } from "node:test";

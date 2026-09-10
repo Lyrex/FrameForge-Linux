@@ -1,4 +1,4 @@
-import type { TierKey } from "../arbitrationTiers";
+import type { TierKey } from "../arbitration/arbitrationTiers";
 export type ClockFormat = "auto" | "12h" | "24h";
 export type RelicOverlayPriority = "completion" | "plat" | "ducat" | "setPlat";
 export type RelicPickPriority = "unowned" | "ducat" | "platinum";

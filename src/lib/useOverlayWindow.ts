@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, primaryMonitor, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
-import { overlayScale } from "./lib/uiScale";
+import { overlayScale } from "./uiScale";
 
 export type OverlayAnchor = "top-right" | "top-center";
 

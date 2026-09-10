@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { fmtMs } from "./TimerHelper";
+import { fmtMs } from "../TimerHelper";
 import {
   completed, filterRuns, summarize, MISSION_TYPES,
   type Breakdown, type Filters, type MissionType, type RunRecord,
 } from "./arbitrationAnalytics";
-import Sparkline from "./Sparkline";
+import Sparkline from "../shared/Sparkline";
 import { TierBadge } from "./TierSelect";
-import { fmtClock, type ClockFormat } from "./clockFormat";
-import "./Report.css";
+import { fmtClock, type ClockFormat } from "../lib/clockFormat";
+import "../shared/Report.css";
 
 const RANGES: { label: string; value: number | "all" }[] = [
   { label: "7d", value: 7 }, { label: "30d", value: 30 }, { label: "90d", value: 90 }, { label: "All", value: "all" },
