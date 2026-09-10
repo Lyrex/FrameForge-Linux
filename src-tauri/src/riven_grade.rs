@@ -6,7 +6,8 @@
 
 use crate::memory_scanner::{BlobRivenEntry, BlobRivenStat, RivenState};
 use crate::riven_stats::{self, RollContext, Unit};
-use crate::{AppState, RivenAnalysis};
+use crate::app_state::AppState;
+use crate::rivens::RivenAnalysis;
 
 /// One rolled stat, placed in the range it could have rolled in at this rank.
 #[derive(serde::Serialize)]
@@ -132,7 +133,7 @@ pub fn grade_riven(riven: &BlobRivenEntry, weapon_name: Option<String>, disposit
     if graded.state == RivenState::Unlocked {
         if let Some(weapon) = graded.weapon_name.clone() {
             let (positives, negatives) = graded.analyzer_inputs();
-            graded.analysis = crate::analyze_riven(weapon, positives, negatives);
+            graded.analysis = crate::rivens::analyze_riven(weapon, positives, negatives);
         }
     }
     graded
@@ -146,7 +147,7 @@ pub async fn grade_owned_rivens(state: tauri::State<'_, AppState>) -> Result<Vec
     let dispositions = state.weapon_dispositions.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
     tauri::async_runtime::spawn_blocking(move || {
-        let cache = crate::load_inventory_state_cache(&path);
+        let cache = crate::inventory_state::load_inventory_state_cache(&path);
         cache.rivens.iter()
             .map(|riven| {
                 let compat = riven.compat.as_deref();
@@ -192,7 +193,7 @@ mod tests {
     /// The analyzer reads its wanted stats from a process-wide database that is
     /// normally loaded from the riven sheet.
     fn seed_riven_db() {
-        let entry = crate::RivenEntry {
+        let entry = crate::rivens::RivenEntry {
             weapon: "Braton".into(),
             stat_alternatives: vec![vec![vec!["Base Damage".into()], vec!["Fire Rate".into()]]],
             stat_groups: vec![vec!["Base Damage".into()], vec!["Fire Rate".into()]],
@@ -201,7 +202,7 @@ mod tests {
         };
         let mut db = std::collections::HashMap::new();
         db.insert("braton".to_string(), entry);
-        *crate::RIVEN_DB.write().unwrap_or_else(|e| e.into_inner()) = Some(db);
+        *crate::rivens::RIVEN_DB.write().unwrap_or_else(|e| e.into_inner()) = Some(db);
     }
 
     #[test]
