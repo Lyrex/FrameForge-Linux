@@ -10,6 +10,9 @@ fn truncate_chars(s: &str, n: usize) -> String {
 }
 use tauri::{Emitter, Manager, State};
 
+mod arbitration;
+mod arbitrations;
+mod log_tail;
 mod cache;
 mod console_login; // [console-login feature] remove this line to drop the feature
 mod db;
@@ -244,6 +247,7 @@ pub struct AppState {
     /// Set by `poke_scan` to bypass the 5-second PID-check cooldown immediately.
     pub force_pid_check: Arc<AtomicBool>,
     /// When false, the Relic Pick Overlay is suppressed even when EE.log triggers it.
+    pub arbitration_overlay_enabled: Arc<AtomicBool>,
     pub relic_pick_overlay_enabled: Arc<AtomicBool>,
     /// When true, a parallel memory-scan thread polls Warframe's process memory for the
     /// relic reward screen open/close events instead of relying solely on EE.log.
@@ -2990,6 +2994,43 @@ fn parse_trade_dialog(raw: &str) -> Option<ParsedTrade> {
     })
 }
 
+fn record_arbitration_runs(
+    app: &tauri::AppHandle,
+    recorder: &mut db::ArbitrationRecorder,
+    chunk: String,
+    live: bool,
+) {
+    let ended = recorder.parse(chunk);
+
+    let state = app.state::<AppState>();
+    let overlay_on = state.arbitration_overlay_enabled.load(Ordering::SeqCst);
+    if let Some(summary) = db::live_run_summary(&ended, live, overlay_on) {
+        show_arbitration_overlay(app);
+        if let Err(e) = app.emit("arbitration-run-ended", &summary) {
+            warn!(error = %e, "arbitration overlay event not delivered");
+        }
+    }
+
+    let stored = {
+        let conn = match state.conn.lock() {
+            Ok(conn) => conn,
+            Err(e) => {
+                warn!(error = %e, "database lock poisoned; arbitration runs held back");
+                return;
+            }
+        };
+        recorder.store(&conn)
+    };
+    match stored {
+        Ok(0) => {}
+        Ok(stored) => {
+            info!(runs = stored, "arbitration runs recorded");
+            app.emit("arbitration-runs-changed", ()).ok();
+        }
+        Err(e) => warn!(error = %e, "storing arbitration runs failed; retrying on the next read"),
+    }
+}
+
 /// Start a lightweight EE.log watcher for features that don't need the memory scanner:
 /// riven reroll detection, trade completion detection, WFM whisper detection.
 /// Called unconditionally at app startup — EE.log is plain file I/O, not memory reading.
@@ -2999,9 +3040,20 @@ fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
         .map(|d| d.join("Warframe").join("EE.log"))
         .ok_or("Cannot find LocalAppData")?;
 
+    static WATCHER: log_tail::WatcherSlot = log_tail::WatcherSlot::new();
+    let Some(slot) = WATCHER.try_acquire() else { return Ok(()); };
+
     std::thread::spawn(move || {
-        use std::io::{Read, Seek, SeekFrom};
-        let mut file_pos: u64 = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+        let _slot = slot;
+        let mut arbitration_runs = db::ArbitrationRecorder::default();
+        let mut tail = log_tail::LogTail::from_start(log_path.clone());
+        // Only arbitration consumes history; old trade prompts and reward overlays
+        // must not replay. Keep the parser so an active run can finish live.
+        if let Some(chunk) = tail.read() {
+            record_arbitration_runs(&app, &mut arbitration_runs, chunk.text, false);
+        }
+        let mut backfilled = tail.has_read();
+        let mut pending_lines = String::new();
         let mut pending_trade: Option<String> = None;
         // Cooldown: don't fire riven-screen-open again within 4 seconds of the last fire.
         // Guards against the same EE.log buffer being processed twice by React StrictMode listeners.
@@ -3031,15 +3083,28 @@ fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
             } else {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            let Ok(mut f) = std::fs::File::open(&log_path) else { continue };
-            let len = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
-            if len < file_pos { file_pos = 0; }
-            if len == file_pos { continue; } // nothing new since last read
-            if f.seek(SeekFrom::Start(file_pos)).is_err() { continue; }
-            let mut buf = String::new();
-            if f.read_to_string(&mut buf).is_err() { continue; }
-            file_pos = len;
-            if buf.is_empty() { continue; }
+            let Some(chunk) = tail.read() else {
+                backfilled |= tail.has_read();
+                record_arbitration_runs(&app, &mut arbitration_runs, String::new(), false);
+                continue;
+            };
+            if chunk.restarted {
+                // A replacement starts a new parser but retains failed writes.
+                arbitration_runs.restart();
+                pending_lines.clear();
+                pending_trade = None;
+                last_riven_fire = None;
+                last_relic_pick_trigger = None;
+            }
+            let live = backfilled && !chunk.restarted;
+            backfilled = true;
+            let buf = chunk.text;
+            record_arbitration_runs(&app, &mut arbitration_runs, buf.clone(), live);
+            if !live { continue; }
+            pending_lines.push_str(&buf);
+            let Some(end) = pending_lines.rfind('\n') else { continue; };
+            let remainder = pending_lines.split_off(end + 1);
+            let buf = std::mem::replace(&mut pending_lines, remainder);
             let lower = buf.to_lowercase();
 
             // ── Riven reroll / unveil ─────────────────────────────────────────
@@ -4235,6 +4300,56 @@ pub struct CraftingJob {
 pub struct BlobStatusPayload {
     pub stage:   String,  // "scanning" | "done" | "error"
     pub detail:  String,  // human-readable detail
+}
+
+#[tauri::command]
+fn get_arbitration_runs(state: State<AppState>) -> Result<Vec<db::RunRecord>, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    db::list_arbitration_runs(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_arbitration_run(app: tauri::AppHandle, state: State<AppState>, uid: String) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let deleted = db::delete_arbitration_run(&conn, &uid).map_err(|e| e.to_string())?;
+    if !deleted {
+        return Err("run not found; the history shown may be out of date".to_string());
+    }
+    app.emit("arbitration-runs-changed", ()).ok();
+    Ok(())
+}
+
+fn show_arbitration_overlay(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("arbitration-overlay") {
+        if let Err(e) = win.show() {
+            warn!(error = %e, "arbitration overlay did not show");
+        }
+    }
+}
+
+#[tauri::command]
+fn set_arbitration_overlay_enabled(state: State<AppState>, enabled: bool) {
+    state.arbitration_overlay_enabled.store(enabled, Ordering::SeqCst);
+}
+
+/// Debug: fire the post-run overlay with a made-up completed run.
+#[tauri::command]
+fn test_arbitration_overlay(app: tauri::AppHandle) -> String {
+    let summary = db::RunSummary {
+        node: "Stöfler (Lua)".into(),
+        mission_type: "defense",
+        duration_sec: 1487.0,
+        rotations: 5,
+        waves: 15,
+        kills: 612,
+        drone_kills: 23,
+        host_telemetry: true,
+        vitus_mean: 41.3,
+        vitus_per_minute: 1.67,
+    };
+    show_arbitration_overlay(&app);
+    let _ = app.emit("arbitration-run-ended", &summary);
+    "Emitted arbitration-run-ended with a sample run".to_string()
 }
 
 // ── Relic pick overlay ────────────────────────────────────────────────────────
@@ -9892,6 +10007,7 @@ pub fn run() {
             unmatched_paths_dir,
             corrections,
             force_pid_check: Arc::new(AtomicBool::new(false)),
+            arbitration_overlay_enabled: Arc::new(AtomicBool::new(false)),
             relic_pick_overlay_enabled: Arc::new(AtomicBool::new(true)),
             mem_trigger_enabled: Arc::new(AtomicBool::new(false)),
         })
@@ -10038,6 +10154,11 @@ pub fn run() {
             factory_reset,
             wfm_set_status,
             start_log_watcher,
+            arbitrations::fetch_arbitration_schedule,
+            get_arbitration_runs,
+            delete_arbitration_run,
+            set_arbitration_overlay_enabled,
+            test_arbitration_overlay,
             ocr_riven_log_error,
             start_riven_memory_watcher,
             riven_screen_visible,

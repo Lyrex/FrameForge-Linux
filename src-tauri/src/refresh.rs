@@ -35,6 +35,11 @@ struct Task {
 }
 
 const TASKS: &[Task] = &[
+    Task {
+        name: "arbitrations",
+        interval: Duration::from_secs(3600),
+        run: crate::arbitrations::refresh_feed,
+    },
     // Just under the 60s frontend poll, so a window's own tick is served from
     // the cache this fills rather than from the network.
     Task {
