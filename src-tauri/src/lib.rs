@@ -42,6 +42,7 @@ mod diagnostics;
 mod image_cache;
 mod inventory_state;
 mod log_watcher;
+mod mastery;
 mod mastery_rules;
 mod monitor;
 mod platform;
@@ -376,7 +377,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             updater::pending_update,
             updater::restart_app,
             settings::force_quit,
-            catalogue::get_weapon_catalog,
+            mastery::get_mastery_overview,
             catalogue::get_craftable_items,
             diagnostics::toggle_debug_categorization,
             catalogue::get_recipe,
