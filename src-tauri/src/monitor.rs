@@ -44,6 +44,7 @@ pub struct InventoryUpdate {
     pub crafting: Vec<CraftingJob>,
     pub mastery_rank: Option<u32>,
     pub mastery_data: HashMap<String, u32>,
+    pub owned_levels: HashMap<String, Vec<u32>>,
     pub changes: Vec<QuantityChange>,
     pub warframe_running: bool,
     pub scanned_at: i64,
@@ -162,6 +163,8 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
     let path_to_tradable: HashMap<String, bool> = items.iter()
         .filter_map(|i| i.tradable.map(|t| (i.unique_name.clone(), t)))
         .collect();
+    let path_to_max_level_cap: HashMap<String, u32> = items.iter()
+        .filter_map(|i| i.max_level_cap.map(|cap| (i.unique_name.clone(), cap))).collect();
     let path_to_masterable: HashMap<String, bool> = items.iter()
         .filter_map(|i| i.masterable.map(|m| (i.unique_name.clone(), m)))
         .collect();
@@ -295,10 +298,8 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                 quantities: initial_qty,
                 crafting: vec![],
                 mastery_rank: startup_cache.mastery_rank,
-                mastery_data: startup_cache.items.iter()
-                    .filter(|(_, v)| v.mastery_rank > 0)
-                    .map(|(k, v)| (k.clone(), v.mastery_rank))
-                    .collect(),
+                mastery_data: startup_cache.mastery_data(),
+                owned_levels: startup_cache.owned_levels(),
                 changes: vec![],
                 consumed_suits: startup_cache.consumed_suits(),
                 mods: known_mods.clone(),
@@ -318,10 +319,8 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
         }
 
         let mut current_mastery_rank: Option<u32> = startup_cache.mastery_rank;
-        let mut current_mastery_data: HashMap<String, u32> = startup_cache.items.iter()
-            .filter(|(_, v)| v.mastery_rank > 0)
-            .map(|(k, v)| (k.clone(), v.mastery_rank))
-            .collect();
+        let mut current_mastery_data: HashMap<String, u32> = startup_cache.mastery_data();
+        let mut current_owned_levels = startup_cache.owned_levels();
         let mut current_recipes: Vec<memory_scanner::PendingRecipe> = Vec::new();
         let mut current_consumed_suits: Vec<String> = startup_cache.consumed_suits();
         let mut current_socketed_shards: HashMap<String, Vec<memory_scanner::ArchonShard>> = startup_cache.items.iter()
@@ -372,6 +371,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     path_to_name: &path_to_name, path_to_category: &path_to_category,
                     path_to_ducat: &path_to_ducat, path_to_vaulted: &path_to_vaulted,
                     path_to_tradable: &path_to_tradable, path_to_masterable: &path_to_masterable,
+                    path_to_max_level_cap: &path_to_max_level_cap,
                     relic_drops: &relic_drops_snapshot, existing_wfm_prices: &existing_wfm,
                     excluded_paths: &alias_excluded,
                 });
@@ -510,9 +510,8 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
 
                 // Meta
                 current_mastery_rank = Some(blob.mastery_level);
-                for (path, &rank) in &blob.mastery_data {
-                    current_mastery_data.insert(path.clone(), rank);
-                }
+                current_mastery_data = sc.mastery_data();
+                current_owned_levels = sc.owned_levels();
                 current_consumed_suits = blob.consumed_suits.clone();
                 current_recipes = blob.pending_recipes.iter().map(|r| memory_scanner::PendingRecipe {
                     unique_name:   r.item_type.clone(),
@@ -592,6 +591,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     crafting,
                     mastery_rank: current_mastery_rank,
                     mastery_data: current_mastery_data.clone(),
+                    owned_levels: current_owned_levels.clone(),
                     changes,
                     warframe_running: true,
                     scanned_at:   now,
@@ -742,6 +742,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                         quantities: emit_qty, crafting,
                         mastery_rank: current_mastery_rank,
                         mastery_data: if send_mastery { current_mastery_data.clone() } else { HashMap::new() },
+                        owned_levels: if send_mastery { current_owned_levels.clone() } else { HashMap::new() },
                         changes: vec![], warframe_running: false, scanned_at: now,
                         consumed_suits: current_consumed_suits.clone(),
                         mods: known_mods.clone(),

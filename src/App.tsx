@@ -194,6 +194,7 @@ export default function App() {
   const [crafting, setCrafting] = useState<CraftingJob[]>([]);
   const [masteryRank, setMasteryRank] = useState<number | null>(null);
   const [masteryData, setMasteryData] = useState<Record<string, number>>({});
+  const [ownedLevels, setOwnedLevels] = useState<Record<string, number[]>>({});
   const [playerName, setPlayerName] = useState<string | null>(null);
   const [poking, setPoking] = useState(false);
   const [autoDiagEnabled, setAutoDiagEnabled] = useState(false);
@@ -552,8 +553,10 @@ if (typeof s.autoDiagEnabled === "boolean") {
       if (p.crafting) setCrafting(p.crafting);
       if (p.mastery_rank != null) setMasteryRank(p.mastery_rank);
       if (p.player_name) setPlayerName(p.player_name);
-      if (p.mastery_data && Object.keys(p.mastery_data).length > 0)
-        setMasteryData(prev => ({ ...prev, ...p.mastery_data }));
+      if (p.mastery_data && (p.is_full_pass || Object.keys(p.mastery_data).length > 0))
+        setMasteryData(p.mastery_data);
+      if (p.owned_levels && (p.is_full_pass || Object.keys(p.owned_levels).length > 0))
+        setOwnedLevels(p.owned_levels);
       setWarframeRunning(p.warframe_running);
       if (p.consumed_suits && p.consumed_suits.length > 0) {
         setSubsummedWarframes(prev => {
@@ -1197,6 +1200,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         unique_name:   path,
         quantity:      qty,
         mastery_rank:  masteryData[path] ?? 0,
+        owned_levels:  ownedLevels[path] ?? [],
         archon_shards: archonShards[path] ?? [],
         forma_count:   formaData[path] ?? 0,
         subsumed:      subsummedWarframes.has(path),
@@ -1206,12 +1210,13 @@ if (typeof s.autoDiagEnabled === "boolean") {
         wfm_price:     null,
         image_name:    cat?.image_name ?? null,
         mastery_req:   cat?.mastery_req ?? null,
+        max_level_cap: cat?.max_level_cap ?? null,
       };
       inv[name] = entry;
       if (path !== name) inv[path] = entry; // path alias so existing unique_name lookups still work
     }
     return inv;
-  }, [catalog, quantities, masteryData, archonShards, formaData, subsummedWarframes, scannerMods]);
+  }, [catalog, quantities, masteryData, ownedLevels, archonShards, formaData, subsummedWarframes, scannerMods]);
 
   const modCopiesMap = useMemo(() => {
     const map: Record<string, ModCopy[]> = {};

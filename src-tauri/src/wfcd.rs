@@ -976,8 +976,7 @@ fn fetch_from_wfcd(
             let mastery_req       = item.get("masteryReq").and_then(|v| v.as_u64()).map(|n| n as u32);
             let omega_attenuation = item.get("omegaAttenuation").and_then(|v| v.as_f64()).map(|n| n as f32);
             let fusion_limit      = item.get("fusionLimit").and_then(|v| v.as_u64()).map(|n| n as u32);
-            let max_level_cap     = item.get("maxLevelCap").and_then(|v| v.as_u64()).map(|n| n as u32)
-                .or_else(|| if unique_name.contains("/EntratiMech/") { Some(40) } else { None });
+            let max_level_cap     = item.get("maxLevelCap").and_then(|v| v.as_u64()).map(|n| n as u32);
             let tradable          = item.get("tradable").and_then(|v| v.as_bool());
             let masterable        = item.get("masterable").and_then(|v| v.as_bool());
 
