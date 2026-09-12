@@ -1,26 +1,25 @@
 import { useState } from "react";
 import type { InventoryItem } from "../types/items";
 import Syndicates from "./Syndicates";
-import Weapons from "./Weapons";
+import Mastery from "./Mastery";
 import { SYNDICATE_FILTERS_DEFAULT } from "../constants/filters";
 import type { SyndicateFilters } from "../types/filters";
 
-export type CompletionistView = "syndicates" | "weapons";
-type WeaponTab = "Primary" | "Secondary" | "Melee" | "Operator";
+export type CompletionistView = "syndicates" | "mastery";
 
 interface CompletionistTabsProps {
   inventory: Record<string, InventoryItem>;
+  refreshKey: number;
 }
 
-export default function CompletionistTabs({ inventory }: CompletionistTabsProps) {
+export default function CompletionistTabs({ inventory, refreshKey }: CompletionistTabsProps) {
   const [view, setView] = useState<CompletionistView>("syndicates");
-  const [weaponsTab, setWeaponsTab] = useState<WeaponTab>("Primary");
   const [syndicateFilters, setSyndicateFilters] = useState<SyndicateFilters>(SYNDICATE_FILTERS_DEFAULT);
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
       <div style={{ display: "flex", gap: 2, padding: "8px 12px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
-        {(["syndicates", "weapons"] as const).map(tab => (
+        {(["syndicates", "mastery"] as const).map(tab => (
           <button
             key={tab}
             onClick={() => setView(tab)}
@@ -33,7 +32,7 @@ export default function CompletionistTabs({ inventory }: CompletionistTabsProps)
               transition: "background 0.15s, color 0.15s", textTransform: "capitalize",
             }}
           >
-            {tab === "syndicates" ? "Syndicates" : "Weapons"}
+            {tab === "syndicates" ? "Syndicates" : "Mastery"}
           </button>
         ))}
       </div>
@@ -44,13 +43,7 @@ export default function CompletionistTabs({ inventory }: CompletionistTabsProps)
           onFiltersChange={setSyndicateFilters}
         />
       )}
-      {view === "weapons" && (
-        <Weapons
-          inventory={inventory}
-          activeTab={weaponsTab}
-          onTabChange={setWeaponsTab}
-        />
-      )}
+      {view === "mastery" && <Mastery inventory={inventory} refreshKey={refreshKey} />}
     </div>
   );
 }
