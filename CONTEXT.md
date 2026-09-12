@@ -30,6 +30,66 @@ slug only exists for items warframe.market trades, and maps to a `unique_name`
 rather than replacing it.
 _Avoid_: url_name, item_url, market id
 
+### Account state and mastery
+
+**Account state**:
+The player's possessions and progression, including equipment history,
+Intrinsic ranks, and mission completion. Inventory is its owned-item subset.
+_Avoid_: inventory (when progression is included)
+
+**Mastery source**:
+One thing that awards mastery credit to an account: an equipment type, an
+Intrinsic track, a junction, or a chart node in one mode. A node's normal and
+Steel Path completions are two sources, since each is unlocked and blocked
+separately.
+_Avoid_: Intrinsic rank (a rank is progress within a track, not a source)
+
+**Earned mastery**:
+Mastery credit permanently awarded to an account, independent of current
+equipment ownership or the level of an owned copy.
+_Avoid_: affinity, equipment level (when permanent account credit is meant)
+
+**Remaining mastery**:
+The mastery credit an account can still earn from a mastery source.
+_Avoid_: missing items (when unearned credit is meant)
+
+**Mastered**:
+A mastery source for which the account has earned all eligible mastery credit.
+For equipment, this is independent of current ownership or an owned copy's level.
+_Avoid_: owned, max-level copy (when permanent mastery completion is meant)
+
+**Node key**:
+The game's own identifier for a star chart node or junction, as carried in
+account state. The canonical identity of a node everywhere in FrameForge; the
+planet and node name are labels.
+_Avoid_: node name, planet/node string (when identity is meant)
+
+**Confirmed**:
+Progress for a mastery source kind that a game observation with a known time
+established. An entry absent from a confirmed field is zero credit, not
+unknown.
+_Avoid_: observed, fresh, cached
+
+**Unconfirmed**:
+Progress carried over from a cache with no observation time. Shown, but not
+trusted until the game is observed again.
+_Avoid_: stale, legacy
+
+**Unknown**:
+Progress for a mastery source kind that no verified observation covers.
+Never displayed as zero.
+
+**Acquisition route**:
+A way to obtain the equipment, components, or progression needed to earn
+remaining mastery, such as crafting, relic rewards, purchases, or unlocks.
+
+**Opportunity**:
+A mastery source with remaining mastery and at least one acquisition route.
+
+**Mastery plan**:
+An ordered selection of actions toward a target Mastery Rank, with potential
+gains conditional on completing those actions.
+
 ### The game's log
 
 **Log path override**:
