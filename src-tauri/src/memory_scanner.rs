@@ -106,8 +106,8 @@ pub struct BlobInventory {
     pub flavour_items:   HashMap<String, i64>,
     /// WeaponSkins — sigils and cosmetic weapon overlays. Path → occurrence count.
     pub weapon_skins:    HashMap<String, i64>,
-    /// Path → mastery rank derived from XPInfo.
-    pub mastery_data:    HashMap<String, u32>,
+    /// XPInfo: earned mastery XP per item.
+    pub mastery_xp:      HashMap<String, i64>,
     pub pending_recipes: Vec<BlobPendingRecipe>,
     /// Warframe paths fed to Helminth (InfestedFoundry.ConsumedSuits).
     pub consumed_suits:  Vec<String>,
@@ -122,7 +122,6 @@ pub struct BlobUniqueEntry {
     pub item_type:     String,
     pub section:       String,
     pub polarized:     u32,
-    /// Raw XP from the blob — used to compute rank via `xp_to_rank`.
     /// For gilded modular items (Amps, Kitguns, Zaws) XP resets to 0 on gilding,
     /// so this reflects post-gild progress.
     pub xp:            i64,
@@ -151,21 +150,6 @@ pub struct BlobStackableEntry {
 pub struct BlobPendingRecipe {
     pub item_type:     String,
     pub completion_ms: i64,
-}
-
-/// Convert raw affinity XP to item rank.
-/// Formula from Warframe wiki: cumulative XP to reach rank N is 1000×N² for
-/// Warframes/Sentinels/companions, 500×N² for all weapon types.
-/// Invert: rank = floor(sqrt(xp / base)).
-/// No upper cap — some weapons (e.g. Paracesis) can exceed rank 30.
-pub fn xp_to_rank(xp: i64, path: &str) -> u32 {
-    let base = if path.contains("/Powersuits/")
-        || path.contains("/SentinelPowersuits/")
-        || path.contains("/Types/Friendly/")
-        || path.contains("/Types/Game/KubrowPet/")
-        || path.contains("/Types/Game/CatbrowPet/")
-    { 1000.0f64 } else { 500.0f64 };
-    (xp as f64 / base).sqrt().floor() as u32
 }
 
 // ─── Public helpers ──────────────────────────────────────────────────────────
@@ -593,15 +577,11 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
         }
     }
 
-    // XPInfo → mastery ranks (covers items no longer owned)
-    let mut mastery_data: HashMap<String, u32> = HashMap::new();
+    let mut mastery_xp: HashMap<String, i64> = HashMap::new();
     if let Some(arr) = json["XPInfo"].as_array() {
         for e in arr {
             let Some(it) = e["ItemType"].as_str() else { continue };
-            if let Some(xp) = e["XP"].as_i64() {
-                let rank = xp_to_rank(xp, it);
-                if rank > 0 { mastery_data.insert(it.to_string(), rank); }
-            }
+            if let Some(xp) = e["XP"].as_i64() { mastery_xp.insert(it.to_string(), xp); }
         }
     }
 
@@ -633,7 +613,7 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
     Some(BlobInventory {
         credits, endo, platinum, free_platinum, mastery_level,
         unique_items, stackable_items, mods,
-        flavour_items, weapon_skins, mastery_data, pending_recipes, consumed_suits,
+        flavour_items, weapon_skins, mastery_xp, pending_recipes, consumed_suits,
         rivens,
     })
 }
@@ -1802,5 +1782,4 @@ mod stitch_engine_tests {
         assert_eq!(inv.credits, 42);
     }
 }
-
 

@@ -58,6 +58,7 @@ export interface InventoryItem {
   unique_name: string;
   quantity: number;
   mastery_rank: number;
+  owned_levels?: number[];
   archon_shards: ArchonShard[];
   forma_count: number;
   subsumed: boolean;
@@ -67,4 +68,5 @@ export interface InventoryItem {
   wfm_price: number | null;
   image_name: string | null;
   mastery_req: number | null;
+  max_level_cap: number | null;
 }

@@ -27,6 +27,7 @@ export interface InventoryUpdate {
   crafting: CraftingJob[];
   mastery_rank?: number;
   mastery_data?: Record<string, number>;
+  owned_levels?: Record<string, number[]>;
   changes: ChangeLogEntry[];
   warframe_running: boolean;
   scanned_at: number;

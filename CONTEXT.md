@@ -44,6 +44,36 @@ Steel Path completions are two sources, since each is unlocked and blocked
 separately.
 _Avoid_: Intrinsic rank (a rank is progress within a track, not a source)
 
+**Affinity**:
+The experience the game records per equipment type, cumulative across every
+copy, Forma reset, and sale, and never decreasing. Ranks and mastery credit are
+derived from it; a Warframe-like piece needs twice the affinity per rank that a
+weapon does.
+_Avoid_: XP, level (when the permanent record is meant)
+
+**Equipment rank**:
+How far a piece of equipment has progressed, 0 up to its rank cap, as derived
+from affinity. Distinct from the account's Mastery Rank and from an owned
+copy's current level.
+_Avoid_: item rank, level (when derived progress is meant)
+
+**Rank cap**:
+The highest equipment rank that still awards mastery credit: 30 for most
+equipment, 40 for Kuva, Tenet and Coda weapons, the Paracesis, and Necramechs.
+The catalogue does not know every cap, so FrameForge's own rules decide.
+_Avoid_: max level, level cap (when the mastery ceiling is meant)
+
+**Level cap**:
+The ceiling an owned copy can currently reach: 30, raised by 2 per Forma on
+rank-40 equipment, up to the rank cap. A property of the copy, not of the
+mastery source.
+_Avoid_: rank cap
+
+**Mastery credit**:
+Mastery points awarded per equipment rank: 200 for Warframe-like equipment
+(Warframes, Archwings, Necramechs, companions, K-Drives, the Plexus), 100 for
+weapons, including sentinel, MOA and Hound weapons.
+
 **Earned mastery**:
 Mastery credit permanently awarded to an account, independent of current
 equipment ownership or the level of an owned copy.

@@ -734,7 +734,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
             { swatch: "rgba(56,139,253,.5)", icon: "⚡",  label: "Ready to craft", desc: "Blue border + ⚡ — all parts collected" },
             { swatch: "rgba(240,192,64,.4)", icon: "BP",  label: "Blueprint",      desc: "Gold comp row — blueprint in inventory" },
             { swatch: "rgba(63,185,80,.4)",  icon: "✓",   label: "Part owned",     desc: "Green comp row — component in inventory" },
-            { icon: "★",  label: "★ Mastered", desc: "Item levelled to rank 30" },
+            { icon: "★",  label: "★ Mastered", desc: "Item levelled to its max rank" },
             { icon: "⚒",  label: "⚒ Building", desc: "Currently crafting in the Foundry" },
             { icon: "MR", label: "MR{n}",       desc: "Required Mastery Rank to use" },
           ]} />
