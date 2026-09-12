@@ -42,6 +42,7 @@ mod diagnostics;
 mod image_cache;
 mod inventory_state;
 mod log_watcher;
+mod mastery_rules;
 mod monitor;
 mod platform;
 mod pricing;

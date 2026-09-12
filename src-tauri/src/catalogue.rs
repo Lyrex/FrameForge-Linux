@@ -5,7 +5,7 @@ use crate::cache::atomic_write;
 use crate::inventory_state::{load_inventory_state_cache, CachedItem};
 use crate::monitor::CraftingJob;
 use crate::wfcd::{RecipeComponent, WfcdItem};
-use crate::{cache, wfcd};
+use crate::{cache, mastery_rules, wfcd};
 
 // ─── Item catalog ─────────────────────────────────────────────────────────────
 
@@ -259,22 +259,6 @@ fn prime_set_prefix(name: &str) -> Option<String> {
     let lower = name.to_lowercase();
     let pos = lower.find("prime")?;
     Some(name[..pos + 5].to_string()) // 5 = "prime".len()
-}
-
-/// WFCD marks all Amp components as `masterable: false`, but Prisms (barrels)
-/// DO grant mastery XP. Path-based overrides run first so they beat WFCD's value.
-fn resolve_masterable(wfcd: Option<bool>, path: &str) -> Option<bool> {
-    if !path.ends_with("Blueprint") {
-        // Amp Prisms (barrels) grant mastery; WFCD incorrectly says false.
-        if path.contains("/OperatorAmplifiers/") && path.contains("/Barrel/") {
-            return Some(true);
-        }
-        // Operator amp weapons (Sirocco, etc.) grant mastery.
-        if path.contains("/Operator/Pistols/") {
-            return Some(true);
-        }
-    }
-    wfcd
 }
 
 fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
@@ -677,18 +661,13 @@ fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> usize {
                 .or_insert_with(|| CachedItem { unique_name: item.unique_name.clone(), ..Default::default() });
             if entry.name.is_empty() { entry.name = item.name.clone(); }
             if item.fusion_limit.is_some() { entry.mod_max_rank = item.fusion_limit; }
-            // Effective level cap: use WFCD's explicit value when present (e.g. 40 for
-            // Necramechs/Paracesis), otherwise fall back to the standard rank-30 cap for
-            // all levelable categories. Non-levelable items get no entry.
-            let effective_cap = item.max_level_cap.or_else(|| {
-                let cat = fix_category(&item.name, &item.item_type, &item.product_category, &item.category, &item.unique_name);
-                match cat.as_str() {
-                    "Warframes" | "Primary" | "Secondary" | "Melee"
-                    | "Companions" | "Archwing" | "Operator Weapons" => Some(30),
-                    _ => None,
-                }
-            });
-            if effective_cap.is_some() { entry.max_level_cap = effective_cap; }
+            let cat = fix_category(&item.name, &item.item_type, &item.product_category, &item.category, &item.unique_name);
+            let levelable = item.max_level_cap.is_some() || matches!(cat.as_str(),
+                "Warframes" | "Primary" | "Secondary" | "Melee"
+                | "Companions" | "Archwing" | "Operator Weapons");
+            if levelable {
+                entry.max_level_cap = Some(mastery_rules::rank_cap(&item.unique_name, item.max_level_cap));
+            }
         }
         if let Ok(json) = serde_json::to_string(&inv) {
             let _ = atomic_write(&state.inventory_state_cache_path, json.as_bytes());
@@ -745,7 +724,7 @@ pub(crate) fn get_weapon_catalog(state: State<AppState>) -> Vec<CatalogItem> {
                 ducats:        i.ducats,
                 mastery_req:   i.mastery_req,
                 max_level_cap: i.max_level_cap,
-                masterable:    resolve_masterable(i.masterable, &i.unique_name),
+                masterable:    mastery_rules::masterable(i.masterable, &i.unique_name),
                 tradeable_wfm: None,
                 source_type:   None,
             })
@@ -823,7 +802,7 @@ pub(crate) fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
                 ducats:        i.ducats,
                 mastery_req:   i.mastery_req,
                 max_level_cap: i.max_level_cap,
-                masterable:    resolve_masterable(i.masterable, &i.unique_name),
+                masterable:    mastery_rules::masterable(i.masterable, &i.unique_name),
                 tradeable_wfm: None,
                 source_type:   None,
             })

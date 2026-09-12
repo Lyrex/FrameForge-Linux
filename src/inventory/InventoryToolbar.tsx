@@ -52,7 +52,7 @@ export default function InventoryToolbar({
         <span className="item-count-label" style={{ marginLeft: "auto" }}>{itemCount} item{itemCount !== 1 ? "s" : ""}{itemCount === 1000 ? " (capped)" : ""}</span>
         <ViewToggle view={view} onChange={onViewChange} />
         <HelpTip items={[
-          { icon: "★", label: "★  Mastered", desc: "Shown above image — item levelled to rank 30" },
+          { icon: "★", label: "★  Mastered", desc: "Shown above image — item levelled to its max rank" },
           { icon: "R5", label: "R{n}  Rank", desc: "Shown above image — current rank, not yet mastered" },
           { icon: "⚒", label: "⚒  Building", desc: "Shown on image — currently crafting in Foundry" },
           { swatch: "rgba(63,185,80,.5)", label: "Green border", desc: "Item recently gained" },
