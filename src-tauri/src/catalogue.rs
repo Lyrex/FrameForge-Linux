@@ -112,6 +112,8 @@ pub(crate) fn fix_category(name: &str, item_type: &str, product_category: &str, 
         "Rifle" | "Shotgun" | "Bow" | "Sniper" | "Launcher" | "Throwing" => {
             // Railjack turrets/crew weapons share weapon types with Primary weapons.
             if product_category == "CrewShipWeapons" { return "Railjack".to_string(); }
+            // WFCD types ten melee weapons (Paracesis, Prova, Mk1-Bo, …) as Rifle.
+            if product_category == "Melee" { return "Melee".to_string(); }
             return "Primary".to_string();
         }
 
@@ -692,73 +694,6 @@ fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> usize {
 }
 
 // ─── Foundry / Recipes ────────────────────────────────────────────────────────
-
-/// Returns all Primary / Secondary / Melee / Operator Weapons from the catalog (for the
-/// Weapons completionist tracker). Includes non-craftable weapons (Coda, Prisms, etc.).
-#[tauri::command]
-pub(crate) fn get_weapon_catalog(state: State<AppState>) -> Vec<CatalogItem> {
-    let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
-    let corrections = &state.corrections;
-
-    let mut result: Vec<CatalogItem> = items.iter()
-        .filter(|i| !i.unique_name.contains("PvPVariant")
-            && i.item_type != "Companion Weapon"
-            && i.product_category != "SentinelWeapons")
-        .filter_map(|i| {
-            let mut cat = fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name);
-            let mut name = i.name.clone();
-            if let Some(c) = corrections.get(&i.unique_name) {
-                if c.category.as_deref() == Some("Ignored") { return None; }
-                if let Some(ref cn) = c.name { name = cn.clone(); }
-                if let Some(ref cc) = c.category { cat = cc.clone(); }
-            }
-            if !matches!(cat.as_str(), "Primary" | "Secondary" | "Melee" | "Operator Weapons") {
-                return None;
-            }
-            Some(CatalogItem {
-                unique_name:   i.unique_name.clone(),
-                name,
-                category:      cat,
-                image_name:    i.image_name.clone(),
-                vaulted:       i.vaulted,
-                ducats:        i.ducats,
-                mastery_req:   i.mastery_req,
-                max_level_cap: i.max_level_cap,
-                masterable:    mastery_rules::masterable(i.masterable, &i.unique_name),
-                tradeable_wfm: None,
-                source_type:   None,
-            })
-        })
-        .collect();
-
-    // Corrections-only items (e.g. Prisms, Zaw Strikes) not in WFCD but tagged as a weapon category
-    let covered: std::collections::HashSet<String> = result.iter().map(|i| i.unique_name.clone()).collect();
-    for (path, c) in corrections.iter() {
-        if covered.contains(path) { continue; }
-        let cat = match c.category.as_deref() {
-            Some(cat) if matches!(cat, "Primary" | "Secondary" | "Melee" | "Operator Weapons") => cat.to_string(),
-            _ => continue,
-        };
-        let name = match c.name.as_deref() {
-            Some(n) if !n.is_empty() => n.to_string(),
-            _ => continue,
-        };
-        result.push(CatalogItem {
-            unique_name:   path.clone(),
-            name,
-            category:      cat,
-            image_name:    None,
-            vaulted:       None,
-            ducats:        None,
-            mastery_req:   None,
-            max_level_cap: None,
-            masterable:    None,
-            tradeable_wfm: c.tradeable_wfm,
-            source_type:   None,
-        });
-    }
-    result
-}
 
 fn acquired_source_label(name: &str, path: &str) -> &'static str {
     if name.ends_with(" Prisma") || name.starts_with("Prisma ") { return "baro"; }

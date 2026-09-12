@@ -164,6 +164,13 @@ impl InventoryStateCache {
             .collect()
     }
 
+    /// Only a full account observation writes currency rows; catalogue
+    /// refreshes seed item rows without one.
+    /// TODO: replace with the cache's own observation time once it records one.
+    pub(crate) fn has_account_observation(&self) -> bool {
+        self.items.contains_key(CREDITS_PATH)
+    }
+
     /// Derive consumed_suits from items so callers don't need to know the internal layout.
     pub(crate) fn consumed_suits(&self) -> Vec<String> {
         self.items.iter()
@@ -198,6 +205,9 @@ pub(crate) fn inventory_path_aliases() -> HashMap<&'static str, &'static str> {
          "/Lotus/Powersuits/SiriusOrion/SiriusSuit"),
         ("/Lotus/Powersuits/SiriusOrion/OrionSuitBlueprint",
          "/Lotus/Types/Recipes/WarframeRecipes/SiriusOrionBlueprint"),
+        // WFCD lists the Grimoire twice; XPInfo only ever credits TnGrimoire.
+        ("/Lotus/Weapons/Tenno/Grimoire/TnDoppelgangerGrimoire",
+         "/Lotus/Weapons/Tenno/Grimoire/TnGrimoire"),
     ].into_iter().collect()
 }
 
@@ -224,7 +234,7 @@ pub(crate) fn build_inventory_from_blob(
     }
 
     // Currency (virtual paths not in WFCD catalog).
-    upsert!("/_currency/Credits").amount     = blob.credits;
+    upsert!(CREDITS_PATH).amount             = blob.credits;
     upsert!("/_currency/Endo").amount        = blob.endo;
     upsert!("/_currency/Platinum").amount    = blob.platinum - blob.free_platinum;
     upsert!("/_currency/PlatinumGift").amount = blob.free_platinum;

@@ -1,7 +1,7 @@
 //! The game's mastery rules, kept apart from the catalogue: WFCD says which
 //! equipment exists and carries `maxLevelCap` where it knows one, but it ships
-//! no cap for Necramechs and marks Amp Prisms non-masterable although the
-//! game's XPInfo credits them. Every consumer
+//! no cap for Necramechs and marks Amp Prisms and Infested Kitgun chambers
+//! non-masterable although the game's XPInfo credits them. Every consumer
 //! derives rank, cap, and masterability through here rather than from the
 //! catalogue fields directly.
 
@@ -36,8 +36,11 @@ pub(crate) fn earned_rank(xp: i64, path: &str, catalogue_cap: Option<u32>) -> u3
 
 pub(crate) fn masterable(wfcd: Option<bool>, path: &str) -> Option<bool> {
     if !path.ends_with("Blueprint") {
-        // Amp Prisms (barrels) grant mastery; WFCD incorrectly says false.
-        if path.contains("/OperatorAmplifiers/") && path.contains("/Barrel/") {
+        // Bare "Barrel": the Mote Prism path has no `/Barrel/` segment.
+        if path.contains("/OperatorAmplifiers/") && path.contains("Barrel") {
+            return Some(true);
+        }
+        if path.contains("/InfKitGun/Barrels/") {
             return Some(true);
         }
         // Operator amp weapons (Sirocco, etc.) grant mastery.

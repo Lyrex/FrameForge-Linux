@@ -11,15 +11,6 @@ export interface CatalogItem {
   source_type?: string;
 }
 
-export interface WeaponItem {
-  unique_name: string;
-  name: string;
-  category: string;
-  image_name?: string;
-  mastery_req?: number;
-  max_level_cap?: number;
-}
-
 export interface CraftingJob {
   unique_name: string;
   item_name: string;
