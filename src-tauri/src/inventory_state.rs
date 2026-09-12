@@ -4,7 +4,7 @@ use tracing::warn;
 use crate::app_state::AppState;
 use crate::cache::atomic_write;
 use crate::db::QuantityChange;
-use crate::memory_scanner;
+use crate::{mastery_rules, memory_scanner};
 
 pub struct BlobBuildParams<'a> {
     pub(crate) blob: &'a memory_scanner::BlobInventory,
@@ -13,6 +13,7 @@ pub struct BlobBuildParams<'a> {
     pub(crate) path_to_ducat: &'a HashMap<String, u32>,
     pub(crate) path_to_vaulted: &'a HashMap<String, bool>,
     pub(crate) path_to_tradable: &'a HashMap<String, bool>,
+    pub(crate) path_to_max_level_cap: &'a HashMap<String, u32>,
     pub(crate) path_to_masterable: &'a HashMap<String, bool>,
     pub(crate) relic_drops: &'a HashMap<String, Vec<String>>,
     pub(crate) existing_wfm_prices: &'a HashMap<String, u32>,
@@ -45,9 +46,11 @@ pub(crate) struct CachedItem {
     /// Total owned copies (or quantity for stackable resources).
     #[serde(default)]
     pub(crate) amount: i64,
-    /// Mastery rank 0-30 (0 = not mastered or not applicable).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub(crate) mastery_rank: u32,
+    /// Level of each owned copy, ascending.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) owned_levels: Vec<u32>,
     /// Socketed Archon Shards (warframes only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) archon_shards: Vec<memory_scanner::ArchonShard>,
@@ -58,8 +61,7 @@ pub(crate) struct CachedItem {
     /// Maximum rank this mod/arcane can reach (from WFCD fusionLimit). Absent for non-mod items.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) mod_max_rank: Option<u32>,
-    /// Maximum level cap override (from WFCD maxLevelCap). Only set for items that exceed rank 30
-    /// (e.g. Paracesis, Ironbride, Necramechs). Absent when the standard 30-cap applies.
+    /// WFCD maxLevelCap, recorded only above 30; readers fall back to 30 when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) max_level_cap: Option<u32>,
     /// Mod/arcane rank breakdown: rank (as string) → copy count at that rank.
@@ -110,6 +112,8 @@ pub(crate) struct CachedItem {
     pub(crate) is_stackable: bool,
 }
 
+const CREDITS_PATH: &str = "/_currency/Credits";
+
 fn is_false(v: &bool) -> bool { !v }
 
 fn is_zero_u32(v: &u32) -> bool { *v == 0 }
@@ -129,6 +133,16 @@ pub(crate) struct InventoryStateCache {
 }
 
 impl InventoryStateCache {
+    pub(crate) fn mastery_data(&self) -> HashMap<String, u32> {
+        self.items.iter().filter(|(_, item)| item.mastery_rank > 0)
+            .map(|(path, item)| (path.clone(), item.mastery_rank)).collect()
+    }
+
+    pub(crate) fn owned_levels(&self) -> HashMap<String, Vec<u32>> {
+        self.items.iter().filter(|(_, item)| !item.owned_levels.is_empty())
+            .map(|(path, item)| (path.clone(), item.owned_levels.clone())).collect()
+    }
+
     pub(crate) fn unique_quantities(&self) -> HashMap<String, i64> {
         self.items.iter()
             .filter(|(path, item)| item.amount > 0 && item.mod_ranks.is_none()
@@ -194,7 +208,7 @@ pub(crate) fn build_inventory_from_blob(
 ) -> InventoryStateCache {
     let BlobBuildParams {
         blob, path_to_name, path_to_category, path_to_ducat, path_to_vaulted,
-        path_to_tradable, path_to_masterable, relic_drops, existing_wfm_prices, excluded_paths,
+        path_to_tradable, path_to_masterable, path_to_max_level_cap, relic_drops, existing_wfm_prices, excluded_paths,
     } = params;
     let mut items: HashMap<String, CachedItem> = HashMap::new();
 
@@ -219,55 +233,22 @@ pub(crate) fn build_inventory_from_blob(
 
     // Ordinary weapons are binary-owned; modular components count each instance.
     for entry in &blob.unique_items {
-        // Amps: key by Prism (Barrel) path instead of the generic OperatorAmpWeapon type.
-        // Must come before the excluded_paths guard because OperatorAmpWeapon is Ignored
-        // (suppressed from the catalog) but the Prism-specific path is not.
-        if entry.section == "OperatorAmps" {
-            let prism_path = entry.modular_parts.iter()
-                .find(|p| p.contains("Barrel"))
-                .cloned()
-                .unwrap_or_else(|| entry.item_type.clone());
-            if excluded_paths.contains(&prism_path) { continue; }
-            let item = items.entry(prism_path.clone()).or_insert_with(|| CachedItem {
-                unique_name: prism_path.clone(),
-                name: path_to_name.get(&prism_path).cloned().unwrap_or_default(),
-                ..Default::default()
-            });
-            item.amount += 1;
-            if entry.item_name.is_some() {
-                let rank = memory_scanner::xp_to_rank(entry.xp, &entry.item_type).min(30);
-                if rank > item.mastery_rank { item.mastery_rank = rank; }
-            }
-            continue;
-        }
-
-        // Zaws: key by Strike (Tip) path instead of the generic LotusModularWeapon type.
-        // Must come before the excluded_paths guard for the same reason as Amps above.
-        if entry.section == "Melee" && entry.item_type.contains("LotusModularWeapon") {
-            let strike_path = entry.modular_parts.iter()
-                .find(|p| p.contains("/Tip"))
-                .cloned()
-                .unwrap_or_else(|| entry.item_type.clone());
-            if excluded_paths.contains(&strike_path) { continue; }
-            let item = items.entry(strike_path.clone()).or_insert_with(|| CachedItem {
-                unique_name: strike_path.clone(),
-                name: path_to_name.get(&strike_path).cloned().unwrap_or_default(),
-                ..Default::default()
-            });
-            item.amount += 1;
-            if entry.item_name.is_some() {
-                let rank = memory_scanner::xp_to_rank(entry.xp, &entry.item_type).min(30);
-                if rank > item.mastery_rank { item.mastery_rank = rank; }
-            }
-            continue;
-        }
-
-        let canonical = path_aliases.get(entry.item_type.as_str()).copied()
-            .unwrap_or(&entry.item_type);
+        // The generic modular weapon type is catalog-Ignored, so the part must
+        // resolve before the excluded_paths guard. "Barrel" is a bare substring:
+        // the Mote Amp prism and Infested chambers lack a `/Barrel/` segment.
+        let keyed_part = entry.modular_parts.iter().find(|part| {
+            (entry.section == "OperatorAmps" && part.contains("Barrel"))
+                || (entry.item_type.contains("LotusModularWeapon") && part.contains("/Tip/"))
+                || (entry.item_type.contains("/SolarisUnited/") && part.contains("Barrel"))
+        });
+        let path = keyed_part.unwrap_or(&entry.item_type);
+        let canonical = path_aliases.get(path.as_str()).copied().unwrap_or(path);
         if excluded_paths.contains(canonical) { continue; }
 
+        let level = capped_rank(entry.xp, canonical, path_to_max_level_cap);
         let item = upsert!(canonical);
-        item.amount        = 1;
+        if keyed_part.is_some() { item.amount += 1; } else { item.amount = 1; }
+        item.owned_levels.push(level);
         item.archon_shards = entry.archon_shards.clone();
         if entry.polarized > 0 { item.forma_count = Some(entry.polarized); }
         if !entry.modular_parts.is_empty() {
@@ -331,15 +312,17 @@ pub(crate) fn build_inventory_from_blob(
         item.is_stackable = true; // cosmetics can have count > 1; never treat as binary-owned
     }
 
-    // Mastery rank per item from XPInfo. Cap at 30 — raw XP can yield uncapped
-    // values (excess affinity beyond rank 30), matching the .min(30) applied to
-    // Amps and Zaws above.
-    for (path, &rank) in &blob.mastery_data {
-        if rank > 0 { upsert!(path).mastery_rank = rank.min(30); }
+    for (path, &xp) in &blob.mastery_xp {
+        let canonical = path_aliases.get(path.as_str()).copied().unwrap_or(path);
+        let rank = capped_rank(xp, canonical, path_to_max_level_cap);
+        let item = upsert!(canonical);
+        item.mastery_rank = item.mastery_rank.max(rank);
     }
 
     // Catalog-derived fields + carry forward fetched WFM prices.
     for (path, item) in items.iter_mut() {
+        item.owned_levels.sort_unstable();
+        item.max_level_cap = path_to_max_level_cap.get(path).copied();
         item.ducat_price  = path_to_ducat.get(path).copied();
         item.vaulted      = path_to_vaulted.get(path).copied();
         item.tradable     = path_to_tradable.get(path).copied();
@@ -361,6 +344,10 @@ pub(crate) fn build_inventory_from_blob(
         mastery_rank: if blob.mastery_level > 0 { Some(blob.mastery_level) } else { None },
         rivens: blob.rivens.clone(),
     }
+}
+
+fn capped_rank(xp: i64, path: &str, path_to_max_level_cap: &HashMap<String, u32>) -> u32 {
+    mastery_rules::earned_rank(xp, path, path_to_max_level_cap.get(path).copied())
 }
 
 pub(crate) fn load_inventory_state_cache(path: &PathBuf) -> InventoryStateCache {
@@ -430,6 +417,7 @@ mod inventory_quantity_tests {
         build_inventory_from_blob(BlobBuildParams {
             blob,
             path_to_name: &HashMap::new(), path_to_category: &HashMap::new(),
+            path_to_max_level_cap: &[(KUVA.into(), 40)].into(),
             path_to_ducat: &HashMap::new(), path_to_vaulted: &HashMap::new(),
             path_to_tradable: &HashMap::new(), path_to_masterable: &HashMap::new(),
             relic_drops: &HashMap::new(), existing_wfm_prices: &HashMap::new(),
@@ -442,6 +430,132 @@ mod inventory_quantity_tests {
     const ZAW: &str = "/Lotus/Weapons/Ostron/Melee/LotusModularWeapon";
     const STRIKE: &str = "/Lotus/Weapons/Ostron/Melee/ModularMelee01/Tip/TipOne";
     const COSMETIC: &str = "/Lotus/Powersuits/Operator/VahdCuirass";
+
+    const KUVA: &str = "/Lotus/Weapons/Grineer/KuvaLich/LongGuns/Karak/KuvaKarak";
+
+    /// XP values observed on an MR30 account. A cache written before caps
+    /// reached the persist path holds rank 30 and no cap for every one of
+    /// these; the next observation must replace it, including after the
+    /// file is reloaded with the game closed.
+    #[test]
+    fn stale_rank_30_cache_is_replaced_by_the_next_observation() {
+        const NUKOR: &str = "/Lotus/Weapons/Grineer/KuvaLich/Secondaries/Nukor/KuvaNukor";
+        const DRAKGOON: &str = "/Lotus/Weapons/Grineer/KuvaLich/LongGuns/Drakgoon/KuvaDrakgoon";
+        const VOIDRIG: &str = "/Lotus/Powersuits/EntratiMech/NechroTech";
+        let stale: InventoryStateCache = serde_json::from_str(&format!(
+            r#"{{"items":{{"{NUKOR}":{{"unique_name":"{NUKOR}","amount":1,"mastery_rank":30,"forma_count":5}},
+                "{VOIDRIG}":{{"unique_name":"{VOIDRIG}","amount":1,"mastery_rank":30,"forma_count":5}}}}}}"#
+        )).expect("pre-fix cache shape still loads");
+        assert_eq!(stale.items[NUKOR].mastery_rank, 30);
+        assert_eq!(stale.items[NUKOR].max_level_cap, None);
+
+        let filler = "x".repeat(60_000);
+        let raw = format!(
+            r#"{{"SubscribedToEmails":0,"RegularCredits":0,"FusionPoints":0,"MiscItems":[],"Suits":[{{"ItemType":"{VOIDRIG}","XP":0,"Polarized":5}}],"XPInfo":[{{"ItemType":"{NUKOR}","XP":129043438}},{{"ItemType":"{DRAKGOON}","XP":450000}},{{"ItemType":"{VOIDRIG}","XP":3527278}}],"Filler":"{filler}","DeathSquadable":false}}"#
+        );
+        let blob = memory_scanner::parse_full_account_blob(raw.as_bytes()).expect("complete account");
+        // WFCD carries 40 for Kuva weapons and null for Necramechs.
+        let live = build_inventory_from_blob(BlobBuildParams {
+            blob: &blob,
+            path_to_name: &HashMap::new(), path_to_category: &HashMap::new(),
+            path_to_max_level_cap: &[(NUKOR.into(), 40), (DRAKGOON.into(), 40)].into(),
+            path_to_ducat: &HashMap::new(), path_to_vaulted: &HashMap::new(),
+            path_to_tradable: &HashMap::new(), path_to_masterable: &HashMap::new(),
+            relic_drops: &HashMap::new(), existing_wfm_prices: &HashMap::new(),
+            excluded_paths: &std::collections::HashSet::new(),
+        });
+        let expected = [(NUKOR, 40), (DRAKGOON, 30), (VOIDRIG, 40)];
+        for (path, rank) in expected {
+            assert_eq!(live.items[path].mastery_rank, rank, "{path}");
+        }
+
+        let file = std::env::temp_dir().join(format!("frameforge-stale-cache-{}.json", std::process::id()));
+        assert!(persist_complete_inventory(&blob, &stale.unique_quantities(), &live, &file));
+        let restarted = load_inventory_state_cache(&file);
+        let _ = std::fs::remove_file(&file);
+        for (path, rank) in expected {
+            assert_eq!(restarted.items[path].mastery_rank, rank, "{path}");
+        }
+        assert_eq!(restarted.items[NUKOR].max_level_cap, Some(40));
+    }
+
+    #[test]
+    fn rank_35_survives_cache_restart() {
+        let path = KUVA;
+        let filler = "x".repeat(60_000);
+        let raw = format!(
+            r#"{{"SubscribedToEmails":0,"RegularCredits":0,"FusionPoints":0,"MiscItems":[],"Suits":[{{"ItemType":"/Lotus/Powersuits/Mag/Mag","XP":0}}],"XPInfo":[{{"ItemType":"{path}","XP":612500}}],"Filler":"{filler}","DeathSquadable":false}}"#
+        );
+        let blob = memory_scanner::parse_full_account_blob(raw.as_bytes()).expect("complete account");
+        let live = cache(&blob);
+        assert_eq!(live.items[path].mastery_rank, 35);
+        let saved = serde_json::to_string(&live).expect("cache serializes");
+        let restarted: InventoryStateCache = serde_json::from_str(&saved).expect("cache round trips");
+        assert_eq!(restarted.items[path].mastery_rank, 35);
+        assert_eq!(live.mastery_data(), restarted.mastery_data());
+        assert_eq!(restarted.items[path].max_level_cap, Some(40));
+    }
+
+    #[test]
+    fn permanent_xp_uses_catalog_caps_and_survives_selling_duplicate_copies() {
+        let braton = "/Lotus/Weapons/Tenno/Rifle/Braton";
+        let mag = "/Lotus/Powersuits/Mag/Mag";
+        for (path, xp, expected) in [
+            (braton, -1, 0), (braton, 0, 0), (braton, 449_999, 29),
+            (braton, 450_000, 30), (braton, 800_000, 30),
+            (mag, 900_000, 30), (KUVA, 480_500, 31),
+            (KUVA, 799_999, 39), (KUVA, 800_000, 40), (KUVA, i64::MAX, 40),
+        ] {
+            let mut blob = memory_scanner::BlobInventory::default();
+            blob.mastery_xp.insert(path.into(), xp);
+            let mut reset = unique(path, "LongGuns", &[]);
+            reset.polarized = 1;
+            let mut leveled = reset.clone();
+            leveled.xp = 50_000;
+            blob.unique_items.extend([leveled, reset]);
+            let owned = cache(&blob);
+            assert_eq!(owned.items[path].mastery_rank, expected, "{path}: {xp}");
+            assert_eq!(owned.items[path].owned_levels[0], 0);
+            assert_eq!(owned.items[path].owned_levels.len(), 2);
+            blob.unique_items.clear();
+            let sold = cache(&blob);
+            assert_eq!(sold.items[path].mastery_rank, expected);
+            assert_eq!(sold.items[path].amount, 0);
+            assert!(sold.items[path].owned_levels.is_empty());
+        }
+    }
+
+    #[test]
+    fn modular_credit_belongs_to_keyed_parts_not_owned_copy_levels() {
+        let kitgun = "/Lotus/Weapons/SolarisUnited/Secondary/LotusModularSecondaryBeam";
+        let chamber = "/Lotus/Weapons/SolarisUnited/Secondary/SUModularSecondarySet1/Barrel/SUModularSecondaryBarrelAPart";
+        let infested_chamber = "/Lotus/Weapons/Infested/Pistols/InfKitGun/Barrels/InfBarrelBeam/InfModularBarrelBeamPart";
+        let mote_amp = "/Lotus/Weapons/Sentients/OperatorAmplifiers/SentTrainingAmplifier/OperatorTrainingAmpWeapon";
+        let mote_prism = "/Lotus/Weapons/Sentients/OperatorAmplifiers/SentTrainingAmplifier/SentAmpTrainingBarrel";
+        for (weapon, section, part) in [
+            (AMP, "OperatorAmps", PRISM), (mote_amp, "OperatorAmps", mote_prism),
+            (ZAW, "Melee", STRIKE),
+            (kitgun, "Pistols", chamber), (kitgun, "LongGuns", chamber),
+            (kitgun, "Pistols", infested_chamber),
+        ] {
+            let mut blob = memory_scanner::BlobInventory::default();
+            blob.mastery_xp.insert(part.into(), 200_000);
+            let mut gilded = unique(weapon, section, &[part]);
+            gilded.item_name = Some("Custom name".into());
+            gilded.xp = 450_000;
+            blob.unique_items.extend([gilded, unique(weapon, section, &[part])]);
+            let owned = cache(&blob);
+            assert_eq!(owned.items[part].mastery_rank, 20);
+            assert_eq!(owned.items[part].owned_levels, [0, 30]);
+            assert_eq!(owned.items[part].amount, 2);
+            assert!(!owned.items.contains_key(weapon));
+            blob.mastery_xp.clear();
+            assert_eq!(cache(&blob).items[part].mastery_rank, 0);
+            blob.mastery_xp.insert(part.into(), 800_000);
+            blob.unique_items.clear();
+            assert_eq!(cache(&blob).items[part].mastery_rank, 30);
+        }
+    }
 
     fn modular_blob() -> memory_scanner::BlobInventory {
         let mut blob = memory_scanner::BlobInventory::default();
