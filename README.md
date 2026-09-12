@@ -1,4 +1,4 @@
-# FrameForge `v4.2.3`
+# FrameForge `v4.3.0`
 
 A desktop companion for Warframe — live inventory, market prices, trading, timers, relic overlay, and riven analysis. Read-only, no game modification.
 
@@ -89,7 +89,9 @@ The item catalog used for OCR matching is built exclusively from known relic rew
 Customisable sidebar with reorderable sections: tracked crafting items, favourite inventory items, pinned timers, and watched fissures.
 
 ### Settings
-Tabbed sidebar layout: **General** (Foundry page size, scanner, API, account info, pop-out), **Overlays** (Relic Overlay and Relic Pick Overlay settings), **Market** (WFM status automation), **Accessibility** (colorblind mode, text size up to 200%), **Data** (item database, cache), and **Debugging** (loggers, diagnostic tools with folder access and one-click clear).
+Tabbed sidebar layout: **General** (Foundry page size, scanner, API, account info, pop-out), **Overlays** (Relic Overlay and Relic Pick Overlay settings), **Market** (WFM status automation), **Filters** (filter preset management per module), **Accessibility** (colorblind mode, text size up to 200%), **Data** (item database, cache), and **Debugging** (loggers, diagnostic tools with folder access and one-click clear).
+
+**Filter Presets** — save, pin, and reorder named filter presets for Inventory, Foundry, Market, and Relic Helper, from each toolbar or from Settings → Filters. Search boxes across the app accept comma-separated terms for OR-style matching (e.g. `braton, soma` shows both).
 
 ---
 
