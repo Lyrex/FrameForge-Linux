@@ -26,6 +26,7 @@ export const TAURI_COMMANDS = {
   FETCH_WFM_ITEMS: "fetch_wfm_items",
   GET_ALL_ITEMS: "get_all_items",
   GET_CRAFTABLE_ITEMS: "get_craftable_items",
+  GET_MASTERY_OVERVIEW: "get_mastery_overview",
   GET_RECIPE: "get_recipe",
   GET_WFM_TOP_ITEMS: "get_wfm_top_items",
   LOAD_SETTINGS: "load_settings",
