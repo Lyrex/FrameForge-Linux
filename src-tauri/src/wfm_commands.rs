@@ -363,6 +363,7 @@ pub(crate) async fn get_item_price(item_name: String, state: State<'_, AppState>
         }).await?
     };
     state.wfm.cache_price(slug, price);
+    state.wfm.save_quotes(&state.wfm_quotes_path);
 
     // Persist WFM price into the inventory cache file so it survives restarts.
     // Only write for tradeable items: prime parts/blueprints (have ducats) and mods/arcanes.

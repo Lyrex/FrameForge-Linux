@@ -9,7 +9,7 @@ use inventory_state::load_inventory_state_cache;
 use pricing::{BulkPrices, BULK_PRICES_CACHE};
 use relic_pick::park_overlay_offscreen;
 use settings::{restore_window_state, save_window_state};
-use wfm::Wfm;
+use wfm::{PriceQuote, Wfm};
 
 pub mod arbitration;
 mod arbitrations;
@@ -111,6 +111,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let quantities_cache_path = cache_dir.join("quantities_cache.json");
     let inventory_state_cache_path = cache_dir.join("inventory_state_cache.json");
     let mastery_progress_path = cache_dir.join("mastery-progress-v1.json");
+    let wfm_quotes_path = cache_dir.join("wfm-quotes-v1.json");
     let settings_path = config_dir.join("settings.json");
     log_parser::init_watched_log_path(&settings_path);
     let log_path = state_dir.join("scan_log.txt");
@@ -137,8 +138,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     // Serve whatever prices were last written, however old; the background
     // refresh below replaces them once the window is up.
-    let initial_relics_run = cache::load::<BulkPrices>(BULK_PRICES_CACHE)
-        .map(|c| c.data)
+    let (initial_relics_run, bulk_retrieved_at) = cache::load::<BulkPrices>(BULK_PRICES_CACHE)
+        .map(|c| (c.data, Some(c.retrieved_at_unix as i64)))
         .unwrap_or_default();
     let initial_relics_run_prices = initial_relics_run.by_name;
     let initial_wfm_prices: HashMap<String, Option<u32>> = initial_relics_run
@@ -258,11 +259,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             blob_log_dir,
             wfm: {
                 let w = Arc::new(Wfm::new());
+                w.load_quotes(&wfm_quotes_path);
                 for (slug, price) in initial_wfm_prices {
-                    w.cache_price(slug, price);
+                    w.seed_price(slug, PriceQuote { price, fetched_at: bulk_retrieved_at });
                 }
                 w
             },
+            wfm_quotes_path,
             wfm_price_queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             wfm_queue_started: Arc::new(AtomicBool::new(false)),
             syndicate_catalog: Mutex::new(initial_syndicate_catalog),

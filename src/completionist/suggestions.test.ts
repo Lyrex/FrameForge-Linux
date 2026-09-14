@@ -2,15 +2,95 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { actionText, chanceText, DEFAULT_CONTROLS, detailText, inSuggestions, parseControls, readyText, remainingText, visibleOpportunities } from "./suggestions.ts";
+import {
+  actionText, alsoNeedsText, chanceText, costText, DEFAULT_CONTROLS, detailText, inSuggestions, parseControls, quoteText, rankPurchases, readyText, remainingText, visibleOpportunities,
+} from "./suggestions.ts";
 import { RELIC_SUGGESTION_THRESHOLD } from "../constants/relics.ts";
-import type { Coverage, Opportunity, RelicPart } from "../types/mastery.ts";
+import type { Coverage, Listing, Opportunity, PartListing, Purchase, RelicPart } from "../types/mastery.ts";
 
 const opportunity = (name: string, over: Partial<Opportunity> = {}): Opportunity => ({
   unique_name: `/Lotus/Weapons/Tenno/${name}`, name, category: "Primary", image_name: null, mastery_req: null,
   cap: 30, earned_rank: 12, remaining_mastery: 1800, state: "partial", unobtainable: null, excluded: false,
   stage: "level_claim", action: "level", owned: true, owned_level: 12, build_completion_ms: null,
-  vendors: [], spend: null, craft: null, relic: null, access: "available", blockers: [], ...over,
+  vendors: [], spend: null, craft: null, relic: null, purchase: null, access: "available", blockers: [], ...over,
+});
+
+const NOW = 1_700_000_000;
+
+const listing = (name: string, price: number | null, fetched_at: number | null = NOW - 120): Listing =>
+  ({ slug: name.toLowerCase().replace(/ /g, "_"), name, price, fetched_at });
+
+const part = (name: string, price: number | null, needed: number, short: number, fetched_at?: number | null): PartListing =>
+  ({ ...listing(name, price, fetched_at), unique_name: `/Lotus/Types/Recipes/${name}`, needed, short });
+
+/** Braton Prime is short two of three parts, at 25p and 30p, against a 40p set. */
+const bratonPrime = (): Purchase => ({
+  parts: [part("Braton Prime Blueprint", 25, 1, 1), part("Braton Prime Barrel", 15, 1, 0, null), part("Braton Prime Receiver", 30, 1, 1, NOW - 7 * 3600)],
+  set: listing("Braton Prime Set", 40),
+  missing_total: 55, full_total: 70,
+  cheapest_finish: { platinum: 40, route: "set" }, full_purchase: { platinum: 40, route: "set" },
+});
+
+const buyer = (name: string, purchase: Purchase | null, over: Partial<Opportunity> = {}) =>
+  opportunity(name, { stage: "acquire", action: "farm", owned: false, owned_level: null, state: "missing", earned_rank: 0, remaining_mastery: 3000, purchase, ...over });
+
+test("comparisons rank differently and leave unpriced candidates last", () => {
+  const braton = buyer("Braton Prime", bratonPrime());
+  // The parts win the finish at 20p, and the set wins the full purchase at 60p.
+  const lex = buyer("Lex Prime", {
+    ...bratonPrime(), set: listing("Lex Prime Set", 60), missing_total: 20, full_total: 70,
+    cheapest_finish: { platinum: 20, route: "parts" }, full_purchase: { platinum: 60, route: "set" },
+  }, { remaining_mastery: 3000 });
+  // Prisma Gorgon is cheaper than the Braton set but carries half the mastery.
+  const gorgon = buyer("Prisma Gorgon", {
+    parts: [], set: listing("Prisma Gorgon", 30), missing_total: null, full_total: null,
+    cheapest_finish: { platinum: 30, route: "set" }, full_purchase: { platinum: 30, route: "set" },
+  }, { action: "trade", remaining_mastery: 1500 });
+  const unpriced = buyer("Akbolto Prime", {
+    parts: [part("Akbolto Prime Link", null, 1, 1, null)], set: listing("Akbolto Prime Set", null, null), missing_total: null, full_total: null,
+    cheapest_finish: null, full_purchase: null,
+  });
+  const noPurchase = buyer("Braton", null);
+  const list = [unpriced, gorgon, braton, noPurchase, lex];
+  const names = (o: Opportunity[]) => o.map(x => x.name);
+  assert.deepEqual(names(rankPurchases(list, "cheapest")), ["Lex Prime", "Prisma Gorgon", "Braton Prime", "Akbolto Prime"]);
+  assert.deepEqual(names(rankPurchases(list, "full")), ["Prisma Gorgon", "Braton Prime", "Lex Prime", "Akbolto Prime"]);
+  assert.deepEqual(names(rankPurchases(list, "per_platinum")), ["Lex Prime", "Braton Prime", "Prisma Gorgon", "Akbolto Prime"]);
+  // Unknown remaining mastery has no rate, so it drops behind a priced candidate with a rate.
+  const unknownGain = buyer("Zenith", bratonPrime(), { remaining_mastery: null });
+  assert.deepEqual(names(rankPurchases([unknownGain, gorgon], "per_platinum")), ["Prisma Gorgon", "Zenith"]);
+  assert.deepEqual(names(rankPurchases([unknownGain, gorgon], "cheapest")), ["Prisma Gorgon", "Zenith"]);
+  // Whole items only players sell stay out of Suggestions.
+  assert.deepEqual(names(visibleOpportunities(list, DEFAULT_CONTROLS, "")), ["Akbolto Prime", "Braton Prime", "Braton", "Lex Prime"]);
+  assert.equal(parseControls(JSON.stringify({ comparison: "full" })).comparison, "full");
+  assert.equal(parseControls(JSON.stringify({ comparison: "bogus" })).comparison, "cheapest");
+});
+
+test("cost, quote age and what platinum does not cover are spelled out", () => {
+  const braton = buyer("Braton Prime", bratonPrime(), {
+    craft: { requirements: [
+      { unique_name: "/Lotus/Types/Recipes/Braton Prime Receiver", name: "Braton Prime Receiver", needed: 1, from_stock: 0, short: 1 },
+      { unique_name: "/Lotus/Types/Items/MiscItems/Ferrite", name: "Ferrite", needed: 100, from_stock: 0, short: 100 },
+    ], builds: [], credits: 20_000, credits_short: 0 },
+  });
+  assert.equal(costText(braton, "cheapest"), "40p · complete set");
+  assert.equal(costText(braton, "full"), "40p · complete set");
+  assert.equal(costText(braton, "per_platinum"), "40p · complete set · 75 mastery/p");
+  const parts = { ...bratonPrime(), cheapest_finish: { platinum: 55, route: "parts" as const }, full_purchase: { platinum: 70, route: "parts" as const } };
+  assert.equal(costText(buyer("Braton Prime", parts), "cheapest"), "55p · 2 parts");
+  assert.equal(costText(buyer("Braton Prime", parts), "full"), "70p · 3 parts");
+  assert.equal(costText(buyer("Akbolto Prime", { ...parts, cheapest_finish: null }), "cheapest"), "Unpriced");
+  assert.equal(costText(buyer("Prisma Gorgon", { ...parts, parts: [], cheapest_finish: { platinum: 90, route: "set" } }, { action: "trade" }), "cheapest"), "90p · whole item");
+  assert.equal(actionText(buyer("Prisma Gorgon", null, { action: "trade" })), "Buy from players");
+
+  assert.equal(quoteText(listing("Braton Prime Set", 40), NOW), "40p · 2m ago");
+  assert.equal(quoteText(listing("Braton Prime Barrel", 15, null), NOW), "15p · age unknown");
+  assert.equal(quoteText(listing("Braton Prime Barrel", null, NOW), NOW), "not listed");
+  assert.equal(quoteText(listing("Braton Prime Barrel", null, null), NOW), "no quote yet");
+
+  assert.equal(alsoNeedsText(braton), "Credits 20,000 · Ferrite ×100 · Weapon slot");
+  assert.equal(alsoNeedsText(buyer("Prisma Gorgon", null, { action: "trade" })), "Weapon slot");
+  assert.equal(alsoNeedsText(buyer("Frost Prime", null, { category: "Warframes", craft: { requirements: [], builds: [], credits: null, credits_short: 0 } })), "Credits unknown · Warframe slot");
 });
 
 const relicFarm = (name: string, coverage: Coverage, parts: RelicPart[] = [], over: Partial<Opportunity> = {}): Opportunity =>

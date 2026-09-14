@@ -244,6 +244,20 @@
 }
 .mst-opp-blockers { color: #d29922; }
 
+.mst-opp-listings { display: flex; flex-wrap: wrap; gap: 4px; }
+.mst-quote {
+  font-size: 11px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mst-quote:hover { background: var(--hover); color: var(--text); }
+.mst-quote-chosen { border-color: var(--accent, #888); color: var(--text); }
+
 .mst-opp-action {
   font-size: 12px;
   white-space: nowrap;

@@ -189,6 +189,39 @@ pub(crate) async fn plan_crafts(app: tauri::AppHandle, unique_names: Vec<String>
     }).await.map_err(|e| e.to_string())
 }
 
+/// Names a recipe ingredient the market sells, and the count the whole
+/// recipe takes regardless of stock.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct Part {
+    pub(crate) unique_name: String,
+    pub(crate) name: String,
+    pub(crate) needed: u32,
+}
+
+/// Walks the recipe without a ledger and stops at each ingredient the market
+/// sells, since a bought part covers its own recipe. A prime blueprint sits
+/// one level down, inside the built component the recipe lists.
+pub(crate) fn purchasable(target: &str, components: &[RecipeComponent], tradeable: &dyn Fn(&str) -> bool) -> Vec<Part> {
+    let mut parts = vec![];
+    collect_purchasable(target, components, 1, tradeable, &mut parts);
+    parts
+}
+
+fn collect_purchasable(target: &str, components: &[RecipeComponent], crafts: u32, tradeable: &dyn Fn(&str) -> bool, parts: &mut Vec<Part>) {
+    for (count, component) in merged(components) {
+        if component.unique_name == target { continue; }
+        let needed = count * crafts;
+        if tradeable(&component.unique_name) {
+            match parts.iter_mut().find(|p| p.unique_name == component.unique_name) {
+                Some(part) => part.needed += needed,
+                None => parts.push(Part { unique_name: component.unique_name.clone(), name: component.name.clone(), needed }),
+            }
+        } else if !component.components.is_empty() {
+            collect_purchasable(target, &component.components, needed.div_ceil(component.result_count.max(1)), tradeable, parts);
+        }
+    }
+}
+
 pub(crate) fn is_blueprint(component: &RecipeComponent) -> bool {
     component.components.is_empty() && component.unique_name.ends_with("Blueprint")
 }
@@ -286,6 +319,18 @@ mod tests {
 
     fn line<'p>(plan: &'p CraftPlan, path: &str) -> &'p Requirement {
         plan.requirements.iter().find(|r| r.unique_name == path).unwrap_or_else(|| panic!("{path} listed"))
+    }
+
+    /// Bolto's blueprint sits inside the built Bolto, which is not sold, so
+    /// the walk descends, and both Boltos merge into one line. Stock plays no
+    /// part, since the count is what the whole recipe takes.
+    #[test]
+    fn purchasable_parts_stop_at_what_the_market_sells_and_merge_duplicates() {
+        let sold: HashSet<&str> = [AKBOLTO_BP, BOLTO_BP, CELL].into();
+        let parts = purchasable(AKBOLTO, &akbolto(), &|path| sold.contains(path));
+        assert_eq!(parts.iter().map(|p| (p.unique_name.as_str(), p.needed)).collect::<Vec<_>>(),
+            [(AKBOLTO_BP, 1), (BOLTO_BP, 2), (CELL, 5)]);
+        assert!(purchasable(AKBOLTO, &akbolto(), &|_| false).is_empty());
     }
 
     #[test]

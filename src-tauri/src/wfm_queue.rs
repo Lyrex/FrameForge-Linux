@@ -8,7 +8,7 @@ use crate::catalogue::fix_category;
 use crate::inventory_state::{load_inventory_state_cache, CachedItem};
 use crate::resolver::ItemResolver;
 use crate::resolver;
-use crate::wfm::to_wfm_slug;
+use crate::wfm::{to_wfm_slug, PriceQuote};
 
 // ─── WFM price queue ──────────────────────────────────────────────────────────
 // All warframe.market price fetches are routed through a single background
@@ -31,18 +31,16 @@ pub(crate) fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>)
         return Ok(());
     }
 
-    // Pre-populate the in-memory price cache from inventory_state_cache.json so that
-    // wfm_get_cached_prices() returns previously-fetched prices immediately on startup
-    // and the queue drain skips slugs that already have a fresh price.
+    // Prices in inventory_state_cache.json predate the stamped quote file, so
+    // they replay with no age and get refetched as soon as anything asks.
     {
         let disk = load_inventory_state_cache(&state.inventory_state_cache_path);
         for item in disk.items.values() {
             if !item.name.is_empty() {
                 let slug = to_wfm_slug(&item.name);
                 if !slug.is_empty() {
-                    // Only insert if we have a price; None entries are kept absent so they get re-queued.
                     if let Some(p) = item.wfm_price {
-                        state.wfm.cache_price(slug, Some(p));
+                        state.wfm.seed_price(slug, PriceQuote { price: Some(p), fetched_at: None });
                     }
                 }
             }
@@ -77,9 +75,10 @@ pub(crate) fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>)
         m
     };
 
-    let queue      = state.wfm_price_queue.clone();
-    let wfm        = state.wfm.clone();
-    let cache_path = state.inventory_state_cache_path.clone();
+    let queue       = state.wfm_price_queue.clone();
+    let wfm         = state.wfm.clone();
+    let cache_path  = state.inventory_state_cache_path.clone();
+    let quotes_path = state.wfm_quotes_path.clone();
 
     std::thread::spawn(move || {
         loop {
@@ -94,7 +93,7 @@ pub(crate) fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>)
             };
 
             // Skip if already cached (avoid redundant API calls within a session).
-            if wfm.is_price_cached(&slug) { continue; }
+            if resolver::slug_variants(&slug).iter().any(|s| wfm.is_price_cached(s)) { continue; }
 
             // Fetch — the rate limiter inside enforces the 3 req/sec limit.
             let price = match wfm.price_with_fallback(&slug) {
@@ -106,8 +105,8 @@ pub(crate) fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>)
             };
             let tradeable = price.is_some();
 
-            // Update in-memory cache.
             wfm.cache_price(slug.clone(), price);
+            wfm.save_quotes(&quotes_path);
 
             // Write price + tradeable_wfm into inventory_state_cache.json if we know the item.
             if let Some((unique_name, _)) = slug_map.get(&slug) {
@@ -131,8 +130,8 @@ pub(crate) fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>)
     Ok(())
 }
 
-/// Add slugs to the normal-priority WFM price queue.
-/// Slugs already cached in-memory are silently skipped.
+/// Add slugs to the normal-priority WFM price queue. A slug with a live
+/// quote under either blueprint spelling is skipped.
 #[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn wfm_queue_prices(state: State<'_, AppState>, url_names: Vec<String>) {
@@ -140,7 +139,8 @@ pub(crate) fn wfm_queue_prices(state: State<'_, AppState>, url_names: Vec<String
     // Snapshot existing queue entries to deduplicate without holding a borrow during push_back.
     let already_queued: std::collections::HashSet<String> = q.iter().cloned().collect();
     for slug in url_names {
-        if !state.wfm.is_price_cached(&slug) && !already_queued.contains(&slug) {
+        let cached = resolver::slug_variants(&slug).iter().any(|s| state.wfm.is_price_cached(s));
+        if !cached && !already_queued.contains(&slug) {
             q.push_back(slug);
         }
     }

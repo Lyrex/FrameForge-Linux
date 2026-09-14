@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./Mastery.css";
@@ -6,7 +6,7 @@ import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import { PREFERENCE_KEYS } from "../constants/preferences";
 import { formatAge } from "../lib/formatters";
 import { fmtClock, type ClockFormat } from "../lib/clockFormat";
-import { parseControls, VIEW_OPTIONS, type MasteryControls } from "./suggestions";
+import { parseControls, purchaseSlugs, VIEW_OPTIONS, type MasteryControls } from "./suggestions";
 import Collection from "./Collection";
 import WhatNext from "./WhatNext";
 import type { InventoryItem } from "../types/items";
@@ -86,6 +86,31 @@ export default function Mastery({ inventory, refreshKey, clockFormat }: Props) {
       .catch(e => { if (!stale) setError(String(e)); });
     return () => { stale = true; };
   }, [inventory, refreshKey, observationKey]);
+
+  // Quotes are fetched only once the platinum view asks for them, a few a
+  // second. Each answer changes the ranking, so the overview refetches, at
+  // most once every couple of seconds while the answers stream in.
+  const platinum = controls.view === "whatnext" && controls.result === "platinum";
+  useEffect(() => {
+    if (!platinum || !overview) return;
+    const slugs = purchaseSlugs(overview.opportunities);
+    if (slugs.length === 0) return;
+    invoke(TAURI_COMMANDS.START_WFM_QUEUE)
+      .then(() => invoke(TAURI_COMMANDS.WFM_QUEUE_PRICES, { urlNames: slugs }))
+      .catch(() => {});
+  }, [platinum, overview]);
+  const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!platinum) return;
+    const unlisten = listen(TAURI_EVENTS.WFM_PRICE_UPDATE, () => {
+      if (refetchTimer.current) return;
+      refetchTimer.current = setTimeout(() => { refetchTimer.current = null; setObservationKey(k => k + 1); }, 2_000);
+    });
+    return () => {
+      unlisten.then(f => f());
+      if (refetchTimer.current) { clearTimeout(refetchTimer.current); refetchTimer.current = null; }
+    };
+  }, [platinum]);
 
   // No event fires when a build finishes, so refetch at the earliest completion time.
   useEffect(() => {

@@ -6,12 +6,14 @@ use crate::catalogue::fix_category;
 use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache, CREDITS_PATH};
 use crate::mastery_nodes;
 use crate::mastery_progress::{PlayerProgress, Provenance, ProvenanceState};
-use crate::mastery_recipe::{is_blueprint, CraftPlan, Ledger};
+use crate::mastery_recipe::{is_blueprint, purchasable, CraftPlan, Ledger};
 use crate::mastery_relics::{Relics, RelicRoute};
 use crate::mastery_rules::{self, Unobtainable};
 use crate::monitor::CraftingJob;
+use crate::resolver::slug_variants;
 use crate::settings::read_settings_map;
 use crate::wfcd::{RecipeComponent, SyndicateOffer, WfcdItem};
+use crate::wfm::{to_wfm_slug, PriceQuote};
 
 const COLLECTION_CATEGORIES: [&str; 11] = [
     "Warframes", "Primary", "Secondary", "Melee", "Operator Weapons",
@@ -109,9 +111,11 @@ pub(crate) enum Stage { LevelClaim, Craft, Acquire }
 
 /// Craft means everything is in stock. Build means intermediates need
 /// crafting first. Farm means parts are short and no vendor sells them.
+/// Trade is a whole item only players sell, so it belongs to the platinum
+/// view alone.
 #[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Action { Level, Claim, Spend, Craft, Build, Buy, Farm, Complete, Unlock }
+pub(crate) enum Action { Level, Claim, Spend, Craft, Build, Buy, Farm, Trade, Complete, Unlock }
 
 /// The variant order runs by severity so `max` keeps a blocker over an
 /// open question.
@@ -142,6 +146,54 @@ pub(crate) struct Spend {
     pub(crate) tracks: Vec<TrackSpend>,
 }
 
+/// A warframe.market listing. A price with a fetch time is a quote of that
+/// age; a price without one came from a cache written before quotes were
+/// stamped; no price with a fetch time means the market does not list the
+/// slug; neither means nobody has asked yet.
+#[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct Listing {
+    pub(crate) slug: String,
+    pub(crate) name: String,
+    pub(crate) price: Option<u32>,
+    pub(crate) fetched_at: Option<i64>,
+}
+
+#[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct PartListing {
+    pub(crate) unique_name: String,
+    #[serde(flatten)]
+    pub(crate) listing: Listing,
+    /// The whole recipe takes this many, owned or not.
+    pub(crate) needed: u32,
+    /// The finish is still short this many after projected stock.
+    pub(crate) short: u32,
+}
+
+#[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Route { Parts, Set }
+
+#[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Cost {
+    pub(crate) platinum: u32,
+    pub(crate) route: Route,
+}
+
+/// What platinum buys toward one source. Each total is None while any part
+/// it sums lacks a price, so a partial sum never reads as the cost.
+#[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct Purchase {
+    pub(crate) parts: Vec<PartListing>,
+    /// Holds the complete set, or the item itself where nothing is crafted.
+    pub(crate) set: Option<Listing>,
+    pub(crate) missing_total: Option<u32>,
+    pub(crate) full_total: Option<u32>,
+    /// The cheaper of the missing parts and the set. A tie goes to the set,
+    /// since it is one trade.
+    pub(crate) cheapest_finish: Option<Cost>,
+    pub(crate) full_purchase: Option<Cost>,
+}
+
 #[derive(serde::Serialize, Clone, Debug)]
 pub(crate) struct Opportunity {
     #[serde(flatten)]
@@ -163,6 +215,7 @@ pub(crate) struct Opportunity {
     /// chance covers those parts only, and the other shortages stay in
     /// `craft`.
     pub(crate) relic: Option<RelicRoute>,
+    pub(crate) purchase: Option<Purchase>,
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -185,6 +238,9 @@ pub(crate) struct Observed<'a> {
     /// The record's `PlayerSkills`, or `None` while Intrinsics are Unknown.
     pub(crate) skills: Option<&'a HashMap<String, i64>>,
     pub(crate) relics: &'a Relics,
+    pub(crate) tradeable: &'a HashSet<String>,
+    /// Holds every quote by slug, expired ones included.
+    pub(crate) quotes: &'a HashMap<String, PriceQuote>,
     pub(crate) now_ms: i64,
 }
 
@@ -200,7 +256,7 @@ pub(crate) async fn get_mastery_overview(app: tauri::AppHandle) -> Result<Master
 fn mastery_overview(state: &AppState) -> MasteryOverview {
     let player = state.local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let excluded = excluded_classes(&state.settings_path);
-    let (mut overview, skills, relic_names) = {
+    let (mut overview, skills, relic_names, tradeable) = {
         let progress = state.mastery_progress.lock().unwrap_or_else(|e| e.into_inner());
         let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
         let record = progress.current(player.as_deref());
@@ -209,7 +265,7 @@ fn mastery_overview(state: &AppState) -> MasteryOverview {
             .filter(|i| i.category == "Relics")
             .map(|i| (i.unique_name.clone(), i.name.clone()))
             .collect();
-        (build_mastery_overview(&items, &state.corrections, record, &excluded), skills, relic_names)
+        (build_mastery_overview(&items, &state.corrections, record, &excluded), skills, relic_names, market_items(&items))
     };
     let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
     // Without an inventory scan we have no idea what the player owns, so skip suggestions.
@@ -232,9 +288,20 @@ fn mastery_overview(state: &AppState) -> MasteryOverview {
         offers: &offers,
         skills: skills.as_ref(),
         relics: &relics,
+        tradeable: &tradeable,
+        quotes: &state.wfm.quotes(),
         now_ms: chrono::Utc::now().timestamp_millis(),
     });
     overview
+}
+
+/// Prime parts carry a ducat value; the catalogue's `tradable` flag covers
+/// whole items players sell, such as Baro and syndicate weapons.
+fn market_items(items: &[WfcdItem]) -> HashSet<String> {
+    items.iter()
+        .filter(|i| i.ducats.is_some() || i.tradable == Some(true))
+        .map(|i| i.unique_name.clone())
+        .collect()
 }
 
 /// Buys the cheapest next rank across the system's tracks, ties in track
@@ -312,7 +379,7 @@ fn node_opportunity(source: &MasterySource, node: &NodeInfo, sources: &HashMap<&
     Some(Opportunity {
         source: source.clone(), stage: Stage::Acquire,
         action: if node.junction { Action::Unlock } else { Action::Complete },
-        owned: false, owned_level: None, build_completion_ms: None, vendors: vec![], spend: None, access, blockers, craft: None, relic: None,
+        owned: false, owned_level: None, build_completion_ms: None, vendors: vec![], spend: None, access, blockers, craft: None, relic: None, purchase: None,
     })
 }
 
@@ -338,7 +405,7 @@ pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Op
                 return Some(Opportunity {
                     source: source.clone(), stage: Stage::LevelClaim, action: Action::Spend,
                     owned: false, owned_level: None, build_completion_ms: None, vendors: vec![], spend: Some(spend),
-                    access: Access::Available, blockers: vec![], craft: None, relic: None,
+                    access: Access::Available, blockers: vec![], craft: None, relic: None, purchase: None,
                 });
             }
             let owned_level = observed.owned_levels.get(&source.unique_name).and_then(|levels| levels.iter().max().copied());
@@ -350,10 +417,11 @@ pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Op
                 // A placeholder until the ledger pass below settles every recipe row.
                 else if observed.recipes.contains_key(&source.unique_name) { Action::Farm }
                 else if !vendors.is_empty() { Action::Buy }
+                else if observed.tradeable.contains(&source.unique_name) { Action::Trade }
                 else { return None };
             Some(Opportunity {
                 source: source.clone(), stage: Stage::Acquire, action, owned, owned_level, build_completion_ms, vendors, spend: None,
-                access: Access::Available, blockers: vec![], craft: None, relic: None,
+                access: Access::Available, blockers: vec![], craft: None, relic: None, purchase: None,
             })
         })
         .collect();
@@ -396,12 +464,66 @@ pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Op
             _ => Stage::Acquire,
         };
         (o.access, o.blockers) = access(o, observed);
+        o.purchase = purchase(o, observed);
     }
     // Ledger order only shows in the Craft stage. Relic farms drew last, and
     // in Acquire they sort by mastery like every other row.
     let craft_order = |a: &Opportunity, b: &Opportunity| if a.stage == Stage::Craft { rank(a).cmp(&rank(b)) } else { std::cmp::Ordering::Equal };
     opportunities.sort_by(|a, b| a.stage.cmp(&b.stage).then_with(|| craft_order(a, b)).then_with(|| by_mastery_then_name(a, b)));
     opportunities
+}
+
+/// The catalogue names a prime part blueprint with the suffix the market
+/// drops, so a quote can sit under either spelling.
+fn listing(slug: String, name: String, quotes: &HashMap<String, PriceQuote>) -> Listing {
+    let quote = slug_variants(&slug).iter().find_map(|s| quotes.get(s)).copied().unwrap_or(PriceQuote { price: None, fetched_at: None });
+    Listing { slug, name, price: quote.price, fetched_at: quote.fetched_at }
+}
+
+/// A source is a platinum candidate when the market sells a part it is
+/// still short of, or the whole item where no part is. Craft and Build
+/// already have everything in stock, so there is nothing to buy for them.
+fn purchase(o: &Opportunity, observed: &Observed) -> Option<Purchase> {
+    if !matches!(o.action, Action::Buy | Action::Farm | Action::Trade) { return None; }
+    let source = &o.source;
+    let tradeable = |path: &str| observed.tradeable.contains(path);
+    let recipe = observed.recipes.get(&source.unique_name);
+    let requirements = o.craft.as_ref().map(|plan| plan.requirements.as_slice()).unwrap_or_default();
+    let parts: Vec<PartListing> = recipe.map(|components| purchasable(&source.unique_name, components, &tradeable)).unwrap_or_default()
+        .into_iter()
+        .map(|part| PartListing {
+            listing: listing(to_wfm_slug(&part.name), part.name, observed.quotes),
+            needed: part.needed,
+            short: requirements.iter().find(|r| r.unique_name == part.unique_name).map_or(0, |r| r.short),
+            unique_name: part.unique_name,
+        })
+        .collect();
+    let slug = to_wfm_slug(&source.name);
+    let set = match recipe {
+        Some(_) if !parts.is_empty() || tradeable(&source.unique_name) => Some(listing(format!("{slug}_set"), format!("{} Set", source.name), observed.quotes)),
+        None if tradeable(&source.unique_name) => Some(listing(slug, source.name.clone(), observed.quotes)),
+        _ => None,
+    };
+    let short = parts.iter().any(|p| p.short > 0);
+    if !short && !(parts.is_empty() && set.is_some()) { return None; }
+
+    let total = |count: fn(&PartListing) -> u32| -> Option<u32> {
+        parts.iter().filter(|p| count(p) > 0).map(|p| p.listing.price.map(|price| price * count(p))).sum()
+    };
+    let missing_total = if short { total(|p| p.short) } else { None };
+    let full_total = if parts.is_empty() { None } else { total(|p| p.needed) };
+    let set_price = set.as_ref().and_then(|s| s.price);
+    let cheaper = |parts: Option<u32>| match (parts, set_price) {
+        (Some(parts), Some(set)) if parts < set => Some(Cost { platinum: parts, route: Route::Parts }),
+        (Some(parts), None) => Some(Cost { platinum: parts, route: Route::Parts }),
+        (_, Some(set)) => Some(Cost { platinum: set, route: Route::Set }),
+        (None, None) => None,
+    };
+    Some(Purchase {
+        cheapest_finish: cheaper(missing_total),
+        full_purchase: cheaper(full_total),
+        parts, set, missing_total, full_total,
+    })
 }
 
 /// A spend ranks by what the banked points buy, which can be less than
@@ -434,7 +556,7 @@ fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<String>) {
         Action::Claim => if o.build_completion_ms.is_some_and(|done| done > observed.now_ms) {
             note(Access::Blocked, "Still building".into());
         },
-        Action::Craft | Action::Build | Action::Buy | Action::Farm => {
+        Action::Craft | Action::Build | Action::Buy | Action::Farm | Action::Trade => {
             match (o.source.mastery_req, observed.mastery_rank) {
                 (Some(required), Some(rank)) if required > rank => note(Access::Blocked, format!("Requires MR {required}")),
                 (Some(required), None) if required > 0 => note(Access::Unknown, "Mastery Rank not observed".into()),
@@ -449,6 +571,7 @@ fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<String>) {
                 }
                 // TODO: read standing from the scan. Until then every Buy stays Unknown.
                 Action::Buy => note(Access::Unknown, "Standing not observed".into()),
+                Action::Trade => {}
                 _ => {
                     let plan = o.craft.as_ref().expect("a farm row carries its plan");
                     let relic_parts: Vec<&str> = o.relic.iter().flat_map(|r| &r.parts).map(|p| p.unique_name.as_str()).collect();
@@ -979,13 +1102,15 @@ mod tests {
 
     static NO_STOCK: LazyLock<HashMap<String, i64>> = LazyLock::new(HashMap::new);
     static NO_RELICS: LazyLock<Relics> = LazyLock::new(Relics::default);
+    static NO_MARKET: LazyLock<HashSet<String>> = LazyLock::new(HashSet::new);
+    static NO_QUOTES: LazyLock<HashMap<String, PriceQuote>> = LazyLock::new(HashMap::new);
 
     fn observed_gear<'a>(owned: &'a HashMap<String, i64>, owned_levels: &'a HashMap<String, Vec<u32>>, crafting: &'a [CraftingJob], recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, mastery_rank: Option<u32>) -> Observed<'a> {
-        Observed { owned, stock: &NO_STOCK, owned_levels, mastery_rank, crafting, recipes, offers, skills: None, relics: &NO_RELICS, now_ms: 1_000_000 }
+        Observed { owned, stock: &NO_STOCK, owned_levels, mastery_rank, crafting, recipes, offers, skills: None, relics: &NO_RELICS, tradeable: &NO_MARKET, quotes: &NO_QUOTES, now_ms: 1_000_000 }
     }
 
     fn observed_skills<'a>(progress: &'a PlayerProgress, recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, owned: &'a HashMap<String, i64>, levels: &'a HashMap<String, Vec<u32>>) -> Observed<'a> {
-        Observed { owned, stock: &NO_STOCK, owned_levels: levels, mastery_rank: Some(30), crafting: &[], recipes, offers, skills: Some(&progress.skills), relics: &NO_RELICS, now_ms: 1_000_000 }
+        Observed { skills: Some(&progress.skills), ..observed_gear(owned, levels, &[], recipes, offers, Some(30)) }
     }
 
     fn track(track: &str, from: u32, to: u32) -> TrackSpend {
@@ -1311,6 +1436,147 @@ mod tests {
         ]);
         assert_eq!(overview.opportunities[0].blockers, ["Credits not observed"]);
         assert_eq!(overview.opportunities[3].blockers, ["Drop sources unknown"]);
+    }
+
+    const BRATON_PRIME: &str = "/Lotus/Weapons/Tenno/Rifle/BratonPrime";
+    const BRATON_PRIME_BP: &str = "/Lotus/Types/Recipes/Weapons/BratonPrimeBlueprint";
+    const BARREL: &str = "/Lotus/Types/Recipes/Weapons/WeaponParts/BratonPrimeBarrel";
+    const RECEIVER: &str = "/Lotus/Types/Recipes/Weapons/WeaponParts/BratonPrimeReceiverComponent";
+    const RECEIVER_BP: &str = "/Lotus/Types/Recipes/Weapons/WeaponParts/BratonPrimeReceiver";
+    const PRISMA_GORGON: &str = "/Lotus/Weapons/Grineer/LongGuns/VoidTraderGorgon/VTGorgon";
+    const DERA_VANDAL: &str = "/Lotus/Weapons/ClanTech/Energy/DeraVandal";
+    const DERA_VANDAL_BP: &str = "/Lotus/Types/Recipes/Weapons/DeraVandalBlueprint";
+    const NOW: i64 = 1_700_000_000;
+
+    /// The receiver blueprint sits inside the built receiver, as prime part
+    /// blueprints do.
+    fn braton_prime_recipe() -> (String, Vec<RecipeComponent>) {
+        let component = |unique_name: &str, name: &str, credits: Option<u32>, components: Vec<RecipeComponent>| RecipeComponent {
+            unique_name: unique_name.into(), name: name.into(), count: 1, result_count: 1, components, credits, reusable: false,
+        };
+        (BRATON_PRIME.into(), vec![
+            component(BRATON_PRIME_BP, "Braton Prime Blueprint", Some(15_000), vec![]),
+            component(BARREL, "Braton Prime Barrel", None, vec![]),
+            component(RECEIVER, "Braton Prime Receiver", None, vec![
+                component(RECEIVER_BP, "Braton Prime Receiver Blueprint", Some(5_000), vec![]),
+                component(FERRITE, "Ferrite", None, vec![]),
+            ]),
+        ])
+    }
+
+    fn quote(price: Option<u32>, fetched_at: Option<i64>) -> PriceQuote {
+        PriceQuote { price, fetched_at }
+    }
+
+    fn quotes(entries: &[(&str, PriceQuote)]) -> HashMap<String, PriceQuote> {
+        entries.iter().map(|(slug, q)| ((*slug).to_string(), *q)).collect()
+    }
+
+    fn catalog_with_market() -> Vec<WfcdItem> {
+        let mut items = catalog();
+        items.push(item("Braton Prime", BRATON_PRIME, "Rifle", "LongGuns", "Primary", Some(true)));
+        items.push(item("Prisma Gorgon", PRISMA_GORGON, "Rifle", "LongGuns", "Primary", Some(true)));
+        items.push(item("Dera Vandal", DERA_VANDAL, "Rifle", "LongGuns", "Primary", Some(true)));
+        items
+    }
+
+    fn purchase_of(overview: &MasteryOverview, path: &str) -> Purchase {
+        overview.opportunities.iter().find(|o| o.source.unique_name == path)
+            .unwrap_or_else(|| panic!("{path} suggested"))
+            .purchase.clone().unwrap_or_else(|| panic!("{path} has a purchase"))
+    }
+
+    #[test]
+    fn cheapest_finish_prefers_a_cheaper_set_and_full_purchase_ignores_owned_parts() {
+        let owned = HashMap::new();
+        let levels = HashMap::new();
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [braton_prime_recipe()].into();
+        let offers = HashMap::new();
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
+        let stock: HashMap<String, i64> = [(BARREL, 1), (FERRITE, 100), (CREDITS_PATH, 50_000)]
+            .into_iter().map(|(path, n)| (path.to_string(), n)).collect();
+        let tradeable: HashSet<String> = [BRATON_PRIME_BP, BARREL, RECEIVER_BP].into_iter().map(String::from).collect();
+        // The receiver quote is seven hours old and the barrel's age is unknown.
+        // Both still price the finish, and the row says how old they are.
+        let mut market = quotes(&[
+            ("braton_prime_blueprint", quote(Some(25), Some(NOW - 60))),
+            ("braton_prime_barrel", quote(Some(15), None)),
+            ("braton_prime_receiver", quote(Some(30), Some(NOW - 7 * 3600))),
+            ("braton_prime_set", quote(Some(40), Some(NOW - 120))),
+        ]);
+        let with_market = |market: &HashMap<String, PriceQuote>| {
+            let observed_stock = Observed { stock: &stock, tradeable: &tradeable, quotes: market, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
+            with_suggestions(&catalog_with_market(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock)
+        };
+
+        let overview = with_market(&market);
+        let braton = purchase_of(&overview, BRATON_PRIME);
+        assert_eq!(braton.parts.iter().map(|p| (p.listing.slug.as_str(), p.needed, p.short, p.listing.price, p.listing.fetched_at)).collect::<Vec<_>>(), [
+            ("braton_prime_blueprint", 1, 1, Some(25), Some(NOW - 60)),
+            ("braton_prime_barrel", 1, 0, Some(15), None),
+            ("braton_prime_receiver_blueprint", 1, 1, Some(30), Some(NOW - 7 * 3600)),
+        ]);
+        assert_eq!(braton.set.as_ref().map(|s| (s.slug.as_str(), s.name.as_str(), s.price)), Some(("braton_prime_set", "Braton Prime Set", Some(40))));
+        assert_eq!((braton.missing_total, braton.full_total), (Some(55), Some(70)));
+        assert_eq!(braton.cheapest_finish, Some(Cost { platinum: 40, route: Route::Set }));
+        assert_eq!(braton.full_purchase, Some(Cost { platinum: 40, route: Route::Set }));
+
+        // A dearer set loses the finish to the two missing parts but still
+        // beats buying all three.
+        market.insert("braton_prime_set".into(), quote(Some(60), Some(NOW)));
+        let braton = purchase_of(&with_market(&market), BRATON_PRIME);
+        assert_eq!(braton.cheapest_finish, Some(Cost { platinum: 55, route: Route::Parts }));
+        assert_eq!(braton.full_purchase, Some(Cost { platinum: 60, route: Route::Set }));
+
+        // A part nobody has quoted leaves the parts route unpriced, while the
+        // set still prices the finish. With the set gone too there is no price.
+        market.remove("braton_prime_receiver");
+        let braton = purchase_of(&with_market(&market), BRATON_PRIME);
+        assert_eq!((braton.missing_total, braton.full_total), (None, None));
+        assert_eq!(braton.parts[2].listing, Listing { slug: "braton_prime_receiver_blueprint".into(), name: "Braton Prime Receiver Blueprint".into(), price: None, fetched_at: None });
+        assert_eq!(braton.cheapest_finish, Some(Cost { platinum: 60, route: Route::Set }));
+        market.insert("braton_prime_set".into(), quote(None, Some(NOW)));
+        let braton = purchase_of(&with_market(&market), BRATON_PRIME);
+        assert_eq!((braton.cheapest_finish, braton.full_purchase), (None, None));
+        assert_eq!(braton.set.as_ref().map(|s| (s.price, s.fetched_at)), Some((None, Some(NOW))));
+    }
+
+    #[test]
+    fn whole_items_trade_only_with_platinum_and_a_finished_recipe_buys_nothing() {
+        let owned = HashMap::new();
+        let levels = HashMap::new();
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [braton_prime_recipe(), recipe(DERA_VANDAL, DERA_VANDAL_BP)].into();
+        let offers = HashMap::new();
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
+        let stock: HashMap<String, i64> = [(BRATON_PRIME_BP, 1), (BARREL, 1), (RECEIVER, 1), (CREDITS_PATH, 50_000)]
+            .into_iter().map(|(path, n)| (path.to_string(), n)).collect();
+        let tradeable: HashSet<String> = [BRATON_PRIME_BP, BARREL, RECEIVER_BP, PRISMA_GORGON, DERA_VANDAL].into_iter().map(String::from).collect();
+        let market = quotes(&[("prisma_gorgon", quote(Some(90), Some(NOW))), ("dera_vandal_set", quote(Some(35), Some(NOW)))]);
+        let observed_stock = Observed { stock: &stock, tradeable: &tradeable, quotes: &market, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
+        let overview = with_suggestions(&catalog_with_market(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
+
+        // Braton Prime is craftable from stock, so platinum has nothing to buy.
+        let braton = overview.opportunities.iter().find(|o| o.source.unique_name == BRATON_PRIME).expect("craft row");
+        assert_eq!((braton.action, braton.purchase.is_none()), (Action::Craft, true));
+
+        // Prisma Gorgon has no recipe and no vendor, so it becomes a Trade row
+        // for the platinum view only, priced as the whole item.
+        let gorgon = overview.opportunities.iter().find(|o| o.source.unique_name == PRISMA_GORGON).expect("trade row");
+        assert_eq!((gorgon.action, gorgon.stage, gorgon.access), (Action::Trade, Stage::Acquire, Access::Available));
+        let gorgon = gorgon.purchase.as_ref().expect("whole item purchase");
+        assert!(gorgon.parts.is_empty());
+        assert_eq!(gorgon.set.as_ref().map(|s| (s.slug.as_str(), s.name.as_str())), Some(("prisma_gorgon", "Prisma Gorgon")));
+        assert_eq!((gorgon.missing_total, gorgon.full_total), (None, None));
+        assert_eq!(gorgon.cheapest_finish, Some(Cost { platinum: 90, route: Route::Set }));
+
+        // Dera Vandal's set is on the market while its parts are not.
+        let dera = purchase_of(&overview, DERA_VANDAL);
+        assert!(dera.parts.is_empty());
+        assert_eq!(dera.set.as_ref().map(|s| (s.slug.as_str(), s.price)), Some(("dera_vandal_set", Some(35))));
+        assert_eq!(dera.cheapest_finish, Some(Cost { platinum: 35, route: Route::Set }));
+
+        // Sweeper has neither recipe nor vendor nor market, so it gets no row.
+        assert!(!overview.opportunities.iter().any(|o| o.source.unique_name == SWEEPER));
     }
 
     #[test]

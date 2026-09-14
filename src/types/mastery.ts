@@ -64,8 +64,8 @@ export interface MasteryProvenance {
 }
 
 export type Stage = "level_claim" | "craft" | "acquire";
-/** Craft means everything is in stock. Build means intermediates need crafting first. Farm means parts are short and no vendor sells them. */
-export type Action = "level" | "claim" | "spend" | "craft" | "build" | "buy" | "farm" | "complete" | "unlock";
+/** Craft means everything is in stock. Build means intermediates need crafting first. Farm means parts are short and no vendor sells them. Trade is a whole item only players sell, so it belongs to the platinum view alone. */
+export type Action = "level" | "claim" | "spend" | "craft" | "build" | "buy" | "farm" | "trade" | "complete" | "unlock";
 export type Access = "available" | "blocked" | "unknown";
 
 export interface VendorOffer {
@@ -143,6 +143,46 @@ export interface RelicRoute {
   coverage: Coverage;
 }
 
+/**
+ * A warframe.market listing. A price with a fetch time is a quote of that age; a price without one
+ * came from a cache written before quotes were stamped; no price with a fetch time means the market
+ * does not list the slug; neither means nobody has asked yet.
+ */
+export interface Listing {
+  slug: string;
+  name: string;
+  price: number | null;
+  /** Unix seconds. */
+  fetched_at: number | null;
+}
+
+export interface PartListing extends Listing {
+  unique_name: string;
+  /** The whole recipe takes this many, owned or not. */
+  needed: number;
+  /** The finish is still short this many after projected stock. */
+  short: number;
+}
+
+export type Route = "parts" | "set";
+
+export interface Cost {
+  platinum: number;
+  route: Route;
+}
+
+/** What platinum buys toward one source. Each total is null while any part it sums lacks a price. */
+export interface Purchase {
+  parts: PartListing[];
+  /** Holds the complete set, or the item itself where nothing is crafted. */
+  set: Listing | null;
+  missing_total: number | null;
+  full_total: number | null;
+  /** The cheaper of the missing parts and the set. A tie goes to the set. */
+  cheapest_finish: Cost | null;
+  full_purchase: Cost | null;
+}
+
 export interface Opportunity extends MasterySource {
   stage: Stage;
   action: Action;
@@ -156,6 +196,7 @@ export interface Opportunity extends MasterySource {
   craft: CraftPlan | null;
   /** Present when something short in the plan drops from a relic. */
   relic: RelicRoute | null;
+  purchase: Purchase | null;
   access: Access;
   blockers: string[];
 }
