@@ -50,8 +50,33 @@ export interface MasteryProvenance {
   junctions: Provenance;
 }
 
+export type Stage = "level_claim" | "acquire";
+export type Action = "level" | "claim" | "buy";
+export type Access = "available" | "blocked" | "unknown";
+
+export interface VendorOffer {
+  syndicate: string;
+  tier: string;
+  blueprint: boolean;
+}
+
+export interface Opportunity extends MasterySource {
+  stage: Stage;
+  action: Action;
+  remaining_mastery: number | null;
+  owned: boolean;
+  /** Null on caches from before levels were stored. */
+  owned_level: number | null;
+  build_completion_ms: number | null;
+  vendors: VendorOffer[];
+  access: Access;
+  blockers: string[];
+}
+
 export interface MasteryOverview {
   counts: MasteryCounts;
   categories: MasteryCategory[];
   provenance: MasteryProvenance;
+  /** The backend sorts these by stage, then remaining mastery high to low with unknown last, then name. */
+  opportunities: Opportunity[];
 }
