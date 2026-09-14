@@ -27,6 +27,10 @@ export interface RecipeComponent {
   count: number;
   result_count: number;
   components: RecipeComponent[];
+  /** Build price of the recipe this blueprint unlocks. Absent when the export carries none. */
+  credits?: number;
+  /** Set when this blueprint survives the craft. */
+  reusable?: boolean;
 }
 
 export type RecipeComponentStatus = "none" | "blueprint" | "part";

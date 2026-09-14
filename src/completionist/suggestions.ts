@@ -68,10 +68,11 @@ export function parseControls(raw: string | null): MasteryControls {
   };
 }
 
-export const STAGE_ORDER: readonly Stage[] = ["level_claim", "acquire"];
+export const STAGE_ORDER: readonly Stage[] = ["level_claim", "craft", "acquire"];
 
 export const STAGE_LABELS: Record<Stage, string> = {
   level_claim: "Level, claim or spend",
+  craft: "Craft",
   acquire: "Acquire",
 };
 
@@ -99,6 +100,15 @@ export function actionText(o: Opportunity): string {
     case "spend": {
       const s = o.spend;
       return s ? `Spend ${s.points.toLocaleString("en-US")} points for ${s.ranks} rank${s.ranks === 1 ? "" : "s"}` : "Spend";
+    }
+    case "craft": return o.access === "available" ? "Craft now" : "Craft";
+    case "build": {
+      const n = o.craft?.builds.length ?? 0;
+      return `Build ${n} ${n === 1 ? "part" : "parts"}, then craft`;
+    }
+    case "farm": {
+      const n = o.craft?.requirements.filter(r => r.short > 0).length ?? 0;
+      return `Farm ${n} ${n === 1 ? "item" : "items"}`;
     }
     case "buy": {
       const first = o.vendors[0];
@@ -131,6 +141,12 @@ export function detailText(o: Opportunity, nowMs: number, readyAt?: string): str
   if (o.spend) {
     parts.push(`+${o.spend.mastery.toLocaleString("en-US")} mastery`);
     for (const t of o.spend.tracks) parts.push(`${t.track} R${t.from} → R${t.to}`);
+  }
+  if (o.craft) {
+    parts.push(o.craft.credits == null ? "Credits unknown" : `Credits ${o.craft.credits.toLocaleString("en-US")}`);
+    if (o.craft.builds.length) parts.push(`Build ${o.craft.builds.map(b => b.crafts > 1 ? `${b.name} ×${b.crafts}` : b.name).join(", ")}`);
+    const short = o.craft.requirements.filter(r => r.short > 0);
+    if (short.length) parts.push(`Short ${short.map(r => `${r.name} ×${r.short.toLocaleString("en-US")}`).join(", ")}`);
   }
   return parts.join(" · ");
 }
