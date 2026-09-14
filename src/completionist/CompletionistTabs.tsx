@@ -4,15 +4,17 @@ import Syndicates from "./Syndicates";
 import Mastery from "./Mastery";
 import { SYNDICATE_FILTERS_DEFAULT } from "../constants/filters";
 import type { SyndicateFilters } from "../types/filters";
+import type { ClockFormat } from "../lib/clockFormat";
 
 export type CompletionistView = "syndicates" | "mastery";
 
 interface CompletionistTabsProps {
   inventory: Record<string, InventoryItem>;
   refreshKey: number;
+  clockFormat: ClockFormat;
 }
 
-export default function CompletionistTabs({ inventory, refreshKey }: CompletionistTabsProps) {
+export default function CompletionistTabs({ inventory, refreshKey, clockFormat }: CompletionistTabsProps) {
   const [view, setView] = useState<CompletionistView>("syndicates");
   const [syndicateFilters, setSyndicateFilters] = useState<SyndicateFilters>(SYNDICATE_FILTERS_DEFAULT);
 
@@ -43,7 +45,7 @@ export default function CompletionistTabs({ inventory, refreshKey }: Completioni
           onFiltersChange={setSyndicateFilters}
         />
       )}
-      {view === "mastery" && <Mastery inventory={inventory} refreshKey={refreshKey} />}
+      {view === "mastery" && <Mastery inventory={inventory} refreshKey={refreshKey} clockFormat={clockFormat} />}
     </div>
   );
 }

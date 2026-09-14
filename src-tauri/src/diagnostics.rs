@@ -84,6 +84,7 @@ pub(crate) fn clear_cache(state: State<AppState>) -> Result<(), String> {
     state.current_quantities.lock().map_err(|e| e.to_string())?.clear();
     state.unique_quantities.lock().map_err(|e| e.to_string())?.clear();
     state.current_mods.lock().map_err(|e| e.to_string())?.clear();
+    state.mastery_progress.lock().map_err(|e| e.to_string())?.clear();
 
     // Delete cache and hint files so nothing reloads on next start
     let _ = std::fs::remove_file(&state.quantities_cache_path);
