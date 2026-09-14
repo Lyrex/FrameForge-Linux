@@ -51,6 +51,10 @@ fn affinity_base(path: &str) -> i64 {
     if is_warframe_like(path) { 1000 } else { 500 }
 }
 
+pub(crate) fn mastery_per_rank(path: &str) -> u32 {
+    if is_warframe_like(path) { 200 } else { 100 }
+}
+
 pub(crate) fn xp_to_rank(xp: i64, path: &str) -> u32 {
     (xp.max(0) as f64 / affinity_base(path) as f64).sqrt().floor() as u32
 }

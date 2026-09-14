@@ -3,11 +3,12 @@ use std::path::Path;
 use tauri::State;
 use crate::app_state::{AppState, CorrectionEntry};
 use crate::catalogue::fix_category;
-use crate::inventory_state::inventory_path_aliases;
+use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache};
 use crate::mastery_progress::{PlayerProgress, Provenance, ProvenanceState};
 use crate::mastery_rules::{self, Unobtainable};
+use crate::monitor::CraftingJob;
 use crate::settings::read_settings_map;
-use crate::wfcd::WfcdItem;
+use crate::wfcd::{RecipeComponent, SyndicateOffer, WfcdItem};
 
 const COLLECTION_CATEGORIES: [&str; 9] = [
     "Warframes", "Primary", "Secondary", "Melee", "Operator Weapons",
@@ -78,20 +79,169 @@ pub(crate) struct MasteryProvenance {
     pub(crate) junctions: Provenance,
 }
 
+// TODO: add a craft stage, and relic routes under Acquire.
+#[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Stage { LevelClaim, Acquire }
+
+#[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Action { Level, Claim, Buy }
+
+#[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Access { Available, Blocked, Unknown }
+
+#[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct VendorOffer {
+    pub(crate) syndicate: String,
+    pub(crate) tier: String,
+    pub(crate) blueprint: bool,
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub(crate) struct Opportunity {
+    #[serde(flatten)]
+    pub(crate) source: MasterySource,
+    pub(crate) stage: Stage,
+    pub(crate) action: Action,
+    pub(crate) remaining_mastery: Option<u32>,
+    pub(crate) owned: bool,
+    /// None on caches from before levels were stored.
+    pub(crate) owned_level: Option<u32>,
+    pub(crate) build_completion_ms: Option<i64>,
+    pub(crate) vendors: Vec<VendorOffer>,
+    pub(crate) access: Access,
+    pub(crate) blockers: Vec<String>,
+}
+
 #[derive(serde::Serialize, Clone, Debug)]
 pub(crate) struct MasteryOverview {
     pub(crate) counts: MasteryCounts,
     pub(crate) categories: Vec<MasteryCategory>,
     pub(crate) provenance: MasteryProvenance,
+    pub(crate) opportunities: Vec<Opportunity>,
+}
+
+pub(crate) struct Observed<'a> {
+    pub(crate) owned: &'a HashMap<String, i64>,
+    pub(crate) owned_levels: &'a HashMap<String, Vec<u32>>,
+    pub(crate) mastery_rank: Option<u32>,
+    pub(crate) crafting: &'a [CraftingJob],
+    pub(crate) recipes: &'a HashMap<String, Vec<RecipeComponent>>,
+    pub(crate) offers: &'a HashMap<String, Vec<SyndicateOffer>>,
+    pub(crate) now_ms: i64,
 }
 
 #[tauri::command]
 pub(crate) fn get_mastery_overview(state: State<AppState>) -> MasteryOverview {
     let player = state.local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let excluded = excluded_classes(&state.settings_path);
-    let progress = state.mastery_progress.lock().unwrap_or_else(|e| e.into_inner());
-    let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
-    build_mastery_overview(&items, &state.corrections, progress.current(player.as_deref()), &excluded)
+    let mut overview = {
+        let progress = state.mastery_progress.lock().unwrap_or_else(|e| e.into_inner());
+        let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
+        build_mastery_overview(&items, &state.corrections, progress.current(player.as_deref()), &excluded)
+    };
+    let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
+    // Without an inventory scan we have no idea what the player owns, so skip suggestions.
+    if inventory.items.is_empty() { return overview; }
+    let crafting = state.current_crafting.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let recipes = state.recipes.lock().unwrap_or_else(|e| e.into_inner());
+    let offers = state.syndicate_catalog.lock().unwrap_or_else(|e| e.into_inner());
+    overview.opportunities = suggest(&overview, &Observed {
+        owned: &inventory.unique_quantities(),
+        owned_levels: &inventory.owned_levels(),
+        mastery_rank: inventory.mastery_rank,
+        crafting: &crafting,
+        recipes: &recipes,
+        offers: &offers,
+        now_ms: chrono::Utc::now().timestamp_millis(),
+    });
+    overview
+}
+
+/// A Foundry job carries the blueprint path. Each recipe lists its own
+/// blueprint as the one component with an empty component list; part
+/// blueprints like a chassis or barrel list their ingredients.
+fn blueprint_results(recipes: &HashMap<String, Vec<RecipeComponent>>) -> HashMap<&str, &str> {
+    recipes.iter().flat_map(|(result, components)| {
+        components.iter()
+            .filter(|c| c.unique_name.ends_with("Blueprint") && c.components.is_empty())
+            .map(move |c| (c.unique_name.as_str(), result.as_str()))
+    }).collect()
+}
+
+/// Hok and Rude Zuud offers have an empty result_unique, so they match on
+/// the part path with "Blueprint" appended.
+fn vendor_offers(source: &str, offers: &HashMap<String, Vec<SyndicateOffer>>) -> Vec<VendorOffer> {
+    let blueprint = format!("{source}Blueprint");
+    let blueprint = blueprint.as_str();
+    let mut vendors: Vec<VendorOffer> = offers.iter().flat_map(|(syndicate, offers)| {
+        offers.iter().filter_map(move |o| {
+            let is_blueprint = if o.unique_name == source { false }
+                else if o.result_unique.as_deref() == Some(source) || o.unique_name == blueprint { true }
+                else { return None };
+            Some(VendorOffer { syndicate: syndicate.clone(), tier: o.tier.clone(), blueprint: is_blueprint })
+        })
+    }).collect();
+    vendors.sort_by(|a, b| a.syndicate.cmp(&b.syndicate).then_with(|| a.tier.cmp(&b.tier)));
+    vendors
+}
+
+pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Opportunity> {
+    let blueprint_results = blueprint_results(observed.recipes);
+    let building: HashMap<&str, i64> = observed.crafting.iter()
+        .map(|job| (blueprint_results.get(job.unique_name.as_str()).copied().unwrap_or(&job.unique_name), job.completion_ms))
+        .collect();
+    let mut opportunities: Vec<Opportunity> = overview.categories.iter().flat_map(|c| &c.sources)
+        .filter(|s| !s.excluded && s.state != MasteryState::Mastered)
+        .filter_map(|source| {
+            let owned_level = observed.owned_levels.get(&source.unique_name).and_then(|levels| levels.iter().max().copied());
+            let owned = owned_level.is_some() || observed.owned.get(&source.unique_name).is_some_and(|&copies| copies > 0);
+            let build_completion_ms = building.get(source.unique_name.as_str()).copied();
+            let vendors = vendor_offers(&source.unique_name, observed.offers);
+            let action = if owned { Action::Level }
+                else if build_completion_ms.is_some() { Action::Claim }
+                else if !vendors.is_empty() { Action::Buy }
+                else { return None };
+            let stage = if action == Action::Buy { Stage::Acquire } else { Stage::LevelClaim };
+            let remaining_mastery = source.earned_rank
+                .map(|rank| source.cap.saturating_sub(rank) * mastery_rules::mastery_per_rank(&source.unique_name));
+            let (access, blockers) = match action {
+                Action::Level => (Access::Available, vec![]),
+                Action::Claim if build_completion_ms.is_some_and(|done| done > observed.now_ms) => (Access::Blocked, vec!["Still building".into()]),
+                Action::Claim => (Access::Available, vec![]),
+                Action::Buy => {
+                    // TODO: read standing from the scan. Until then every Buy stays Unknown.
+                    let mut access = Access::Unknown;
+                    let mut blockers = vec![];
+                    match (source.mastery_req, observed.mastery_rank) {
+                        (Some(required), Some(rank)) if required > rank => {
+                            access = Access::Blocked;
+                            blockers.push(format!("Requires MR {required}"));
+                        }
+                        (Some(required), None) if required > 0 => blockers.push("Mastery Rank not observed".into()),
+                        _ => {}
+                    }
+                    blockers.push("Standing not observed".into());
+                    (access, blockers)
+                }
+            };
+            Some(Opportunity {
+                source: source.clone(), stage, action, remaining_mastery, owned, owned_level, build_completion_ms, vendors, access, blockers,
+            })
+        })
+        .collect();
+    opportunities.sort_by(|a, b| a.stage.cmp(&b.stage)
+        .then_with(|| match (a.remaining_mastery, b.remaining_mastery) {
+            (Some(x), Some(y)) => y.cmp(&x),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        })
+        .then_with(|| a.source.name.cmp(&b.source.name))
+        .then_with(|| a.source.unique_name.cmp(&b.source.unique_name)));
+    opportunities
 }
 
 /// The `masteryExclude` map in settings.json, one boolean per class; only an
@@ -187,7 +337,7 @@ pub(crate) fn build_mastery_overview(
     for category in &mut categories {
         category.sources.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.unique_name.cmp(&b.unique_name)));
     }
-    MasteryOverview { counts, categories, provenance: MasteryProvenance { equipment, ..Default::default() } }
+    MasteryOverview { counts, categories, provenance: MasteryProvenance { equipment, ..Default::default() }, opportunities: vec![] }
 }
 
 /// Inventory display categories file modular chambers, decks and mechs under
@@ -209,6 +359,7 @@ fn collection_category(item_type: &str, display_category: &str) -> Option<&'stat
 mod tests {
     use super::*;
     use crate::mastery_progress::{PlayerProgress, Provenance, ProvenanceState};
+    use crate::wfcd::{RecipeComponent, SyndicateOffer};
 
     const ORION: &str = "/Lotus/Powersuits/SiriusOrion/OrionSuit";
     const SIRIUS: &str = "/Lotus/Powersuits/SiriusOrion/SiriusSuit";
@@ -457,5 +608,145 @@ mod tests {
 
         let overview = build_mastery_overview(&items, &corrections, Some(&progress), &HashSet::new());
         assert_eq!(overview.counts, MasteryCounts { total: 18, mastered: 1, partial: 0, missing: 17, unknown: 0, unobtainable: 0 });
+    }
+
+    fn with_suggestions(items: &[WfcdItem], corrections: &HashMap<String, CorrectionEntry>, progress: Option<&PlayerProgress>, excluded: &HashSet<Unobtainable>, observed: &Observed) -> MasteryOverview {
+        let mut overview = build_mastery_overview(items, corrections, progress, excluded);
+        overview.opportunities = suggest(&overview, observed);
+        overview
+    }
+
+    fn observed_gear<'a>(owned: &'a HashMap<String, i64>, owned_levels: &'a HashMap<String, Vec<u32>>, crafting: &'a [CraftingJob], recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, mastery_rank: Option<u32>) -> Observed<'a> {
+        Observed { owned, owned_levels, mastery_rank, crafting, recipes, offers, now_ms: 1_000_000 }
+    }
+
+    fn recipe(source: &str, blueprint: &str) -> (String, Vec<RecipeComponent>) {
+        let component = |unique_name: &str, name: &str, components: Vec<RecipeComponent>| RecipeComponent {
+            unique_name: unique_name.into(), name: name.into(), count: 1, result_count: 1, components,
+        };
+        let part = component("/Lotus/Types/Recipes/Parts/ChassisBlueprint", "Chassis Blueprint", vec![component("/Lotus/Types/Items/MiscItems/Ferrite", "Ferrite", vec![])]);
+        (source.into(), vec![component("/Lotus/Types/Items/MiscItems/Ferrite", "Ferrite", vec![]), part, component(blueprint, "Blueprint", vec![])])
+    }
+
+    fn offer(unique_name: &str, tier: &str, result_unique: Option<&str>) -> SyndicateOffer {
+        SyndicateOffer {
+            unique_name: unique_name.into(), name: String::new(), category: String::new(), image_name: None,
+            tier: tier.into(), ducats: None, result_unique: result_unique.map(Into::into),
+        }
+    }
+
+    fn job(blueprint: &str, completion_ms: i64) -> CraftingJob {
+        CraftingJob { unique_name: blueprint.into(), item_name: String::new(), completion_ms }
+    }
+
+    fn summary(opportunities: &[Opportunity]) -> Vec<(&str, Action, Option<u32>, Access)> {
+        opportunities.iter().map(|o| (o.source.name.as_str(), o.action, o.remaining_mastery, o.access)).collect()
+    }
+
+    #[test]
+    fn stages_run_level_claim_acquire_with_known_remaining_first_then_name() {
+        let mut items = catalog();
+        items.push(item("Excalibur Prime", EXCALIBUR_PRIME, "Warframe", "Suits", "Warframes", Some(true)));
+        let mut corrections = corrections();
+        corrections.insert(EXCALIBUR_PRIME.into(), CorrectionEntry { path: EXCALIBUR_PRIME.into(), unobtainable: Some(Unobtainable::Founders), ..Default::default() });
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[
+            (BRATON, 72_000), (GRIMOIRE, 450_000), (MOTE_PRISM, 450_000),
+        ]);
+        let levels: HashMap<String, Vec<u32>> = [
+            (BRATON.to_string(), vec![5, 12]), (GRIMOIRE.to_string(), vec![30]), (EXCALIBUR_PRIME.to_string(), vec![30]),
+        ].into();
+        let owned: HashMap<String, i64> = [(SIRIUS.to_string(), 1), (BRATON.to_string(), 1)].into();
+        let crafting = [job("/Lotus/Types/Recipes/Weapons/KuvaKarakBlueprint", 999_000), job("/Lotus/Types/Recipes/Mechs/VoidrigBlueprint", 1_001_000)];
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [
+            recipe(KUVA, "/Lotus/Types/Recipes/Weapons/KuvaKarakBlueprint"),
+            recipe(MECH, "/Lotus/Types/Recipes/Mechs/VoidrigBlueprint"),
+        ].into();
+        let offers: HashMap<String, Vec<SyndicateOffer>> = [
+            ("Steel Meridian".to_string(), vec![offer(SWEEPER, "General", None), offer("syndicate/stub/thing", "Maxim", None)]),
+            ("Solaris United".to_string(), vec![offer(&format!("{CHAMBER}Blueprint"), "(Rude Zuud), Neutral", None)]),
+            ("Cephalon Simaris".to_string(), vec![offer("/Lotus/Types/Recipes/Weapons/SweeperBlueprint", "Neutral", Some(SWEEPER))]),
+        ].into();
+        let overview = with_suggestions(&items, &corrections, Some(&progress), &Unobtainable::ALL.into(),
+            &observed_gear(&owned, &levels, &crafting, &recipes, &offers, Some(2)));
+
+        assert_eq!(summary(&overview.opportunities), [
+            ("Voidrig", Action::Claim, Some(8_000), Access::Blocked),
+            ("Sirius & Orion", Action::Level, Some(6_000), Access::Available),
+            ("Kuva Karak", Action::Claim, Some(4_000), Access::Available),
+            ("Braton", Action::Level, Some(1_800), Access::Available),
+            ("Catchmoon", Action::Buy, Some(3_000), Access::Unknown),
+            ("Sweeper", Action::Buy, Some(3_000), Access::Unknown),
+        ]);
+        let stages: Vec<Stage> = overview.opportunities.iter().map(|o| o.stage).collect();
+        assert_eq!(stages, [Stage::LevelClaim, Stage::LevelClaim, Stage::LevelClaim, Stage::LevelClaim, Stage::Acquire, Stage::Acquire]);
+        let braton = &overview.opportunities[3];
+        assert_eq!((braton.owned, braton.owned_level, braton.source.earned_rank, braton.build_completion_ms), (true, Some(12), Some(12), None));
+        assert_eq!((overview.opportunities[1].owned, overview.opportunities[1].owned_level), (true, None));
+        let voidrig = &overview.opportunities[0];
+        assert_eq!(voidrig.build_completion_ms, Some(1_001_000));
+        assert_eq!(voidrig.blockers, ["Still building"]);
+        assert!(overview.opportunities[2].blockers.is_empty());
+        let sweeper = &overview.opportunities[5];
+        assert_eq!(sweeper.vendors, [
+            VendorOffer { syndicate: "Cephalon Simaris".into(), tier: "Neutral".into(), blueprint: true },
+            VendorOffer { syndicate: "Steel Meridian".into(), tier: "General".into(), blueprint: false },
+        ]);
+        assert_eq!(sweeper.blockers, ["Standing not observed"]);
+        assert_eq!(overview.opportunities[4].vendors, [VendorOffer { syndicate: "Solaris United".into(), tier: "(Rude Zuud), Neutral".into(), blueprint: true }]);
+    }
+
+    #[test]
+    fn a_mastery_lock_blocks_acquisition_and_an_unknown_mastery_rank_leaves_access_unknown() {
+        let owned = HashMap::new();
+        let levels = HashMap::new();
+        let recipes = HashMap::new();
+        let offers: HashMap<String, Vec<SyndicateOffer>> = [("Steel Meridian".to_string(), vec![offer(SWEEPER, "General", None)])].into();
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
+        let locked = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
+            &observed_gear(&owned, &levels, &[], &recipes, &offers, Some(1)));
+        assert_eq!(summary(&locked.opportunities), [("Sweeper", Action::Buy, Some(3_000), Access::Blocked)]);
+        assert_eq!(locked.opportunities[0].blockers, ["Requires MR 2", "Standing not observed"]);
+        let unranked = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
+            &observed_gear(&owned, &levels, &[], &recipes, &offers, None));
+        assert_eq!(summary(&unranked.opportunities), [("Sweeper", Action::Buy, Some(3_000), Access::Unknown)]);
+        assert_eq!(unranked.opportunities[0].blockers, ["Mastery Rank not observed", "Standing not observed"]);
+    }
+
+    #[test]
+    fn unknown_remaining_stays_unknown_and_sorts_after_known_within_its_stage() {
+        let owned = HashMap::new();
+        let levels: HashMap<String, Vec<u32>> = [(BRATON.to_string(), vec![12]), (SIRIUS.to_string(), vec![3]), (KUVA.to_string(), vec![35])].into();
+        let recipes = HashMap::new();
+        let offers = HashMap::new();
+        let unobserved = with_suggestions(&catalog(), &corrections(), None, &HashSet::new(),
+            &observed_gear(&owned, &levels, &[], &recipes, &offers, None));
+        assert_eq!(summary(&unobserved.opportunities), [
+            ("Braton", Action::Level, None, Access::Available),
+            ("Kuva Karak", Action::Level, None, Access::Available),
+            ("Sirius & Orion", Action::Level, None, Access::Available),
+        ]);
+        let progress = observed(ProvenanceState::Unconfirmed, None, &[(BRATON, 72_000), (KUVA, 612_500)]);
+        let unconfirmed = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
+            &observed_gear(&owned, &levels, &[], &recipes, &offers, None));
+        assert_eq!(summary(&unconfirmed.opportunities), [
+            ("Braton", Action::Level, Some(1_800), Access::Available),
+            ("Kuva Karak", Action::Level, Some(500), Access::Available),
+            ("Sirius & Orion", Action::Level, None, Access::Available),
+        ]);
+    }
+
+    #[test]
+    fn one_result_per_source_keeps_the_other_routes_as_details() {
+        let owned = HashMap::new();
+        let levels: HashMap<String, Vec<u32>> = [(KUVA.to_string(), vec![10])].into();
+        let crafting = [job("/Lotus/Types/Recipes/Weapons/KuvaKarakBlueprint", 0)];
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [recipe(KUVA, "/Lotus/Types/Recipes/Weapons/KuvaKarakBlueprint")].into();
+        let offers: HashMap<String, Vec<SyndicateOffer>> = [("Kahl's Garrison".to_string(), vec![offer(KUVA, "Champion", None)])].into();
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(KUVA, 50_000)]);
+        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
+            &observed_gear(&owned, &levels, &crafting, &recipes, &offers, Some(30)));
+        assert_eq!(summary(&overview.opportunities), [("Kuva Karak", Action::Level, Some(3_000), Access::Available)]);
+        let kuva = &overview.opportunities[0];
+        assert_eq!((kuva.owned_level, kuva.build_completion_ms, kuva.vendors.len()), (Some(10), Some(0), 1));
     }
 }
