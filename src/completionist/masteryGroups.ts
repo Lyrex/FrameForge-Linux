@@ -3,6 +3,7 @@ import type { MasterySource } from "../types/mastery";
 const GROUP_ORDER = ["Standard", "Zaw", "Kitgun", "Amp", "Prime", "Kuva", "Tenet", "Coda", "Wraith", "Vandal", "Prisma", "MK1"];
 
 export function masteryGroup(source: MasterySource): string {
+  if (source.category === "Intrinsics") return "Intrinsics";
   const path = source.unique_name;
   if (path.includes("/Ostron/Melee/")) return "Zaw";
   if (path.includes("/SolarisUnited/") || path.includes("/InfKitGun/")) return "Kitgun";

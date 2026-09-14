@@ -71,7 +71,7 @@ export function parseControls(raw: string | null): MasteryControls {
 export const STAGE_ORDER: readonly Stage[] = ["level_claim", "acquire"];
 
 export const STAGE_LABELS: Record<Stage, string> = {
-  level_claim: "Level or claim",
+  level_claim: "Level, claim or spend",
   acquire: "Acquire",
 };
 
@@ -96,6 +96,10 @@ export function actionText(o: Opportunity): string {
   switch (o.action) {
     case "level": return o.owned_level == null ? `Level to R${o.cap}` : `Level R${o.owned_level} → R${o.cap}`;
     case "claim": return "Claim from Foundry";
+    case "spend": {
+      const s = o.spend;
+      return s ? `Spend ${s.points.toLocaleString("en-US")} points for ${s.ranks} rank${s.ranks === 1 ? "" : "s"}` : "Spend";
+    }
     case "buy": {
       const first = o.vendors[0];
       return first ? `Buy ${first.blueprint ? "blueprint " : ""}from ${first.syndicate}` : "Buy";
@@ -121,5 +125,9 @@ export function detailText(o: Opportunity, nowMs: number, readyAt?: string): str
     parts.push(`Build ${readyText(o.build_completion_ms, nowMs)}${readyAt ? ` (${readyAt})` : ""}`);
   }
   for (const v of o.vendors) parts.push(`${v.syndicate}${v.tier ? `, ${v.tier}` : ""}${v.blueprint ? " (blueprint)" : ""}`);
+  if (o.spend) {
+    parts.push(`+${o.spend.mastery.toLocaleString("en-US")} mastery`);
+    for (const t of o.spend.tracks) parts.push(`${t.track} R${t.from} → R${t.to}`);
+  }
   return parts.join(" · ");
 }

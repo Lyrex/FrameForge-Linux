@@ -44,6 +44,13 @@ Steel Path completions are two sources, since each is unlocked and blocked
 separately.
 _Avoid_: Intrinsic rank (a rank is progress within a track, not a source)
 
+**Intrinsic system**:
+Railjack or Drifter: one pool of banked Intrinsic points and the tracks it
+buys ranks in. The Collection shows a system as one row of summed track ranks
+whose `unique_name` is the game's `PlayerSkills` field for the pool
+(`LPP_SPACE`, `LPP_DRIFTER`); the tracks stay internal.
+_Avoid_: Intrinsic track (when the pool and all its tracks are meant)
+
 **Affinity**:
 The experience the game records per equipment type, cumulative across every
 copy, Forma reset, and sale, and never decreasing. Ranks and mastery credit are

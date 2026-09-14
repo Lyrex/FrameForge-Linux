@@ -10,9 +10,73 @@
 //! carry whole classes the catalogue gets wrong, so a new prism or Necramech
 //! needs no table row.
 
+use std::collections::HashMap;
 use crate::app_state::CorrectionEntry;
 
 pub(crate) const DEFAULT_RANK_CAP: u32 = 30;
+
+pub(crate) const INTRINSIC_RANK_CAP: u32 = 10;
+const INTRINSIC_MASTERY_PER_RANK: u32 = 1_500;
+
+/// An Intrinsic system's banked-point pool and the tracks it feeds, named
+/// by the game's own `PlayerSkills` fields. The rank costs come from the
+/// wiki's Railjack and Drifter Intrinsics pages.
+pub(crate) struct IntrinsicSystem {
+    pub(crate) name: &'static str,
+    /// The `LPP_*` field holds the points still banked. A capture held
+    /// `LPP_DRIFTER: 0` with every Drifter track at 10, which rules out
+    /// lifetime earnings.
+    pub(crate) points: &'static str,
+    /// Each track's name and `LPS_*` rank field, in the game's display order.
+    pub(crate) tracks: &'static [(&'static str, &'static str)],
+    /// The points each rank costs, starting at rank 1.
+    pub(crate) rank_costs: [u32; INTRINSIC_RANK_CAP as usize],
+}
+
+pub(crate) const INTRINSIC_SYSTEMS: [IntrinsicSystem; 2] = [
+    IntrinsicSystem {
+        name: "Railjack",
+        points: "LPP_SPACE",
+        tracks: &[
+            ("Tactical", "LPS_TACTICAL"), ("Piloting", "LPS_PILOTING"), ("Gunnery", "LPS_GUNNERY"),
+            ("Engineering", "LPS_ENGINEERING"), ("Command", "LPS_COMMAND"),
+        ],
+        rank_costs: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512],
+    },
+    IntrinsicSystem {
+        name: "Drifter",
+        points: "LPP_DRIFTER",
+        tracks: &[
+            ("Combat", "LPS_DRIFT_COMBAT"), ("Riding", "LPS_DRIFT_RIDING"),
+            ("Opportunity", "LPS_DRIFT_OPPORTUNITY"), ("Endurance", "LPS_DRIFT_ENDURANCE"),
+        ],
+        rank_costs: [20, 25, 30, 45, 65, 90, 125, 160, 205, 255],
+    },
+];
+
+impl IntrinsicSystem {
+    pub(crate) fn rank_cap(&self) -> u32 {
+        self.tracks.len() as u32 * INTRINSIC_RANK_CAP
+    }
+
+    /// A field the game never wrote is rank 0, and a value outside 0..=10 is
+    /// not a rank the game hands out.
+    pub(crate) fn track_ranks(&self, skills: &HashMap<String, i64>) -> Vec<u32> {
+        self.tracks.iter()
+            .map(|(_, field)| skills.get(*field).copied().unwrap_or(0).clamp(0, i64::from(INTRINSIC_RANK_CAP)) as u32)
+            .collect()
+    }
+
+    pub(crate) fn banked(&self, skills: &HashMap<String, i64>) -> u32 {
+        skills.get(self.points).copied().unwrap_or(0).clamp(0, i64::from(u32::MAX)) as u32
+    }
+}
+
+/// Finds the system whose point pool field is a Collection row's `unique_name`.
+pub(crate) fn intrinsic_system(unique_name: &str) -> Option<&'static IntrinsicSystem> {
+    INTRINSIC_SYSTEMS.iter().find(|s| s.points == unique_name)
+}
+
 
 /// Why no account can earn a mastery source any more. Settings exclude each
 /// class from the progress denominator independently.
@@ -51,8 +115,10 @@ fn affinity_base(path: &str) -> i64 {
     if is_warframe_like(path) { 1000 } else { 500 }
 }
 
-pub(crate) fn mastery_per_rank(path: &str) -> u32 {
-    if is_warframe_like(path) { 200 } else { 100 }
+pub(crate) fn mastery_per_rank(unique_name: &str) -> u32 {
+    if intrinsic_system(unique_name).is_some() { INTRINSIC_MASTERY_PER_RANK }
+    else if is_warframe_like(unique_name) { 200 }
+    else { 100 }
 }
 
 pub(crate) fn xp_to_rank(xp: i64, path: &str) -> u32 {
