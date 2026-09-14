@@ -35,12 +35,14 @@ pub(crate) fn relic_pick_hide(app: &tauri::AppHandle) {
 
 // ── Arbitration post-run overlay ──────────────────────────────────────────────
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn set_arbitration_overlay_enabled(state: State<AppState>, enabled: bool) {
     state.arbitration_overlay_enabled.store(enabled, Ordering::SeqCst);
 }
 
 /// Debug: fire the post-run overlay with a made-up completed run.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn test_arbitration_overlay(app: tauri::AppHandle) -> String {
     let summary = db::RunSummary {
@@ -61,6 +63,7 @@ pub(crate) fn test_arbitration_overlay(app: tauri::AppHandle) -> String {
 }
 
 /// Debug: run OCR on the top-left quarter of the Warframe window and report the detected era.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn debug_detect_fissure_era() -> String {
     match crate::ocr::detect_fissure_era() {
@@ -70,6 +73,7 @@ pub(crate) fn debug_detect_fissure_era() -> String {
 }
 
 /// Debug: manually fire the relic pick overlay for a given era.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn test_relic_pick_overlay(era: String, app: tauri::AppHandle) -> String {
     let payload = build_relic_pick_payload(&era, &app);
@@ -81,6 +85,7 @@ pub(crate) fn test_relic_pick_overlay(era: String, app: tauri::AppHandle) -> Str
 
 /// Debug: return the last ~4 KB of EE.log so we can see what strings appear when
 /// opening the relic selection screen. Call this immediately after opening the screen.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn debug_ee_log_tail() -> String {
     use std::io::{Read, Seek, SeekFrom};
@@ -286,6 +291,7 @@ pub(crate) fn park_overlay_offscreen(app: &tauri::AppHandle, label: &str) {
 /// Reposition the pre-declared relic-overlay window and bring it on screen.
 /// The overlay is pre-declared in tauri.conf.json so its webview initialises
 /// at app startup. Never created/destroyed — just shown and hidden.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn show_overlay_window(
     app: tauri::AppHandle,
@@ -328,6 +334,7 @@ pub(crate) fn show_overlay_window(
 }
 
 /// Hide the relic-overlay window (visual "close" without destroying it).
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn move_overlay_offscreen(app: tauri::AppHandle) -> Result<(), String> {
     park_overlay_offscreen(&app, "relic-overlay");
@@ -337,6 +344,7 @@ pub(crate) fn move_overlay_offscreen(app: tauri::AppHandle) -> Result<(), String
 /// Pull and clear the last locked relic reward payload { items, positions }.
 /// Overlay.tsx calls this on mount so it never misses rewards that arrived before
 /// its relic-rewards listener was registered (the tauri://created → React mount gap).
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_pending_relic_rewards(state: State<'_, AppState>) -> Option<serde_json::Value> {
     state.pending_relic_rewards.lock().ok()?.take()

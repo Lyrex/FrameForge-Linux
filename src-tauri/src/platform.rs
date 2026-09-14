@@ -16,6 +16,7 @@ pub(crate) async fn get_platform_capabilities() -> PlatformCapabilities {
     }
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_system_locale() -> String {
     // POSIX locales look like "de_DE.UTF-8" or "de_DE@euro"; the frontend

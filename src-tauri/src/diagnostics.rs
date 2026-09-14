@@ -17,6 +17,7 @@ pub(crate) async fn dump_memory_probe(state: State<'_, AppState>) -> Result<Stri
 }
 
 /// Enable or disable automatic per-pass inventory blob logging to blobs/.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn set_blob_log(enabled: bool, state: State<'_, AppState>) {
     state.blob_log_enabled.store(enabled, Ordering::SeqCst);
@@ -73,6 +74,7 @@ pub(crate) async fn toggle_raw_scan(state: State<'_, AppState>) -> Result<String
 
 /// Resets the scanned inventory only. The downloaded caches are untouched — the
 /// refresh button is what re-fetches those.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn clear_cache(state: State<AppState>) -> Result<(), String> {
     // Clear change log from DB
@@ -96,6 +98,7 @@ pub(crate) fn clear_cache(state: State<AppState>) -> Result<(), String> {
 }
 
 /// Read the riven overlay session log.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_riven_session_log(state: State<'_, AppState>) -> String {
     let path = state.riven_log.clone();
@@ -104,6 +107,7 @@ pub(crate) fn get_riven_session_log(state: State<'_, AppState>) -> String {
 }
 
 /// Read the current overlay session log.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_overlay_session_log(state: State<'_, AppState>) -> String {
     let path = state.overlay_log.clone();
@@ -112,6 +116,7 @@ pub(crate) fn get_overlay_session_log(state: State<'_, AppState>) -> String {
 
 /// Frontend tracing — App.tsx and Overlay.tsx call this to write diagnostic
 /// lines into the same session log that gets copied to the diagnostics folder.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn log_relic_fe(state: State<'_, AppState>, msg: String) {
     let path = state.overlay_log.clone();
@@ -122,6 +127,7 @@ pub(crate) fn log_relic_fe(state: State<'_, AppState>, msg: String) {
 /// WebviewWindow creation is broken. Returns Ok("created") or Err(reason).
 /// Uses a URL hash (#modular) so the Tauri asset protocol serves clean index.html
 /// Toggle debug categorization mode. Returns the new state (true = enabled).
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn toggle_debug_categorization(state: State<AppState>) -> bool {
     let prev = state.debug_cat_enabled.fetch_xor(true, Ordering::SeqCst);
@@ -162,6 +168,7 @@ pub(crate) fn clear_diag_folder(state: State<AppState>) -> u64 {
     0
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn open_debug_folder(state: State<AppState>, which: String) -> Result<(), String> {
     let path: std::path::PathBuf = match which.as_str() {
@@ -181,6 +188,7 @@ pub(crate) fn open_debug_folder(state: State<AppState>, which: String) -> Result
 
 /// Clear debug data for a specific category.
 /// `which`: "blobs" | "raw_scan" | "probe" | "unmatched_paths" | "manual_capture"
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn clear_debug_data(state: State<AppState>, which: String) -> Result<(), String> {
     let clear_dir = |dir: &std::path::Path| {
@@ -211,6 +219,7 @@ pub(crate) fn clear_debug_data(state: State<AppState>, which: String) -> Result<
 
 /// Return the byte size of a debug folder or file.
 /// `which`: "blobs" | "raw_scan" | "probe" | "diag" | "manual_capture" | "unmatched_paths"
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_debug_data_size(state: State<AppState>, which: String) -> u64 {
     match which.as_str() {
@@ -292,6 +301,7 @@ pub(crate) async fn capture_diagnostics(state: State<'_, AppState>) -> Result<St
 /// The rect comes from the same X11 window the capture grabs, so the rect and
 /// the captured frame can never describe different areas — both exclude the
 /// window title bar and borders.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_warframe_window_rect() -> Result<[i32; 4], String> {
     ocr::warframe_window_rect()

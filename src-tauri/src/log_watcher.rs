@@ -66,6 +66,7 @@ fn record_arbitration_runs(
 /// Start a lightweight EE.log watcher for features that don't need the memory scanner:
 /// riven reroll detection, trade completion detection, WFM whisper detection.
 /// Called unconditionally at app startup — EE.log is plain file I/O, not memory reading.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
     let log_path =
