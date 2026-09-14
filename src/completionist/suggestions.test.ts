@@ -59,6 +59,12 @@ test("labels spell out the action, the route and unknowns", () => {
   assert.equal(actionText(bought), "Buy blueprint from Cephalon Simaris");
   assert.equal(detailText(bought, now), "Cephalon Simaris (blueprint) · Steel Meridian, General");
   assert.equal(detailText(opportunity("Braton"), now), "Owned copy");
+  const node = { key: "SolNode27", planet: "Earth", mode: "normal" as const, junction: false };
+  const ePrime = opportunity("E Prime", { unique_name: "SolNode27", category: "Star Chart", cap: 1, earned_rank: 0, state: "missing",
+    stage: "acquire", action: "complete", remaining_mastery: null, owned: false, owned_level: null, access: "unknown", blockers: ["Node unlock not observed"], node });
+  assert.equal(actionText(ePrime), "Complete node");
+  assert.equal(detailText(ePrime, now), "Earth");
+  assert.equal(actionText({ ...ePrime, action: "unlock", node: { ...node, junction: true } }), "Unlock junction");
   assert.equal(detailText(opportunity("Braton", { build_completion_ms: 5_000_000 }), now), "Owned copy · Build ready");
   assert.equal(detailText(opportunity("Braton", { build_completion_ms: now + 60_000 }), now, "14:32"), "Owned copy · Build ready in 1m (14:32)");
   const spend = opportunity("Railjack", {

@@ -104,6 +104,8 @@ export function actionText(o: Opportunity): string {
       const first = o.vendors[0];
       return first ? `Buy ${first.blueprint ? "blueprint " : ""}from ${first.syndicate}` : "Buy";
     }
+    case "complete": return "Complete node";
+    case "unlock": return "Unlock junction";
   }
 }
 
@@ -120,6 +122,7 @@ export function readyText(completionMs: number, nowMs: number): string {
 
 export function detailText(o: Opportunity, nowMs: number, readyAt?: string): string {
   const parts: string[] = [];
+  if (o.node) parts.push(o.node.planet);
   if (o.owned) parts.push("Owned copy");
   if (o.build_completion_ms != null) {
     parts.push(`Build ${readyText(o.build_completion_ms, nowMs)}${readyAt ? ` (${readyAt})` : ""}`);
