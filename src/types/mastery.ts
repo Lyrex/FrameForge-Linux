@@ -63,8 +63,9 @@ export interface MasteryProvenance {
   junctions: Provenance;
 }
 
-export type Stage = "level_claim" | "acquire";
-export type Action = "level" | "claim" | "spend" | "buy" | "complete" | "unlock";
+export type Stage = "level_claim" | "craft" | "acquire";
+/** Craft means everything is in stock. Build means intermediates need crafting first. Farm means parts are short and no vendor sells them. */
+export type Action = "level" | "claim" | "spend" | "craft" | "build" | "buy" | "farm" | "complete" | "unlock";
 export type Access = "available" | "blocked" | "unknown";
 
 export interface VendorOffer {
@@ -88,6 +89,28 @@ export interface Spend {
   tracks: TrackSpend[];
 }
 
+export interface Requirement {
+  unique_name: string;
+  name: string;
+  needed: number;
+  from_stock: number;
+  short: number;
+}
+
+export interface Build {
+  unique_name: string;
+  name: string;
+  crafts: number;
+}
+
+export interface CraftPlan {
+  requirements: Requirement[];
+  builds: Build[];
+  /** Null as soon as any recipe in the plan carries no price. */
+  credits: number | null;
+  credits_short: number;
+}
+
 export interface Opportunity extends MasterySource {
   stage: Stage;
   action: Action;
@@ -97,6 +120,8 @@ export interface Opportunity extends MasterySource {
   build_completion_ms: number | null;
   vendors: VendorOffer[];
   spend: Spend | null;
+  /** A source that is neither owned nor building carries its plan whenever a recipe exists. */
+  craft: CraftPlan | null;
   access: Access;
   blockers: string[];
 }

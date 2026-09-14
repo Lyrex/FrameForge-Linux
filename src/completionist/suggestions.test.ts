@@ -9,7 +9,7 @@ const opportunity = (name: string, over: Partial<Opportunity> = {}): Opportunity
   unique_name: `/Lotus/Weapons/Tenno/${name}`, name, category: "Primary", image_name: null, mastery_req: null,
   cap: 30, earned_rank: 12, remaining_mastery: 1800, state: "partial", unobtainable: null, excluded: false,
   stage: "level_claim", action: "level", owned: true, owned_level: 12, build_completion_ms: null,
-  vendors: [], spend: null, access: "available", blockers: [], ...over,
+  vendors: [], spend: null, craft: null, access: "available", blockers: [], ...over,
 });
 
 test("stored controls are validated field by field and fall back to defaults", () => {
@@ -76,6 +76,21 @@ test("labels spell out the action, the route and unknowns", () => {
   assert.equal(actionText(spend), "Spend 2,048 points for 5 ranks");
   assert.equal(detailText(spend, now), "+7,500 mastery · Piloting R9 → R10 · Gunnery R8 → R10 · Engineering R8 → R10");
   assert.equal(actionText(opportunity("Drifter", { action: "spend", spend: { ranks: 1, points: 205, mastery: 1500, tracks: [{ track: "Endurance", from: 8, to: 9 }] } })), "Spend 205 points for 1 rank");
+  const chassis = { unique_name: "/Lotus/Types/Recipes/Parts/Chassis", name: "Chassis", needed: 1, from_stock: 0, short: 0 };
+  const ferrite = { unique_name: "/Lotus/Types/Items/MiscItems/Ferrite", name: "Ferrite", needed: 150, from_stock: 50, short: 100 };
+  const crafted = opportunity("Hek", { stage: "craft", action: "craft", owned: false, owned_level: null,
+    craft: { requirements: [chassis], builds: [], credits: 15_000, credits_short: 0 } });
+  assert.equal(actionText(crafted), "Craft now");
+  assert.equal(actionText({ ...crafted, access: "blocked", blockers: ["Needs 5,000 more credits"] }), "Craft");
+  assert.equal(detailText(crafted, now), "Credits 15,000");
+  const built = opportunity("Hek", { stage: "craft", action: "build", owned: false, owned_level: null,
+    craft: { requirements: [chassis], builds: [{ unique_name: chassis.unique_name, name: "Chassis", crafts: 2 }], credits: null, credits_short: 0 } });
+  assert.equal(actionText(built), "Build 1 part, then craft");
+  assert.equal(detailText(built, now), "Credits unknown · Build Chassis ×2");
+  const farmed = opportunity("Hek", { stage: "craft", action: "farm", owned: false, owned_level: null,
+    craft: { requirements: [chassis, ferrite], builds: [], credits: 20_000, credits_short: 5_000 } });
+  assert.equal(actionText(farmed), "Farm 1 item");
+  assert.equal(detailText(farmed, now), "Credits 20,000 · Short Ferrite ×100");
   assert.equal(readyText(5_000_000, now), "ready");
   assert.equal(readyText(now + 3_720_000, now), "ready in 1h 2m");
   assert.equal(readyText(now + 45_000, now), "ready in 1m");

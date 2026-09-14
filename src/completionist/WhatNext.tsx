@@ -114,7 +114,7 @@ export default function WhatNext({ overview, controls, onChange, nowMs, clockFor
           <div className="mst-empty">Platinum suggestions are not available yet.</div>
         )}
         {controls.result === "suggestions" && overview.opportunities.length === 0 && (
-          <div className="mst-empty">No suggestions yet: nothing owned or building with mastery left, and no known vendor route.</div>
+          <div className="mst-empty">No suggestions yet: nothing owned or building with mastery left, and no known recipe or vendor route.</div>
         )}
         {controls.result === "suggestions" && overview.opportunities.length > 0 && visible.length === 0 && (
           <div className="mst-empty">Nothing matches.</div>
