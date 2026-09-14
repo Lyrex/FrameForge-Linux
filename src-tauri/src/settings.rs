@@ -52,7 +52,7 @@ pub(crate) fn load_settings(state: State<AppState>) -> String {
 // and wipe all settings on the next merge.
 static SETTINGS_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn read_settings_map(path: &std::path::Path) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+pub(crate) fn read_settings_map(path: &std::path::Path) -> Result<serde_json::Map<String, serde_json::Value>, String> {
     let raw = std::fs::read_to_string(path).unwrap_or_default();
     if raw.trim().is_empty() {
         return Ok(serde_json::Map::new());

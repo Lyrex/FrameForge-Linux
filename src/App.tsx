@@ -107,11 +107,13 @@ import {
   CLOCK_FORMAT_OPTIONS,
   DEFAULT_CLOCK_FORMAT,
   DEFAULT_FOUNDRY_PAGE_SIZE,
+  DEFAULT_MASTERY_EXCLUDE,
   DEFAULT_RELIC_OVERLAY_PRIORITY,
   DEFAULT_RELIC_PICK_LINES,
   DEFAULT_RELIC_PICK_PRIORITY,
   DEFAULT_RELIC_PICK_REFINEMENT,
   FOUNDRY_PAGE_SIZE_OPTIONS,
+  MASTERY_EXCLUDE_OPTIONS,
   MODULAR_SECTION_ORDER_DEFAULT,
   RELIC_PICK_LINES_OPTIONS,
   RELIC_PICK_PRIORITY_OPTIONS,
@@ -124,7 +126,7 @@ import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, QuantityMap 
 import type { ChangeLogEntry, InventoryUpdate, ModCopy } from "./types/inventory";
 import type { RivenAnalysis, RivenAnalysisUpdate } from "./types/rivens";
 import type { ClockFormat } from "./lib/clockFormat";
-import type { FissureWatch, FoundryPageSize, RelicOverlayPriority, RelicPickLines, RelicPickPriority, RelicRefinement, SettingsSnapshot } from "./types/settings";
+import type { FissureWatch, FoundryPageSize, MasteryExclude, RelicOverlayPriority, RelicPickLines, RelicPickPriority, RelicRefinement, SettingsSnapshot } from "./types/settings";
 import type { SeenFissures } from "./types/worldstate";
 import type { TradeCompletedEvent } from "./types/trades";
 import type { AddTradeArgs, AnalyzeRivenArgs, BlobStatusPayload, InventoryRewardPayload, ItemListStatus, OcrRivenScreenResult, OverlayWindowBounds, RelicRewardsPayload, SettingsFile, SettingsPatch, WarframeWindowRect, WfmCredentials, WfmSession } from "./types/tauri";
@@ -261,6 +263,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [relicPickPriority,   setRelicPickPriority]   = useState<RelicPickPriority>(DEFAULT_RELIC_PICK_PRIORITY);
   const [relicPickRefinement, setRelicPickRefinement] = useState<RelicRefinement>(DEFAULT_RELIC_PICK_REFINEMENT);
   const [relicPickLines,      setRelicPickLines]      = useState<RelicPickLines>(DEFAULT_RELIC_PICK_LINES);
+  const [masteryExclude,      setMasteryExclude]      = useState<MasteryExclude>(DEFAULT_MASTERY_EXCLUDE);
   const [appVersion, setAppVersion] = useState("");
   const [updateAvailable, setUpdateAvailable] = useState<UpdateAvailable | null>(null);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
@@ -318,8 +321,9 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     relicPickEnabled: true, relicPickPriority: DEFAULT_RELIC_PICK_PRIORITY, relicPickRefinement: DEFAULT_RELIC_PICK_REFINEMENT, relicPickLines: DEFAULT_RELIC_PICK_LINES,
     foundryPageSize: DEFAULT_FOUNDRY_PAGE_SIZE,
     memTriggerEnabled: false,
+    masteryExclude: DEFAULT_MASTERY_EXCLUDE,
   });
-  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, arbitrationOverlayEnabled: arbOverlayEnabled, arbitrationTierFilter: arbTierFilter, arbitrationAlertTiers: arbAlertTiers, arbitrationScheduleDays: arbScheduleDays, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled };
+  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, arbitrationOverlayEnabled: arbOverlayEnabled, arbitrationTierFilter: arbTierFilter, arbitrationAlertTiers: arbAlertTiers, arbitrationScheduleDays: arbScheduleDays, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled, masteryExclude };
 
   const saveAllSettings = useCallback(() => {
     // Until the on-disk settings have been applied, settingsRef still holds
@@ -487,6 +491,11 @@ if (typeof s.autoDiagEnabled === "boolean") {
         if (RELIC_PICK_REFINEMENT_OPTIONS.includes(s.relicPickRefinement)) setRelicPickRefinement(s.relicPickRefinement);
         if (RELIC_PICK_LINES_OPTIONS.includes(s.relicPickLines)) setRelicPickLines(s.relicPickLines);
         if (FOUNDRY_PAGE_SIZE_OPTIONS.includes(s.foundryPageSize)) setFoundryPageSize(s.foundryPageSize);
+        if (typeof s.masteryExclude === "object" && s.masteryExclude != null) {
+          const stored = s.masteryExclude as Partial<MasteryExclude>;
+          setMasteryExclude(Object.fromEntries(MASTERY_EXCLUDE_OPTIONS.map(o =>
+            [o.key, typeof stored[o.key] === "boolean" ? stored[o.key] : DEFAULT_MASTERY_EXCLUDE[o.key]])) as MasteryExclude);
+        }
       } catch {}
       // Unblock saving even if the file failed to parse, since the backend
       // refuses to overwrite a settings.json that is not a valid JSON object.
@@ -1448,7 +1457,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         </div>
       </header>
 
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} {...{ settingsTab, setSettingsTab, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setItemsRefreshKey, blobLogEnabled, setBlobLogEnabled, setShowInventoryBatchPreview, autoDiagEnabled, setAutoDiagEnabled, appVersion, arbOverlayEnabled, setArbOverlayEnabled }} onUpdateFound={u => { setUpdateAvailable(u); setShowUpdateDialog(true); }} />}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} {...{ settingsTab, setSettingsTab, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, masteryExclude, setMasteryExclude, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setItemsRefreshKey, blobLogEnabled, setBlobLogEnabled, setShowInventoryBatchPreview, autoDiagEnabled, setAutoDiagEnabled, appVersion, arbOverlayEnabled, setArbOverlayEnabled }} onUpdateFound={u => { setUpdateAvailable(u); setShowUpdateDialog(true); }} />}
       {showUpdateDialog && updateAvailable && (
         <UpdateDialog update={updateAvailable} onDismiss={() => setShowUpdateDialog(false)} />
       )}

@@ -7,13 +7,13 @@ import UpdateCheckRow from "./update/UpdateCheck";
 import type { UpdateAvailable } from "./update/updater";
 import { formatBytes } from "./lib/formatters";
 import { PREFERENCE_KEYS } from "./constants/preferences";
-import { CLOCK_FORMAT_OPTIONS, FOUNDRY_PAGE_SIZE_OPTIONS, RELIC_OVERLAY_PRIORITY_OPTIONS, RELIC_PICK_LINES_OPTIONS, RELIC_PICK_PRIORITY_OPTIONS } from "./constants/settings";
+import { CLOCK_FORMAT_OPTIONS, FOUNDRY_PAGE_SIZE_OPTIONS, MASTERY_EXCLUDE_OPTIONS, RELIC_OVERLAY_PRIORITY_OPTIONS, RELIC_PICK_LINES_OPTIONS, RELIC_PICK_PRIORITY_OPTIONS } from "./constants/settings";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import type { ArchonShard, QuantityMap } from "./types/items";
 import type { ChangeLogEntry } from "./types/inventory";
 import type { ClockFormat } from "./lib/clockFormat";
 import { useModal } from "./shared/useModal";
-import type { FoundryPageSize, RelicOverlayPriority, RelicPickLines, RelicPickPriority, SettingsSnapshot } from "./types/settings";
+import type { FoundryPageSize, MasteryExclude, RelicOverlayPriority, RelicPickLines, RelicPickPriority, SettingsSnapshot } from "./types/settings";
 import "./SettingsModal.css";
 
 type SettingsTab = "general" | "overlays" | "market" | "accessibility" | "data" | "debugging";
@@ -29,7 +29,7 @@ export interface SettingsModalProps {
   memoryScannerEnabled: boolean; setMemoryScannerEnabled: Setter<boolean>; modularPopout: boolean; setModularPopout: Setter<boolean>; overlayStatus: string;
   overlayEnabled: boolean; setOverlayEnabled: Setter<boolean>; overlayPriority: RelicOverlayPriority; setOverlayPriority: Setter<RelicOverlayPriority>; memTriggerEnabled: boolean; setMemTriggerEnabled: Setter<boolean>;
   relicPickEnabled: boolean; setRelicPickEnabled: Setter<boolean>; relicPickPriority: RelicPickPriority; setRelicPickPriority: Setter<RelicPickPriority>;
-  relicPickLines: RelicPickLines; setRelicPickLines: Setter<RelicPickLines>; wfmLoggedIn: boolean;
+  relicPickLines: RelicPickLines; setRelicPickLines: Setter<RelicPickLines>; masteryExclude: MasteryExclude; setMasteryExclude: Setter<MasteryExclude>; wfmLoggedIn: boolean;
   wfmInvisibleOnStart: boolean; setWfmInvisibleOnStart: Setter<boolean>; wfmInvisibleOnStartRef: MutableRefObject<boolean>; wfmInvisibleOnClose: boolean; setWfmInvisibleOnClose: Setter<boolean>; wfmInvisibleOnCloseRef: MutableRefObject<boolean>;
   wfmAutoInvisible: boolean; setWfmAutoInvisible: Setter<boolean>; wfmAutoInvisibleMins: number; setWfmAutoInvisibleMins: Setter<number>; colorblindMode: boolean; setColorblindMode: Setter<boolean>; textScale: number; setTextScale: Setter<number>;
   clockFormat: ClockFormat; setClockFormat: Setter<ClockFormat>; itemCount: number; recipeCount: number; handleFetch: () => Promise<void>; fetching: boolean; fetchMsg: string;
@@ -69,7 +69,7 @@ function RefreshAllButton() {
 }
 
 export default function SettingsModal(props: SettingsModalProps) {
-  const { settingsTab, setSettingsTab, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setItemsRefreshKey, blobLogEnabled, setBlobLogEnabled, setShowInventoryBatchPreview, autoDiagEnabled, setAutoDiagEnabled, appVersion, arbOverlayEnabled, setArbOverlayEnabled, onUpdateFound, onClose } = props;
+  const { settingsTab, setSettingsTab, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, masteryExclude, setMasteryExclude, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setItemsRefreshKey, blobLogEnabled, setBlobLogEnabled, setShowInventoryBatchPreview, autoDiagEnabled, setAutoDiagEnabled, appVersion, arbOverlayEnabled, setArbOverlayEnabled, onUpdateFound, onClose } = props;
   const modal = useModal(onClose);
   const [clearMsg, setClearMsg] = useState("");
   const [notifyTestResult, setNotifyTestResult] = useState("");
@@ -149,6 +149,29 @@ export default function SettingsModal(props: SettingsModalProps) {
                       {FOUNDRY_PAGE_SIZE_OPTIONS.map(size => <option key={size} value={size}>{size}</option>)}
                     </select>
                   </div>
+                </div>
+
+                {/* Mastery */}
+                <div className="settings-section">
+                  <div className="settings-section-title">Mastery</div>
+                  {MASTERY_EXCLUDE_OPTIONS.map(({ key, label, desc }) => (
+                    <div className="settings-row" key={key}>
+                      <div className="settings-row-info">
+                        <span className="settings-row-label">{label}</span>
+                        <span className="settings-row-desc">{desc}</span>
+                      </div>
+                      <button
+                        className="btn-secondary"
+                        style={{ minWidth: 64, background: masteryExclude[key] ? "rgba(56,139,253,.15)" : undefined, borderColor: masteryExclude[key] ? "var(--accent)" : undefined }}
+                        onClick={() => {
+                          const next = { ...masteryExclude, [key]: !masteryExclude[key] };
+                          setMasteryExclude(next);
+                          settingsRef.current = { ...settingsRef.current, masteryExclude: next };
+                          saveAllSettings();
+                        }}
+                      >{masteryExclude[key] ? "On" : "Off"}</button>
+                    </div>
+                  ))}
                 </div>
 
                 {/* Memory Scanner */}

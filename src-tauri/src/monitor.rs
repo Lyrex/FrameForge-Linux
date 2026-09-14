@@ -8,6 +8,7 @@ use crate::catalogue::{fix_category, sanitize_chat_item_name, DebugUnmatched};
 use crate::db::QuantityChange;
 use crate::diagnostics::write_bmp;
 use crate::inventory_state::{load_inventory_state_cache, build_inventory_from_blob, inventory_path_aliases, persist_complete_inventory, compare_inventory_quantities, BlobBuildParams};
+use crate::mastery_rules;
 use crate::relic_pick::park_overlay_offscreen;
 use crate::worldstate::store_to_unique;
 use crate::{db, log_parser, memory_scanner, memory_scanner_linux, ocr};
@@ -164,9 +165,12 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
         .filter_map(|i| i.tradable.map(|t| (i.unique_name.clone(), t)))
         .collect();
     let path_to_max_level_cap: HashMap<String, u32> = items.iter()
-        .filter_map(|i| i.max_level_cap.map(|cap| (i.unique_name.clone(), cap))).collect();
+        .filter_map(|i| mastery_rules::known_cap(state.corrections.get(&i.unique_name), i.max_level_cap)
+            .map(|cap| (i.unique_name.clone(), cap)))
+        .collect();
     let path_to_masterable: HashMap<String, bool> = items.iter()
-        .filter_map(|i| i.masterable.map(|m| (i.unique_name.clone(), m)))
+        .filter_map(|i| mastery_rules::masterable(state.corrections.get(&i.unique_name), i.masterable, &i.unique_name)
+            .map(|m| (i.unique_name.clone(), m)))
         .collect();
     // Owned maps for debug capture — cloned once, no borrow from `items`.
     let path_to_item_type: HashMap<String, String> = items.iter()

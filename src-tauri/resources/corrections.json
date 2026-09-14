@@ -1003,5 +1003,17 @@
         "name": "Zid-An Haras",
         "category": "Arcanes",
         "tradeable_wfm": true
+    },
+    {
+        "path": "/Lotus/Powersuits/Excalibur/ExcaliburPrime",
+        "unobtainable": "founders"
+    },
+    {
+        "path": "/Lotus/Weapons/Tenno/Pistol/LatoPrime",
+        "unobtainable": "founders"
+    },
+    {
+        "path": "/Lotus/Weapons/Tenno/Melee/LongSword/SkanaPrime",
+        "unobtainable": "founders"
     }
 ]
