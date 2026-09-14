@@ -1,7 +1,7 @@
 //! The game's mastery rules, kept apart from the catalogue: WFCD says which
 //! equipment exists and carries `maxLevelCap` where it knows one, but it ships
-//! no cap for Necramechs and marks Amp Prisms and Infested Kitgun chambers
-//! non-masterable although the game's XPInfo credits them. Every consumer
+//! no cap for Necramechs and marks Amp Prisms, Infested Kitgun chambers and
+//! Venari non-masterable although the game's XPInfo credits them. Every consumer
 //! derives rank, cap, and masterability through here rather than from the
 //! catalogue fields directly.
 //!
@@ -88,6 +88,9 @@ pub(crate) fn masterable(correction: Option<&CorrectionEntry>, wfcd: Option<bool
         if path.contains("/Operator/Pistols/") {
             return Some(true);
         }
+        if path.contains("/Khora/Kavat/") {
+            return Some(true);
+        }
     }
     wfcd
 }
@@ -167,5 +170,19 @@ mod tests {
         assert_eq!(masterable(Some(&entry), Some(false), MOTE_PRISM), Some(false));
         assert_eq!(rank_cap(Some(&entry), KUBROW, Some(30)), 40);
         assert_eq!(rank_cap(Some(&CorrectionEntry::default()), KUBROW, None), 30);
+    }
+
+    /// XPInfo shows Venari at 900,000 affinity, the rank-30 Warframe
+    /// threshold, while WFCD marks it non-masterable.
+    #[test]
+    fn venari_is_masterable_on_the_warframe_base() {
+        const VENARI: &str = "/Lotus/Powersuits/Khora/Kavat/KhoraKavatPowerSuit";
+        const VENARI_PRIME: &str = "/Lotus/Powersuits/Khora/Kavat/KhoraPrimeKavatPowerSuit";
+        for path in [VENARI, VENARI_PRIME] {
+            assert_eq!(masterable(None, Some(false), path), Some(true), "{path}");
+            assert_eq!(rank_cap(None, path, None), 30, "{path}");
+            assert_eq!(earned_rank(899_999, path, None), 29, "{path}");
+            assert_eq!(earned_rank(900_000, path, None), 30, "{path}");
+        }
     }
 }
