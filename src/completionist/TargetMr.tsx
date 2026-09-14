@@ -182,7 +182,7 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
                 <div key={`${path}#${i}`} className="mst-plan-row">
                   <span className="mst-plan-index">{i + 1}</span>
                   {o ? (
-                    <OpportunityRow opportunity={{ ...o, blockers: [...o.blockers, ...(entry?.notes ?? [])] }} nowMs={nowMs} clockFormat={clockFormat}>
+                    <OpportunityRow opportunity={o} notes={entry?.notes} nowMs={nowMs} clockFormat={clockFormat}>
                       {controlsFor}
                     </OpportunityRow>
                   ) : (
