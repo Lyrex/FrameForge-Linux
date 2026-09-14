@@ -1,11 +1,14 @@
 import { RELIC_SUGGESTION_THRESHOLD } from "../constants/relics.ts";
-import type { Access, Coverage, MasteryState, Opportunity, Stage } from "../types/mastery";
+import { formatAge } from "../lib/formatters.ts";
+import type { Access, Coverage, Listing, MasteryState, Opportunity, Purchase, Stage } from "../types/mastery";
 
 export type MasteryView = "whatnext" | "collection";
 export type ResultView = "suggestions" | "relics" | "platinum";
 export type ProgressFilter = "all" | Exclude<MasteryState, "mastered">;
 export type AvailabilityFilter = "all" | Access;
 export type Sort = "mastery" | "name";
+export type Comparison = "cheapest" | "per_platinum" | "full";
+export type Priced = Opportunity & { purchase: Purchase };
 
 export interface MasteryControls {
   view: MasteryView;
@@ -16,10 +19,11 @@ export interface MasteryControls {
   sort: Sort;
   /** Keeps relic routes out of Suggestions, while More relics still lists them. */
   hideRelics: boolean;
+  comparison: Comparison;
 }
 
 export const DEFAULT_CONTROLS: MasteryControls = {
-  view: "whatnext", result: "suggestions", category: null, progress: "all", availability: "all", sort: "mastery", hideRelics: false,
+  view: "whatnext", result: "suggestions", category: null, progress: "all", availability: "all", sort: "mastery", hideRelics: false, comparison: "cheapest",
 };
 
 export const VIEW_OPTIONS: { key: MasteryView; label: string }[] = [
@@ -52,6 +56,12 @@ export const SORT_OPTIONS: { key: Sort; label: string }[] = [
   { key: "name",    label: "Name" },
 ];
 
+export const COMPARISON_OPTIONS: { key: Comparison; label: string }[] = [
+  { key: "cheapest",     label: "Cheapest finish" },
+  { key: "per_platinum", label: "Mastery per platinum" },
+  { key: "full",         label: "Full purchase" },
+];
+
 function pick<T>(options: { key: T }[], value: unknown, fallback: T): T {
   return options.some(o => o.key === value) ? (value as T) : fallback;
 }
@@ -69,6 +79,7 @@ export function parseControls(raw: string | null): MasteryControls {
     availability: pick(AVAILABILITY_OPTIONS, stored.availability, DEFAULT_CONTROLS.availability),
     sort: pick(SORT_OPTIONS, stored.sort, DEFAULT_CONTROLS.sort),
     hideRelics: stored.hideRelics === true,
+    comparison: pick(COMPARISON_OPTIONS, stored.comparison, DEFAULT_CONTROLS.comparison),
   };
 }
 
@@ -97,14 +108,20 @@ function chance(o: Opportunity): number {
   return o.relic?.coverage.kind === "complete" ? o.relic.coverage.probability : -1;
 }
 
-export function visibleOpportunities(list: Opportunity[], controls: MasteryControls, search: string): Opportunity[] {
+function matches(o: Opportunity, controls: MasteryControls, search: string): boolean {
   const q = search.trim().toLowerCase();
-  const visible = list.filter(o =>
-    (controls.result === "relics" ? o.relic != null && !inSuggestions(o) : inSuggestions(o) && !(controls.hideRelics && o.relic != null))
-    && (controls.category == null || o.category === controls.category)
+  return (controls.category == null || o.category === controls.category)
     && (controls.progress === "all" || o.state === controls.progress)
     && (controls.availability === "all" || o.access === controls.availability)
-    && (!q || o.name.toLowerCase().includes(q)));
+    && (!q || o.name.toLowerCase().includes(q));
+}
+
+/** Suggestions are actions without platinum, so a whole item only players sell stays out. */
+export function visibleOpportunities(list: Opportunity[], controls: MasteryControls, search: string): Opportunity[] {
+  const visible = list.filter(o =>
+    o.action !== "trade"
+    && (controls.result === "relics" ? o.relic != null && !inSuggestions(o) : inSuggestions(o) && !(controls.hideRelics && o.relic != null))
+    && matches(o, controls, search));
   if (controls.result === "relics") {
     return visible.sort((a, b) =>
       RELIC_GROUP_ORDER.indexOf(a.relic!.coverage.kind) - RELIC_GROUP_ORDER.indexOf(b.relic!.coverage.kind)
@@ -122,6 +139,10 @@ export function chanceText(coverage: Coverage): string {
     case "partial": return "Partial";
     case "unknown": return "Unknown";
   }
+}
+
+export function visiblePurchases(list: Opportunity[], controls: MasteryControls, search: string): Priced[] {
+  return rankPurchases(list.filter(o => matches(o, controls, search)), controls.comparison);
 }
 
 export function remainingText(remaining: number | null): string {
@@ -152,9 +173,87 @@ export function actionText(o: Opportunity): string {
       const first = o.vendors[0];
       return first ? `Buy ${first.blueprint ? "blueprint " : ""}from ${first.syndicate}` : "Buy";
     }
+    case "trade": return "Buy from players";
     case "complete": return "Complete node";
     case "unlock": return "Unlock junction";
   }
+}
+
+export function comparisonValue(o: Opportunity, comparison: Comparison): number | null {
+  const p = o.purchase;
+  if (!p) return null;
+  switch (comparison) {
+    case "cheapest": return p.cheapest_finish?.platinum ?? null;
+    case "full": return p.full_purchase?.platinum ?? null;
+    case "per_platinum": {
+      const cost = p.cheapest_finish?.platinum;
+      return cost && o.remaining_mastery != null ? o.remaining_mastery / cost : null;
+    }
+  }
+}
+
+export function rankPurchases(list: Opportunity[], comparison: Comparison): Priced[] {
+  const direction = comparison === "per_platinum" ? -1 : 1;
+  return list.filter((o): o is Priced => o.purchase != null)
+    .map(o => ({ o, value: comparisonValue(o, comparison) }))
+    .sort((a, b) => {
+      if (a.value == null || b.value == null) return Number(a.value == null) - Number(b.value == null) || a.o.name.localeCompare(b.o.name);
+      return direction * (a.value - b.value) || a.o.name.localeCompare(b.o.name);
+    })
+    .map(({ o }) => o);
+}
+
+/** Every slug the purchase view prices, set and parts alike, since the full comparison needs even the owned parts quoted. */
+export function purchaseSlugs(list: Opportunity[]): string[] {
+  const slugs = new Set<string>();
+  for (const { purchase } of list) {
+    if (!purchase) continue;
+    if (purchase.set) slugs.add(purchase.set.slug);
+    for (const part of purchase.parts) slugs.add(part.slug);
+  }
+  return [...slugs];
+}
+
+export function costText(o: Opportunity, comparison: Comparison): string {
+  const p = o.purchase;
+  if (!p) return "Unpriced";
+  const cost = comparison === "full" ? p.full_purchase : p.cheapest_finish;
+  if (!cost) return "Unpriced";
+  const route = cost.route === "set"
+    ? (p.parts.length ? "complete set" : "whole item")
+    : `${p.parts.filter(pt => (comparison === "full" ? pt.needed : pt.short) > 0).length} parts`;
+  const value = comparisonValue(o, comparison);
+  const per = comparison === "per_platinum" && value != null ? ` · ${value.toFixed(value >= 10 ? 0 : 1)} mastery/p` : "";
+  return `${cost.platinum.toLocaleString("en-US")}p · ${route}${per}`;
+}
+
+export function quoteText(listing: Listing, now: number): string {
+  if (listing.price == null) return listing.fetched_at == null ? "no quote yet" : "not listed";
+  return `${listing.price.toLocaleString("en-US")}p · ${listing.fetched_at == null ? "age unknown" : formatAge(listing.fetched_at, now)}`;
+}
+
+/** Whether a slot is free is not observed, so the slot line is only a reminder. */
+function slotText(category: string): string {
+  switch (category) {
+    case "Warframes": return "Warframe slot";
+    case "Archwing": return "Archwing slot";
+    case "Companions": return "Companion slot";
+    case "Vehicles": return "Vehicle slot";
+    default: return "Weapon slot";
+  }
+}
+
+export function alsoNeedsText(o: Opportunity): string {
+  const parts: string[] = [];
+  if (o.craft) {
+    parts.push(o.craft.credits == null ? "Credits unknown" : `Credits ${o.craft.credits.toLocaleString("en-US")}`);
+    const bought = new Set(o.purchase?.parts.map(p => p.unique_name));
+    for (const r of o.craft.requirements) {
+      if (r.short > 0 && !bought.has(r.unique_name)) parts.push(`${r.name} ×${r.short.toLocaleString("en-US")}`);
+    }
+  }
+  parts.push(slotText(o.category));
+  return parts.join(" · ");
 }
 
 export function readyText(completionMs: number, nowMs: number): string {

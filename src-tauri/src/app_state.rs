@@ -98,6 +98,9 @@ pub struct AppState {
     /// The warframe.market client: session, rate limiters, and the slug → price
     /// cache all live behind this one seam, shared (Arc) with the prefetch thread.
     pub wfm: Arc<Wfm>,
+    /// Where the slug → quote cache is written after every fetch, so a
+    /// restart replays quotes with their real age.
+    pub wfm_quotes_path: PathBuf,
     /// Slugs waiting for a price fetch. Drained by the WFM queue thread.
     pub wfm_price_queue: Arc<Mutex<std::collections::VecDeque<String>>>,
     /// Set to true once the WFM queue drain thread has been started.

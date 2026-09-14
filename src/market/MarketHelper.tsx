@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import ItemImg from "../ItemImg";
 import { PlatIcon, DucatIcon } from "../shared/icons";
 import { useModal } from "../shared/useModal";
-import { fmt, toggle, normalizeForWfm } from "../utils";
+import { fmt, toggle, normalizeForWfm, wfmSlugLookup } from "../utils";
 import { listen } from "@tauri-apps/api/event";
 import { HelpTip } from "../shared/HelpTip";
 import WfmTrading from "./WfmTrading";
@@ -249,32 +249,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
       .finally(() => setWfmLoading(false));
   }, []);
 
-  const wfmLookup = useMemo(() => {
-    const map = new Map<string, string>();
-
-    // Pass 1: exact matches — highest priority, never overwritten
-    for (const w of wfmItems) {
-      map.set(normalizeForWfm(w.item_name), w.url_name);
-    }
-
-    // Pass 2: fill gaps only — add Blueprint ↔ no-Blueprint aliases for keys
-    // that don't already have an exact entry, so we handle WFM's inconsistency
-    // (some items listed with "Blueprint" suffix, some without)
-    for (const w of wfmItems) {
-      const key = normalizeForWfm(w.item_name);
-      if (key.endsWith("_blueprint")) {
-        // WFM has "…Blueprint" → also expose without suffix for catalog names that omit it
-        const stripped = key.slice(0, -"_blueprint".length);
-        if (!map.has(stripped)) map.set(stripped, w.url_name);
-      } else {
-        // WFM has no "Blueprint" → also expose with suffix for catalog names that include it
-        const withBp = key + "_blueprint";
-        if (!map.has(withBp)) map.set(withBp, w.url_name);
-      }
-    }
-
-    return map;
-  }, [wfmItems]);
+  const wfmLookup = useMemo(() => wfmSlugLookup(wfmItems), [wfmItems]);
 
   const primeItems = useMemo(() =>
     allItems.filter(i =>
