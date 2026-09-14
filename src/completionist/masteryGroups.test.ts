@@ -7,7 +7,7 @@ import type { MasterySource } from "../types/mastery.ts";
 
 const source = (name: string, unique_name = `/Lotus/Weapons/Tenno/${name}`): MasterySource => ({
   unique_name, name, category: "Melee", image_name: null, mastery_req: null,
-  cap: 30, earned_rank: 0, state: "missing",
+  cap: 30, earned_rank: 0, state: "missing", unobtainable: null, excluded: false,
 });
 
 test("variant prefixes and modular paths decide the group", () => {

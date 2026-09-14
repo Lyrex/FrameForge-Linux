@@ -1,5 +1,8 @@
 export type MasteryState = "mastered" | "partial" | "missing" | "unknown";
 
+/** Why no account can earn a source any more; settings exclude each class separately. */
+export type Unobtainable = "founders" | "retiredEvent" | "removedNode";
+
 export interface MasterySource {
   unique_name: string;
   name: string;
@@ -10,14 +13,20 @@ export interface MasterySource {
   /** Absent while equipment progress is Unknown. */
   earned_rank: number | null;
   state: MasteryState;
+  /** The corrections table's class, whatever the settings say. */
+  unobtainable: Unobtainable | null;
+  /** Settings exclude the class: the source sits in the Unobtainable bucket, outside `total`. */
+  excluded: boolean;
 }
 
 export interface MasteryCounts {
+  /** Excludes the `unobtainable` count. */
   total: number;
   mastered: number;
   partial: number;
   missing: number;
   unknown: number;
+  unobtainable: number;
 }
 
 export interface MasteryCategory {

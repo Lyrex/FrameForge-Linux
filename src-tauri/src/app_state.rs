@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use crate::mastery_progress::MasteryProgress;
+use crate::mastery_rules::Unobtainable;
 use crate::monitor::CraftingJob;
 use crate::wfcd::{RecipeComponent, SyndicateOffer, WfcdItem};
 use crate::wfm::Wfm;
@@ -31,10 +32,10 @@ pub(crate) fn load_corrections(user_path: &std::path::Path) -> HashMap<String, C
 
 /// One entry in corrections.json — a hand-curated override for a specific Lotus path.
 /// Fields are all optional so a minimal entry can omit unused columns.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct CorrectionEntry {
     pub path:          String,
-    /// Display name override. Required unless category is "Ignored".
+    /// Display name override.
     pub name:          Option<String>,
     /// Display category override, or "Ignored" to suppress the path everywhere.
     pub category:      Option<String>,
@@ -43,6 +44,9 @@ pub struct CorrectionEntry {
     pub tradeable_wfm: Option<bool>,
     /// True when this item is stackable (quantity shown rather than binary owned).
     pub is_stackable:  Option<bool>,
+    pub masterable:    Option<bool>,
+    pub rank_cap:      Option<u32>,
+    pub unobtainable:  Option<Unobtainable>,
 }
 
 pub struct AppState {

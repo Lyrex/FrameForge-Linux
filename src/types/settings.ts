@@ -1,5 +1,6 @@
 import type { TierKey } from "../arbitration/arbitrationTiers";
 import type { ClockFormat } from "../lib/clockFormat";
+import type { Unobtainable } from "./mastery";
 export type RelicOverlayPriority = "completion" | "plat" | "ducat" | "setPlat";
 export type RelicPickPriority = "unowned" | "ducat" | "platinum";
 export type RelicRefinement = "intact" | "exceptional" | "flawless" | "radiant";
@@ -7,6 +8,9 @@ export type RelicPickLines = "all" | "best" | "estimated";
 export type FoundryPageSize = 30 | 60 | 100;
 
 export type FissureVariant = "normal" | "hard" | "storm";
+
+/** True keeps that class out of the Mastery progress denominator; its sources show only in the Unobtainable bucket. */
+export type MasteryExclude = Record<Unobtainable, boolean>;
 
 export interface FissureWatch {
   id: string;
@@ -26,4 +30,5 @@ export interface SettingsSnapshot {
   wfmInvisibleOnClose: boolean; wfmAutoInvisible: boolean; wfmAutoInvisibleMins: number; relicPickEnabled: boolean;
   relicPickPriority: RelicPickPriority; relicPickRefinement: RelicRefinement;
   relicPickLines: RelicPickLines; foundryPageSize: FoundryPageSize; memTriggerEnabled: boolean;
+  masteryExclude: MasteryExclude;
 }

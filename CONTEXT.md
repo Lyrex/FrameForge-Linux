@@ -88,6 +88,13 @@ A mastery source for which the account has earned all eligible mastery credit.
 For equipment, this is independent of current ownership or an owned copy's level.
 _Avoid_: owned, max-level copy (when permanent mastery completion is meant)
 
+**Unobtainable**:
+A mastery source no account can earn any more: a Founders item, a retired
+event item, or a removed node. The corrections table marks the class; settings
+exclude each class from the progress denominator, on by default, and an
+excluded source shows only in Collection's Unobtainable bucket.
+_Avoid_: vaulted, unavailable (when permanent unobtainability is meant)
+
 **Node key**:
 The game's own identifier for a star chart node or junction, as carried in
 account state. The canonical identity of a node everywhere in FrameForge; the
