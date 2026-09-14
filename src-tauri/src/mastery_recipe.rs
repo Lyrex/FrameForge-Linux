@@ -1,4 +1,5 @@
-//! Inventory-aware recipe expansion shared by the mastery views.
+//! Inventory-aware recipe expansion shared by the mastery views, the Foundry
+//! and the tracked list.
 //!
 //! Targets plan in display order against one projected stock ledger, so an
 //! ingredient two targets share is available to the first and short for the
@@ -10,8 +11,10 @@
 //! hundreds of thousands of Alloy Plate its recipe asks for.
 
 use std::collections::{HashMap, HashSet};
-use crate::inventory_state::CREDITS_PATH;
+use crate::app_state::AppState;
+use crate::inventory_state::{load_inventory_state_cache, InventoryStateCache, CREDITS_PATH};
 use crate::wfcd::RecipeComponent;
+use tauri::Manager;
 
 #[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Requirement {
@@ -170,6 +173,22 @@ impl<'a> Ledger<'a> {
     }
 }
 
+pub(crate) fn plan_all(inventory: &InventoryStateCache, recipes: &HashMap<String, Vec<RecipeComponent>>, targets: &[String]) -> Vec<CraftPlan> {
+    let (stock, owned) = (inventory.stackable_quantities(), inventory.unique_quantities());
+    let (mut ledger, _) = Ledger::new(&stock, &owned, &HashSet::new(), &HashMap::new());
+    targets.iter().map(|target| ledger.plan(target, recipes.get(target).map_or(&[], Vec::as_slice))).collect()
+}
+
+#[tauri::command]
+pub(crate) async fn plan_crafts(app: tauri::AppHandle, unique_names: Vec<String>) -> Result<Vec<CraftPlan>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
+        let recipes = state.recipes.lock().unwrap_or_else(|e| e.into_inner());
+        plan_all(&inventory, &recipes, &unique_names)
+    }).await.map_err(|e| e.to_string())
+}
+
 pub(crate) fn is_blueprint(component: &RecipeComponent) -> bool {
     component.components.is_empty() && component.unique_name.ends_with("Blueprint")
 }
@@ -189,6 +208,7 @@ fn merged(components: &[RecipeComponent]) -> Vec<(u32, &RecipeComponent)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inventory_state::{CachedItem, InventoryStateCache};
     use std::sync::LazyLock;
 
     const FROST: &str = "/Lotus/Powersuits/Frost/Frost";
@@ -373,6 +393,31 @@ mod tests {
         let plan = ledger.plan(AKBOLTO, &recipe);
         assert!(plan.craftable_now());
         assert_eq!((line(&plan, BOLTO).needed, line(&plan, BOLTO).from_stock), (2, 2));
+    }
+
+    #[test]
+    fn tracked_targets_draw_on_one_ledger_in_order_and_spare_owned_equipment() {
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [(FROST.to_string(), frost()), (AKBOLTO.to_string(), akbolto())].into();
+        let mut inventory = InventoryStateCache::default();
+        for (path, amount, category) in [
+            (FROST_BP, 1, "Blueprints"), (CHASSIS, 1, "Parts"), (AKBOLTO_BP, 1, "Blueprints"),
+            (BOLTO_BP, 1, "Blueprints"), (BOLTO, 1, "Secondary"), (LATO, 1, "Secondary"), (CELL, 1, "Resources"),
+        ] {
+            inventory.items.insert(path.into(), CachedItem { unique_name: path.into(), amount, category: category.into(), ..Default::default() });
+        }
+
+        let [frost, akbolto] = <[CraftPlan; 2]>::try_from(plan_all(&inventory, &recipes, &[FROST.into(), AKBOLTO.into()])).expect("one plan per target");
+        assert!(frost.craftable_now());
+        assert!(!frost.requirements.iter().any(|r| r.unique_name == FERRITE));
+        // The owned Bolto and Lato are equipment, so neither is an ingredient.
+        assert_eq!(builds(&akbolto), [(BOLTO, 2)]);
+        assert_eq!(short(&akbolto), [(BOLTO_BP, 1), (LATO, 2), (CELL, 5)]);
+
+        let [akbolto, frost] = <[CraftPlan; 2]>::try_from(plan_all(&inventory, &recipes, &[AKBOLTO.into(), FROST.into()])).expect("one plan per target");
+        assert_eq!(short(&akbolto), [(BOLTO_BP, 1), (LATO, 2), (CELL, 4)]);
+        assert_eq!(short(&frost), [(CELL, 1)]);
+
+        assert!(plan_all(&inventory, &recipes, &["/Lotus/Types/Unknown".into()])[0].requirements.is_empty());
     }
 
     #[test]

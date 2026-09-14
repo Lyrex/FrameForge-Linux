@@ -403,6 +403,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             updater::restart_app,
             settings::force_quit,
             mastery::get_mastery_overview,
+            mastery_recipe::plan_crafts,
             catalogue::get_craftable_items,
             diagnostics::toggle_debug_categorization,
             catalogue::get_recipe,
