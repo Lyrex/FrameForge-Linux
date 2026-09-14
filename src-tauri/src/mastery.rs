@@ -6,7 +6,7 @@ use crate::catalogue::fix_category;
 use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache, CREDITS_PATH};
 use crate::mastery_nodes;
 use crate::mastery_progress::{MasteryPlan, PlayerProgress, Provenance, ProvenanceState};
-use crate::mastery_recipe::{is_blueprint, purchasable, CraftPlan, Ledger};
+use crate::mastery_recipe::{blueprint_results, purchasable, CraftPlan, Ledger};
 use crate::mastery_relics::{Relics, RelicRoute};
 use crate::mastery_rules::{self, Unobtainable};
 use crate::monitor::CraftingJob;
@@ -380,17 +380,6 @@ fn plan_spend(system: &mastery_rules::IntrinsicSystem, skills: &HashMap<String, 
         mastery: gained * mastery_rules::mastery_per_rank(system.points),
         tracks,
     })
-}
-
-/// A Foundry job carries the blueprint path. Each recipe lists its own
-/// blueprint as the one component with an empty component list; part
-/// blueprints like a chassis or barrel list their ingredients.
-fn blueprint_results(recipes: &HashMap<String, Vec<RecipeComponent>>) -> HashMap<&str, &str> {
-    recipes.iter().flat_map(|(result, components)| {
-        components.iter()
-            .filter(|c| is_blueprint(c))
-            .map(move |c| (c.unique_name.as_str(), result.as_str()))
-    }).collect()
 }
 
 /// Hok and Rude Zuud offers have an empty result_unique, so they match on

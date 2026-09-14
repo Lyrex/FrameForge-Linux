@@ -226,6 +226,17 @@ pub(crate) fn is_blueprint(component: &RecipeComponent) -> bool {
     component.components.is_empty() && component.unique_name.ends_with("Blueprint")
 }
 
+/// A Foundry job carries the blueprint path. Each recipe lists its own
+/// blueprint as the one component with an empty component list; part
+/// blueprints like a chassis or barrel list their ingredients.
+pub(crate) fn blueprint_results(recipes: &HashMap<String, Vec<RecipeComponent>>) -> HashMap<&str, &str> {
+    recipes.iter().flat_map(|(result, components)| {
+        components.iter()
+            .filter(|c| is_blueprint(c))
+            .map(move |c| (c.unique_name.as_str(), result.as_str()))
+    }).collect()
+}
+
 /// Akbolto lists Bolto twice rather than once with count 2.
 fn merged(components: &[RecipeComponent]) -> Vec<(u32, &RecipeComponent)> {
     let mut out: Vec<(u32, &RecipeComponent)> = vec![];
@@ -264,6 +275,8 @@ mod tests {
     const PAIR_BP: &str = "/Lotus/Types/Recipes/Components/PairBlueprint";
     const TARGET: &str = "/Lotus/Types/Target";
     const TARGET_BP: &str = "/Lotus/Types/Recipes/TargetBlueprint";
+    const FORMA: &str = "/Lotus/Types/Items/MiscItems/Forma";
+    const FORMA_BP: &str = "/Lotus/Types/Recipes/Components/FormaBlueprint";
 
     static NO_EQUIPMENT: LazyLock<HashMap<String, i64>> = LazyLock::new(HashMap::new);
 
@@ -319,6 +332,20 @@ mod tests {
 
     fn line<'p>(plan: &'p CraftPlan, path: &str) -> &'p Requirement {
         plan.requirements.iter().find(|r| r.unique_name == path).unwrap_or_else(|| panic!("{path} listed"))
+    }
+
+    /// Forma lists its blueprint after its resources, and Akbolto's part
+    /// blueprints sit inside the built Boltos, so neither the first component
+    /// nor every `Blueprint` path names the result.
+    #[test]
+    fn a_foundry_job_resolves_to_the_recipe_whose_own_blueprint_it_names() {
+        let forma = vec![cell(1), leaf(FERRITE, 100), blueprint(FORMA_BP, Some(35_000), false)];
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [(FORMA.to_string(), forma), (AKBOLTO.to_string(), akbolto())].into();
+        let results = blueprint_results(&recipes);
+        assert_eq!(results.get(FORMA_BP), Some(&FORMA));
+        assert_eq!(results.get(AKBOLTO_BP), Some(&AKBOLTO));
+        assert_eq!(results.get(BOLTO_BP), None);
+        assert_eq!(results.get(CELL_BP), None);
     }
 
     /// Bolto's blueprint sits inside the built Bolto, which is not sold, so

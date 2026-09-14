@@ -5,7 +5,7 @@ use crate::cache::atomic_write;
 use crate::inventory_state::{load_inventory_state_cache, CachedItem};
 use crate::monitor::CraftingJob;
 use crate::wfcd::{RecipeComponent, WfcdItem};
-use crate::{cache, mastery_rules, wfcd};
+use crate::{cache, mastery_recipe, mastery_rules, wfcd};
 
 // ─── Item catalog ─────────────────────────────────────────────────────────────
 
@@ -819,6 +819,17 @@ pub(crate) fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
 pub(crate) fn get_recipe(state: State<AppState>, unique_name: String) -> Vec<RecipeComponent> {
     let recipes = state.recipes.lock().unwrap_or_else(|e| e.into_inner());
     recipes.get(&unique_name).cloned().unwrap_or_default()
+}
+
+/// Maps each blueprint path to the item its recipe builds. A Foundry job
+/// carries the blueprint path.
+#[tracing::instrument(level = "debug", skip_all)]
+#[tauri::command]
+pub(crate) fn get_blueprint_results(state: State<AppState>) -> HashMap<String, String> {
+    let recipes = state.recipes.lock().unwrap_or_else(|e| e.into_inner());
+    mastery_recipe::blueprint_results(&recipes).into_iter()
+        .map(|(blueprint, result)| (blueprint.to_string(), result.to_string()))
+        .collect()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
