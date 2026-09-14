@@ -26,6 +26,23 @@ test("variant prefixes and modular paths decide the group", () => {
   assert.equal(masteryGroup({ ...source("Railjack", "LPP_SPACE"), category: "Intrinsics" }), "Intrinsics");
 });
 
+test("star chart rows group by planet in the order they arrive, junctions and mode pairs intact", () => {
+  const node = (name: string, key: string, planet: string, mode: "normal" | "steel_path", junction = false): MasterySource => ({
+    ...source(name, mode === "normal" ? key : `${key}/steel_path`), category: "Star Chart", cap: 1, node: { key, planet, mode, junction },
+  });
+  const rows = [
+    node("Mercury Junction", "VenusToMercuryJunction", "Venus", "normal", true),
+    node("Mercury Junction", "VenusToMercuryJunction", "Venus", "steel_path", true),
+    node("Aphrodite", "SolNode2", "Venus", "normal"),
+    node("Aphrodite", "SolNode2", "Venus", "steel_path"),
+    node("Apollodorus", "SolNode94", "Mercury", "normal"),
+  ];
+  const groups = groupSources(rows);
+  assert.deepEqual(groups.map(g => g.group), ["Venus", "Mercury"]);
+  assert.deepEqual(groups[0].sources.map(s => s.unique_name),
+    ["VenusToMercuryJunction", "VenusToMercuryJunction/steel_path", "SolNode2", "SolNode2/steel_path"]);
+});
+
 test("groups keep the fixed order and unknown groups trail", () => {
   const groups = groupSources([
     source("Zzz Prime"), source("Kuva Karak"), source("Braton"), source("Aaa Prime"),

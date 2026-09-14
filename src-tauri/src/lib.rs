@@ -43,6 +43,7 @@ mod image_cache;
 mod inventory_state;
 mod log_watcher;
 mod mastery;
+mod mastery_nodes;
 mod mastery_progress;
 mod mastery_rules;
 mod monitor;

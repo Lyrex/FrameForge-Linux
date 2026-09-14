@@ -22,12 +22,15 @@ function inBucket(source: MasterySource, bucket: Bucket | null): boolean {
 }
 
 function SourceRow({ source }: { source: MasterySource }) {
-  const rank = source.earned_rank == null ? "?" : `R${source.earned_rank}/${source.cap}`;
+  const steelPath = source.node?.mode === "steel_path";
+  const rank = source.earned_rank == null ? "?" : source.node ? "—" : `R${source.earned_rank}/${source.cap}`;
+  const unknownTitle = steelPath ? "Steel Path clears are not read from the account yet" : "No account observation yet";
   const classNoun = MASTERY_EXCLUDE_OPTIONS.find(o => o.key === source.unobtainable)?.noun;
   return (
     <div className={`mst-item mst-${source.state}`}>
       <ItemImg imageName={source.image_name ?? undefined} fallback={<div className="img-fallback">{source.name[0]?.toUpperCase() ?? "?"}</div>} />
       <span className="mst-name">{source.name}</span>
+      {steelPath && <span className="mst-mr">Steel Path</span>}
       {classNoun && <span className="mst-mr" title={source.excluded ? "Not counted toward progress; see Settings › Mastery" : undefined}>{classNoun}</span>}
       {source.mastery_req != null && source.mastery_req > 0 && (
         <span className="mst-mr" title={`Mastery Rank ${source.mastery_req} required`}>MR{source.mastery_req}</span>
@@ -35,7 +38,7 @@ function SourceRow({ source }: { source: MasterySource }) {
       {source.remaining_mastery != null && source.remaining_mastery > 0 && (
         <span className="mst-mr" title="Remaining mastery">+{source.remaining_mastery.toLocaleString("en-US")}</span>
       )}
-      <span className={`mst-rank rank-${source.state}`} title={source.state === "unknown" ? "No account observation yet" : undefined}>
+      <span className={`mst-rank rank-${source.state}`} title={source.state === "unknown" ? unknownTitle : undefined}>
         {source.state === "mastered" ? "✓" : rank}
       </span>
     </div>
@@ -64,7 +67,7 @@ export default function Collection({ overview }: { overview: MasteryOverview }) 
 
   return (
     <>
-      <div className="mst-tabs" role="group" aria-label="Equipment category">
+      <div className="mst-tabs" role="group" aria-label="Category">
         {categories.map(c => (
           <button
             key={c.category}
@@ -106,7 +109,7 @@ export default function Collection({ overview }: { overview: MasteryOverview }) 
       <div className="mst-body">
         {categories.length === 0 && <div className="mst-empty">Item catalogue not loaded yet.</div>}
         {category && groups.length === 0 && (
-          <div className="mst-empty">{isFiltered ? "Nothing matches." : "No equipment in this category."}</div>
+          <div className="mst-empty">{isFiltered ? "Nothing matches." : "Nothing in this category."}</div>
         )}
         {groups.map(({ group, sources }) => (
           <div key={group} className="mst-group">
