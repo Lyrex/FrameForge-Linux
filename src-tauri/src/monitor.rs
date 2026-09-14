@@ -2097,26 +2097,31 @@ pub(crate) fn append_to_file(path: &std::path::Path, text: &str) -> std::io::Res
     f.write_all(text.as_bytes())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn stop_monitor(state: State<AppState>) {
     state.monitor_active.store(false, Ordering::SeqCst);
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn poke_scan(state: State<AppState>) {
     state.force_pid_check.store(true, Ordering::SeqCst);
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn set_relic_pick_enabled(state: State<AppState>, enabled: bool) {
     state.relic_pick_overlay_enabled.store(enabled, Ordering::SeqCst);
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn set_mem_trigger_enabled(state: State<AppState>, enabled: bool) {
     state.mem_trigger_enabled.store(enabled, Ordering::SeqCst);
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_monitor_status(state: State<AppState>) -> bool {
     state.monitor_active.load(Ordering::SeqCst)

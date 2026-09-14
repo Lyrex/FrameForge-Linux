@@ -35,6 +35,7 @@ pub struct Trade {
     pub trade_type: String,     // "sale" | "purchase" | "trade" | "" (legacy)
 }
 
+#[tracing::instrument(level = "info", skip_all)]
 pub fn init_db(db_path: &PathBuf) -> Result<Connection> {
     let conn = Connection::open(db_path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;

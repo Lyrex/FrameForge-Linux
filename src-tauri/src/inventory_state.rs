@@ -22,6 +22,7 @@ pub struct BlobBuildParams<'a> {
 
 /// Subsumed warframes from the persisted cache, so the Foundry shows them
 /// before the first scan pass completes.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_saved_consumed_suits(state: tauri::State<'_, AppState>) -> Vec<String> {
     load_inventory_state_cache(&state.inventory_state_cache_path).consumed_suits()
@@ -359,6 +360,7 @@ fn capped_rank(xp: i64, path: &str, path_to_max_level_cap: &HashMap<String, u32>
     mastery_rules::earned_rank(xp, path, path_to_max_level_cap.get(path).copied())
 }
 
+#[tracing::instrument(level = "info", skip_all)]
 pub(crate) fn load_inventory_state_cache(path: &PathBuf) -> InventoryStateCache {
     std::fs::read_to_string(path).ok()
         .and_then(|s| serde_json::from_str(&s).ok())

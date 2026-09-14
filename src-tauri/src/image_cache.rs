@@ -24,6 +24,7 @@ fn cached_image_ok(path: &std::path::Path) -> bool {
         && looks_like_image(&buf)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_img_cache_dir(state: State<AppState>) -> String {
     state.img_cache_dir.to_string_lossy().into_owned()

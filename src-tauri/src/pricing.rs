@@ -21,6 +21,7 @@ pub(crate) fn refresh_bulk_prices_task(app: &tauri::AppHandle, force: bool) -> R
 
 /// Per-cache freshness for the status chip: which rung each cache last answered
 /// from, when it was last updated, and what went wrong if anything did.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_cache_statuses() -> HashMap<String, cache::CacheStatus> {
     cache::statuses()
@@ -28,6 +29,7 @@ pub(crate) fn get_cache_statuses() -> HashMap<String, cache::CacheStatus> {
 
 /// Bring every cache due at once, ignoring both TTLs and ETags. The scheduler
 /// picks this up on its next tick, so the work happens off the UI thread.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn refresh_all_caches() {
     refresh::force_all();

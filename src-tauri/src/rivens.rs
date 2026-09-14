@@ -299,6 +299,7 @@ pub(crate) static RIVEN_DB: std::sync::RwLock<Option<HashMap<String, RivenEntry>
 
 /// Returns a map of weapon unique_name → riven disposition (omegaAttenuation).
 /// Data comes from All.json (fetched during item load) — no extra HTTP request.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_weapon_dispositions(state: State<AppState>) -> HashMap<String, f32> {
     state.weapon_dispositions.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -866,6 +867,7 @@ pub(crate) async fn ocr_riven_screen(state: State<'_, AppState>) -> Result<serde
 }
 
 /// Write an error into the riven session log (called from TypeScript when OCR command fails).
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn ocr_riven_log_error(state: State<'_, AppState>, error: String) {
     let path = state.riven_log.clone();
@@ -877,6 +879,7 @@ pub(crate) fn ocr_riven_log_error(state: State<'_, AppState>, error: String) {
 
 // ── Saved rivens commands ─────────────────────────────────────────────────────
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn save_riven_roll(
     state: tauri::State<'_, AppState>,
@@ -896,18 +899,21 @@ pub(crate) fn save_riven_roll(
     Ok(id)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_saved_riven_rolls(state: tauri::State<'_, AppState>) -> Result<Vec<crate::db::SavedRiven>, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     crate::db::get_saved_rivens(&conn).map_err(|e| e.to_string())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn delete_saved_riven_roll(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     crate::db::delete_saved_riven(&conn, &id).map_err(|e| e.to_string())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn rename_saved_riven_roll(state: tauri::State<'_, AppState>, id: String, label: String) -> Result<(), String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
@@ -915,6 +921,7 @@ pub(crate) fn rename_saved_riven_roll(state: tauri::State<'_, AppState>, id: Str
 }
 
 /// Return all weapon names that have riven data.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_riven_weapons() -> Vec<String> {
     let mut weapons: Vec<String> = with_riven_db(|db| db.keys().cloned().collect());
@@ -923,23 +930,29 @@ pub(crate) fn get_riven_weapons() -> Vec<String> {
 }
 
 /// Reload the riven database from the Google Sheet.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn reload_riven_database() -> Result<usize, String> {
-    let (fresh, source, warning) = fetch_riven_db(true);
-    let count = fresh.len();
-    if count > 0 {
-        *RIVEN_DB.write().unwrap_or_else(|e| e.into_inner()) = Some(fresh);
-    }
-    // The user asked for the current sheet, so a stale copy is not an answer
-    // even though it is still worth showing.
-    if source != cache::Source::Refreshed {
-        return Err(warning.unwrap_or_else(|| "Failed to load riven database.".to_string()));
-    }
-    Ok(count)
+pub(crate) async fn reload_riven_database() -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let (fresh, source, warning) = fetch_riven_db(true);
+        let count = fresh.len();
+        if count > 0 {
+            *RIVEN_DB.write().unwrap_or_else(|e| e.into_inner()) = Some(fresh);
+        }
+        // The user asked for the current sheet, so a stale copy is not an answer
+        // even though it is still worth showing.
+        if source != cache::Source::Refreshed {
+            return Err(warning.unwrap_or_else(|| "Failed to load riven database.".to_string()));
+        }
+        Ok(count)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Analyse a riven roll for a given weapon.
 /// positives / negatives are full stat names (e.g. "Critical Damage", "Zoom").
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn analyze_riven(weapon: String, positives: Vec<String>, negatives: Vec<String>) -> Option<RivenAnalysis> {
     let key = weapon.to_lowercase();

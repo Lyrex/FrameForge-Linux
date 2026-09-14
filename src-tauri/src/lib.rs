@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use tracing::warn;
+use tracing::{info, warn};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
@@ -61,6 +61,7 @@ mod worldstate;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    logging::mark_process_start();
     // ==========================================================================
     // Linux: run the GTK/WebKit side under XWayland, not native Wayland
     // ==========================================================================
@@ -99,6 +100,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Everything below used to sit in a single directory; carry the files that
     // cannot be refetched over to the split layout before anything opens them.
     let roots = paths::init()?;
+    // Before the DB open and cache loads below, so their spans are captured.
+    logging::init(&roots.state);
     let paths::Roots { config: config_dir, data: data_dir, cache: cache_dir, state: state_dir } = &roots;
 
     let db_path = data_dir.join("data.db");
@@ -213,6 +216,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    info!(elapsed_ms = logging::since_start_ms(), "startup: state seeded");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -279,8 +284,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .setup(|app| {
             use tauri::Manager;
 
-            logging::init(&app.state::<AppState>().roots.state);
-
             // Every Linux bundle carries its own Tesseract language model. Point
             // the OCR engine at it before anything can call it.
             if let Ok(dir) = app.path().resource_dir() {
@@ -305,6 +308,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let state = app.state::<AppState>();
                 restore_window_state(app.handle(), &window, &state.settings_path, "window", 400, 300);
                 let _ = window.show();
+                info!(elapsed_ms = logging::since_start_ms(), "startup: main window shown");
             }
 
             // Overlay windows start as visible:false in tauri.conf.json. show() here
@@ -352,6 +356,23 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             updater::spawn_launch_check(app.handle().clone());
 
+            // Sync commands and window events run on the GTK thread, so a stall
+            // there delays every IPC message.
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    let sent = std::time::Instant::now();
+                    let _ = handle.run_on_main_thread(move || {
+                        let lag = sent.elapsed();
+                        if lag > std::time::Duration::from_millis(250) {
+                            warn!(lag_ms = lag.as_millis(), "main thread lag");
+                        }
+                    });
+                });
+            }
+
+            info!(elapsed_ms = logging::since_start_ms(), "startup: setup done");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -361,6 +382,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             catalogue::get_player_name,
             catalogue::get_item_list_status,
             catalogue::fetch_item_list,
+            logging::startup_mark,
             stats::get_change_log,
             stats::get_tracked_items,
             stats::add_tracked_item,

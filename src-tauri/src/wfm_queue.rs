@@ -24,6 +24,7 @@ struct WfmPriceUpdate {
 
 /// Start the WFM price queue drain thread (no-op if already running).
 /// Must be called after fetch_item_list so wfcd_items is populated.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     if state.wfm_queue_started.swap(true, Ordering::SeqCst) {
@@ -132,6 +133,7 @@ pub(crate) fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>)
 
 /// Add slugs to the normal-priority WFM price queue.
 /// Slugs already cached in-memory are silently skipped.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn wfm_queue_prices(state: State<'_, AppState>, url_names: Vec<String>) {
     let mut q = state.wfm_price_queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -146,6 +148,7 @@ pub(crate) fn wfm_queue_prices(state: State<'_, AppState>, url_names: Vec<String
 
 /// Return the current in-memory WFM price cache (slug → price).
 /// Frontend calls this on startup to populate prices without waiting for the queue.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn wfm_get_cached_prices(state: State<'_, AppState>) -> HashMap<String, Option<u32>> {
     state.wfm.cached_prices()
