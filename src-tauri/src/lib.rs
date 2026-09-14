@@ -43,6 +43,7 @@ mod image_cache;
 mod inventory_state;
 mod log_watcher;
 mod mastery;
+mod mastery_progress;
 mod mastery_rules;
 mod monitor;
 mod platform;
@@ -97,6 +98,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = data_dir.join("data.db");
     let quantities_cache_path = cache_dir.join("quantities_cache.json");
     let inventory_state_cache_path = cache_dir.join("inventory_state_cache.json");
+    let mastery_progress_path = cache_dir.join("mastery-progress-v1.json");
     let settings_path = config_dir.join("settings.json");
     log_parser::init_watched_log_path(&settings_path);
     let log_path = state_dir.join("scan_log.txt");
@@ -182,6 +184,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
     // Load unified inventory state cache. All data lives in items: unique_name → CachedItem.
     let initial_state = load_inventory_state_cache(&inventory_state_cache_path);
+    let mastery_progress = mastery_progress::MasteryProgress::load(mastery_progress_path, &initial_state);
     let initial_quantities = initial_state.stackable_quantities();
     let initial_unique = initial_state.unique_quantities();
     // Mods and arcanes.
@@ -220,6 +223,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             db_path,
             quantities_cache_path,
             inventory_state_cache_path,
+            mastery_progress: Arc::new(Mutex::new(mastery_progress)),
             settings_path,
             log_path,
             changes_log_path,

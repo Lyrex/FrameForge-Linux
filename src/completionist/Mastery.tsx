@@ -1,12 +1,15 @@
 import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import ItemImg from "../ItemImg";
 import SearchBar from "../shared/SearchBar";
 import "./Mastery.css";
-import { TAURI_COMMANDS } from "../constants/tauri";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import { groupSources } from "./masteryGroups";
+import { formatAge } from "../lib/formatters";
+import { fmtClock, type ClockFormat } from "../lib/clockFormat";
 import type { InventoryItem } from "../types/items";
-import type { MasteryCounts, MasteryOverview, MasterySource, MasteryState } from "../types/mastery";
+import type { MasteryCounts, MasteryOverview, MasteryProvenance, MasterySource, MasteryState, Provenance } from "../types/mastery";
 
 const BUCKETS: { state: MasteryState; label: string }[] = [
   { state: "mastered", label: "Mastered" },
@@ -31,6 +34,32 @@ function SourceRow({ source }: { source: MasterySource }) {
   );
 }
 
+const SOURCE_KINDS: { key: keyof MasteryProvenance; label: string }[] = [
+  { key: "equipment",  label: "Equipment" },
+  { key: "intrinsics", label: "Intrinsics" },
+  { key: "nodes",      label: "Nodes" },
+  { key: "junctions",  label: "Junctions" },
+];
+
+function pillText(label: string, { state, observed_at }: Provenance, now: number, clockFormat: ClockFormat): { detail: string; title: string } {
+  if (state === "confirmed" && observed_at != null) {
+    const day = new Date(observed_at * 1000).toLocaleDateString(navigator.language, { month: "short", day: "numeric" });
+    return { detail: formatAge(observed_at, now), title: `${label}: observed ${day}, ${fmtClock(observed_at, clockFormat)}` };
+  }
+  if (state === "unconfirmed") return { detail: "Unconfirmed", title: `${label}: carried over from a cache with no observation time` };
+  return { detail: "Unknown", title: `${label}: no observation yet` };
+}
+
+function ProvenancePill({ label, provenance, now, clockFormat }: { label: string; provenance: Provenance; now: number; clockFormat: ClockFormat }) {
+  const { state } = provenance;
+  const { detail, title } = pillText(label, provenance, now, clockFormat);
+  return (
+    <span className={`mst-pill mst-pill-${state}`} title={title}>
+      <span className="mst-pill-kind">{label}</span> {detail}
+    </span>
+  );
+}
+
 function Progress({ counts, label }: { counts: MasteryCounts; label: string }) {
   return (
     <div className="mst-progress-wrap" title={`${label}: ${counts.mastered} mastered, ${counts.partial} partial, ${counts.missing} missing, ${counts.unknown} unknown`}>
@@ -49,22 +78,33 @@ interface Props {
   /** Only a change signal: the overview itself comes from the backend. */
   inventory: Record<string, InventoryItem>;
   refreshKey: number;
+  clockFormat: ClockFormat;
 }
 
-export default function Mastery({ inventory, refreshKey }: Props) {
+export default function Mastery({ inventory, refreshKey, clockFormat }: Props) {
   const [overview, setOverview] = useState<MasteryOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [bucket, setBucket] = useState<MasteryState | null>(null);
+  // Provenance changes (a re-observation, a player switch) leave the inventory
+  // prop untouched, so the backend announces them separately.
+  const [observationKey, setObservationKey] = useState(0);
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+
+  useEffect(() => {
+    const unlisten = listen(TAURI_EVENTS.MASTERY_UPDATE, () => setObservationKey(k => k + 1));
+    const tick = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 60_000);
+    return () => { clearInterval(tick); unlisten.then(f => f()); };
+  }, []);
 
   useEffect(() => {
     let stale = false;
     invoke<MasteryOverview>(TAURI_COMMANDS.GET_MASTERY_OVERVIEW)
-      .then(o => { if (!stale) { setOverview(o); setError(null); } })
+      .then(o => { if (!stale) { setOverview(o); setError(null); setNow(Math.floor(Date.now() / 1000)); } })
       .catch(e => { if (!stale) setError(String(e)); });
     return () => { stale = true; };
-  }, [inventory, refreshKey]);
+  }, [inventory, refreshKey, observationKey]);
 
   const categories = overview?.categories ?? [];
   const category = categories.find(c => c.category === activeCategory) ?? categories[0];
@@ -100,6 +140,9 @@ export default function Mastery({ inventory, refreshKey }: Props) {
         <SearchBar className="search-box mst-search" placeholder="Search…" value={search} onChange={setSearch} />
         {category && <Progress counts={category.counts} label={category.category} />}
         {overview && <Progress counts={overview.counts} label="All" />}
+        {overview && SOURCE_KINDS.map(kind => (
+          <ProvenancePill key={kind.key} label={kind.label} provenance={overview.provenance[kind.key]} now={now} clockFormat={clockFormat} />
+        ))}
       </div>
       <div className="mst-toolbar mst-buckets" role="group" aria-label="Progress filter">
         {BUCKETS.map(b => {

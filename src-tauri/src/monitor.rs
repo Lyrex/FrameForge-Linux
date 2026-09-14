@@ -215,6 +215,8 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
     let flag = state.monitor_active.clone();
     let db_path = state.db_path.clone();
     let inventory_state_cache_path = state.inventory_state_cache_path.clone();
+    let mastery_progress     = state.mastery_progress.clone();
+    let local_player_name    = state.local_player_name.clone();
     let shared_quantities    = state.current_quantities.clone();
     let shared_unique        = state.unique_quantities.clone();
     let shared_mods          = state.current_mods.clone();
@@ -332,6 +334,10 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
             .collect();
         let mut last_walk_time: Option<std::time::Instant> = None;
         let mut last_probe_time: Option<std::time::Instant> = None;
+        // Name under which every blob still in the channel was captured. A
+        // probe drains one tick later and a walk one or two, and the log tail
+        // can rename the player in between; such a blob confirms nobody.
+        let mut capture_player: Option<String> = None;
         let mut last_blob_probe: Option<std::time::Instant> = None;
         // Guard against overlapping captures: a full memory walk can take >10 s on large
         // game processes, so without this flag we'd stack up concurrent scan threads.
@@ -359,6 +365,11 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
 
             let now = chrono::Utc::now().timestamp();
 
+            let player = local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).select_player(player.as_deref()) {
+                let _ = app.emit("mastery-update", ());
+            }
+
             // Process any incoming blob (non-blocking)
             while let Ok(blob) = blob_rx.try_recv() {
                 let existing_wfm: HashMap<String, u32> =
@@ -376,7 +387,19 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     excluded_paths: &alias_excluded,
                 });
                 if !persist_complete_inventory(&blob, &unique_quantities, &sc, &inventory_state_cache_path) {
+                    mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).discard_blob();
                     continue;
+                }
+                if blob.mastery_xp.is_none() {
+                    warn!("XPInfo is not an array; inventory applied, equipment progress left as it was");
+                }
+                if capture_player != player {
+                    warn!(captured_as = ?capture_player, drained_as = ?player, "player changed while blob was queued; inventory applied, equipment progress left as it was");
+                    mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).discard_blob();
+                } else if mastery_progress.lock().unwrap_or_else(|e| e.into_inner())
+                    .apply_blob(player.as_deref(), blob.mastery_xp.as_ref(), now)
+                {
+                    let _ = app.emit("mastery-update", ());
                 }
 
                 // Snapshot previous full inventory (known + uniques + mods) for change detection.
@@ -660,6 +683,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                 let mut should_capture = false;
                 if probe_due && !walk_in_flight {
                     last_probe_time = Some(std::time::Instant::now());
+                    capture_player = player.clone();
                     let stitch_due = last_blob_probe
                         .is_none_or(|t: std::time::Instant| t.elapsed() >= BLOB_PROBE_FALLBACK)
                         || blob_sync_pending.load(Ordering::SeqCst)
@@ -670,6 +694,11 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     };
                     if outcome.is_some() {
                         last_blob_probe = Some(std::time::Instant::now());
+                    }
+                    if outcome == Some(memory_scanner::ScanOutcome::Unchanged)
+                        && mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).reobserve(player.as_deref(), now)
+                    {
+                        let _ = app.emit("mastery-update", ());
                     }
                     if sync_marker {
                         blob_sync_pending.store(true, Ordering::SeqCst);

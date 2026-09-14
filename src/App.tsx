@@ -1597,7 +1597,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         {/* ── Completionist module ── */}
         {activeModule === "completionist" && (
           <ErrorBoundary>
-            <CompletionistTabs inventory={inventory} refreshKey={itemsRefreshKey} />
+            <CompletionistTabs inventory={inventory} refreshKey={itemsRefreshKey} clockFormat={clockFormat} />
           </ErrorBoundary>
         )}
 

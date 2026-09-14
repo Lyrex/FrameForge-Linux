@@ -112,7 +112,7 @@ pub(crate) struct CachedItem {
     pub(crate) is_stackable: bool,
 }
 
-const CREDITS_PATH: &str = "/_currency/Credits";
+pub(crate) const CREDITS_PATH: &str = "/_currency/Credits";
 
 fn is_false(v: &bool) -> bool { !v }
 
@@ -166,7 +166,6 @@ impl InventoryStateCache {
 
     /// Only a full account observation writes currency rows; catalogue
     /// refreshes seed item rows without one.
-    /// TODO: replace with the cache's own observation time once it records one.
     pub(crate) fn has_account_observation(&self) -> bool {
         self.items.contains_key(CREDITS_PATH)
     }
@@ -322,7 +321,7 @@ pub(crate) fn build_inventory_from_blob(
         item.is_stackable = true; // cosmetics can have count > 1; never treat as binary-owned
     }
 
-    for (path, &xp) in &blob.mastery_xp {
+    for (path, &xp) in blob.mastery_xp.iter().flatten() {
         let canonical = path_aliases.get(path.as_str()).copied().unwrap_or(path);
         let rank = capped_rank(xp, canonical, path_to_max_level_cap);
         let item = upsert!(canonical);
@@ -517,7 +516,7 @@ mod inventory_quantity_tests {
             (KUVA, 799_999, 39), (KUVA, 800_000, 40), (KUVA, i64::MAX, 40),
         ] {
             let mut blob = memory_scanner::BlobInventory::default();
-            blob.mastery_xp.insert(path.into(), xp);
+            blob.mastery_xp = Some([(path.to_string(), xp)].into());
             let mut reset = unique(path, "LongGuns", &[]);
             reset.polarized = 1;
             let mut leveled = reset.clone();
@@ -549,7 +548,7 @@ mod inventory_quantity_tests {
             (kitgun, "Pistols", infested_chamber),
         ] {
             let mut blob = memory_scanner::BlobInventory::default();
-            blob.mastery_xp.insert(part.into(), 200_000);
+            blob.mastery_xp = Some([(part.to_string(), 200_000)].into());
             let mut gilded = unique(weapon, section, &[part]);
             gilded.item_name = Some("Custom name".into());
             gilded.xp = 450_000;
@@ -559,9 +558,9 @@ mod inventory_quantity_tests {
             assert_eq!(owned.items[part].owned_levels, [0, 30]);
             assert_eq!(owned.items[part].amount, 2);
             assert!(!owned.items.contains_key(weapon));
-            blob.mastery_xp.clear();
+            blob.mastery_xp = Some(HashMap::new());
             assert_eq!(cache(&blob).items[part].mastery_rank, 0);
-            blob.mastery_xp.insert(part.into(), 800_000);
+            blob.mastery_xp = Some([(part.to_string(), 800_000)].into());
             blob.unique_items.clear();
             assert_eq!(cache(&blob).items[part].mastery_rank, 30);
         }
