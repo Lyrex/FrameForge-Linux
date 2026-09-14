@@ -300,23 +300,28 @@ pub(crate) fn save_mastery_plan(state: tauri::State<'_, AppState>, plan: Mastery
 
 /// Builds the overview and, once an inventory scan says what the player
 /// owns, everything a row is planned against. Without a scan there are no
-/// suggestions to make, so the closure sees no `Observed`.
+/// suggestions to make, so the closure sees no `Observed`. A scan another
+/// account wrote is treated as no scan. The mastery record is kept per
+/// player and the inventory cache is not, so after a player switch the
+/// previous account's copies would otherwise stay listed until the next
+/// full pass.
 fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Observed>) -> R) -> R {
     let player = state.local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let excluded = excluded_classes(&state.settings_path);
-    let (mut overview, skills, relic_names, tradeable) = {
+    let (mut overview, skills, relic_names, tradeable, owner) = {
         let progress = state.mastery_progress.lock().unwrap_or_else(|e| e.into_inner());
         let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
+        let owner = progress.owner(player.as_deref());
         let record = progress.current(player.as_deref());
         let skills = record.filter(|r| r.intrinsics.state != ProvenanceState::Unknown).map(|r| r.skills.clone());
         let relic_names: HashMap<String, String> = items.iter()
             .filter(|i| i.category == "Relics")
             .map(|i| (i.unique_name.clone(), i.name.clone()))
             .collect();
-        (build_mastery_overview(&items, &state.corrections, record, &excluded), skills, relic_names, market_items(&items))
+        (build_mastery_overview(&items, &state.corrections, record, &excluded), skills, relic_names, market_items(&items), owner)
     };
     let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
-    if inventory.items.is_empty() { return f(overview, None); }
+    if inventory.items.is_empty() || !owner.trusts_inventory(inventory.player.as_deref()) { return f(overview, None); }
     overview.mastery_rank = inventory.mastery_rank;
     let stock = inventory.stackable_quantities();
     let relics = {
