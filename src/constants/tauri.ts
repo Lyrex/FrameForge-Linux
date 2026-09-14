@@ -20,6 +20,7 @@ export const TAURI_COMMANDS = {
   SAVE_SETTINGS: "save_settings",
   GET_CURRENT_QUANTITIES: "get_current_quantities",
   GET_RECIPES_BULK: "get_recipes_bulk",
+  GET_BLUEPRINT_RESULTS: "get_blueprint_results",
   SAVE_RIVEN_ROLL: "save_riven_roll",
   MOVE_OVERLAY_OFFSCREEN: "move_overlay_offscreen",
   OPEN_URL: "plugin:opener|open_url",

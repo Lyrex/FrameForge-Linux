@@ -227,18 +227,15 @@ function TreeNode({ node, inventory, depth }: {
 
 // ─── Recipe modal ─────────────────────────────────────────────────────────────
 
-function RecipeModal({ item, recipe, inventory, isTracked, onTrack, onClose, crafting }: {
+function RecipeModal({ item, recipe, inventory, isTracked, onTrack, onClose, building }: {
   item: CatalogItem; recipe: RecipeComponent[] | null;
   inventory: Record<string, InventoryItem>; isTracked: boolean;
-  onTrack: () => void; onClose: () => void; crafting: CraftingJob[];
+  onTrack: () => void; onClose: () => void; building: Set<string>;
 }) {
   const [mode, setMode] = useState<"tree" | "needs">("tree");
   const isKuva     = isLichWeapon(item);
   const isAcquired = !!item.source_type;
-  const craftJob = crafting.find(c =>
-    c.unique_name === item.unique_name ||
-    (recipe && recipe.length > 0 && recipe[0].unique_name === c.unique_name)
-  );
+  const isCrafting = building.has(item.unique_name);
 
   const targets = useMemo(() => [item.unique_name], [item.unique_name]);
   const plan = usePlanCrafts(targets, inventory)[item.unique_name];
@@ -253,7 +250,7 @@ function RecipeModal({ item, recipe, inventory, isTracked, onTrack, onClose, cra
         <div className="craft-modal-header">
           <ItemImg imageName={item.image_name} category={item.category} size={36} />
           <span className="craft-modal-title">{item.name}</span>
-          {craftJob && <span className="craft-modal-foundry-badge" title={`Building — ${item.name}`}>⚒ Building</span>}
+          {isCrafting && <span className="craft-modal-foundry-badge" title={`Building — ${item.name}`}>⚒ Building</span>}
           <button className={`foundry-track-btn-large ${isTracked ? "tracked" : ""}`} onClick={onTrack}>
             {isTracked ? "★ Tracked" : "☆ Track"}
           </button>
@@ -317,11 +314,11 @@ function RecipeModal({ item, recipe, inventory, isTracked, onTrack, onClose, cra
 
 // ─── Craft card ───────────────────────────────────────────────────────────────
 
-const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops, relicNames, crafting, isTracked, onTrack, onOpen, subsummedWarframes, view }: {
+const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops, relicNames, building, isTracked, onTrack, onOpen, subsummedWarframes, view }: {
   item: CatalogItem; recipe: RecipeComponent[] | null;
   inventory: Record<string, InventoryItem>; relicDrops: RelicDropMap;
   relicNames: Record<string, string>;
-  crafting: CraftingJob[]; isTracked: boolean;
+  building: Set<string>; isTracked: boolean;
   onTrack: (item: CatalogItem) => void;
   onOpen: (item: CatalogItem) => void;
   subsummedWarframes: Set<string>;
@@ -335,12 +332,7 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
   const isSubsumed  = item.category === "Warframes" && subsummedWarframes.has(item.unique_name);
   const shards      = item.category === "Warframes" ? (invEntry?.archon_shards ?? []) : [];
   const formaCount  = invEntry?.forma_count ?? 0;
-  // Memory scanner stores the recipe/blueprint path; catalog uses the result-item path.
-  // Check both so items like Forma (recipe path ≠ item path) still get the badge.
-  const isCrafting = crafting.some(c =>
-    c.unique_name === item.unique_name ||
-    (recipe && recipe.length > 0 && recipe[0].unique_name === c.unique_name)
-  );
+  const isCrafting = building.has(item.unique_name);
   const isKuva     = isLichWeapon(item);
   const mergedRecipe = recipe ? mergeComponents(recipe) : recipe;
   // ⚡ Ready = you have every ingredient itself (not just its blueprint).
@@ -473,7 +465,7 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
   if (prev.item          !== next.item)          return false;
   if (prev.recipe        !== next.recipe)        return false;
   if (prev.isTracked     !== next.isTracked)     return false;
-  if (prev.crafting      !== next.crafting)      return false;
+  if (prev.building      !== next.building)      return false;
   if (prev.onTrack       !== next.onTrack)       return false;
   if (prev.onOpen        !== next.onOpen)        return false;
   if (prev.relicDrops    !== next.relicDrops)    return false;
@@ -507,6 +499,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
   const [filters, onFiltersChange] = useState<FoundryFilters>(FOUNDRY_FILTERS_DEFAULT);
   const [craftable, setCraftable] = useState<CatalogItem[]>([]);
   const [recipes, setRecipes]     = useState<Map<string, RecipeComponent[]>>(new Map());
+  const [blueprintResults, setBlueprintResults] = useState<Record<string, string>>({});
   const [relicDrops, setRelicDrops] = useState<RelicDropMap>({});
   const [relicNames, setRelicNames] = useState<Record<string, string>>({});
   const [modalItem, setModalItem] = useState<CatalogItem | null>(null);
@@ -544,6 +537,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
   useEffect(() => {
     invoke<CatalogItem[]>(TAURI_COMMANDS.GET_CRAFTABLE_ITEMS).then(setCraftable).catch(() => setCraftable([]));
     invoke<RelicDropMap>("get_relic_drops").then(setRelicDrops).catch(() => {});
+    invoke<Record<string, string>>(TAURI_COMMANDS.GET_BLUEPRINT_RESULTS).then(setBlueprintResults).catch(() => {});
     invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS)
       .then(items => {
         const map: Record<string, string> = {};
@@ -551,6 +545,11 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
         setRelicNames(map);
       }).catch(() => {});
   }, [refreshKey]);
+
+  // A Foundry job carries the blueprint path, so it is resolved to the item it builds before matching catalog items.
+  const building = useMemo(() =>
+    new Set(crafting.map(c => blueprintResults[c.unique_name] ?? c.unique_name)),
+    [crafting, blueprintResults]);
 
   const visible = useMemo(() => {
     const q = search.toLowerCase();
@@ -660,7 +659,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
           isTracked={tracked.includes(modalItem.unique_name)}
           onTrack={() => handleTrack(modalItem)}
           onClose={() => setModalItem(null)}
-          crafting={crafting}
+          building={building}
         />
       )}
 
@@ -726,7 +725,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
               inventory={inventory}
               relicDrops={relicDrops}
               relicNames={relicNames}
-              crafting={crafting}
+              building={building}
               isTracked={trackedSet.has(item.unique_name)}
               onTrack={handleTrack}
               onOpen={handleOpen}

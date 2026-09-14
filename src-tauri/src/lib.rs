@@ -420,6 +420,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             diagnostics::toggle_debug_categorization,
             catalogue::get_recipe,
             catalogue::get_recipes_bulk,
+            catalogue::get_blueprint_results,
             catalogue::get_relic_drops,
             wfcd::get_drop_data,
             wfm_commands::fetch_wfm_items,
