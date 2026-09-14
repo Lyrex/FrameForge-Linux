@@ -4,6 +4,7 @@ import ItemImg from "../ItemImg";
 import ItemMarketPopup from "../market/ItemMarketPopup";
 import Filters from "./Filters";
 import { TAURI_COMMANDS } from "../constants/tauri";
+import { blockerText } from "../constants/blockers";
 import { wfmSlugLookup } from "../utils";
 import { fmtClock, type ClockFormat } from "../lib/clockFormat";
 import {
@@ -37,9 +38,18 @@ function Remaining({ opportunity: { remaining_mastery, state } }: { opportunity:
   );
 }
 
-export function OpportunityRow({ opportunity, nowMs, clockFormat, children }: { opportunity: Opportunity; nowMs: number; clockFormat: ClockFormat; children?: ReactNode }) {
-  const { access, blockers, build_completion_ms, image_name, name, relic } = opportunity;
+interface RowProps {
+  opportunity: Opportunity;
+  nowMs: number;
+  clockFormat: ClockFormat;
+  notes?: string[];
+  children?: ReactNode;
+}
+
+export function OpportunityRow({ opportunity, nowMs, clockFormat, notes = [], children }: RowProps) {
+  const { access, build_completion_ms, image_name, name, relic } = opportunity;
   const readyAt = build_completion_ms == null ? undefined : fmtClock(Math.floor(build_completion_ms / 1000), clockFormat);
+  const blockers = [...opportunity.blockers.map(blockerText), ...notes];
   return (
     <div className={`mst-opp mst-opp-${access}`} tabIndex={0}>
       <ItemImg imageName={image_name ?? undefined} fallback={<div className="img-fallback">{name[0]?.toUpperCase() ?? "?"}</div>} />
@@ -69,7 +79,8 @@ interface PurchaseRowProps {
 }
 
 function PurchaseRow({ opportunity, comparison, now, onOpen }: PurchaseRowProps) {
-  const { access, blockers, image_name, name, purchase } = opportunity;
+  const { access, image_name, name, purchase } = opportunity;
+  const blockers = opportunity.blockers.map(blockerText);
   const set = purchase.set;
   const cost = comparison === "full" ? purchase.full_purchase : purchase.cheapest_finish;
   const count = (part: { needed: number; short: number }) => comparison === "full" ? part.needed : part.short;

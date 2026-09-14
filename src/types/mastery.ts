@@ -68,6 +68,19 @@ export type Stage = "level_claim" | "craft" | "acquire";
 export type Action = "level" | "claim" | "spend" | "craft" | "build" | "buy" | "farm" | "trade" | "complete" | "unlock";
 export type Access = "available" | "blocked" | "unknown";
 
+export type Blocker =
+  | { kind: "still_building" }
+  | { kind: "mastery_rank_below"; required: number }
+  | { kind: "mastery_rank_not_observed" }
+  | { kind: "credits_short"; short: number }
+  | { kind: "credit_cost_unknown" }
+  | { kind: "credits_not_observed" }
+  | { kind: "standing_not_observed" }
+  | { kind: "drop_sources_unknown" }
+  | { kind: "missing_gate"; path: string; name: string }
+  | { kind: "junction_tasks_not_observed" }
+  | { kind: "node_unlock_not_observed" };
+
 export interface VendorOffer {
   syndicate: string;
   tier: string;
@@ -198,7 +211,7 @@ export interface Opportunity extends MasterySource {
   relic: RelicRoute | null;
   purchase: Purchase | null;
   access: Access;
-  blockers: string[];
+  blockers: Blocker[];
 }
 
 export interface MasteryOverview {

@@ -123,6 +123,23 @@ pub(crate) enum Action { Level, Claim, Spend, Craft, Build, Buy, Farm, Trade, Co
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Access { Available, Unknown, Blocked }
 
+/// Labels live in the frontend, so a wording change never reaches the wire.
+#[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum Blocker {
+    StillBuilding,
+    MasteryRankBelow { required: u32 },
+    MasteryRankNotObserved,
+    CreditsShort { short: u64 },
+    CreditCostUnknown,
+    CreditsNotObserved,
+    StandingNotObserved,
+    DropSourcesUnknown,
+    MissingGate { path: String, name: String },
+    JunctionTasksNotObserved,
+    NodeUnlockNotObserved,
+}
+
 #[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct VendorOffer {
     pub(crate) syndicate: String,
@@ -207,7 +224,7 @@ pub(crate) struct Opportunity {
     pub(crate) vendors: Vec<VendorOffer>,
     pub(crate) spend: Option<Spend>,
     pub(crate) access: Access,
-    pub(crate) blockers: Vec<String>,
+    pub(crate) blockers: Vec<Blocker>,
     /// A source that is neither owned nor building carries its plan whenever
     /// a recipe exists.
     pub(crate) craft: Option<CraftPlan>,
@@ -402,9 +419,9 @@ fn node_opportunity(source: &MasterySource, node: &NodeInfo, sources: &HashMap<&
     if source.state != MasteryState::Missing { return None; }
     let gate = mastery_nodes::PLANETS.iter().find(|p| p.name == node.planet).and_then(|p| p.gate);
     let (access, blockers) = match gate.and_then(|gate| sources.get(gate)).filter(|g| g.state == MasteryState::Missing) {
-        Some(gate) => (Access::Blocked, vec![format!("{} not cleared", gate.name)]),
-        None if node.junction => (Access::Unknown, vec!["Junction tasks not observed".into()]),
-        None => (Access::Unknown, vec!["Node unlock not observed".into()]),
+        Some(gate) => (Access::Blocked, vec![Blocker::MissingGate { path: gate.unique_name.clone(), name: gate.name.clone() }]),
+        None if node.junction => (Access::Unknown, vec![Blocker::JunctionTasksNotObserved]),
+        None => (Access::Unknown, vec![Blocker::NodeUnlockNotObserved]),
     };
     Some(Opportunity {
         source: source.clone(), stage: Stage::Acquire,
@@ -790,56 +807,46 @@ fn by_mastery_then_name(a: &Opportunity, b: &Opportunity) -> std::cmp::Ordering 
     .then_with(|| a.source.unique_name.cmp(&b.source.unique_name))
 }
 
-fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<String>) {
+fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<Blocker>) {
     let mut access = Access::Available;
     let mut blockers = vec![];
-    let mut note = |worst: Access, text: String| {
+    let mut note = |worst: Access, blocker: Blocker| {
         access = access.max(worst);
-        blockers.push(text);
+        blockers.push(blocker);
     };
     match o.action {
         Action::Level => {}
         Action::Spend | Action::Complete | Action::Unlock => unreachable!("settled when the row was built"),
         Action::Claim => if o.build_completion_ms.is_some_and(|done| done > observed.now_ms) {
-            note(Access::Blocked, "Still building".into());
+            note(Access::Blocked, Blocker::StillBuilding);
         },
         Action::Craft | Action::Build | Action::Buy | Action::Farm | Action::Trade => {
             match (o.source.mastery_req, observed.mastery_rank) {
-                (Some(required), Some(rank)) if required > rank => note(Access::Blocked, format!("Requires MR {required}")),
-                (Some(required), None) if required > 0 => note(Access::Unknown, "Mastery Rank not observed".into()),
+                (Some(required), Some(rank)) if required > rank => note(Access::Blocked, Blocker::MasteryRankBelow { required }),
+                (Some(required), None) if required > 0 => note(Access::Unknown, Blocker::MasteryRankNotObserved),
                 _ => {}
             }
             match o.action {
                 Action::Craft | Action::Build => {
                     let plan = o.craft.as_ref().expect("a craft row carries its plan");
-                    if plan.credits_short > 0 { note(Access::Blocked, format!("Needs {} more credits", thousands(plan.credits_short))); }
-                    else if plan.credits.is_none() { note(Access::Unknown, "Credit cost unknown".into()); }
-                    else if !observed.stock.contains_key(CREDITS_PATH) { note(Access::Unknown, "Credits not observed".into()); }
+                    if plan.credits_short > 0 { note(Access::Blocked, Blocker::CreditsShort { short: plan.credits_short }); }
+                    else if plan.credits.is_none() { note(Access::Unknown, Blocker::CreditCostUnknown); }
+                    else if !observed.stock.contains_key(CREDITS_PATH) { note(Access::Unknown, Blocker::CreditsNotObserved); }
                 }
                 // TODO: read standing from the scan. Until then every Buy stays Unknown.
-                Action::Buy => note(Access::Unknown, "Standing not observed".into()),
+                Action::Buy => note(Access::Unknown, Blocker::StandingNotObserved),
                 Action::Trade => {}
                 _ => {
                     let plan = o.craft.as_ref().expect("a farm row carries its plan");
                     let relic_parts: Vec<&str> = o.relic.iter().flat_map(|r| &r.parts).map(|p| p.unique_name.as_str()).collect();
                     if plan.shortages().any(|r| !relic_parts.contains(&r.unique_name.as_str())) {
-                        note(Access::Unknown, "Drop sources unknown".into());
+                        note(Access::Unknown, Blocker::DropSourcesUnknown);
                     }
                 }
             }
         }
     }
     (access, blockers)
-}
-
-fn thousands(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) { out.push(','); }
-        out.push(c);
-    }
-    out
 }
 
 /// The `masteryExclude` map in settings.json, one boolean per class; only an
@@ -1435,14 +1442,14 @@ mod tests {
         assert_eq!((overview.opportunities[1].owned, overview.opportunities[1].owned_level), (true, None));
         let voidrig = &overview.opportunities[0];
         assert_eq!(voidrig.build_completion_ms, Some(1_001_000));
-        assert_eq!(voidrig.blockers, ["Still building"]);
+        assert_eq!(voidrig.blockers, [Blocker::StillBuilding]);
         assert!(overview.opportunities[2].blockers.is_empty());
         let sweeper = &overview.opportunities[5];
         assert_eq!(sweeper.vendors, [
             VendorOffer { syndicate: "Cephalon Simaris".into(), tier: "Neutral".into(), blueprint: true },
             VendorOffer { syndicate: "Steel Meridian".into(), tier: "General".into(), blueprint: false },
         ]);
-        assert_eq!(sweeper.blockers, ["Standing not observed"]);
+        assert_eq!(sweeper.blockers, [Blocker::StandingNotObserved]);
         assert_eq!(overview.opportunities[4].vendors, [VendorOffer { syndicate: "Solaris United".into(), tier: "(Rude Zuud), Neutral".into(), blueprint: true }]);
     }
 
@@ -1456,11 +1463,11 @@ mod tests {
         let locked = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
             &observed_gear(&owned, &levels, &[], &recipes, &offers, Some(1)));
         assert_eq!(summary(&locked.opportunities), [("Sweeper", Action::Buy, Some(3_000), Access::Blocked)]);
-        assert_eq!(locked.opportunities[0].blockers, ["Requires MR 2", "Standing not observed"]);
+        assert_eq!(locked.opportunities[0].blockers, [Blocker::MasteryRankBelow { required: 2 }, Blocker::StandingNotObserved]);
         let unranked = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
             &observed_gear(&owned, &levels, &[], &recipes, &offers, None));
         assert_eq!(summary(&unranked.opportunities), [("Sweeper", Action::Buy, Some(3_000), Access::Unknown)]);
-        assert_eq!(unranked.opportunities[0].blockers, ["Mastery Rank not observed", "Standing not observed"]);
+        assert_eq!(unranked.opportunities[0].blockers, [Blocker::MasteryRankNotObserved, Blocker::StandingNotObserved]);
     }
 
     #[test]
@@ -1505,17 +1512,17 @@ mod tests {
             "junctions carry known mastery and lead the stage");
         let mercury = find("Mercury Junction");
         assert_eq!((mercury.action, mercury.source.remaining_mastery, mercury.access), (Action::Unlock, Some(1_000), Access::Unknown));
-        assert_eq!(mercury.blockers, ["Junction tasks not observed"]);
+        assert_eq!(mercury.blockers, [Blocker::JunctionTasksNotObserved]);
         let mars = find("Mars Junction");
         assert_eq!((mars.action, mars.access), (Action::Unlock, Access::Unknown));
         let aphrodite = find("Aphrodite");
         assert_eq!((aphrodite.action, aphrodite.source.remaining_mastery, aphrodite.access), (Action::Complete, None, Access::Unknown));
-        assert_eq!(aphrodite.blockers, ["Node unlock not observed"]);
+        assert_eq!(aphrodite.blockers, [Blocker::NodeUnlockNotObserved]);
         let apollodorus = find("Apollodorus");
         assert_eq!((apollodorus.action, apollodorus.access), (Action::Complete, Access::Blocked));
-        assert_eq!(apollodorus.blockers, ["Mercury Junction not cleared"]);
+        assert_eq!(apollodorus.blockers, [Blocker::MissingGate { path: "VenusToMercuryJunction".into(), name: "Mercury Junction".into() }]);
         let ceres = find("Ceres Junction");
-        assert_eq!((ceres.access, ceres.blockers.clone()), (Access::Blocked, vec!["Mars Junction not cleared".to_string()]));
+        assert_eq!((ceres.access, ceres.blockers.clone()), (Access::Blocked, vec![Blocker::MissingGate { path: "EarthToMarsJunction".into(), name: "Mars Junction".into() }]));
         assert!(nodes.iter().all(|o| o.source.name != "E Prime" && o.source.name != "Venus Junction"), "cleared rows are not suggested");
 
         let unknown = with_suggestions(&catalog(), &corrections(), Some(&observed(ProvenanceState::Confirmed, Some(1_000), &[])), &HashSet::new(),
@@ -1663,10 +1670,10 @@ mod tests {
         let braton = plan(2);
         assert_eq!(braton.builds.iter().map(|b| (b.name.as_str(), b.crafts)).collect::<Vec<_>>(), [("Chassis", 1)]);
         assert_eq!((braton.credits, braton.credits_short), (Some(20_000), 15_000));
-        assert_eq!(overview.opportunities[2].blockers, ["Needs 15,000 more credits"]);
+        assert_eq!(overview.opportunities[2].blockers, [Blocker::CreditsShort { short: 15_000 }]);
         let sweeper = plan(3);
         assert_eq!(sweeper.shortages().map(|r| (r.name.as_str(), r.short)).collect::<Vec<_>>(), [("Blueprint", 1), ("Chassis Blueprint", 1), ("Ferrite", 150)]);
-        assert_eq!(overview.opportunities[3].blockers, ["Standing not observed"]);
+        assert_eq!(overview.opportunities[3].blockers, [Blocker::StandingNotObserved]);
 
         // Without the vendor the same shortage becomes a farm. A craft with no
         // credit balance observed cannot promise it is affordable.
@@ -1681,8 +1688,8 @@ mod tests {
             ("Braton", Action::Build, Some(3_000), Access::Unknown),
             ("Sweeper", Action::Farm, Some(3_000), Access::Unknown),
         ]);
-        assert_eq!(overview.opportunities[0].blockers, ["Credits not observed"]);
-        assert_eq!(overview.opportunities[3].blockers, ["Drop sources unknown"]);
+        assert_eq!(overview.opportunities[0].blockers, [Blocker::CreditsNotObserved]);
+        assert_eq!(overview.opportunities[3].blockers, [Blocker::DropSourcesUnknown]);
     }
 
     const BRATON_PRIME: &str = "/Lotus/Weapons/Tenno/Rifle/BratonPrime";
@@ -1867,7 +1874,7 @@ mod tests {
         let Coverage::Complete { probability } = route.coverage else { panic!("every part has a relic: {:?}", route.coverage) };
         assert!((probability - (1.0 - 0.75 * 0.75)).abs() < 1e-12, "{probability}");
         // The Ferrite short beyond the relic parts keeps the drop sources unknown.
-        assert_eq!(sirius.blockers, ["Drop sources unknown"]);
+        assert_eq!(sirius.blockers, [Blocker::DropSourcesUnknown]);
 
         // With Ferrite in hand the relics are Sirius's only shortage and the
         // row is available. Without any relic the route still exists and
@@ -2059,6 +2066,6 @@ mod tests {
         let observed_stock = Observed { stock: &stock, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(1)) };
         let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
         assert_eq!(summary(&overview.opportunities), [("Braton", Action::Craft, Some(3_000), Access::Blocked)]);
-        assert_eq!(overview.opportunities[0].blockers, ["Requires MR 2", "Credit cost unknown"]);
+        assert_eq!(overview.opportunities[0].blockers, [Blocker::MasteryRankBelow { required: 2 }, Blocker::CreditCostUnknown]);
     }
 }

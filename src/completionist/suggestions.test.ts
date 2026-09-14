@@ -6,6 +6,7 @@ import {
   actionText, activePreset, alsoNeedsText, chanceText, costText, DEFAULT_CONTROLS, detailText, inSuggestions, parseControls, quoteText, PRESETS, rankPurchases, readyText, remainingText, shownControls, visibleOpportunities, visiblePurchases,
 } from "./suggestions.ts";
 import { RELIC_SUGGESTION_THRESHOLD } from "../constants/relics.ts";
+import { blockerText } from "../constants/blockers.ts";
 import type { MasteryControls, Preset } from "./suggestions.ts";
 import type { Coverage, Listing, Opportunity, PartListing, Purchase, RelicPart } from "../types/mastery.ts";
 
@@ -132,7 +133,7 @@ test("presets set filters and sort only, and the active one is read back from th
 test("Easy mode shows everything not blocked, over the stored filters, in every result view", () => {
   const list = [
     opportunity("Braton"),
-    opportunity("Hek", { state: "missing", earned_rank: 0, remaining_mastery: 3000, access: "blocked", blockers: ["Requires MR 4"], purchase: bratonPrime() }),
+    opportunity("Hek", { state: "missing", earned_rank: 0, remaining_mastery: 3000, access: "blocked", blockers: [{ kind: "mastery_rank_below", required: 4 }], purchase: bratonPrime() }),
     opportunity("Skana", { category: "Melee", state: "unknown", earned_rank: null, remaining_mastery: null, access: "unknown", purchase: bratonPrime() }),
   ];
   const names = (o: Opportunity[]) => o.map(x => x.name);
@@ -183,7 +184,7 @@ test("Suggestions and More relics split the list, and More relics ranks by chanc
 test("filters narrow by category, progress and availability; search matches the name", () => {
   const list = [
     opportunity("Braton"),
-    opportunity("Hek", { category: "Primary", state: "missing", earned_rank: 0, remaining_mastery: 3000, access: "blocked", blockers: ["Requires MR 4"] }),
+    opportunity("Hek", { category: "Primary", state: "missing", earned_rank: 0, remaining_mastery: 3000, access: "blocked", blockers: [{ kind: "mastery_rank_below", required: 4 }] }),
     opportunity("Skana", { category: "Melee", state: "unknown", earned_rank: null, remaining_mastery: null, access: "unknown" }),
   ];
   const names = (o: Opportunity[]) => o.map(x => x.name);
@@ -222,7 +223,7 @@ test("labels spell out the action, the route and unknowns", () => {
   assert.equal(detailText(opportunity("Braton"), now), "Owned copy");
   const node = { key: "SolNode27", planet: "Earth", mode: "normal" as const, junction: false };
   const ePrime = opportunity("E Prime", { unique_name: "SolNode27", category: "Star Chart", cap: 1, earned_rank: 0, state: "missing",
-    stage: "acquire", action: "complete", remaining_mastery: null, owned: false, owned_level: null, access: "unknown", blockers: ["Node unlock not observed"], node });
+    stage: "acquire", action: "complete", remaining_mastery: null, owned: false, owned_level: null, access: "unknown", blockers: [{ kind: "node_unlock_not_observed" }], node });
   assert.equal(actionText(ePrime), "Complete node");
   assert.equal(detailText(ePrime, now), "Earth");
   assert.equal(actionText({ ...ePrime, action: "unlock", node: { ...node, junction: true } }), "Unlock junction");
@@ -242,7 +243,7 @@ test("labels spell out the action, the route and unknowns", () => {
   const crafted = opportunity("Hek", { stage: "craft", action: "craft", owned: false, owned_level: null,
     craft: { requirements: [chassis], builds: [], credits: 15_000, credits_short: 0 } });
   assert.equal(actionText(crafted), "Craft now");
-  assert.equal(actionText({ ...crafted, access: "blocked", blockers: ["Needs 5,000 more credits"] }), "Craft");
+  assert.equal(actionText({ ...crafted, access: "blocked", blockers: [{ kind: "credits_short", short: 5_000 }] }), "Craft");
   assert.equal(detailText(crafted, now), "Credits 15,000");
   const built = opportunity("Hek", { stage: "craft", action: "build", owned: false, owned_level: null,
     craft: { requirements: [chassis], builds: [{ unique_name: chassis.unique_name, name: "Chassis", crafts: 2 }], credits: null, credits_short: 0 } });
@@ -272,4 +273,11 @@ test("labels spell out the action, the route and unknowns", () => {
   assert.equal(readyText(5_000_000, now), "ready");
   assert.equal(readyText(now + 3_720_000, now), "ready in 1h 2m");
   assert.equal(readyText(now + 45_000, now), "ready in 1m");
+});
+
+test("blocker labels come from the kind, with the numbers formatted", () => {
+  assert.equal(blockerText({ kind: "mastery_rank_below", required: 4 }), "Requires MR 4");
+  assert.equal(blockerText({ kind: "credits_short", short: 15_000 }), "Needs 15,000 more credits");
+  assert.equal(blockerText({ kind: "missing_gate", path: "EarthToMarsJunction", name: "Mars Junction" }), "Mars Junction not cleared");
+  assert.equal(blockerText({ kind: "standing_not_observed" }), "Standing not observed");
 });
