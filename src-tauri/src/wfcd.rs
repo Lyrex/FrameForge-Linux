@@ -4,12 +4,13 @@ use tracing::{info, warn};
 
 use crate::cache::{self, Fetched};
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct WfcdItem {
     pub name: String,
     pub unique_name: String,
     pub category: String,
-    /// WFCD `type` field — most granular discriminator (110 values). Always set.
+    /// WFCD `type` field — most granular discriminator (110 values). Always set
+    /// by WFCD; empty on a stand-in built from a corrections-table row.
     pub item_type: String,
     /// WFCD `productCategory` field — inventory slot type. Empty string when not set (~93% of items).
     pub product_category: String,

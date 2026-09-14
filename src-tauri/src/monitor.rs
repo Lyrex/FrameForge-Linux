@@ -164,11 +164,11 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
     let path_to_tradable: HashMap<String, bool> = items.iter()
         .filter_map(|i| i.tradable.map(|t| (i.unique_name.clone(), t)))
         .collect();
-    let path_to_max_level_cap: HashMap<String, u32> = items.iter()
+    let mut path_to_max_level_cap: HashMap<String, u32> = items.iter()
         .filter_map(|i| mastery_rules::known_cap(state.corrections.get(&i.unique_name), i.max_level_cap)
             .map(|cap| (i.unique_name.clone(), cap)))
         .collect();
-    let path_to_masterable: HashMap<String, bool> = items.iter()
+    let mut path_to_masterable: HashMap<String, bool> = items.iter()
         .filter_map(|i| mastery_rules::masterable(state.corrections.get(&i.unique_name), i.masterable, &i.unique_name)
             .map(|m| (i.unique_name.clone(), m)))
         .collect();
@@ -208,6 +208,15 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
         }
         if let Some(ref cat) = c.category {
             path_to_category.insert(path.clone(), cat.clone());
+        }
+        // The Plexus has no WFCD entry, so its table row is all the rules see.
+        if !path_to_item_type.contains_key(path) {
+            if let Some(masterable) = mastery_rules::masterable(Some(c), None, path) {
+                path_to_masterable.insert(path.clone(), masterable);
+            }
+            if let Some(cap) = mastery_rules::known_cap(Some(c), None) {
+                path_to_max_level_cap.insert(path.clone(), cap);
+            }
         }
     }
     // Ignored paths are suppressed from the inventory cache just like alias secondaries.
