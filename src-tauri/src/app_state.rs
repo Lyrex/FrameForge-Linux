@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use crate::mastery_progress::MasteryProgress;
 use crate::mastery_rules::Unobtainable;
 use crate::monitor::CraftingJob;
-use crate::wfcd::{RecipeComponent, SyndicateOffer, WfcdItem};
+use crate::wfcd::{DropLocation, RecipeComponent, SyndicateOffer, WfcdItem};
 use crate::wfm::Wfm;
 use crate::{memory_scanner, paths, wfcd};
 
@@ -86,6 +86,8 @@ pub struct AppState {
     pub recipes: Mutex<HashMap<String, Vec<RecipeComponent>>>,
     /// component unique_name → relic unique_names that drop it
     pub relic_drops: Mutex<HashMap<String, Vec<String>>>,
+    /// item or component unique_name → non-relic places it drops
+    pub drop_locations: Mutex<HashMap<String, Vec<DropLocation>>>,
     /// relic unique_name → sorted reward list (Bronze×3, Silver×2, Gold×1)
     pub relic_rewards: Mutex<HashMap<String, Vec<wfcd::RelicReward>>>,
     /// blueprint_unique → (display_name, ducats). Used to enrich virtual catalog entries.

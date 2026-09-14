@@ -8,13 +8,13 @@ import {
 import { RELIC_SUGGESTION_THRESHOLD } from "../constants/relics.ts";
 import { blockerText } from "../constants/blockers.ts";
 import type { MasteryControls, Preset } from "./suggestions.ts";
-import type { Coverage, Listing, Opportunity, PartListing, Purchase, RelicPart } from "../types/mastery.ts";
+import type { Coverage, DropPart, Listing, Opportunity, PartListing, Purchase, RelicPart } from "../types/mastery.ts";
 
 const opportunity = (name: string, over: Partial<Opportunity> = {}): Opportunity => ({
   unique_name: `/Lotus/Weapons/Tenno/${name}`, name, category: "Primary", image_name: null, mastery_req: null,
   cap: 30, earned_rank: 12, remaining_mastery: 1800, state: "partial", unobtainable: null, excluded: false,
   stage: "level_claim", action: "level", owned: true, owned_level: 12, build_completion_ms: null,
-  vendors: [], spend: null, craft: null, relic: null, purchase: null, access: "available", blockers: [], ...over,
+  vendors: [], spend: null, craft: null, relic: null, drop: null, purchase: null, access: "available", blockers: [], ...over,
 });
 
 const NOW = 1_700_000_000;
@@ -270,6 +270,16 @@ test("labels spell out the action, the route and unknowns", () => {
   const partial = relicFarm("Braton Prime", { kind: "partial", missing: ["Blueprint"], short: ["Barrel"] },
     [{ unique_name: "/bp", name: "Blueprint", needed: 1, relics: [] }, ...relicParts]);
   assert.equal(detailText(partial, now), "No relic for Blueprint · Too few relics for Barrel · Barrel ×2 from Lith B4 Radiant ×3, Lith B4 Intact ×1 · Credits 15,000");
+  const cell = { unique_name: "/Lotus/Types/Items/MiscItems/OrokinCell", name: "Orokin Cell", needed: 10, from_stock: 7, short: 3 };
+  const dropParts: DropPart[] = [{ unique_name: cell.unique_name, name: "Orokin Cell", needed: 3, locations: [
+    { location: "Corrupted Vor", chance: 50 }, { location: "Saturn/Titan (Survival), Rotation C", chance: 12.5 }, { location: "Cephalon Simaris", chance: null },
+  ] }];
+  const dropFarmed = { ...relicFarmed, craft: { ...relicFarmed.craft!, requirements: [barrel, cell, ferrite] }, drop: { parts: dropParts } };
+  assert.equal(actionText(dropFarmed), "Farm relics + 2 items");
+  assert.equal(detailText(dropFarmed, now), "Barrel ×2 from Lith B4 Radiant ×3, Lith B4 Intact ×1 · Orokin Cell ×3 from Corrupted Vor (50%), Saturn/Titan (Survival), Rotation C (12.5%), Cephalon Simaris · Credits 15,000 · Short Ferrite ×100");
+  const onlyDrops = { ...dropFarmed, relic: null, craft: { ...dropFarmed.craft, requirements: [cell] }, drop: { parts: [{ ...dropParts[0], needed: 1 }] } };
+  assert.equal(actionText(onlyDrops), "Farm 1 item");
+  assert.equal(detailText(onlyDrops, now), "Orokin Cell from Corrupted Vor (50%), Saturn/Titan (Survival), Rotation C (12.5%), Cephalon Simaris · Credits 15,000");
   assert.equal(readyText(5_000_000, now), "ready");
   assert.equal(readyText(now + 3_720_000, now), "ready in 1h 2m");
   assert.equal(readyText(now + 45_000, now), "ready in 1m");

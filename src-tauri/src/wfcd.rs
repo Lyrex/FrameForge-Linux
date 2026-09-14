@@ -80,6 +80,14 @@ pub struct SyndicateOffer {
     pub result_unique: Option<String>,
 }
 
+/// A place other than a relic that drops an item, such as a mission
+/// rotation, a vendor or a cache. `location` is WFCD's free text.
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug)]
+pub struct DropLocation {
+    pub location: String,
+    pub chance: Option<f64>,
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct FetchResult {
     pub items: Vec<WfcdItem>,
@@ -87,6 +95,10 @@ pub struct FetchResult {
     pub recipes: HashMap<String, Vec<RecipeComponent>>,
     /// component unique_name → list of relic unique_names that can drop it
     pub relic_drops: HashMap<String, Vec<String>>,
+    /// item or component unique_name → every non-relic place it drops, one
+    /// entry per location
+    #[serde(default)]
+    pub drop_locations: HashMap<String, Vec<DropLocation>>,
     /// relic unique_name → 6 rewards sorted Bronze×3, Silver×2, Gold×1
     pub relic_rewards: HashMap<String, Vec<RelicReward>>,
     /// blueprint_unique → (display name, ducats)
@@ -864,6 +876,41 @@ fn parse_relics_rewards(
     result
 }
 
+/// WFCD repeats a resource's whole location table on every recipe that
+/// consumes it, so locations dedup on insert. Relic entries dedup where
+/// `relic_drops` is built.
+fn record_drops(
+    unique_name: &str,
+    name: &str,
+    drops: &[serde_json::Value],
+    raw_drop_entries: &mut HashMap<String, Vec<(String, String, String)>>,
+    drop_locations: &mut HashMap<String, Vec<DropLocation>>,
+) {
+    for drop in drops {
+        let location = drop.get("location").and_then(|v| v.as_str()).map(str::trim).unwrap_or("");
+        match drop.get("uniqueName").and_then(|v| v.as_str()) {
+            Some(relic_path) if relic_path.contains("/Game/Projections/") => {
+                let rarity_raw = drop.get("rarity").and_then(|v| v.as_str()).unwrap_or("Common");
+                let rarity = match rarity_raw.to_lowercase().as_str() {
+                    "uncommon" => "Silver",
+                    "rare"     => "Gold",
+                    _          => "Bronze",
+                }.to_string();
+                raw_drop_entries
+                    .entry(relic_path.to_string())
+                    .or_default()
+                    .push((unique_name.to_string(), name.to_string(), rarity));
+            }
+            _ if location.is_empty() => {}
+            _ => {
+                let locations = drop_locations.entry(unique_name.to_string()).or_default();
+                if locations.iter().any(|d| d.location == location) { continue; }
+                locations.push(DropLocation { location: location.to_string(), chance: drop.get("chance").and_then(|v| v.as_f64()) });
+            }
+        }
+    }
+}
+
 #[tracing::instrument(level = "debug", skip_all)]
 fn fetch_from_wfcd(
     all_items_raw: &[&serde_json::Value],
@@ -878,6 +925,7 @@ fn fetch_from_wfcd(
     // Built by inverting each item's drops[] array (item→relics stored per-item).
     // WFCD canonicalizes all refinements under the Bronze path — dedup at build time.
     let mut raw_drop_entries: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
+    let mut drop_locations: HashMap<String, Vec<DropLocation>> = HashMap::new();
 
     // Group items by display category to preserve the two-pass structure below.
     let mut category_map: HashMap<String, Vec<&serde_json::Value>> = HashMap::new();
@@ -976,29 +1024,11 @@ fn fetch_from_wfcd(
                 }
             }
 
-            // Invert each item's drops[] to build relic_path → reward_items.
-            // All.json stores drops on the item side (item → relics), not on the relic side.
-            // WFCD uses the Bronze path as the canonical key for all refinements.
+            // All.json lists drops on the item, so the relic tables come from
+            // inverting them. relic_rewards is built from Relics.json, which
+            // spells out every refinement.
             if let Some(drops_arr) = item.get("drops").and_then(|v| v.as_array()) {
-                for drop in drops_arr {
-                    let relic_path = match drop.get("uniqueName").and_then(|v| v.as_str()) {
-                        Some(p) if p.contains("/Game/Projections/") => p.to_string(),
-                        _ => continue,
-                    };
-                    let rarity_raw = drop.get("rarity").and_then(|v| v.as_str()).unwrap_or("Common");
-                    let rarity = match rarity_raw.to_lowercase().as_str() {
-                        "uncommon" => "Silver",
-                        "rare"     => "Gold",
-                        _          => "Bronze",
-                    }.to_string();
-                    // Store as-is. raw_drop_entries is only used to build relic_drops
-                    // (component → relics) for RelicHelper. relic_rewards is built
-                    // separately from Relics.json which has all refinements explicitly.
-                    raw_drop_entries
-                        .entry(relic_path)
-                        .or_default()
-                        .push((unique_name.clone(), name.clone(), rarity));
-                }
+                record_drops(&unique_name, &name, drops_arr, &mut raw_drop_entries, &mut drop_locations);
             }
 
             // Add component parts to catalog
@@ -1012,6 +1042,12 @@ fn fetch_from_wfcd(
                         Some(u) => u.trim().to_string(),
                         None => continue,
                     };
+                    // Relic and mission drops live on the component, and a
+                    // resource keeps its table whether or not it makes the
+                    // catalogue below.
+                    if let Some(drops_arr) = comp.get("drops").and_then(|v| v.as_array()) {
+                        record_drops(&cunique, cname, drops_arr, &mut raw_drop_entries, &mut drop_locations);
+                    }
                     let is_part = cunique.starts_with("/Lotus/Types/Recipes/")
                         || cunique.starts_with("/Lotus/Powersuits/")
                         || cunique.starts_with("/Lotus/Weapons/")
@@ -1424,7 +1460,7 @@ fn fetch_from_wfcd(
         .filter_map(|i| i.omega_attenuation.map(|d| (i.unique_name.clone(), d)))
         .collect();
 
-    Ok(FetchResult { items, recipes, relic_drops, relic_rewards, blueprint_names, syndicate_catalog, weapon_dispositions })
+    Ok(FetchResult { items, recipes, relic_drops, drop_locations, relic_rewards, blueprint_names, syndicate_catalog, weapon_dispositions })
 }
 
 pub fn fallback_items() -> Vec<WfcdItem> {
@@ -1526,6 +1562,49 @@ mod tests {
                 .expect("no test panics while holding this")
                 .insert(name.to_string(), body.to_string());
         }
+    }
+
+    #[test]
+    fn component_drops_split_into_relics_and_locations() {
+        const BARREL: &str = "/Lotus/Types/Recipes/Weapons/WeaponParts/BratonPrimeBarrel";
+        const CELL: &str = "/Lotus/Types/Items/MiscItems/OrokinCell";
+        const AXI: &str = "/Lotus/Types/Game/Projections/T4VoidProjectionGrendelPrimeDBronze";
+        let braton = serde_json::json!({
+            "name": "Braton Prime", "uniqueName": "/Lotus/Weapons/Tenno/Rifle/BratonPrime", "category": "Primary",
+            "components": [
+                { "name": "Barrel", "uniqueName": BARREL, "drops": [
+                    { "location": "Axi A17 Relic (Radiant)", "uniqueName": AXI, "chance": 16.67, "rarity": "Uncommon" },
+                    { "location": "Corrupted Vor", "uniqueName": null, "chance": 50.0 },
+                    { "location": "Corrupted Vor", "uniqueName": null, "chance": 50.0 },
+                    { "location": "Cephalon Simaris", "chance": null },
+                ] },
+                { "name": "Orokin Cell", "uniqueName": CELL, "drops": [{ "location": "Corrupted Vor", "chance": 50.0 }] },
+            ],
+        });
+        let cell = serde_json::json!({ "name": "Orokin Cell", "uniqueName": CELL, "category": "Resources",
+            "drops": [{ "location": "Saturn/Titan (Survival), Rotation C", "chance": 12.5 }] });
+        let out = fetch_from_wfcd(&[&braton, &cell], None, None, None).expect("fixture builds");
+
+        assert_eq!(out.relic_drops.get(BARREL).map(Vec::as_slice), Some(&[AXI.to_string()][..]));
+        let at = |unique: &str| out.drop_locations.get(unique).map(|v| v.iter().map(|d| (d.location.as_str(), d.chance)).collect::<Vec<_>>());
+        assert_eq!(at(BARREL), Some(vec![("Corrupted Vor", Some(50.0)), ("Cephalon Simaris", None)]));
+        assert_eq!(at(CELL), Some(vec![("Corrupted Vor", Some(50.0)), ("Saturn/Titan (Survival), Rotation C", Some(12.5))]));
+        assert!(!out.drop_locations.contains_key(AXI));
+    }
+
+    #[test]
+    fn drop_locations_default_on_old_caches_and_round_trip() {
+        let old = serde_json::json!({
+            "items": [], "recipes": {}, "relic_drops": {}, "relic_rewards": {},
+            "blueprint_names": {}, "syndicate_catalog": {}, "weapon_dispositions": {},
+        });
+        let mut cached: FetchResult = serde_json::from_value(old).expect("a cache without the field still loads");
+        assert!(cached.drop_locations.is_empty());
+
+        let locations = vec![DropLocation { location: "Corrupted Vor".into(), chance: Some(50.0) }, DropLocation { location: "Cephalon Simaris".into(), chance: None }];
+        cached.drop_locations.insert("/Lotus/Types/Items/MiscItems/OrokinCell".into(), locations.clone());
+        let again: FetchResult = serde_json::from_str(&serde_json::to_string(&cached).expect("serializes")).expect("parses");
+        assert_eq!(again.drop_locations.get("/Lotus/Types/Items/MiscItems/OrokinCell"), Some(&locations));
     }
 
     fn spec() -> SourceSpec {

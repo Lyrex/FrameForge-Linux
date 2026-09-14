@@ -689,6 +689,7 @@ fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> usize {
     *state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()) = deduped;
     *state.recipes.lock().unwrap_or_else(|e| e.into_inner()) = result.recipes;
     *state.relic_drops.lock().unwrap_or_else(|e| e.into_inner()) = result.relic_drops;
+    *state.drop_locations.lock().unwrap_or_else(|e| e.into_inner()) = result.drop_locations;
     *state.relic_rewards.lock().unwrap_or_else(|e| e.into_inner()) = result.relic_rewards;
     *state.blueprint_to_result.lock().unwrap_or_else(|e| e.into_inner()) = result.blueprint_names;
     if !result.weapon_dispositions.is_empty() {
