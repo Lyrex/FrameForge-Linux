@@ -46,6 +46,7 @@ mod mastery;
 mod mastery_nodes;
 mod mastery_progress;
 mod mastery_recipe;
+mod mastery_relics;
 mod mastery_rules;
 mod monitor;
 mod platform;

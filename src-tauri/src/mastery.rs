@@ -7,6 +7,7 @@ use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache,
 use crate::mastery_nodes;
 use crate::mastery_progress::{PlayerProgress, Provenance, ProvenanceState};
 use crate::mastery_recipe::{is_blueprint, CraftPlan, Ledger};
+use crate::mastery_relics::{Relics, RelicRoute};
 use crate::mastery_rules::{self, Unobtainable};
 use crate::monitor::CraftingJob;
 use crate::settings::read_settings_map;
@@ -102,7 +103,6 @@ pub(crate) struct MasteryProvenance {
     pub(crate) junctions: Provenance,
 }
 
-// TODO: relic routes under Acquire.
 #[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Stage { LevelClaim, Craft, Acquire }
@@ -159,6 +159,10 @@ pub(crate) struct Opportunity {
     /// A source that is neither owned nor building carries its plan whenever
     /// a recipe exists.
     pub(crate) craft: Option<CraftPlan>,
+    /// Present when something short in the plan drops from a relic. The
+    /// chance covers those parts only, and the other shortages stay in
+    /// `craft`.
+    pub(crate) relic: Option<RelicRoute>,
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -180,6 +184,7 @@ pub(crate) struct Observed<'a> {
     pub(crate) offers: &'a HashMap<String, Vec<SyndicateOffer>>,
     /// The record's `PlayerSkills`, or `None` while Intrinsics are Unknown.
     pub(crate) skills: Option<&'a HashMap<String, i64>>,
+    pub(crate) relics: &'a Relics,
     pub(crate) now_ms: i64,
 }
 
@@ -195,28 +200,38 @@ pub(crate) async fn get_mastery_overview(app: tauri::AppHandle) -> Result<Master
 fn mastery_overview(state: &AppState) -> MasteryOverview {
     let player = state.local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let excluded = excluded_classes(&state.settings_path);
-    let (mut overview, skills) = {
+    let (mut overview, skills, relic_names) = {
         let progress = state.mastery_progress.lock().unwrap_or_else(|e| e.into_inner());
         let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
         let record = progress.current(player.as_deref());
         let skills = record.filter(|r| r.intrinsics.state != ProvenanceState::Unknown).map(|r| r.skills.clone());
-        (build_mastery_overview(&items, &state.corrections, record, &excluded), skills)
+        let relic_names: HashMap<String, String> = items.iter()
+            .filter(|i| i.category == "Relics")
+            .map(|i| (i.unique_name.clone(), i.name.clone()))
+            .collect();
+        (build_mastery_overview(&items, &state.corrections, record, &excluded), skills, relic_names)
     };
     let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
     // Without an inventory scan we have no idea what the player owns, so skip suggestions.
     if inventory.items.is_empty() { return overview; }
+    let stock = inventory.stackable_quantities();
+    let relics = {
+        let tables = state.relic_rewards.lock().unwrap_or_else(|e| e.into_inner());
+        Relics::new(&stock, &tables, &relic_names)
+    };
     let crafting = state.current_crafting.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let recipes = state.recipes.lock().unwrap_or_else(|e| e.into_inner());
     let offers = state.syndicate_catalog.lock().unwrap_or_else(|e| e.into_inner());
     overview.opportunities = suggest(&overview, &Observed {
         owned: &inventory.unique_quantities(),
-        stock: &inventory.stackable_quantities(),
+        stock: &stock,
         owned_levels: &inventory.owned_levels(),
         mastery_rank: inventory.mastery_rank,
         crafting: &crafting,
         recipes: &recipes,
         offers: &offers,
         skills: skills.as_ref(),
+        relics: &relics,
         now_ms: chrono::Utc::now().timestamp_millis(),
     });
     overview
@@ -297,7 +312,7 @@ fn node_opportunity(source: &MasterySource, node: &NodeInfo, sources: &HashMap<&
     Some(Opportunity {
         source: source.clone(), stage: Stage::Acquire,
         action: if node.junction { Action::Unlock } else { Action::Complete },
-        owned: false, owned_level: None, build_completion_ms: None, vendors: vec![], spend: None, access, blockers, craft: None,
+        owned: false, owned_level: None, build_completion_ms: None, vendors: vec![], spend: None, access, blockers, craft: None, relic: None,
     })
 }
 
@@ -323,7 +338,7 @@ pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Op
                 return Some(Opportunity {
                     source: source.clone(), stage: Stage::LevelClaim, action: Action::Spend,
                     owned: false, owned_level: None, build_completion_ms: None, vendors: vec![], spend: Some(spend),
-                    access: Access::Available, blockers: vec![], craft: None,
+                    access: Access::Available, blockers: vec![], craft: None, relic: None,
                 });
             }
             let owned_level = observed.owned_levels.get(&source.unique_name).and_then(|levels| levels.iter().max().copied());
@@ -338,21 +353,26 @@ pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Op
                 else { return None };
             Some(Opportunity {
                 source: source.clone(), stage: Stage::Acquire, action, owned, owned_level, build_completion_ms, vendors, spend: None,
-                access: Access::Available, blockers: vec![], craft: None,
+                access: Access::Available, blockers: vec![], craft: None, relic: None,
             })
         })
         .collect();
 
     // Recipes draw on one ledger in display order, which is why every recipe
-    // row sits in the Craft stage whatever its final action. A standalone
-    // pass finds which targets are craftable on their own, so those plan
-    // first and keep their ingredients instead of losing them to a target
-    // short anyway.
+    // row sits in the Craft stage whatever its final action, except a relic
+    // farm, which is the furthest from done and so draws last and lands in
+    // Acquire. A standalone pass finds which targets are craftable on their
+    // own, so those plan first and keep their ingredients instead of losing
+    // them to a target short anyway.
     let mut crafting: Vec<usize> = (0..opportunities.len()).filter(|&i| opportunities[i].action == Action::Farm).collect();
     let standalone: HashMap<String, u8> = crafting.iter().map(|&i| {
         let path = &opportunities[i].source.unique_name;
         let plan = ledger.clone().plan(path, &observed.recipes[path]);
-        (path.clone(), if plan.craftable_now() { 0 } else if plan.buildable() { 1 } else { 2 })
+        let rank = if plan.craftable_now() { 0 }
+            else if plan.buildable() { 1 }
+            else if plan.shortages().any(|r| observed.relics.is_part(&r.unique_name)) { 3 }
+            else { 2 };
+        (path.clone(), rank)
     }).collect();
     let rank = |o: &Opportunity| standalone.get(&o.source.unique_name).copied().unwrap_or(0);
     crafting.sort_by(|&a, &b| rank(&opportunities[a]).cmp(&rank(&opportunities[b])).then_with(|| by_mastery_then_name(&opportunities[a], &opportunities[b])));
@@ -363,6 +383,7 @@ pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Op
             else if plan.buildable() { Action::Build }
             else if !o.vendors.is_empty() { Action::Buy }
             else { Action::Farm };
+        o.relic = observed.relics.route(&plan);
         o.craft = Some(plan);
     }
 
@@ -371,12 +392,15 @@ pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Op
     for o in opportunities.iter_mut().filter(|o| !matches!(o.action, Action::Spend | Action::Complete | Action::Unlock)) {
         o.stage = match o.action {
             Action::Level | Action::Claim => Stage::LevelClaim,
-            _ if o.craft.is_some() => Stage::Craft,
+            _ if o.craft.is_some() && o.relic.is_none() => Stage::Craft,
             _ => Stage::Acquire,
         };
         (o.access, o.blockers) = access(o, observed);
     }
-    opportunities.sort_by(|a, b| a.stage.cmp(&b.stage).then_with(|| rank(a).cmp(&rank(b))).then_with(|| by_mastery_then_name(a, b)));
+    // Ledger order only shows in the Craft stage. Relic farms drew last, and
+    // in Acquire they sort by mastery like every other row.
+    let craft_order = |a: &Opportunity, b: &Opportunity| if a.stage == Stage::Craft { rank(a).cmp(&rank(b)) } else { std::cmp::Ordering::Equal };
+    opportunities.sort_by(|a, b| a.stage.cmp(&b.stage).then_with(|| craft_order(a, b)).then_with(|| by_mastery_then_name(a, b)));
     opportunities
 }
 
@@ -425,7 +449,13 @@ fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<String>) {
                 }
                 // TODO: read standing from the scan. Until then every Buy stays Unknown.
                 Action::Buy => note(Access::Unknown, "Standing not observed".into()),
-                _ => note(Access::Unknown, "Drop sources unknown".into()),
+                _ => {
+                    let plan = o.craft.as_ref().expect("a farm row carries its plan");
+                    let relic_parts: Vec<&str> = o.relic.iter().flat_map(|r| &r.parts).map(|p| p.unique_name.as_str()).collect();
+                    if plan.shortages().any(|r| !relic_parts.contains(&r.unique_name.as_str())) {
+                        note(Access::Unknown, "Drop sources unknown".into());
+                    }
+                }
             }
         }
     }
@@ -948,13 +978,14 @@ mod tests {
     }
 
     static NO_STOCK: LazyLock<HashMap<String, i64>> = LazyLock::new(HashMap::new);
+    static NO_RELICS: LazyLock<Relics> = LazyLock::new(Relics::default);
 
     fn observed_gear<'a>(owned: &'a HashMap<String, i64>, owned_levels: &'a HashMap<String, Vec<u32>>, crafting: &'a [CraftingJob], recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, mastery_rank: Option<u32>) -> Observed<'a> {
-        Observed { owned, stock: &NO_STOCK, owned_levels, mastery_rank, crafting, recipes, offers, skills: None, now_ms: 1_000_000 }
+        Observed { owned, stock: &NO_STOCK, owned_levels, mastery_rank, crafting, recipes, offers, skills: None, relics: &NO_RELICS, now_ms: 1_000_000 }
     }
 
     fn observed_skills<'a>(progress: &'a PlayerProgress, recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, owned: &'a HashMap<String, i64>, levels: &'a HashMap<String, Vec<u32>>) -> Observed<'a> {
-        Observed { owned, stock: &NO_STOCK, owned_levels: levels, mastery_rank: Some(30), crafting: &[], recipes, offers, skills: Some(&progress.skills), now_ms: 1_000_000 }
+        Observed { owned, stock: &NO_STOCK, owned_levels: levels, mastery_rank: Some(30), crafting: &[], recipes, offers, skills: Some(&progress.skills), relics: &NO_RELICS, now_ms: 1_000_000 }
     }
 
     fn track(track: &str, from: u32, to: u32) -> TrackSpend {
@@ -1280,6 +1311,63 @@ mod tests {
         ]);
         assert_eq!(overview.opportunities[0].blockers, ["Credits not observed"]);
         assert_eq!(overview.opportunities[3].blockers, ["Drop sources unknown"]);
+    }
+
+    #[test]
+    fn relic_farms_draw_last_land_in_acquire_and_carry_their_chance() {
+        use crate::mastery_relics::Coverage;
+        use crate::wfcd::RelicReward;
+        const SIRIUS_BP: &str = "/Lotus/Types/Recipes/WarframeRecipes/SiriusOrionBlueprint";
+        const BRATON_BP: &str = "/Lotus/Types/Recipes/Weapons/BratonBlueprint";
+        const LITH: &str = "/Lotus/Types/Game/Projections/T1VoidProjectionGBronze";
+        let owned = HashMap::new();
+        let levels = HashMap::new();
+        let (sirius, mut components) = recipe(SIRIUS, SIRIUS_BP);
+        components.retain(|c| c.unique_name != CHASSIS);
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [(sirius, components), recipe(BRATON, BRATON_BP)].into();
+        let offers = HashMap::new();
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
+        let reward = |unique_name: &str, chance: f64| RelicReward { unique_name: unique_name.into(), name: String::new(), rarity: String::new(), image_name: None, chance: Some(chance) };
+        let tables: HashMap<String, Vec<RelicReward>> = [
+            (LITH.to_string(), vec![reward(SIRIUS_BP, 25.0), reward("/Lotus/Upgrades/Mods/Immortal/ImmortalOneMod", 75.0)]),
+        ].into();
+        let names: HashMap<String, String> = [(LITH.to_string(), "Lith A1 Intact".to_string())].into();
+        // Sixty Ferrite covers neither target. Sirius outranks Braton on
+        // mastery, but as a relic farm it draws after Braton's plain farm.
+        let stock: HashMap<String, i64> = [(LITH, 2), (FERRITE, 60), (CREDITS_PATH, 100_000)]
+            .into_iter().map(|(path, n)| (path.to_string(), n)).collect();
+        let relics = Relics::new(&stock, &tables, &names);
+        let observed_stock = Observed { stock: &stock, relics: &relics, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
+        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
+        assert_eq!(summary(&overview.opportunities), [
+            ("Braton", Action::Farm, Some(3_000), Access::Unknown),
+            ("Sirius & Orion", Action::Farm, Some(6_000), Access::Unknown),
+        ]);
+        assert_eq!(overview.opportunities.iter().map(|o| o.stage).collect::<Vec<_>>(), [Stage::Craft, Stage::Acquire]);
+        let braton = &overview.opportunities[0];
+        let sirius = &overview.opportunities[1];
+        let ferrite = |o: &Opportunity| o.craft.as_ref().expect("recipe rows carry a plan").requirements.iter().find(|r| r.unique_name == FERRITE).map(|r| (r.from_stock, r.short));
+        assert_eq!((ferrite(braton), ferrite(sirius)), (Some((60, 90)), Some((0, 50))));
+        assert!(braton.relic.is_none());
+        let route = sirius.relic.as_ref().expect("a relic part is short");
+        assert_eq!(route.parts.iter().map(|p| (p.name.as_str(), p.needed, p.relics.len())).collect::<Vec<_>>(), [("Blueprint", 1, 1)]);
+        let Coverage::Complete { probability } = route.coverage else { panic!("every part has a relic: {:?}", route.coverage) };
+        assert!((probability - (1.0 - 0.75 * 0.75)).abs() < 1e-12, "{probability}");
+        // The Ferrite short beyond the relic parts keeps the drop sources unknown.
+        assert_eq!(sirius.blockers, ["Drop sources unknown"]);
+
+        // With Ferrite in hand the relics are Sirius's only shortage and the
+        // row is available. Without any relic the route still exists and
+        // carries no chance.
+        let mut stock = stock;
+        stock.insert(FERRITE.into(), 1_000);
+        stock.remove(LITH);
+        let relics = Relics::new(&stock, &tables, &names);
+        let observed_stock = Observed { stock: &stock, relics: &relics, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
+        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
+        let sirius = overview.opportunities.iter().find(|o| o.source.name == "Sirius & Orion").expect("listed");
+        assert_eq!((sirius.stage, sirius.access, sirius.blockers.clone()), (Stage::Acquire, Access::Available, vec![]));
+        assert_eq!(sirius.relic.as_ref().map(|r| r.coverage.clone()), Some(Coverage::Partial { missing: vec!["Blueprint".into()], short: vec![] }));
     }
 
     #[test]

@@ -147,6 +147,20 @@ What one target needs against projected stock: each requirement with how much
 came from stock and how much is short, the intermediates to build first, and
 the credit cost.
 
+**Relic route**:
+A craft plan with a shortage that drops from a relic. Its completion chance
+is the probability that every such part drops from the relics the player
+owns, each rolled once, solo, at its current refinement. Other shortages,
+credits, and the crafting itself are outside the chance.
+_Avoid_: drop chance (when the whole-route estimate is meant)
+
+**Coverage**:
+Whether the owned relics can yield a relic route at all: complete when every
+part has relics enough to roll, partial when a part has no owned source or
+the owned relics cannot yield the parts together, unknown when a relevant
+table carries no chances. Only complete coverage carries a chance, and only a chance strictly
+above 85% puts the route in Suggestions rather than More relics.
+
 ### The game's log
 
 **Log path override**:

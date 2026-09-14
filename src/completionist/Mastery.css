@@ -255,3 +255,9 @@
   background: rgba(248,81,73,.10);
   border-color: rgba(248,81,73,.30);
 }
+.mst-pill-relic-complete {
+  color: #a371f7;
+  background: rgba(163,113,247,.10);
+  border-color: rgba(163,113,247,.30);
+}
+.mst-select input[type="checkbox"] { margin: 0; }

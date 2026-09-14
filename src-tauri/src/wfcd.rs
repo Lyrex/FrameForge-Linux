@@ -59,6 +59,11 @@ pub struct RelicReward {
     /// "Bronze" = Common, "Silver" = Uncommon, "Gold" = Rare
     pub rarity: String,
     pub image_name: Option<String>,
+    /// Relics.json's per-refinement drop chance in percent. The table's
+    /// rarity labels are unreliable (a 25.33% Intact drop reads "Uncommon"),
+    /// so this is the only field the probability maths trusts.
+    #[serde(default)]
+    pub chance: Option<f64>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -839,7 +844,8 @@ fn parse_relics_rewards(
                     let no_bp = name.to_lowercase().replace(" blueprint", "");
                     image_by_name.get(&no_bp).cloned()
                 });
-            Some(RelicReward { unique_name, name, rarity, image_name })
+            let chance = r.get("chance").and_then(|v| v.as_f64());
+            Some(RelicReward { unique_name, name, rarity, image_name, chance })
         }).collect();
 
         reward_list.sort_by_key(|r| match r.rarity.as_str() { "Silver" => 1u8, "Gold" => 2, _ => 0 });
