@@ -113,6 +113,9 @@ pub struct BlobInventory {
     /// under the game's own field names. `None` when the section was not an
     /// object, while an empty object is a real zero everywhere.
     pub player_skills:   Option<HashMap<String, i64>>,
+    /// Missions: completion counts per node key. `None` when the section was
+    /// not an array. An empty array is a real zero and stays `Some`.
+    pub missions:        Option<HashMap<String, BlobMission>>,
     pub pending_recipes: Vec<BlobPendingRecipe>,
     /// Warframe paths fed to Helminth (InfestedFoundry.ConsumedSuits).
     pub consumed_suits:  Vec<String>,
@@ -139,6 +142,14 @@ pub struct BlobUniqueEntry {
     /// Populated from the blob's `ModularParts` array.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modular_parts: Vec<String>,
+}
+/// One `Missions` entry. `Completes` counts every clear of the node across
+/// modes. `Tier` is null on most entries and 1, 2 or 8 on the rest, and its
+/// meaning is not established, so nothing derives Steel Path state from it yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlobMission {
+    pub completes: u32,
+    pub tier:      Option<u32>,
 }
 
 /// A stackable item: resource, blueprint, relic, Ayatan sculpture, etc.
@@ -590,6 +601,13 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
         skills.iter().filter_map(|(field, value)| Some((field.clone(), value.as_i64()?))).collect()
     });
 
+    let missions: Option<HashMap<String, BlobMission>> = json["Missions"].as_array().map(|arr| {
+        arr.iter().filter_map(|e| Some((
+            e["Tag"].as_str()?.to_string(),
+            BlobMission { completes: e["Completes"].as_u64()? as u32, tier: e["Tier"].as_u64().map(|t| t as u32) },
+        ))).collect()
+    });
+
     // PendingRecipes (Foundry)
     let pending_recipes: Vec<BlobPendingRecipe> = json["PendingRecipes"].as_array()
         .map(|a| a.iter().filter_map(|e| {
@@ -618,7 +636,7 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
     Some(BlobInventory {
         credits, endo, platinum, free_platinum, mastery_level,
         unique_items, stackable_items, mods,
-        flavour_items, weapon_skins, mastery_xp, player_skills, pending_recipes, consumed_suits,
+        flavour_items, weapon_skins, mastery_xp, player_skills, missions, pending_recipes, consumed_suits,
         rivens,
     })
 }
@@ -1722,7 +1740,7 @@ mod sync_marker_tests {
 
 #[cfg(test)]
 mod stitch_engine_tests {
-    use super::{blob_digest_test_guard, parse_full_account_blob, stitch_blobs, BlobInventory};
+    use super::{blob_digest_test_guard, parse_full_account_blob, stitch_blobs, BlobInventory, BlobMission};
     use crate::mem_regions::RecordedRegions;
 
     /// The parser rejects a blob under 50 KB, and one with no owned Warframe in
@@ -1771,6 +1789,23 @@ mod stitch_engine_tests {
 
         assert!(parse_full_account_blob(&make_blob(r#""RegularCredits":1"#)).expect("parses").player_skills.is_none());
         assert!(parse_full_account_blob(&make_blob(r#""RegularCredits":1,"PlayerSkills":null"#)).expect("parses").player_skills.is_none());
+    }
+
+    #[test]
+    fn missions_distinguish_empty_from_absent_and_keep_the_tier() {
+        let absent = parse_full_account_blob(&make_blob(r#""RegularCredits":1"#)).expect("parses");
+        assert!(absent.missions.is_none());
+
+        let empty = parse_full_account_blob(&make_blob(r#""RegularCredits":1,"Missions":[]"#)).expect("parses");
+        assert_eq!(empty.missions.as_ref().map(|m| m.len()), Some(0));
+
+        let cleared = parse_full_account_blob(&make_blob(
+            r#""RegularCredits":1,"Missions":[{"Completes":14,"Tier":1,"Tag":"SolNode27"},{"Completes":2,"Tag":"EarthToVenusJunction"},{"Tag":"SolNode1"},{"Completes":3}]"#,
+        )).expect("parses");
+        let missions = cleared.missions.expect("array");
+        assert_eq!(missions.get("SolNode27"), Some(&BlobMission { completes: 14, tier: Some(1) }));
+        assert_eq!(missions.get("EarthToVenusJunction"), Some(&BlobMission { completes: 2, tier: None }));
+        assert_eq!(missions.len(), 2, "an entry without both tag and count is dropped");
     }
 
     fn run(regions: Vec<(usize, Vec<u8>)>) -> Option<BlobInventory> {

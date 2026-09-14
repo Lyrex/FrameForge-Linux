@@ -3,6 +3,16 @@ export type MasteryState = "mastered" | "partial" | "missing" | "unknown";
 /** Why no account can earn a source any more; settings exclude each class separately. */
 export type Unobtainable = "founders" | "retiredEvent" | "removedNode";
 
+export type Mode = "normal" | "steel_path";
+
+/** A node's normal and Steel Path clears are two sources. The Steel Path row's `unique_name` ends in `/steel_path`. */
+export interface NodeInfo {
+  key: string;
+  planet: string;
+  mode: Mode;
+  junction: boolean;
+}
+
 export interface MasterySource {
   unique_name: string;
   name: string;
@@ -18,6 +28,8 @@ export interface MasterySource {
   unobtainable: Unobtainable | null;
   /** Settings exclude the class: the source sits in the Unobtainable bucket, outside `total`. */
   excluded: boolean;
+  /** Present on star chart rows only, where `cap` is 1 and `earned_rank` is 0 or 1. */
+  node?: NodeInfo;
 }
 
 export interface MasteryCounts {
@@ -52,7 +64,7 @@ export interface MasteryProvenance {
 }
 
 export type Stage = "level_claim" | "acquire";
-export type Action = "level" | "claim" | "spend" | "buy";
+export type Action = "level" | "claim" | "spend" | "buy" | "complete" | "unlock";
 export type Access = "available" | "blocked" | "unknown";
 
 export interface VendorOffer {

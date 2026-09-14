@@ -4,21 +4,40 @@ use tauri::State;
 use crate::app_state::{AppState, CorrectionEntry};
 use crate::catalogue::fix_category;
 use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache};
+use crate::mastery_nodes;
 use crate::mastery_progress::{PlayerProgress, Provenance, ProvenanceState};
 use crate::mastery_rules::{self, Unobtainable};
 use crate::monitor::CraftingJob;
 use crate::settings::read_settings_map;
 use crate::wfcd::{RecipeComponent, SyndicateOffer, WfcdItem};
 
-const COLLECTION_CATEGORIES: [&str; 10] = [
+const COLLECTION_CATEGORIES: [&str; 11] = [
     "Warframes", "Primary", "Secondary", "Melee", "Operator Weapons",
-    "Archwing", "Companions", "Companion Weapons", "Vehicles", "Intrinsics",
+    "Archwing", "Companions", "Companion Weapons", "Vehicles", "Intrinsics", STAR_CHART,
 ];
+
+const STAR_CHART: &str = "Star Chart";
 
 #[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum MasteryState { Mastered, Partial, Missing, Unknown }
 
+#[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Mode { Normal, SteelPath }
+
+/// A node's normal and Steel Path clears are two sources. The row's
+/// `unique_name` is the node key, with `/steel_path` appended for the Steel
+/// Path row.
+#[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct NodeInfo {
+    pub(crate) key: &'static str,
+    pub(crate) planet: &'static str,
+    pub(crate) mode: Mode,
+    pub(crate) junction: bool,
+}
+
+/// A star chart row has `cap` 1 and an `earned_rank` of 0 or 1.
 #[derive(serde::Serialize, Clone, Debug)]
 pub(crate) struct MasterySource {
     pub(crate) unique_name: String,
@@ -35,6 +54,8 @@ pub(crate) struct MasterySource {
     /// Settings exclude the class: the source sits in the Unobtainable
     /// bucket, outside `total`, with its progress still shown.
     pub(crate) excluded: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) node: Option<NodeInfo>,
 }
 
 /// `unobtainable` counts excluded sources and is not part of `total`.
@@ -71,7 +92,7 @@ pub(crate) struct MasteryCategory {
     pub(crate) sources: Vec<MasterySource>,
 }
 
-/// Nodes and junctions have no extraction yet and stay Unknown.
+/// Nodes and junctions share the `Missions` observation.
 #[derive(serde::Serialize, Clone, Copy, Default, Debug)]
 pub(crate) struct MasteryProvenance {
     pub(crate) equipment: Provenance,
@@ -87,7 +108,7 @@ pub(crate) enum Stage { LevelClaim, Acquire }
 
 #[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Action { Level, Claim, Spend, Buy }
+pub(crate) enum Action { Level, Claim, Spend, Buy, Complete, Unlock }
 
 #[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -241,14 +262,37 @@ fn vendor_offers(source: &str, offers: &HashMap<String, Vec<SyndicateOffer>>) ->
     vendors
 }
 
+/// A junction that is not cleared blocks everything on the planet behind it.
+/// Past that gate nothing observed says whether a node is unlocked, so its
+/// access is Unknown.
+fn node_opportunity(source: &MasterySource, node: &NodeInfo, sources: &HashMap<&str, &MasterySource>) -> Option<Opportunity> {
+    // An Unknown row (every Steel Path row, or no Missions field) has no
+    // evidence of anything left to do.
+    if source.state != MasteryState::Missing { return None; }
+    let gate = mastery_nodes::PLANETS.iter().find(|p| p.name == node.planet).and_then(|p| p.gate);
+    let (access, blockers) = match gate.and_then(|gate| sources.get(gate)).filter(|g| g.state == MasteryState::Missing) {
+        Some(gate) => (Access::Blocked, vec![format!("{} not cleared", gate.name)]),
+        None if node.junction => (Access::Unknown, vec!["Junction tasks not observed".into()]),
+        None => (Access::Unknown, vec!["Node unlock not observed".into()]),
+    };
+    Some(Opportunity {
+        source: source.clone(), stage: Stage::Acquire,
+        action: if node.junction { Action::Unlock } else { Action::Complete },
+        owned: false, owned_level: None, build_completion_ms: None, vendors: vec![], spend: None, access, blockers,
+    })
+}
+
 pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Opportunity> {
     let blueprint_results = blueprint_results(observed.recipes);
     let building: HashMap<&str, i64> = observed.crafting.iter()
         .map(|job| (blueprint_results.get(job.unique_name.as_str()).copied().unwrap_or(&job.unique_name), job.completion_ms))
         .collect();
+    let by_name: HashMap<&str, &MasterySource> = overview.categories.iter().flat_map(|c| &c.sources)
+        .map(|s| (s.unique_name.as_str(), s)).collect();
     let mut opportunities: Vec<Opportunity> = overview.categories.iter().flat_map(|c| &c.sources)
         .filter(|s| !s.excluded && s.state != MasteryState::Mastered)
         .filter_map(|source| {
+            if let Some(node) = &source.node { return node_opportunity(source, node, &by_name); }
             if let Some(system) = mastery_rules::intrinsic_system(&source.unique_name) {
                 let spend = plan_spend(system, observed.skills?)?;
                 return Some(Opportunity {
@@ -269,6 +313,7 @@ pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Op
             let (access, blockers) = match action {
                 Action::Level => (Access::Available, vec![]),
                 Action::Spend => unreachable!("Intrinsic rows returned above"),
+                Action::Complete | Action::Unlock => unreachable!("star chart rows returned above"),
                 Action::Claim if build_completion_ms.is_some_and(|done| done > observed.now_ms) => (Access::Blocked, vec!["Still building".into()]),
                 Action::Claim => (Access::Available, vec![]),
                 Action::Buy => {
@@ -370,6 +415,7 @@ pub(crate) fn build_mastery_overview(
             state: MasteryState::Unknown,
             unobtainable: correction.and_then(|c| c.unobtainable),
             excluded: correction.and_then(|c| c.unobtainable).is_some_and(|class| excluded.contains(&class)),
+            node: None,
         });
     }
 
@@ -393,14 +439,7 @@ pub(crate) fn build_mastery_overview(
     for source in sources.into_values() {
         let rank = affinity.get(source.unique_name.as_str())
             .map(|&earned| mastery_rules::xp_to_rank(earned, &source.unique_name).min(source.cap));
-        // An Unconfirmed record came from a cache that dropped rank-0 rows, so
-        // absence there says nothing.
-        let rank = match (equipment.state, rank) {
-            (ProvenanceState::Unknown, _) | (ProvenanceState::Unconfirmed, None) => None,
-            (ProvenanceState::Confirmed, None) => Some(0),
-            (_, Some(rank)) => Some(rank),
-        };
-        place(source, rank);
+        place(source, equipment.resolve(rank, 0));
     }
     for system in &mastery_rules::INTRINSIC_SYSTEMS {
         let source = MasterySource {
@@ -415,16 +454,49 @@ pub(crate) fn build_mastery_overview(
             state: MasteryState::Unknown,
             unobtainable: None,
             excluded: false,
+            node: None,
         };
         let rank = progress.filter(|p| p.intrinsics.state != ProvenanceState::Unknown)
             .map(|p| system.track_ranks(&p.skills).iter().sum());
         place(source, rank);
     }
-    categories.retain(|c| !c.sources.is_empty());
+    // Equipment sorts by name. The star chart rows keep the table's chart
+    // order, which is why they are pushed after this sort.
     for category in &mut categories {
         category.sources.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.unique_name.cmp(&b.unique_name)));
     }
-    MasteryOverview { counts, categories, provenance: MasteryProvenance { equipment, intrinsics, ..Default::default() }, opportunities: vec![] }
+
+    let nodes = progress.map(|p| p.nodes).unwrap_or_default();
+    let chart = categories.iter_mut().find(|c| c.category == STAR_CHART).expect("category comes from COLLECTION_CATEGORIES");
+    for node in mastery_nodes::all() {
+        let completes = progress.and_then(|p| p.missions.get(node.key)).map(|m| m.completes > 0);
+        // TODO: the Steel Path row waits on the meaning of `Tier`. Until then
+        // a node first cleared on the Steel Path also reads as cleared here.
+        let cleared = nodes.resolve(completes, false);
+        for mode in [Mode::Normal, Mode::SteelPath] {
+            let cleared = if mode == Mode::Normal { cleared } else { None };
+            let source = MasterySource {
+                unique_name: match mode { Mode::Normal => node.key.into(), Mode::SteelPath => format!("{}/steel_path", node.key) },
+                name: node.name.into(),
+                category: STAR_CHART.into(),
+                image_name: None,
+                mastery_req: None,
+                cap: 1,
+                earned_rank: cleared.map(u32::from),
+                remaining_mastery: cleared.filter(|_| node.junction).map(|done| if done { 0 } else { mastery_nodes::JUNCTION_MASTERY }),
+                state: match cleared { Some(true) => MasteryState::Mastered, Some(false) => MasteryState::Missing, None => MasteryState::Unknown },
+                unobtainable: None,
+                excluded: false,
+                node: Some(NodeInfo { key: node.key, planet: node.planet.name, mode, junction: node.junction }),
+            };
+            chart.counts.add(&source);
+            counts.add(&source);
+            chart.sources.push(source);
+        }
+    }
+    categories.retain(|c| !c.sources.is_empty());
+    let provenance = MasteryProvenance { equipment, intrinsics, nodes, junctions: nodes };
+    MasteryOverview { counts, categories, provenance, opportunities: vec![] }
 }
 
 /// Inventory display categories file modular chambers, decks and mechs under
@@ -446,6 +518,7 @@ fn collection_category(item_type: &str, display_category: &str) -> Option<&'stat
 mod tests {
     use super::*;
     use crate::mastery_progress::{PlayerProgress, Provenance, ProvenanceState};
+    use crate::memory_scanner::BlobMission;
     use crate::wfcd::{RecipeComponent, SyndicateOffer};
 
     const ORION: &str = "/Lotus/Powersuits/SiriusOrion/OrionSuit";
@@ -537,6 +610,21 @@ mod tests {
         }
     }
 
+    fn with_missions(mut progress: PlayerProgress, cleared: &[(&str, u32, Option<u32>)]) -> PlayerProgress {
+        progress.missions = cleared.iter()
+            .map(|(key, completes, tier)| ((*key).to_string(), BlobMission { completes: *completes, tier: *tier }))
+            .collect();
+        progress.nodes = progress.equipment;
+        progress
+    }
+
+    /// Every node and junction counts once per mode.
+    const CHART_ROWS: u32 = 2 * 265;
+
+    fn star_chart(overview: &MasteryOverview) -> &MasteryCategory {
+        overview.categories.iter().find(|c| c.category == "Star Chart").expect("star chart listed")
+    }
+
     fn with_skills(mut progress: PlayerProgress, state: ProvenanceState, skills: &[(&str, i64)]) -> PlayerProgress {
         progress.skills = skills.iter().map(|(field, value)| ((*field).to_string(), *value)).collect();
         progress.intrinsics = Provenance { state, observed_at: Some(2_000) };
@@ -566,7 +654,7 @@ mod tests {
         let overview = build_mastery_overview(&catalog(), &corrections(), Some(&observed(ProvenanceState::Confirmed, Some(1_000), &[])), &HashSet::new());
         let categories: Vec<&str> = overview.categories.iter().map(|c| c.category.as_str()).collect();
         assert_eq!(categories, ["Warframes", "Primary", "Secondary", "Melee", "Operator Weapons",
-            "Archwing", "Companions", "Companion Weapons", "Vehicles", "Intrinsics"]);
+            "Archwing", "Companions", "Companion Weapons", "Vehicles", "Intrinsics", "Star Chart"]);
         assert_eq!(names(&overview, "Warframes"), ["Sirius & Orion"]);
         assert_eq!(source(&overview, SIRIUS).category, "Warframes");
         assert_eq!(names(&overview, "Primary"), ["Braton", "Kuva Karak"]);
@@ -578,7 +666,7 @@ mod tests {
         assert_eq!(names(&overview, "Companion Weapons"), ["Sweeper"]);
         assert_eq!(names(&overview, "Vehicles"), ["Bad Baby", "Voidrig"]);
         assert_eq!(names(&overview, "Intrinsics"), ["Drifter", "Railjack"]);
-        assert_eq!(overview.counts.total, 18);
+        assert_eq!(overview.counts.total, 18 + CHART_ROWS);
         let all: Vec<&str> = overview.categories.iter().flat_map(|c| &c.sources).map(|s| s.unique_name.as_str()).collect();
         assert_eq!(all.len(), all.iter().collect::<std::collections::HashSet<_>>().len());
         for absent in [ORION, GRIMOIRE_ALIAS, ZAW_WEAPON, VINQUIBUS_MELEE] {
@@ -603,7 +691,55 @@ mod tests {
         assert_eq!(source(&overview, MECH).remaining_mastery, Some(8_000));
         let primary = overview.categories.iter().find(|c| c.category == "Primary").expect("primary");
         assert_eq!(primary.counts, MasteryCounts { total: 2, mastered: 1, partial: 1, missing: 0, unknown: 0, unobtainable: 0 });
-        assert_eq!(overview.counts, MasteryCounts { total: 18, mastered: 2, partial: 2, missing: 12, unknown: 2, unobtainable: 0 });
+        assert_eq!(overview.counts, MasteryCounts { total: 18 + CHART_ROWS, mastered: 2, partial: 2, missing: 12, unknown: 2 + CHART_ROWS, unobtainable: 0 });
+    }
+
+    /// Completion is the only fact a `Missions` entry establishes: a node
+    /// absent from a confirmed array is Missing, and the tier says nothing
+    /// about the Steel Path row until its meaning is verified.
+    #[test]
+    fn star_chart_rows_follow_the_confirmed_missions_field() {
+        let progress = with_missions(observed(ProvenanceState::Confirmed, Some(1_000), &[]), &[
+            ("SolNode27", 14, Some(1)), ("EarthToVenusJunction", 2, None), ("SolNode239", 1, Some(1)),
+        ]);
+        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        assert_eq!(overview.provenance.nodes, Provenance { state: ProvenanceState::Confirmed, observed_at: Some(1_000) });
+        assert_eq!(overview.provenance.junctions, overview.provenance.nodes);
+
+        let e_prime = source(&overview, "SolNode27");
+        assert_eq!((e_prime.name.as_str(), e_prime.category.as_str(), e_prime.earned_rank, e_prime.state), ("E Prime", "Star Chart", Some(1), MasteryState::Mastered));
+        let node = e_prime.node.as_ref().expect("node info");
+        assert_eq!((node.key, node.planet, node.mode, node.junction), ("SolNode27", "Earth", Mode::Normal, false));
+        let steel = source(&overview, "SolNode27/steel_path");
+        assert_eq!((steel.earned_rank, steel.state, steel.node.as_ref().map(|n| n.mode)), (None, MasteryState::Unknown, Some(Mode::SteelPath)));
+        let junction = source(&overview, "EarthToVenusJunction");
+        assert_eq!((junction.name.as_str(), junction.state, junction.node.as_ref().map(|n| n.junction)), ("Venus Junction", MasteryState::Mastered, Some(true)));
+        let mariana = source(&overview, "SolNode89");
+        assert_eq!((mariana.earned_rank, mariana.state), (Some(0), MasteryState::Missing));
+        assert!(overview.categories.iter().flat_map(|c| &c.sources).all(|s| s.unique_name != "SolNode239"), "a key outside the table is not a source");
+
+        let chart = star_chart(&overview);
+        assert_eq!(chart.counts, MasteryCounts { total: CHART_ROWS, mastered: 2, partial: 0, missing: 263, unknown: 265, unobtainable: 0 });
+        assert_eq!(overview.counts.total, 18 + CHART_ROWS);
+        let venus: Vec<(&str, Mode)> = chart.sources.iter()
+            .filter(|s| s.node.as_ref().is_some_and(|n| n.planet == "Venus"))
+            .map(|s| (s.name.as_str(), s.node.as_ref().expect("node").mode)).take(5).collect();
+        assert_eq!(venus, [
+            ("Mercury Junction", Mode::Normal), ("Mercury Junction", Mode::SteelPath),
+            ("Aphrodite", Mode::Normal), ("Aphrodite", Mode::SteelPath), ("Cytherean", Mode::Normal),
+        ], "junctions lead their planet, nodes follow by name, each mode paired");
+        assert_eq!(overview.categories.last().map(|c| c.category.as_str()), Some("Star Chart"));
+    }
+
+    #[test]
+    fn missions_field_absent_leaves_every_star_chart_row_unknown() {
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(BRATON, 450_000)]);
+        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        assert_eq!(overview.provenance.nodes, Provenance::default());
+        assert_eq!(source(&overview, BRATON).state, MasteryState::Mastered);
+        let chart = star_chart(&overview);
+        assert!(chart.sources.iter().all(|s| s.state == MasteryState::Unknown && s.earned_rank.is_none()));
+        assert_eq!(chart.counts.unknown, CHART_ROWS);
     }
 
     #[test]
@@ -611,7 +747,7 @@ mod tests {
         let overview = build_mastery_overview(&catalog(), &corrections(), None, &HashSet::new());
         assert!(overview.categories.iter().flat_map(|c| &c.sources)
             .all(|s| s.state == MasteryState::Unknown && s.earned_rank.is_none() && s.remaining_mastery.is_none()));
-        assert_eq!(overview.counts, MasteryCounts { total: 18, mastered: 0, partial: 0, missing: 0, unknown: 18, unobtainable: 0 });
+        assert_eq!(overview.counts, MasteryCounts { total: 18 + CHART_ROWS, mastered: 0, partial: 0, missing: 0, unknown: 18 + CHART_ROWS, unobtainable: 0 });
         for kind in [overview.provenance.equipment, overview.provenance.intrinsics, overview.provenance.nodes, overview.provenance.junctions] {
             assert_eq!(kind, Provenance::default());
         }
@@ -625,7 +761,7 @@ mod tests {
         assert_eq!((source(&overview, BRATON).earned_rank, source(&overview, BRATON).state), (Some(30), MasteryState::Mastered));
         assert_eq!((source(&overview, KUVA).earned_rank, source(&overview, KUVA).state), (Some(35), MasteryState::Partial));
         assert_eq!((source(&overview, CHAMBER).earned_rank, source(&overview, CHAMBER).state), (None, MasteryState::Unknown));
-        assert_eq!(overview.counts, MasteryCounts { total: 18, mastered: 1, partial: 1, missing: 0, unknown: 16, unobtainable: 0 });
+        assert_eq!(overview.counts, MasteryCounts { total: 18 + CHART_ROWS, mastered: 1, partial: 1, missing: 0, unknown: 16 + CHART_ROWS, unobtainable: 0 });
     }
 
     #[test]
@@ -670,7 +806,7 @@ mod tests {
         let plexus = source(&overview, PLEXUS);
         assert_eq!((plexus.cap, plexus.earned_rank, plexus.state), (30, Some(25), MasteryState::Partial));
         assert_eq!((plexus.image_name.as_deref(), plexus.mastery_req), (None, None));
-        assert_eq!(overview.counts.total, 19);
+        assert_eq!(overview.counts.total, 19 + CHART_ROWS);
 
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
         let overview = build_mastery_overview(&catalog(), &corrections, Some(&progress), &HashSet::new());
@@ -695,7 +831,7 @@ mod tests {
         let all: HashSet<Unobtainable> = Unobtainable::ALL.into();
 
         let overview = build_mastery_overview(&items, &corrections, Some(&progress), &all);
-        assert_eq!(overview.counts, MasteryCounts { total: 17, mastered: 0, partial: 0, missing: 15, unknown: 2, unobtainable: 3 });
+        assert_eq!(overview.counts, MasteryCounts { total: 17 + CHART_ROWS, mastered: 0, partial: 0, missing: 15, unknown: 2 + CHART_ROWS, unobtainable: 3 });
         let excalibur = source(&overview, EXCALIBUR_PRIME);
         assert_eq!((excalibur.excluded, excalibur.unobtainable), (true, Some(Unobtainable::Founders)));
         assert_eq!((excalibur.state, excalibur.earned_rank), (MasteryState::Mastered, Some(30)));
@@ -707,11 +843,11 @@ mod tests {
             excluded.remove(&class);
             let overview = build_mastery_overview(&items, &corrections, Some(&progress), &excluded);
             assert_eq!((source(&overview, path).excluded, source(&overview, path).unobtainable), (false, Some(class)));
-            assert_eq!((overview.counts.total, overview.counts.unobtainable), (18, 2), "{class:?}");
+            assert_eq!((overview.counts.total, overview.counts.unobtainable), (18 + CHART_ROWS, 2), "{class:?}");
         }
 
         let overview = build_mastery_overview(&items, &corrections, Some(&progress), &HashSet::new());
-        assert_eq!(overview.counts, MasteryCounts { total: 20, mastered: 1, partial: 0, missing: 17, unknown: 2, unobtainable: 0 });
+        assert_eq!(overview.counts, MasteryCounts { total: 20 + CHART_ROWS, mastered: 1, partial: 0, missing: 17, unknown: 2 + CHART_ROWS, unobtainable: 0 });
     }
 
     fn with_suggestions(items: &[WfcdItem], corrections: &HashMap<String, CorrectionEntry>, progress: Option<&PlayerProgress>, excluded: &HashSet<Unobtainable>, observed: &Observed) -> MasteryOverview {
@@ -848,6 +984,43 @@ mod tests {
     }
 
     #[test]
+    fn nodes_suggest_complete_and_unlock_with_junction_gates_as_the_only_blockers() {
+        let owned = HashMap::new();
+        let levels = HashMap::new();
+        let recipes = HashMap::new();
+        let offers = HashMap::new();
+        let progress = with_missions(observed(ProvenanceState::Confirmed, Some(1_000), &[]), &[
+            ("EarthToVenusJunction", 1, None), ("SolNode27", 1, None),
+        ]);
+        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
+            &observed_gear(&owned, &levels, &[], &recipes, &offers, Some(2)));
+        let nodes: Vec<&Opportunity> = overview.opportunities.iter().filter(|o| o.source.node.is_some()).collect();
+        assert_eq!(nodes.len(), 265 - 2, "every missing normal row; Steel Path rows are Unknown and absent");
+        assert!(nodes.iter().all(|o| o.stage == Stage::Acquire && !o.owned && o.vendors.is_empty()));
+        let find = |name: &str| nodes.iter().find(|o| o.source.name == name).unwrap_or_else(|| panic!("{name} suggested"));
+        assert_eq!(nodes.iter().take(2).map(|o| o.source.name.as_str()).collect::<Vec<_>>(), ["Ceres Junction", "Eris Junction"],
+            "junctions carry known mastery and lead the stage");
+        let mercury = find("Mercury Junction");
+        assert_eq!((mercury.action, mercury.source.remaining_mastery, mercury.access), (Action::Unlock, Some(1_000), Access::Unknown));
+        assert_eq!(mercury.blockers, ["Junction tasks not observed"]);
+        let mars = find("Mars Junction");
+        assert_eq!((mars.action, mars.access), (Action::Unlock, Access::Unknown));
+        let aphrodite = find("Aphrodite");
+        assert_eq!((aphrodite.action, aphrodite.source.remaining_mastery, aphrodite.access), (Action::Complete, None, Access::Unknown));
+        assert_eq!(aphrodite.blockers, ["Node unlock not observed"]);
+        let apollodorus = find("Apollodorus");
+        assert_eq!((apollodorus.action, apollodorus.access), (Action::Complete, Access::Blocked));
+        assert_eq!(apollodorus.blockers, ["Mercury Junction not cleared"]);
+        let ceres = find("Ceres Junction");
+        assert_eq!((ceres.access, ceres.blockers.clone()), (Access::Blocked, vec!["Mars Junction not cleared".to_string()]));
+        assert!(nodes.iter().all(|o| o.source.name != "E Prime" && o.source.name != "Venus Junction"), "cleared rows are not suggested");
+
+        let unknown = with_suggestions(&catalog(), &corrections(), Some(&observed(ProvenanceState::Confirmed, Some(1_000), &[])), &HashSet::new(),
+            &observed_gear(&owned, &levels, &[], &recipes, &offers, Some(2)));
+        assert!(unknown.opportunities.iter().all(|o| o.source.node.is_none()), "no Missions field: nothing to suggest");
+    }
+
+    #[test]
     fn one_result_per_source_keeps_the_other_routes_as_details() {
         let owned = HashMap::new();
         let levels: HashMap<String, Vec<u32>> = [(KUVA.to_string(), vec![10])].into();
@@ -896,7 +1069,7 @@ mod tests {
         for system in [RAILJACK, DRIFTER] {
             assert_eq!((source(&overview, system).earned_rank, source(&overview, system).state), (None, MasteryState::Unknown), "{system}");
         }
-        assert_eq!(overview.counts.unknown, 2);
+        assert_eq!(overview.counts.unknown, 2 + CHART_ROWS);
     }
 
     /// Worked by hand from the wiki's cost tables. 18 of the 20 Railjack
