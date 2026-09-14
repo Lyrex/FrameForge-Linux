@@ -85,9 +85,21 @@ struct MasteryProgressCache {
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-enum Owner {
+pub(crate) enum Owner {
     Unassigned,
     Player(String),
+}
+
+impl Owner {
+    /// An unstamped cache predates the stamp and stays trusted, so
+    /// upgrading does not blank suggestions until the next scan.
+    pub(crate) fn trusts_inventory(&self, cache_player: Option<&str>) -> bool {
+        match (self, cache_player) {
+            (_, None) => true,
+            (Owner::Player(owner), Some(player)) => owner == player,
+            (Owner::Unassigned, Some(_)) => false,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -221,7 +233,7 @@ impl MasteryProgress {
         self.write_blocked = false;
     }
 
-    fn owner(&self, name: Option<&str>) -> Owner {
+    pub(crate) fn owner(&self, name: Option<&str>) -> Owner {
         match name.or(self.cache.last_seen_player.as_deref()) {
             Some(player) => Owner::Player(player.to_string()),
             None => Owner::Unassigned,
@@ -531,6 +543,19 @@ mod tests {
         let reloaded = MasteryProgress::load(path.clone(), &InventoryStateCache::default());
         let a = reloaded.current(Some("A")).expect("A survives restart");
         assert_eq!((a.skills.clone(), a.intrinsics.observed_at), (skills, Some(1_060)));
+        std::fs::remove_file(path).expect("test cache removable");
+    }
+
+    #[test]
+    fn inventory_is_trusted_only_when_stamped_for_the_progress_owner_or_not_at_all() {
+        let (path, mut progress) = fresh("inventory-owner");
+        assert!(progress.owner(None).trusts_inventory(None), "pre-stamp cache, nobody seen");
+        assert!(!progress.owner(None).trusts_inventory(Some("A")), "A's scan, nobody seen: not ours");
+        progress.select_player(Some("A"));
+        assert!(progress.owner(None).trusts_inventory(Some("A")), "resolves through the last seen player");
+        assert!(progress.owner(Some("B")).trusts_inventory(None), "pre-stamp cache is trusted as before");
+        assert!(!progress.owner(Some("B")).trusts_inventory(Some("A")), "A's scan must not serve B");
+        assert!(progress.owner(Some("B")).trusts_inventory(Some("B")));
         std::fs::remove_file(path).expect("test cache removable");
     }
 }
