@@ -12,7 +12,7 @@ use crate::mastery_rules::{self, Unobtainable};
 use crate::monitor::CraftingJob;
 use crate::resolver::slug_variants;
 use crate::settings::read_settings_map;
-use crate::wfcd::{RecipeComponent, SyndicateOffer, WfcdItem};
+use crate::wfcd::{DropLocation, RecipeComponent, SyndicateOffer, WfcdItem};
 use crate::wfm::{to_wfm_slug, PriceQuote};
 
 const COLLECTION_CATEGORIES: [&str; 11] = [
@@ -211,6 +211,26 @@ pub(crate) struct Purchase {
     pub(crate) full_purchase: Option<Cost>,
 }
 
+#[derive(serde::Serialize, Clone, PartialEq, Debug)]
+pub(crate) struct DropPart {
+    pub(crate) unique_name: String,
+    pub(crate) name: String,
+    pub(crate) needed: u32,
+    /// Sorted with the best chance first and cut at `DROP_LOCATIONS_SHOWN`.
+    pub(crate) locations: Vec<DropLocation>,
+}
+
+/// Drop locations for the shortages the relic route leaves out. Each
+/// location is a plain label with its own chance, and nothing estimates the
+/// whole item. A resource such as Orokin Cell lists over a hundred rotations,
+/// so a part keeps only its best few.
+#[derive(serde::Serialize, Clone, PartialEq, Debug)]
+pub(crate) struct DropRoute {
+    pub(crate) parts: Vec<DropPart>,
+}
+
+const DROP_LOCATIONS_SHOWN: usize = 5;
+
 #[derive(serde::Serialize, Clone, Debug)]
 pub(crate) struct Opportunity {
     #[serde(flatten)]
@@ -232,6 +252,9 @@ pub(crate) struct Opportunity {
     /// chance covers those parts only, and the other shortages stay in
     /// `craft`.
     pub(crate) relic: Option<RelicRoute>,
+    /// Present when a shortage outside the relic route has a known drop
+    /// location.
+    pub(crate) drop: Option<DropRoute>,
     pub(crate) purchase: Option<Purchase>,
 }
 
@@ -256,6 +279,8 @@ pub(crate) struct Observed<'a> {
     /// The record's `PlayerSkills`, or `None` while Intrinsics are Unknown.
     pub(crate) skills: Option<&'a HashMap<String, i64>>,
     pub(crate) relics: &'a Relics,
+    /// Holds every non-relic drop location by item or component `unique_name`.
+    pub(crate) drops: &'a HashMap<String, Vec<DropLocation>>,
     pub(crate) tradeable: &'a HashSet<String>,
     /// Holds every quote by slug, expired ones included.
     pub(crate) quotes: &'a HashMap<String, PriceQuote>,
@@ -326,6 +351,7 @@ fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Ob
     let crafting = state.current_crafting.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let recipes = state.recipes.lock().unwrap_or_else(|e| e.into_inner());
     let offers = state.syndicate_catalog.lock().unwrap_or_else(|e| e.into_inner());
+    let drops = state.drop_locations.lock().unwrap_or_else(|e| e.into_inner());
     f(overview, Some(&Observed {
         owned: &inventory.unique_quantities(),
         stock: &stock,
@@ -336,6 +362,7 @@ fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Ob
         offers: &offers,
         skills: skills.as_ref(),
         relics: &relics,
+        drops: &drops,
         tradeable: &tradeable,
         quotes: &state.wfm.quotes(),
         now_ms: chrono::Utc::now().timestamp_millis(),
@@ -415,7 +442,7 @@ fn node_opportunity(source: &MasterySource, node: &NodeInfo, sources: &HashMap<&
     Some(Opportunity {
         source: source.clone(), stage: Stage::Acquire,
         action: if node.junction { Action::Unlock } else { Action::Complete },
-        owned: false, owned_level: None, build_completion_ms: None, vendors: vec![], spend: None, access, blockers, craft: None, relic: None, purchase: None,
+        owned: false, owned_level: None, build_completion_ms: None, vendors: vec![], spend: None, access, blockers, craft: None, relic: None, drop: None, purchase: None,
     })
 }
 
@@ -451,7 +478,7 @@ impl<'a> Rows<'a> {
             return Some(Opportunity {
                 source: source.clone(), stage: Stage::LevelClaim, action: Action::Spend,
                 owned: false, owned_level: None, build_completion_ms: None, vendors: vec![], spend: Some(spend),
-                access: Access::Available, blockers: vec![], craft: None, relic: None, purchase: None,
+                access: Access::Available, blockers: vec![], craft: None, relic: None, drop: None, purchase: None,
             });
         }
         let owned_level = observed.owned_levels.get(&source.unique_name).and_then(|levels| levels.iter().max().copied());
@@ -466,7 +493,7 @@ impl<'a> Rows<'a> {
             else { return None };
         Some(Opportunity {
             source: source.clone(), stage: Stage::Acquire, action, owned, owned_level, build_completion_ms, vendors, spend: None,
-            access: Access::Available, blockers: vec![], craft: None, relic: None, purchase: None,
+            access: Access::Available, blockers: vec![], craft: None, relic: None, drop: None, purchase: None,
         })
     }
 }
@@ -479,6 +506,7 @@ fn settle<'a>(o: &mut Opportunity, ledger: &mut Ledger<'a>, observed: &Observed<
             else if !o.vendors.is_empty() { Action::Buy }
             else { Action::Farm };
         o.relic = observed.relics.route(&plan);
+        o.drop = drop_route(&plan, o.relic.as_ref(), observed.drops);
         o.craft = Some(plan);
     }
     if matches!(o.action, Action::Spend | Action::Complete | Action::Unlock) { return; }
@@ -796,6 +824,20 @@ fn by_mastery_then_name(a: &Opportunity, b: &Opportunity) -> std::cmp::Ordering 
     .then_with(|| a.source.unique_name.cmp(&b.source.unique_name))
 }
 
+fn drop_route(plan: &CraftPlan, relic: Option<&RelicRoute>, drops: &HashMap<String, Vec<DropLocation>>) -> Option<DropRoute> {
+    let parts: Vec<DropPart> = plan.shortages()
+        .filter(|r| !relic.is_some_and(|route| route.parts.iter().any(|p| p.unique_name == r.unique_name)))
+        .filter_map(|r| {
+            let mut locations = drops.get(&r.unique_name)?.clone();
+            locations.sort_by(|a, b| b.chance.partial_cmp(&a.chance).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.location.cmp(&b.location)));
+            locations.truncate(DROP_LOCATIONS_SHOWN);
+            Some(DropPart { unique_name: r.unique_name.clone(), name: r.name.clone(), needed: r.short, locations })
+        })
+        .collect();
+    if parts.is_empty() { return None; }
+    Some(DropRoute { parts })
+}
+
 fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<Blocker>) {
     let mut access = Access::Available;
     let mut blockers = vec![];
@@ -827,8 +869,10 @@ fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<Blocker>) {
                 Action::Trade => {}
                 _ => {
                     let plan = o.craft.as_ref().expect("a farm row carries its plan");
-                    let relic_parts: Vec<&str> = o.relic.iter().flat_map(|r| &r.parts).map(|p| p.unique_name.as_str()).collect();
-                    if plan.shortages().any(|r| !relic_parts.contains(&r.unique_name.as_str())) {
+                    let located: Vec<&str> = o.relic.iter().flat_map(|r| &r.parts).map(|p| p.unique_name.as_str())
+                        .chain(o.drop.iter().flat_map(|r| &r.parts).map(|p| p.unique_name.as_str()))
+                        .collect();
+                    if plan.shortages().any(|r| !located.contains(&r.unique_name.as_str())) {
                         note(Access::Unknown, Blocker::DropSourcesUnknown);
                     }
                 }
@@ -1347,9 +1391,10 @@ mod tests {
     static NO_RELICS: LazyLock<Relics> = LazyLock::new(Relics::default);
     static NO_MARKET: LazyLock<HashSet<String>> = LazyLock::new(HashSet::new);
     static NO_QUOTES: LazyLock<HashMap<String, PriceQuote>> = LazyLock::new(HashMap::new);
+    static NO_DROPS: LazyLock<HashMap<String, Vec<DropLocation>>> = LazyLock::new(HashMap::new);
 
     fn observed_gear<'a>(owned: &'a HashMap<String, i64>, owned_levels: &'a HashMap<String, Vec<u32>>, crafting: &'a [CraftingJob], recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, mastery_rank: Option<u32>) -> Observed<'a> {
-        Observed { owned, stock: &NO_STOCK, owned_levels, mastery_rank, crafting, recipes, offers, skills: None, relics: &NO_RELICS, tradeable: &NO_MARKET, quotes: &NO_QUOTES, now_ms: 1_000_000 }
+        Observed { owned, stock: &NO_STOCK, owned_levels, mastery_rank, crafting, recipes, offers, skills: None, relics: &NO_RELICS, drops: &NO_DROPS, tradeable: &NO_MARKET, quotes: &NO_QUOTES, now_ms: 1_000_000 }
     }
 
     fn observed_skills<'a>(progress: &'a PlayerProgress, recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, owned: &'a HashMap<String, i64>, levels: &'a HashMap<String, Vec<u32>>) -> Observed<'a> {
@@ -1820,6 +1865,67 @@ mod tests {
 
         // Sweeper has neither recipe nor vendor nor market, so it gets no row.
         assert!(!overview.opportunities.iter().any(|o| o.source.unique_name == SWEEPER));
+    }
+
+    #[test]
+    fn drop_locations_route_a_farm_and_lift_the_unknown_blocker() {
+        use crate::mastery_relics::Coverage;
+        use crate::wfcd::RelicReward;
+        const SIRIUS_BP: &str = "/Lotus/Types/Recipes/WarframeRecipes/SiriusOrionBlueprint";
+        const BRATON_BP: &str = "/Lotus/Types/Recipes/Weapons/BratonBlueprint";
+        const LITH: &str = "/Lotus/Types/Game/Projections/T1VoidProjectionGBronze";
+        let owned = HashMap::new();
+        let levels = HashMap::new();
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [recipe(SIRIUS, SIRIUS_BP), recipe(BRATON, BRATON_BP)].into_iter()
+            .map(|(source, mut components)| { components.retain(|c| c.unique_name != CHASSIS); (source, components) })
+            .collect();
+        let offers = HashMap::new();
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
+        let stock: HashMap<String, i64> = [(FERRITE, 1_000), (CREDITS_PATH, 100_000)]
+            .into_iter().map(|(path, n)| (path.to_string(), n)).collect();
+        let at = |location: &str, chance: Option<f64>| DropLocation { location: location.into(), chance };
+        // The seven locations arrive unsorted, and the cut at five drops the
+        // 1% cache and the chanceless vendor.
+        let drops: HashMap<String, Vec<DropLocation>> = [(SIRIUS_BP.to_string(), vec![
+            at("Cephalon Simaris", None),
+            at("Earth/Mantle (Capture)", Some(7.5)),
+            at("Corrupted Vor", Some(50.0)),
+            at("Venus/Orb Vallis Bounty, Rotation B", Some(33.33)),
+            at("Venus/Orb Vallis Bounty, Rotation A", Some(33.33)),
+            at("Hallowed Flame Mission Caches", Some(1.0)),
+            at("Saturn/Titan (Survival), Rotation C", Some(12.5)),
+        ])].into();
+        let observed_stock = Observed { stock: &stock, drops: &drops, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
+        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
+        let row = |name: &str| overview.opportunities.iter().find(|o| o.source.name == name).expect("listed");
+        let braton = row("Braton");
+        assert_eq!((braton.action, braton.access, braton.blockers.clone()), (Action::Farm, Access::Unknown, vec![Blocker::DropSourcesUnknown]));
+        assert!(braton.drop.is_none());
+        // A located drop leaves the row in the Craft stage, since only a relic
+        // farm moves to Acquire.
+        let sirius = row("Sirius & Orion");
+        assert_eq!((sirius.action, sirius.stage, sirius.access, sirius.blockers.clone()), (Action::Farm, Stage::Craft, Access::Available, vec![]));
+        let route = sirius.drop.as_ref().expect("the blueprint has drop locations");
+        assert_eq!(route.parts.iter().map(|p| (p.unique_name.as_str(), p.name.as_str(), p.needed)).collect::<Vec<_>>(), [(SIRIUS_BP, "Blueprint", 1)]);
+        assert_eq!(route.parts[0].locations.iter().map(|d| (d.location.as_str(), d.chance)).collect::<Vec<_>>(), [
+            ("Corrupted Vor", Some(50.0)),
+            ("Venus/Orb Vallis Bounty, Rotation A", Some(33.33)),
+            ("Venus/Orb Vallis Bounty, Rotation B", Some(33.33)),
+            ("Saturn/Titan (Survival), Rotation C", Some(12.5)),
+            ("Earth/Mantle (Capture)", Some(7.5)),
+        ]);
+
+        // Once a relic drops the blueprint the relic route owns it, even with
+        // no relic in stock, and the drop route has nothing left to list.
+        let reward = |unique_name: &str, chance: f64| RelicReward { unique_name: unique_name.into(), name: String::new(), rarity: String::new(), image_name: None, chance: Some(chance) };
+        let tables: HashMap<String, Vec<RelicReward>> = [(LITH.to_string(), vec![reward(SIRIUS_BP, 25.0)])].into();
+        let relics = Relics::new(&stock, &tables, &HashMap::new());
+        let observed_stock = Observed { stock: &stock, drops: &drops, relics: &relics, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
+        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
+        let sirius = overview.opportunities.iter().find(|o| o.source.name == "Sirius & Orion").expect("listed");
+        assert_eq!(sirius.relic.as_ref().map(|r| r.coverage.clone()), Some(Coverage::Partial { missing: vec!["Blueprint".into()], short: vec![] }));
+        assert!(sirius.drop.is_none());
+        assert_eq!(sirius.blockers, []);
     }
 
     #[test]
