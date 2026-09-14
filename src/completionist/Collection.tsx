@@ -64,6 +64,10 @@ export default function Collection({ overview }: { overview: MasteryOverview }) 
   }, [category, search, bucket]);
 
   const isFiltered = search !== "" || bucket != null;
+  // A header over the only group repeats the tab name. The whole category
+  // decides this, so a search that narrows a category to one visible group
+  // keeps its header instead of flickering it away while typing.
+  const singleGroup = useMemo(() => category != null && groupSources(category.sources).length === 1, [category]);
 
   return (
     <>
@@ -113,7 +117,7 @@ export default function Collection({ overview }: { overview: MasteryOverview }) 
         )}
         {groups.map(({ group, sources }) => (
           <div key={group} className="mst-group">
-            <div className="mst-group-header">{group}</div>
+            {!singleGroup && <div className="mst-group-header">{group}</div>}
             <div className="mst-group-grid">
               {sources.map(s => <SourceRow key={s.unique_name} source={s} />)}
             </div>
