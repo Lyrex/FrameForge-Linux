@@ -146,6 +146,10 @@ export default function Mastery({ inventory, refreshKey, clockFormat }: Props) {
         {overview && SOURCE_KINDS.map(kind => (
           <ProvenancePill key={kind.key} label={kind.label} provenance={overview.provenance[kind.key]} now={now} clockFormat={clockFormat} />
         ))}
+        <label className="mst-select" title="Only what is not blocked, without the filters">
+          <input type="checkbox" checked={controls.easy} onChange={e => update({ easy: e.target.checked })} />
+          Easy mode
+        </label>
       </div>
 
       {error && <div className="mst-body"><div className="mst-empty">Mastery overview unavailable: {error}</div></div>}

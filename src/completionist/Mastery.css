@@ -275,3 +275,17 @@
   border-color: rgba(163,113,247,.30);
 }
 .mst-select input[type="checkbox"] { margin: 0; }
+
+/* ── Keyboard focus ── */
+.mst-tab:focus-visible,
+.mst-filter-btn:focus-visible,
+.mst-quote:focus-visible,
+.mst-opp:focus-visible,
+.mst-item:focus-visible,
+.mst-select select:focus-visible,
+.mst-select input:focus-visible {
+  outline: 2px solid var(--accent, #888);
+  outline-offset: -2px;
+}
+.mst-opp:focus-visible,
+.mst-item:focus-visible { background: var(--hover); border-color: var(--border); }
