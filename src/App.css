@@ -884,6 +884,7 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .qty-sep               { color: var(--muted); }
 .qty-required          { color: var(--muted); }
 .recipe-shortage       { font-size: 11px; font-weight: 600; color: var(--red); background: rgba(248,81,73,.12); padding: 1px 5px; border-radius: 4px; flex-shrink: 0; }
+.recipe-build          { font-size: 11px; font-weight: 600; color: var(--accent); background: rgba(56,139,253,.12); padding: 1px 5px; border-radius: 4px; flex-shrink: 0; }
 
 /* ── What I need list ── */
 .needs-list { padding: 4px 8px; }

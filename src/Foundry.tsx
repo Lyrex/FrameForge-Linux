@@ -9,6 +9,9 @@ import { FOUNDRY_FILTERS_DEFAULT } from "./constants/filters";
 import { WARFRAME_WIKI_BASE } from "./constants/urls";
 import { TAURI_COMMANDS } from "./constants/tauri";
 import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeComponentStatus, RecipeMap, RelicDropMap } from "./types/items";
+import { craftRows } from "./lib/craftPlan";
+import { usePlanCrafts } from "./shared/usePlanCrafts";
+import { CraftCounts } from "./shared/CraftCounts";
 import type { FoundryFilters } from "./types/filters";
 import type { ViewMode } from "./types/ui";
 import { ViewToggle } from "./shared/ViewToggle";
@@ -27,26 +30,6 @@ interface Props {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-
-function collectNeeds(
-  nodes: RecipeComponent[],
-  multiplier: number,
-  acc: Map<string, { name: string; needed: number }>
-) {
-  for (const node of mergeComponents(nodes)) {
-    const resultCount = node.result_count ?? 1;
-    const craftsNeeded = Math.ceil((node.count * multiplier) / resultCount);
-    if (node.components.length === 0) {
-      const prev = acc.get(node.unique_name);
-      acc.set(node.unique_name, { name: node.name, needed: (prev?.needed ?? 0) + node.count * multiplier });
-    } else {
-      collectNeeds(node.components, craftsNeeded, acc);
-      const prev = acc.get(node.unique_name);
-      acc.set(node.unique_name, { name: node.name, needed: (prev?.needed ?? 0) + node.count * multiplier });
-    }
-  }
-}
 
 function compStatus(comp: RecipeComponent, inventory: Record<string, InventoryItem>): RecipeComponentStatus {
   if ((inventory[comp.unique_name]?.quantity ?? 0) >= (comp.count || 1)) return "part";
@@ -257,17 +240,9 @@ function RecipeModal({ item, recipe, inventory, isTracked, onTrack, onClose, cra
     (recipe && recipe.length > 0 && recipe[0].unique_name === c.unique_name)
   );
 
-  const needs = useMemo(() => {
-    if (!recipe?.length) return [];
-    const acc = new Map<string, { name: string; needed: number }>();
-    collectNeeds(recipe, 1, acc);
-    return Array.from(acc.entries())
-      .map(([unique_name, { name, needed }]) => ({
-        unique_name, name, needed, owned: inventory[unique_name]?.quantity ?? 0,
-      }))
-      .filter(r => r.owned < r.needed)
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [recipe, inventory]);
+  const targets = useMemo(() => [item.unique_name], [item.unique_name]);
+  const plan = usePlanCrafts(targets, inventory)[item.unique_name];
+  const needs = useMemo(() => plan ? craftRows(plan).filter(r => r.short > 0 || r.crafts > 0) : [], [plan]);
 
   const modal = useModal(onClose);
   return (
@@ -318,6 +293,8 @@ function RecipeModal({ item, recipe, inventory, isTracked, onTrack, onClose, cra
                 <div className="empty-msg">No recipe data.</div>
               ) : mode === "tree" ? (
                 mergeComponents(recipe).map((node, i) => <TreeNode key={i} node={node} inventory={inventory} depth={0} />)
+              ) : !plan ? (
+                <div className="empty-msg">Loading…</div>
               ) : needs.length === 0 ? (
                 <div className="empty-msg">✓ You have everything needed.</div>
               ) : (
@@ -325,12 +302,7 @@ function RecipeModal({ item, recipe, inventory, isTracked, onTrack, onClose, cra
                   {needs.map(r => (
                     <div key={r.unique_name} className="needs-row">
                       <span className="needs-name">{r.name}</span>
-                      <span className="needs-counts">
-                        <span className="qty-need">{fmt(r.owned)}</span>
-                        <span className="qty-sep">/</span>
-                        <span className="qty-required">{fmt(r.needed)}</span>
-                        <span className="recipe-shortage">−{fmt(r.needed - r.owned)}</span>
-                      </span>
+                      <CraftCounts row={r} className="needs-counts" />
                     </div>
                   ))}
                 </div>
