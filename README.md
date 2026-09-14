@@ -38,10 +38,14 @@ Items with Forma applied show a **Forma icon badge** with the count overlaid —
 
 **View modes** — switch between Cards (icon + text), Icon grid, Text cards, List (compact row with icon), and Compact list (text-only) via the toggle in the filter bar. Each tab remembers its own preference.
 
-### Weapons
-Track mastery progress across all weapon categories: Primary, Secondary, Melee, and **Operator** (Amp Prisms + Sirocco). Each tab shows items grouped by type — Standard, Prime, Kuva, Tenet, Coda, Wraith, Vandal, Prisma, MK1, and **Zaw** (Strike components) in the Melee tab. Mastered items are highlighted; a progress bar shows how many you've mastered in each category. Filter to unmastered items only.
+### Mastery
+Sits in the **Completionist** module and covers every source of mastery: Warframes, Primary, Secondary, Melee, Operator Weapons, Archwing, Companions, Companion Weapons, Vehicles, Intrinsics, and Star Chart nodes and junctions. The toolbar shows overall progress and, for Equipment, Intrinsics, Nodes and Junctions, when each was last read from the account. Three views:
 
-Amp Prisms and Zaw Strikes use the same modular mastery mechanic — a gilded amp or Zaw at rank 30 counts as mastered, keyed by its Prism or Strike component so each component tracks independently.
+- **Collection** — the catalogue by category, grouped by variant (Standard, Prime, Kuva, Tenet, Zaw, Amp, …). Each item shows earned rank against its cap and the mastery it still has to give. Filter to Mastered, Partial, Missing, Unknown (no account observation yet) or Unobtainable.
+- **What next** — actions that still earn mastery. **Suggestions** sorts them into stages: *Level, claim or spend*, *Craft* and *Acquire*, each row naming its blockers and whether it is Available, Blocked or of Unknown access. **More relics** lists items short a part that drops from relics you own, rated by the chance that every missing part drops when you run them solo at their current refinement; routes above 85% show up in Suggestions instead. **With platinum** prices missing parts and whole items from warframe.market, ranked by Cheapest finish, Mastery per platinum or Full purchase; click a quote for the market popup.
+- **Target MR** — enter a rank and the plan fills itself from the chosen result view, shows the total, the gap and the projected rank, and lets you reorder, add or remove actions, star crafts for Foundry tracking, and spend owned mastered pieces as ingredients. Plans are saved per player.
+
+Filters: Category, Progress, Availability, Sort and search. The **Quick gains**, **Early progression** and **Completionist** presets set them together. **Easy mode** hides the filters and shows only what is not blocked.
 
 ### Market Helper
 Browse Prime sets and mods with live platinum prices from [warframe.market](https://warframe.market). Prices are loaded from the [FrameForgePricing](https://github.com/WyrmStudios/FrameForgePricing) mirror on startup — a daily bulk cache updated twice per day from relics.run. No per-item network calls needed. Click any item for a live order popup with sell/buy orders, 3-week price chart, and one-click listing (requires WFM login). Mod cards show per-rank chips — click a chip to pre-fill the listing form with that exact rank and quantity. A **rank selector** in the orders popup filters listings to a specific mod/arcane rank.
@@ -103,7 +107,7 @@ The item catalog used for OCR matching is built exclusively from known relic rew
 Customisable sidebar with reorderable sections: tracked crafting items, favourite inventory items, pinned timers, and watched fissures.
 
 ### Settings
-Tabbed sidebar layout: **General** (Foundry page size, scanner, API, account info, pop-out), **Overlays** (Relic Overlay and Relic Pick Overlay settings), **Market** (WFM status automation), **Accessibility** (colorblind mode, text size up to 200%), **Data** (item database, cache), and **Debugging** (loggers, diagnostic tools with folder access and one-click clear).
+Tabbed sidebar layout: **General** (Foundry page size, Mastery exclusions for Founders, retired event and removed-node sources, scanner, API, account info, pop-out), **Overlays** (Relic Overlay and Relic Pick Overlay settings), **Market** (WFM status automation), **Accessibility** (colorblind mode, text size up to 200%), **Data** (item database, cache), and **Debugging** (loggers, diagnostic tools with folder access and one-click clear).
 
 ---
 
