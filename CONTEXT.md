@@ -138,6 +138,15 @@ A mastery source with remaining mastery and at least one acquisition route.
 An ordered selection of actions toward a target Mastery Rank, with potential
 gains conditional on completing those actions.
 
+**Projected stock**:
+The inventory as it stands after every earlier target in a displayed list has
+taken its ingredients. Owned equipment is never part of it.
+
+**Craft plan**:
+What one target needs against projected stock: each requirement with how much
+came from stock and how much is short, the intermediates to build first, and
+the credit cost.
+
 ### The game's log
 
 **Log path override**:

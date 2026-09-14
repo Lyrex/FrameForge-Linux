@@ -40,6 +40,14 @@ pub struct RecipeComponent {
     #[serde(default = "default_one")]
     pub result_count: u32,
     pub components: Vec<RecipeComponent>,
+    /// Set on a blueprint node to the build price of the recipe it unlocks.
+    /// It stays None when the export carried no price, so an unpriced recipe
+    /// reads as unknown and never as free.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credits: Option<u32>,
+    /// Set on a blueprint node when the blueprint survives the craft.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reusable: bool,
 }
 
 fn default_one() -> u32 { 1 }
@@ -471,6 +479,21 @@ fn parse_export_recipes(json: Option<&serde_json::Value>) -> HashMap<String, Exp
     map
 }
 
+/// Price and reusability of every blueprint in the export, keyed by the
+/// blueprint path. Several results have two blueprints (a helmet and its
+/// conversion, a lens and its convert recipe), and keying by result keeps
+/// only one, so this walks the raw entries instead. An entry without
+/// `consumeOnUse` counts as consumable, so a missing blueprint shows as a
+/// shortage rather than gating its recipe.
+fn blueprint_prices(json: Option<&serde_json::Value>) -> HashMap<&str, (Option<u32>, bool)> {
+    json.and_then(|j| j.as_object()).into_iter().flatten()
+        .map(|(blueprint, entry)| (blueprint.as_str(), (
+            entry["buildPrice"].as_u64().map(|p| p as u32),
+            !entry["consumeOnUse"].as_bool().unwrap_or(true),
+        )))
+        .collect()
+}
+
 /// Read the syndicate store catalog from warframe-drop-data/syndicates.json.
 /// This covers all vendor-purchased items: sigils, specters, health restores,
 /// weapon blueprints, augment mods — items that WFCD's `drops` field mostly omits.
@@ -681,7 +704,7 @@ fn build_recipe_node(
     depth: u32,
 ) -> RecipeComponent {
     if depth > 6 {
-        return RecipeComponent { unique_name, name, count, result_count: 1, components: vec![] };
+        return RecipeComponent { unique_name, name, count, result_count: 1, components: vec![], credits: None, reusable: false };
     }
 
     let (result_count, components) = if let Some(recipe) = export_recipes.get(&unique_name) {
@@ -696,6 +719,8 @@ fn build_recipe_node(
             count: 1,
             result_count: 1,
             components: vec![],
+            credits: None,
+            reusable: false,
         }];
 
         for (item_type, item_count) in &recipe.ingredients {
@@ -726,7 +751,19 @@ fn build_recipe_node(
         (1, vec![])
     };
 
-    RecipeComponent { unique_name, name, count, result_count, components }
+    RecipeComponent { unique_name, name, count, result_count, components, credits: None, reusable: false }
+}
+
+/// WFCD lists a result's own blueprint as a plain component, so its price and
+/// reusability come from the export entry keyed by that blueprint.
+fn price_blueprints(nodes: &mut [RecipeComponent], prices: &HashMap<&str, (Option<u32>, bool)>) {
+    for node in nodes {
+        if let Some(&(credits, reusable)) = prices.get(node.unique_name.as_str()) {
+            node.credits = credits;
+            node.reusable = reusable;
+        }
+        price_blueprints(&mut node.components, prices);
+    }
 }
 
 fn wfcd_category_to_display(wfcd_cat: &str) -> &'static str {
@@ -1281,10 +1318,11 @@ fn fetch_from_wfcd(
     }
 
     // Build recipe trees
+    let prices = blueprint_prices(recipes_json);
     let mut recipes: HashMap<String, Vec<RecipeComponent>> = HashMap::new();
     for (parent_unique, item_json) in &raw_craftable {
         if let Some(comps) = item_json.get("components").and_then(|v| v.as_array()) {
-            let tree: Vec<RecipeComponent> = comps.iter().filter_map(|c| {
+            let mut tree: Vec<RecipeComponent> = comps.iter().filter_map(|c| {
                 let cu = c["uniqueName"].as_str()?.trim().to_string();
                 let raw = c["name"].as_str().unwrap_or("Unknown");
                 let cn = display_names.get(&cu).cloned()
@@ -1294,6 +1332,7 @@ fn fetch_from_wfcd(
                     cu, cn, cc, Some(c), &display_names, &export_recipes, 0,
                 ))
             }).collect();
+            price_blueprints(&mut tree, &prices);
             if !tree.is_empty() {
                 recipes.insert(parent_unique.clone(), tree);
             }

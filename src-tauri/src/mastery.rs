@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use tauri::State;
+use tauri::Manager;
 use crate::app_state::{AppState, CorrectionEntry};
 use crate::catalogue::fix_category;
-use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache};
+use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache, CREDITS_PATH};
 use crate::mastery_nodes;
 use crate::mastery_progress::{PlayerProgress, Provenance, ProvenanceState};
+use crate::mastery_recipe::{is_blueprint, CraftPlan, Ledger};
 use crate::mastery_rules::{self, Unobtainable};
 use crate::monitor::CraftingJob;
 use crate::settings::read_settings_map;
@@ -101,18 +102,22 @@ pub(crate) struct MasteryProvenance {
     pub(crate) junctions: Provenance,
 }
 
-// TODO: add a craft stage, and relic routes under Acquire.
+// TODO: relic routes under Acquire.
 #[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Stage { LevelClaim, Acquire }
+pub(crate) enum Stage { LevelClaim, Craft, Acquire }
 
+/// Craft means everything is in stock. Build means intermediates need
+/// crafting first. Farm means parts are short and no vendor sells them.
 #[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Action { Level, Claim, Spend, Buy, Complete, Unlock }
+pub(crate) enum Action { Level, Claim, Spend, Craft, Build, Buy, Farm, Complete, Unlock }
 
-#[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+/// The variant order runs by severity so `max` keeps a blocker over an
+/// open question.
+#[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Access { Available, Blocked, Unknown }
+pub(crate) enum Access { Available, Unknown, Blocked }
 
 #[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct VendorOffer {
@@ -151,6 +156,9 @@ pub(crate) struct Opportunity {
     pub(crate) spend: Option<Spend>,
     pub(crate) access: Access,
     pub(crate) blockers: Vec<String>,
+    /// A source that is neither owned nor building carries its plan whenever
+    /// a recipe exists.
+    pub(crate) craft: Option<CraftPlan>,
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -162,7 +170,9 @@ pub(crate) struct MasteryOverview {
 }
 
 pub(crate) struct Observed<'a> {
+    /// Equipment the player owns. The ledger never spends it as an ingredient.
     pub(crate) owned: &'a HashMap<String, i64>,
+    pub(crate) stock: &'a HashMap<String, i64>,
     pub(crate) owned_levels: &'a HashMap<String, Vec<u32>>,
     pub(crate) mastery_rank: Option<u32>,
     pub(crate) crafting: &'a [CraftingJob],
@@ -173,8 +183,16 @@ pub(crate) struct Observed<'a> {
     pub(crate) now_ms: i64,
 }
 
+/// Planning every recipe against the inventory is too slow for the thread
+/// a sync command runs on, so the work goes to the blocking pool.
 #[tauri::command]
-pub(crate) fn get_mastery_overview(state: State<AppState>) -> MasteryOverview {
+pub(crate) async fn get_mastery_overview(app: tauri::AppHandle) -> Result<MasteryOverview, String> {
+    tauri::async_runtime::spawn_blocking(move || mastery_overview(&app.state::<AppState>()))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn mastery_overview(state: &AppState) -> MasteryOverview {
     let player = state.local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let excluded = excluded_classes(&state.settings_path);
     let (mut overview, skills) = {
@@ -192,6 +210,7 @@ pub(crate) fn get_mastery_overview(state: State<AppState>) -> MasteryOverview {
     let offers = state.syndicate_catalog.lock().unwrap_or_else(|e| e.into_inner());
     overview.opportunities = suggest(&overview, &Observed {
         owned: &inventory.unique_quantities(),
+        stock: &inventory.stackable_quantities(),
         owned_levels: &inventory.owned_levels(),
         mastery_rank: inventory.mastery_rank,
         crafting: &crafting,
@@ -240,7 +259,7 @@ fn plan_spend(system: &mastery_rules::IntrinsicSystem, skills: &HashMap<String, 
 fn blueprint_results(recipes: &HashMap<String, Vec<RecipeComponent>>) -> HashMap<&str, &str> {
     recipes.iter().flat_map(|(result, components)| {
         components.iter()
-            .filter(|c| c.unique_name.ends_with("Blueprint") && c.components.is_empty())
+            .filter(|c| is_blueprint(c))
             .map(move |c| (c.unique_name.as_str(), result.as_str()))
     }).collect()
 }
@@ -278,7 +297,7 @@ fn node_opportunity(source: &MasterySource, node: &NodeInfo, sources: &HashMap<&
     Some(Opportunity {
         source: source.clone(), stage: Stage::Acquire,
         action: if node.junction { Action::Unlock } else { Action::Complete },
-        owned: false, owned_level: None, build_completion_ms: None, vendors: vec![], spend: None, access, blockers,
+        owned: false, owned_level: None, build_completion_ms: None, vendors: vec![], spend: None, access, blockers, craft: None,
     })
 }
 
@@ -289,6 +308,12 @@ pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Op
         .collect();
     let by_name: HashMap<&str, &MasterySource> = overview.categories.iter().flat_map(|c| &c.sources)
         .map(|s| (s.unique_name.as_str(), s)).collect();
+    let mastered: HashSet<&str> = overview.categories.iter().flat_map(|c| &c.sources)
+        .filter(|s| s.state == MasteryState::Mastered).map(|s| s.unique_name.as_str()).collect();
+    // TODO: let the player authorize spending mastered equipment. Until then
+    // Suggestions authorizes nothing.
+    let (mut ledger, _) = Ledger::new(observed.stock, observed.owned, &mastered, &HashMap::new());
+
     let mut opportunities: Vec<Opportunity> = overview.categories.iter().flat_map(|c| &c.sources)
         .filter(|s| !s.excluded && s.state != MasteryState::Mastered)
         .filter_map(|source| {
@@ -298,7 +323,7 @@ pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Op
                 return Some(Opportunity {
                     source: source.clone(), stage: Stage::LevelClaim, action: Action::Spend,
                     owned: false, owned_level: None, build_completion_ms: None, vendors: vec![], spend: Some(spend),
-                    access: Access::Available, blockers: vec![],
+                    access: Access::Available, blockers: vec![], craft: None,
                 });
             }
             let owned_level = observed.owned_levels.get(&source.unique_name).and_then(|levels| levels.iter().max().copied());
@@ -307,49 +332,114 @@ pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Op
             let vendors = vendor_offers(&source.unique_name, observed.offers);
             let action = if owned { Action::Level }
                 else if build_completion_ms.is_some() { Action::Claim }
+                // A placeholder until the ledger pass below settles every recipe row.
+                else if observed.recipes.contains_key(&source.unique_name) { Action::Farm }
                 else if !vendors.is_empty() { Action::Buy }
                 else { return None };
-            let stage = if action == Action::Buy { Stage::Acquire } else { Stage::LevelClaim };
-            let (access, blockers) = match action {
-                Action::Level => (Access::Available, vec![]),
-                Action::Spend => unreachable!("Intrinsic rows returned above"),
-                Action::Complete | Action::Unlock => unreachable!("star chart rows returned above"),
-                Action::Claim if build_completion_ms.is_some_and(|done| done > observed.now_ms) => (Access::Blocked, vec!["Still building".into()]),
-                Action::Claim => (Access::Available, vec![]),
-                Action::Buy => {
-                    // TODO: read standing from the scan. Until then every Buy stays Unknown.
-                    let mut access = Access::Unknown;
-                    let mut blockers = vec![];
-                    match (source.mastery_req, observed.mastery_rank) {
-                        (Some(required), Some(rank)) if required > rank => {
-                            access = Access::Blocked;
-                            blockers.push(format!("Requires MR {required}"));
-                        }
-                        (Some(required), None) if required > 0 => blockers.push("Mastery Rank not observed".into()),
-                        _ => {}
-                    }
-                    blockers.push("Standing not observed".into());
-                    (access, blockers)
-                }
-            };
             Some(Opportunity {
-                source: source.clone(), stage, action, owned, owned_level, build_completion_ms, vendors, spend: None, access, blockers,
+                source: source.clone(), stage: Stage::Acquire, action, owned, owned_level, build_completion_ms, vendors, spend: None,
+                access: Access::Available, blockers: vec![], craft: None,
             })
         })
         .collect();
-    // A spend ranks by what the banked points buy, which can be less than
-    // the system's remaining mastery.
-    let gain = |o: &Opportunity| o.spend.as_ref().map(|s| s.mastery).or(o.source.remaining_mastery);
-    opportunities.sort_by(|a, b| a.stage.cmp(&b.stage)
-        .then_with(|| match (gain(a), gain(b)) {
-            (Some(x), Some(y)) => y.cmp(&x),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        })
-        .then_with(|| a.source.name.cmp(&b.source.name))
-        .then_with(|| a.source.unique_name.cmp(&b.source.unique_name)));
+
+    // Recipes draw on one ledger in display order, which is why every recipe
+    // row sits in the Craft stage whatever its final action. A standalone
+    // pass finds which targets are craftable on their own, so those plan
+    // first and keep their ingredients instead of losing them to a target
+    // short anyway.
+    let mut crafting: Vec<usize> = (0..opportunities.len()).filter(|&i| opportunities[i].action == Action::Farm).collect();
+    let standalone: HashMap<String, u8> = crafting.iter().map(|&i| {
+        let path = &opportunities[i].source.unique_name;
+        let plan = ledger.clone().plan(path, &observed.recipes[path]);
+        (path.clone(), if plan.craftable_now() { 0 } else if plan.buildable() { 1 } else { 2 })
+    }).collect();
+    let rank = |o: &Opportunity| standalone.get(&o.source.unique_name).copied().unwrap_or(0);
+    crafting.sort_by(|&a, &b| rank(&opportunities[a]).cmp(&rank(&opportunities[b])).then_with(|| by_mastery_then_name(&opportunities[a], &opportunities[b])));
+    for i in crafting {
+        let o = &mut opportunities[i];
+        let plan = ledger.plan(&o.source.unique_name, &observed.recipes[&o.source.unique_name]);
+        o.action = if plan.craftable_now() { Action::Craft }
+            else if plan.buildable() { Action::Build }
+            else if !o.vendors.is_empty() { Action::Buy }
+            else { Action::Farm };
+        o.craft = Some(plan);
+    }
+
+    // Intrinsic and star chart rows settled their stage and access when they
+    // were built.
+    for o in opportunities.iter_mut().filter(|o| !matches!(o.action, Action::Spend | Action::Complete | Action::Unlock)) {
+        o.stage = match o.action {
+            Action::Level | Action::Claim => Stage::LevelClaim,
+            _ if o.craft.is_some() => Stage::Craft,
+            _ => Stage::Acquire,
+        };
+        (o.access, o.blockers) = access(o, observed);
+    }
+    opportunities.sort_by(|a, b| a.stage.cmp(&b.stage).then_with(|| rank(a).cmp(&rank(b))).then_with(|| by_mastery_then_name(a, b)));
     opportunities
+}
+
+/// A spend ranks by what the banked points buy, which can be less than
+/// the system's remaining mastery.
+fn gain(o: &Opportunity) -> Option<u32> {
+    o.spend.as_ref().map(|s| s.mastery).or(o.source.remaining_mastery)
+}
+
+fn by_mastery_then_name(a: &Opportunity, b: &Opportunity) -> std::cmp::Ordering {
+    match (gain(a), gain(b)) {
+        (Some(x), Some(y)) => y.cmp(&x),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+    .then_with(|| a.source.name.cmp(&b.source.name))
+    .then_with(|| a.source.unique_name.cmp(&b.source.unique_name))
+}
+
+fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<String>) {
+    let mut access = Access::Available;
+    let mut blockers = vec![];
+    let mut note = |worst: Access, text: String| {
+        access = access.max(worst);
+        blockers.push(text);
+    };
+    match o.action {
+        Action::Level => {}
+        Action::Spend | Action::Complete | Action::Unlock => unreachable!("settled when the row was built"),
+        Action::Claim => if o.build_completion_ms.is_some_and(|done| done > observed.now_ms) {
+            note(Access::Blocked, "Still building".into());
+        },
+        Action::Craft | Action::Build | Action::Buy | Action::Farm => {
+            match (o.source.mastery_req, observed.mastery_rank) {
+                (Some(required), Some(rank)) if required > rank => note(Access::Blocked, format!("Requires MR {required}")),
+                (Some(required), None) if required > 0 => note(Access::Unknown, "Mastery Rank not observed".into()),
+                _ => {}
+            }
+            match o.action {
+                Action::Craft | Action::Build => {
+                    let plan = o.craft.as_ref().expect("a craft row carries its plan");
+                    if plan.credits_short > 0 { note(Access::Blocked, format!("Needs {} more credits", thousands(plan.credits_short))); }
+                    else if plan.credits.is_none() { note(Access::Unknown, "Credit cost unknown".into()); }
+                    else if !observed.stock.contains_key(CREDITS_PATH) { note(Access::Unknown, "Credits not observed".into()); }
+                }
+                // TODO: read standing from the scan. Until then every Buy stays Unknown.
+                Action::Buy => note(Access::Unknown, "Standing not observed".into()),
+                _ => note(Access::Unknown, "Drop sources unknown".into()),
+            }
+        }
+    }
+    (access, blockers)
+}
+
+fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) { out.push(','); }
+        out.push(c);
+    }
+    out
 }
 
 /// The `masteryExclude` map in settings.json, one boolean per class; only an
@@ -517,6 +607,7 @@ fn collection_category(item_type: &str, display_category: &str) -> Option<&'stat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::LazyLock;
     use crate::mastery_progress::{PlayerProgress, Provenance, ProvenanceState};
     use crate::memory_scanner::BlobMission;
     use crate::wfcd::{RecipeComponent, SyndicateOffer};
@@ -856,24 +947,33 @@ mod tests {
         overview
     }
 
+    static NO_STOCK: LazyLock<HashMap<String, i64>> = LazyLock::new(HashMap::new);
+
     fn observed_gear<'a>(owned: &'a HashMap<String, i64>, owned_levels: &'a HashMap<String, Vec<u32>>, crafting: &'a [CraftingJob], recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, mastery_rank: Option<u32>) -> Observed<'a> {
-        Observed { owned, owned_levels, mastery_rank, crafting, recipes, offers, skills: None, now_ms: 1_000_000 }
+        Observed { owned, stock: &NO_STOCK, owned_levels, mastery_rank, crafting, recipes, offers, skills: None, now_ms: 1_000_000 }
     }
 
     fn observed_skills<'a>(progress: &'a PlayerProgress, recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, owned: &'a HashMap<String, i64>, levels: &'a HashMap<String, Vec<u32>>) -> Observed<'a> {
-        Observed { owned, owned_levels: levels, mastery_rank: Some(30), crafting: &[], recipes, offers, skills: Some(&progress.skills), now_ms: 1_000_000 }
+        Observed { owned, stock: &NO_STOCK, owned_levels: levels, mastery_rank: Some(30), crafting: &[], recipes, offers, skills: Some(&progress.skills), now_ms: 1_000_000 }
     }
 
     fn track(track: &str, from: u32, to: u32) -> TrackSpend {
         TrackSpend { track: track.into(), from, to }
     }
 
+    const FERRITE: &str = "/Lotus/Types/Items/MiscItems/Ferrite";
+    const CHASSIS: &str = "/Lotus/Types/Recipes/Parts/Chassis";
+    const CHASSIS_BP: &str = "/Lotus/Types/Recipes/Parts/ChassisBlueprint";
+
     fn recipe(source: &str, blueprint: &str) -> (String, Vec<RecipeComponent>) {
-        let component = |unique_name: &str, name: &str, components: Vec<RecipeComponent>| RecipeComponent {
-            unique_name: unique_name.into(), name: name.into(), count: 1, result_count: 1, components,
+        let component = |unique_name: &str, name: &str, count: u32, credits: Option<u32>, components: Vec<RecipeComponent>| RecipeComponent {
+            unique_name: unique_name.into(), name: name.into(), count, result_count: 1, components, credits, reusable: false,
         };
-        let part = component("/Lotus/Types/Recipes/Parts/ChassisBlueprint", "Chassis Blueprint", vec![component("/Lotus/Types/Items/MiscItems/Ferrite", "Ferrite", vec![])]);
-        (source.into(), vec![component("/Lotus/Types/Items/MiscItems/Ferrite", "Ferrite", vec![]), part, component(blueprint, "Blueprint", vec![])])
+        let chassis = component(CHASSIS, "Chassis", 1, None, vec![
+            component(CHASSIS_BP, "Chassis Blueprint", 1, Some(5_000), vec![]),
+            component(FERRITE, "Ferrite", 100, None, vec![]),
+        ]);
+        (source.into(), vec![component(blueprint, "Blueprint", 1, Some(15_000), vec![]), chassis, component(FERRITE, "Ferrite", 50, None, vec![])])
     }
 
     fn offer(unique_name: &str, tier: &str, result_unique: Option<&str>) -> SyndicateOffer {
@@ -1118,5 +1218,85 @@ mod tests {
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
         let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)));
         assert!(overview.opportunities.is_empty(), "Unknown Intrinsics suggest nothing");
+    }
+
+    #[test]
+    fn craft_rows_split_now_from_builds_and_farming_and_draw_on_one_ledger_in_display_order() {
+        const SIRIUS_BP: &str = "/Lotus/Types/Recipes/WarframeRecipes/SiriusOrionBlueprint";
+        const BRATON_BP: &str = "/Lotus/Types/Recipes/Weapons/BratonBlueprint";
+        const IMPERATOR_BP: &str = "/Lotus/Types/Recipes/Weapons/ImperatorBlueprint";
+        const SWEEPER_BP: &str = "/Lotus/Types/Recipes/Weapons/SweeperBlueprint";
+        let owned = HashMap::new();
+        let levels = HashMap::new();
+        let without_chassis = |(path, mut components): (String, Vec<RecipeComponent>)| {
+            components.retain(|c| c.unique_name != CHASSIS);
+            (path, components)
+        };
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [
+            without_chassis(recipe(SIRIUS, SIRIUS_BP)), recipe(BRATON, BRATON_BP), without_chassis(recipe(IMPERATOR, IMPERATOR_BP)), recipe(SWEEPER, SWEEPER_BP),
+        ].into();
+        let offers: HashMap<String, Vec<SyndicateOffer>> = [("Cephalon Simaris".to_string(), vec![offer(SWEEPER_BP, "Neutral", Some(SWEEPER))])].into();
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
+        // Ferrite runs out after Sirius, Imperator and Braton's chassis build,
+        // so Sweeper goes short. Credits run out after Sirius and Imperator,
+        // so Braton goes short.
+        let stock: HashMap<String, i64> = [
+            (SIRIUS_BP, 1), (BRATON_BP, 1), (CHASSIS_BP, 1), (IMPERATOR_BP, 1), (FERRITE, 250), (CREDITS_PATH, 35_000),
+        ].into_iter().map(|(path, n)| (path.to_string(), n)).collect();
+        let observed_stock = Observed { stock: &stock, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
+        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
+
+        // Craftable targets draw first, so the rows read top to bottom as the
+        // ledger ran.
+        assert_eq!(summary(&overview.opportunities), [
+            ("Sirius & Orion", Action::Craft, Some(6_000), Access::Available),
+            ("Imperator", Action::Craft, Some(3_000), Access::Available),
+            ("Braton", Action::Build, Some(3_000), Access::Blocked),
+            ("Sweeper", Action::Buy, Some(3_000), Access::Unknown),
+        ]);
+        assert!(overview.opportunities.iter().all(|o| o.stage == Stage::Craft));
+        let plan = |i: usize| overview.opportunities[i].craft.as_ref().expect("recipe rows carry a plan");
+        assert_eq!((plan(0).credits, plan(0).credits_short), (Some(15_000), 0));
+        let braton = plan(2);
+        assert_eq!(braton.builds.iter().map(|b| (b.name.as_str(), b.crafts)).collect::<Vec<_>>(), [("Chassis", 1)]);
+        assert_eq!((braton.credits, braton.credits_short), (Some(20_000), 15_000));
+        assert_eq!(overview.opportunities[2].blockers, ["Needs 15,000 more credits"]);
+        let sweeper = plan(3);
+        assert_eq!(sweeper.shortages().map(|r| (r.name.as_str(), r.short)).collect::<Vec<_>>(), [("Blueprint", 1), ("Chassis Blueprint", 1), ("Ferrite", 150)]);
+        assert_eq!(overview.opportunities[3].blockers, ["Standing not observed"]);
+
+        // Without the vendor the same shortage becomes a farm. A craft with no
+        // credit balance observed cannot promise it is affordable.
+        let mut stock = stock;
+        stock.remove(CREDITS_PATH);
+        let no_offers = HashMap::new();
+        let observed_stock = Observed { stock: &stock, ..observed_gear(&owned, &levels, &[], &recipes, &no_offers, Some(30)) };
+        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
+        assert_eq!(summary(&overview.opportunities), [
+            ("Sirius & Orion", Action::Craft, Some(6_000), Access::Unknown),
+            ("Imperator", Action::Craft, Some(3_000), Access::Unknown),
+            ("Braton", Action::Build, Some(3_000), Access::Unknown),
+            ("Sweeper", Action::Farm, Some(3_000), Access::Unknown),
+        ]);
+        assert_eq!(overview.opportunities[0].blockers, ["Credits not observed"]);
+        assert_eq!(overview.opportunities[3].blockers, ["Drop sources unknown"]);
+    }
+
+    #[test]
+    fn an_unpriced_recipe_and_a_mastery_lock_show_on_the_craft_row() {
+        const BRATON_BP: &str = "/Lotus/Types/Recipes/Weapons/BratonBlueprint";
+        let owned = HashMap::new();
+        let levels = HashMap::new();
+        let (path, mut components) = recipe(BRATON, BRATON_BP);
+        components[0].credits = None;
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [(path, components)].into();
+        let offers = HashMap::new();
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
+        let stock: HashMap<String, i64> = [(BRATON_BP, 1), (CHASSIS, 1), (FERRITE, 50), (CREDITS_PATH, 0)]
+            .into_iter().map(|(path, n)| (path.to_string(), n)).collect();
+        let observed_stock = Observed { stock: &stock, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(1)) };
+        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
+        assert_eq!(summary(&overview.opportunities), [("Braton", Action::Craft, Some(3_000), Access::Blocked)]);
+        assert_eq!(overview.opportunities[0].blockers, ["Requires MR 2", "Credit cost unknown"]);
     }
 }
