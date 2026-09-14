@@ -279,6 +279,7 @@
 /* ── Keyboard focus ── */
 .mst-tab:focus-visible,
 .mst-filter-btn:focus-visible,
+.mst-plan-btn:focus-visible,
 .mst-quote:focus-visible,
 .mst-opp:focus-visible,
 .mst-item:focus-visible,
@@ -289,3 +290,32 @@
 }
 .mst-opp:focus-visible,
 .mst-item:focus-visible { background: var(--hover); border-color: var(--border); }
+
+.mst-plan-target { width: 4em; }
+.mst-plan-summary { align-items: center; }
+.mst-plan-summary-text { font-size: 12px; }
+.mst-plan-range { font-size: 11px; color: var(--text-dim); }
+.mst-plan-row { display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap; }
+.mst-plan-row > .mst-opp { flex: 1; min-width: 0; }
+.mst-plan-index { font-size: 11px; color: var(--text-dim); width: 1.5em; text-align: right; padding-top: 8px; flex-shrink: 0; }
+.mst-plan-controls { display: flex; gap: 2px; flex-shrink: 0; }
+.mst-plan-btn {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.2;
+}
+.mst-plan-btn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.mst-plan-btn:disabled { opacity: 0.35; cursor: default; }
+.mst-plan-star.tracked { color: #f0c040; }
+.mst-plan-done { opacity: 0.6; }
+.mst-pill-done {
+  color: #3fb950;
+  background: rgba(63,185,80,.10);
+  border-color: rgba(63,185,80,.30);
+}
+.mst-plan-allowances { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; padding: 0 8px 4px 2.5em; }

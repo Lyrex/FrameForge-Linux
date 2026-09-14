@@ -34,6 +34,19 @@ impl Provenance {
     }
 }
 
+/// An empty selection list is a plan the player cleared, kept until they
+/// regenerate.
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct MasteryPlan {
+    pub(crate) target: u32,
+    /// Kept as text so a view the frontend later renames still loads. The
+    /// frontend falls back to Suggestions for a name it no longer knows.
+    pub(crate) view: String,
+    pub(crate) selections: Vec<String>,
+    #[serde(default)]
+    pub(crate) allowances: HashMap<String, u32>,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub(crate) struct PlayerProgress {
     /// Affinity per unique_name as `XPInfo` reports it; ranks derive at read
@@ -55,6 +68,10 @@ pub(crate) struct PlayerProgress {
     /// covers both kinds.
     #[serde(default)]
     pub(crate) nodes: Provenance,
+    /// Lives with the progress because both are keyed by the same player
+    /// name. Observations never touch it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) plan: Option<MasteryPlan>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
@@ -189,6 +206,12 @@ impl MasteryProgress {
             Owner::Player(player) => self.cache.players.get(&player),
             Owner::Unassigned => self.cache.unassigned.as_ref(),
         }
+    }
+
+    pub(crate) fn set_plan(&mut self, name: Option<&str>, plan: MasteryPlan) {
+        let owner = self.owner(name);
+        self.record_mut(&owner).plan = Some(plan);
+        self.save();
     }
 
     pub(crate) fn clear(&mut self) {
@@ -442,6 +465,26 @@ mod tests {
         assert_eq!(record.equipment.state, ProvenanceState::Confirmed);
         assert_eq!(record.nodes, Provenance::default());
         assert!(record.missions.is_empty());
+        std::fs::remove_file(path).expect("test cache removable");
+    }
+
+    #[test]
+    fn a_plan_sits_under_its_player_and_outlives_observations_and_restarts() {
+        let (path, mut progress) = fresh("plan");
+        let plan = |target: u32, selections: &[&str]| MasteryPlan {
+            target, view: "suggestions".into(), selections: selections.iter().map(|s| (*s).to_string()).collect(), allowances: HashMap::new(),
+        };
+        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, 1_000);
+        assert_eq!(progress.current(Some("A")).and_then(|p| p.plan.as_ref()), None, "no plan until one is saved");
+        progress.set_plan(Some("A"), plan(12, &[KUVA, MAG]));
+        progress.set_plan(Some("B"), plan(5, &[]));
+        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000), (KUVA, 800_000)])), None, None, 2_000);
+        assert_eq!(progress.current(Some("A")).and_then(|p| p.plan.clone()), Some(plan(12, &[KUVA, MAG])), "a new observation leaves the plan alone");
+
+        let reloaded = MasteryProgress::load(path.clone(), &InventoryStateCache::default());
+        assert_eq!(reloaded.current(Some("A")).and_then(|p| p.plan.clone()), Some(plan(12, &[KUVA, MAG])));
+        assert_eq!(reloaded.current(Some("B")).and_then(|p| p.plan.clone()), Some(plan(5, &[])), "a cleared plan is still a plan");
+        assert_eq!(reloaded.current(None).and_then(|p| p.plan.clone()), Some(plan(12, &[KUVA, MAG])), "no name reads the last seen player's plan");
         std::fs::remove_file(path).expect("test cache removable");
     }
 

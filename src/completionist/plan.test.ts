@@ -1,0 +1,70 @@
+// Run with: node --experimental-strip-types --test src/completionist/plan.test.ts
+
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { addable, candidates, moved, planView, prefill, rangeText, summaryText } from "./plan.ts";
+import { DEFAULT_CONTROLS } from "./suggestions.ts";
+import type { MasteryPlan, MasteryTotal, Opportunity, PlanEvaluation } from "../types/mastery.ts";
+
+const opportunity = (name: string, remaining_mastery: number | null, over: Partial<Opportunity> = {}): Opportunity => ({
+  unique_name: `/Lotus/Weapons/Tenno/${name}`, name, category: "Primary", image_name: null, mastery_req: null,
+  cap: 30, earned_rank: 0, remaining_mastery, state: "missing", unobtainable: null, excluded: false,
+  stage: "acquire", action: "farm", owned: false, owned_level: null, build_completion_ms: null,
+  vendors: [], spend: null, craft: null, relic: null, purchase: null, access: "available", blockers: [], ...over,
+});
+
+const paths = (list: Opportunity[]) => list.map(o => o.unique_name);
+
+test("prefill takes candidates in view order until the known gains cover the gap or run out", () => {
+  const list = [opportunity("Hek", 3000), opportunity("Braton", 1800), opportunity("Skana", null), opportunity("Lato", 3000)];
+  assert.deepEqual(prefill(list, 4000), paths(list.slice(0, 2)));
+  assert.deepEqual(prefill(list, 4800), paths(list.slice(0, 2)), "exactly covered stops");
+  // An unknown gain counts for nothing, so the walk goes past it.
+  assert.deepEqual(prefill(list, 5000), paths(list));
+  assert.deepEqual(prefill(list, 20_000), paths(list), "candidates run out before the gap is covered");
+  assert.deepEqual(prefill(list, 0), []);
+  assert.deepEqual(prefill([], 5000), []);
+  // A spend contributes only what the banked points buy.
+  const railjack = opportunity("Railjack", 7500, { action: "spend", spend: { ranks: 2, points: 3, mastery: 3000, tracks: [] } });
+  assert.deepEqual(prefill([railjack, list[0]], 3500), [railjack.unique_name, list[0].unique_name]);
+});
+
+test("candidates follow the chosen view with the shared filters, and the addable list leaves out what is already planned", () => {
+  const relic = opportunity("Braton Prime", 3000, { relic: { parts: [], coverage: { kind: "complete", probability: 0.5 } } });
+  const priced = opportunity("Lex Prime", 3000, { purchase: { parts: [], set: { slug: "lex_prime_set", name: "Lex Prime Set", price: 20, fetched_at: null }, missing_total: null, full_total: null, cheapest_finish: { platinum: 20, route: "set" }, full_purchase: { platinum: 20, route: "set" } } });
+  const trade = opportunity("Prisma Gorgon", 3000, { action: "trade", purchase: { parts: [], set: { slug: "prisma_gorgon", name: "Prisma Gorgon", price: 90, fetched_at: null }, missing_total: null, full_total: null, cheapest_finish: { platinum: 90, route: "set" }, full_purchase: { platinum: 90, route: "set" } } });
+  const list = [opportunity("Hek", 3000, { category: "Melee" }), relic, priced, trade];
+  assert.deepEqual(paths(candidates(list, DEFAULT_CONTROLS, "suggestions")), paths([list[0], priced]));
+  assert.deepEqual(paths(candidates(list, DEFAULT_CONTROLS, "relics")), [relic.unique_name]);
+  assert.deepEqual(paths(candidates(list, DEFAULT_CONTROLS, "platinum")), paths([priced, trade]));
+  assert.deepEqual(paths(candidates(list, { ...DEFAULT_CONTROLS, category: "Melee" }, "suggestions")), [list[0].unique_name]);
+  const plan: MasteryPlan = { target: 5, view: "suggestions", selections: [priced.unique_name], allowances: {} };
+  assert.deepEqual(paths(addable(list, plan, "")), paths([list[0], relic, trade]));
+  assert.deepEqual(paths(addable(list, plan, "gorg")), [trade.unique_name]);
+  assert.equal(planView("platinum"), "platinum");
+  assert.equal(planView("bogus"), "suggestions");
+});
+
+test("reordering swaps neighbours and stops at the ends", () => {
+  assert.deepEqual(moved(["a", "b", "c"], 0, 1), ["b", "a", "c"]);
+  assert.deepEqual(moved(["a", "b", "c"], 2, -1), ["a", "c", "b"]);
+  assert.deepEqual(moved(["a", "b", "c"], 0, -1), ["a", "b", "c"]);
+  assert.deepEqual(moved(["a", "b", "c"], 2, 1), ["a", "b", "c"]);
+});
+
+test("the summary shows lower bounds as at least and the details show the range", () => {
+  const total: MasteryTotal = { lower: 122_500, upper: 159_999, exact: null, rank: 7, rank_upper: 7 };
+  const evaluation = (over: Partial<PlanEvaluation>): PlanEvaluation => ({
+    entries: [], total, target_xp: 160_000, gap: 37_500, gains: 9_000, unknown_gains: 0,
+    projected: { lower: 131_500, upper: 168_999, exact: null, rank: 7, rank_upper: 8 }, rejected_allowances: [], ...over,
+  });
+  assert.equal(summaryText(evaluation({}), 8), "Total at least 122,500 · MR 8 needs 37,500 more · plan adds 9,000 · projected at least MR 7");
+  assert.equal(rangeText(evaluation({})), "Total between 122,500 and 159,999 · projected between 131,500 and 168,999, MR 7 to 8 · target MR needs 160,000");
+  assert.equal(summaryText(evaluation({ unknown_gains: 2 }), 8), "Total at least 122,500 · MR 8 needs 37,500 more · plan adds 9,000 and 2 unknown · projected at least MR 7");
+  const exact = evaluation({ total: { ...total, exact: 147_200 }, gap: 12_800, projected: { lower: 131_500, upper: 168_999, exact: 156_200, rank: 7, rank_upper: 8 } });
+  assert.equal(summaryText(exact, 8), "Total 147,200 · MR 8 needs 12,800 more · plan adds 9,000 · projected MR 7");
+  assert.equal(rangeText(exact), "Total 147,200 exactly · projected 156,200, MR 7 · target MR needs 160,000");
+  const reached = evaluation({ gap: 0, gains: 40_000, projected: { lower: 162_500, upper: 199_999, exact: null, rank: 8, rank_upper: 8 } });
+  assert.equal(summaryText(reached, 8), "Total at least 122,500 · MR 8 is reached · plan adds 40,000 · projected at least MR 8");
+  assert.equal(summaryText(evaluation({ total: null, gap: null, projected: null }), 8), "Mastery Rank not observed yet, so the gap and projection are unknown.");
+});
