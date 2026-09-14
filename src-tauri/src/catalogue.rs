@@ -685,9 +685,6 @@ fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> usize {
     if !result.weapon_dispositions.is_empty() {
         *state.weapon_dispositions.lock().unwrap_or_else(|e| e.into_inner()) = result.weapon_dispositions;
     }
-    if !result.wiki_reward_names.is_empty() {
-        *state.wiki_reward_names.lock().unwrap_or_else(|e| e.into_inner()) = result.wiki_reward_names;
-    }
     if !result.syndicate_catalog.is_empty() {
         *state.syndicate_catalog.lock().unwrap_or_else(|e| e.into_inner()) = result.syndicate_catalog;
     }
