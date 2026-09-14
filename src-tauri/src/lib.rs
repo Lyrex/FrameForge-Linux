@@ -163,7 +163,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         initial_relic_drops,
         initial_relic_rewards,
         initial_blueprint_names,
-        initial_wiki_reward_names,
         initial_syndicate_catalog,
     ) = match cached_catalogue {
         Some(c) => (
@@ -172,7 +171,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             c.relic_drops,
             c.relic_rewards,
             c.blueprint_names,
-            c.wiki_reward_names,
             c.syndicate_catalog,
         ),
         None => (
@@ -181,7 +179,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
-            std::collections::HashSet::new(),
             HashMap::new(),
         ),
     };
@@ -239,7 +236,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             relic_drops: Mutex::new(initial_relic_drops),
             relic_rewards: Mutex::new(initial_relic_rewards),
             blueprint_to_result: Mutex::new(initial_blueprint_names),
-            wiki_reward_names: Mutex::new(initial_wiki_reward_names),
             weapon_dispositions: Mutex::new(initial_weapon_dispositions),
             current_quantities: Arc::new(Mutex::new(initial_quantities)),
             unique_quantities: Arc::new(Mutex::new(initial_unique)),

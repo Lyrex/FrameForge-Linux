@@ -79,105 +79,11 @@ pub struct FetchResult {
     /// blueprint_unique → (display name, ducats)
     /// Built from ExportRecipes × WFCD display_names. Used to enrich the frontend catalog.
     pub blueprint_names: HashMap<String, (String, Option<u32>)>,
-    /// Canonical relic reward display names from the Warframe Wiki Module:Void.
-    /// Lower-cased. Used as a name-based whitelist for the overlay catalog so that
-    /// path-mismatch issues between ExportRecipes and WFCD never exclude a valid reward.
-    pub wiki_reward_names: HashSet<String>,
     /// syndicate name → items available for purchase from that syndicate's store
     pub syndicate_catalog: HashMap<String, Vec<SyndicateOffer>>,
     /// weapon unique_name → omegaAttenuation (riven disposition).
     /// Extracted directly from All.json — no separate ExportWeapons.json fetch needed.
     pub weapon_dispositions: HashMap<String, f32>,
-}
-
-/// Fetch the complete list of relic reward display names from the Warframe Wiki's
-/// Module:Void Lua table via the MediaWiki API.
-/// Returns a set of lower-cased names like "xaku prime neuroptics blueprint".
-#[tracing::instrument(level = "debug", skip_all)]
-fn fetch_wiki_reward_names() -> HashSet<String> {
-    let mut names: HashSet<String> = HashSet::new();
-
-    // ── Source A: Module:Void wikitext ────────────────────────────────────────
-    // Structured Lua table with Item + Part fields per relic reward entry.
-    let url_mod = "https://wiki.warframe.com/api.php?\
-                   action=parse&page=Module:Void&prop=wikitext&format=json";
-    if let Some(body) = ureq::get(url_mod)
-        .header("User-Agent", "FrameForge/3.1.0")
-        .call().ok()
-        .and_then(|mut r| r.body_mut().read_to_string().ok())
-    {
-        let wikitext = serde_json::from_str::<serde_json::Value>(&body)
-            .ok()
-            .and_then(|v| v["parse"]["wikitext"]["*"].as_str().map(|s| s.to_string()))
-            .unwrap_or_default();
-
-        let item_re  = regex::Regex::new(r#"Item\s*=\s*"([^"]+)""#).unwrap();
-        let part_re  = regex::Regex::new(r#"Part\s*=\s*"([^"]+)""#).unwrap();
-        let block_re = regex::Regex::new(r"\{([^}]+)\}").unwrap();
-        for block in block_re.captures_iter(&wikitext) {
-            let content = &block[1];
-            if let (Some(im), Some(pm)) = (item_re.captures(content), part_re.captures(content)) {
-                let item = im[1].trim();
-                let part = pm[1].trim();
-                let full = if part == "Blueprint" {
-                    format!("{} Blueprint", item)
-                } else {
-                    format!("{} {}", item, part)
-                };
-                names.insert(full.to_lowercase());
-            }
-        }
-    }
-
-    // ── Source B: Void_Relic/ByRelic rendered HTML ────────────────────────────
-    // This page lists every relic with its Common / Uncommon / Rare reward columns.
-    // We extract all linked item names from the rendered HTML — these are the
-    // canonical display names used on the reward selection screen.
-    let url_br = "https://wiki.warframe.com/api.php?\
-                  action=parse&page=Void_Relic/ByRelic&prop=text&format=json";
-    if let Some(html) = ureq::get(url_br)
-        .header("User-Agent", "FrameForge/3.1.0")
-        .call().ok()
-        .and_then(|mut r| r.body_mut().read_to_string().ok())
-        .and_then(|b| {
-            serde_json::from_str::<serde_json::Value>(&b).ok()
-                .and_then(|v| v["parse"]["text"]["*"].as_str().map(|s| s.to_string()))
-        })
-    {
-        // Extract text from anchor tags inside table cells.
-        // Reward names appear as <a ...>Item Name</a> in the Common/Uncommon/Rare columns.
-        // We capture every linked name that looks like a relic reward:
-        //   • contains "Prime"
-        //   • starts with "Forma"
-        //   • ends with "Blueprint" or a known component suffix
-        let link_re = regex::Regex::new(r#">([^<]{4,60})</a>"#).unwrap();
-        for cap in link_re.captures_iter(&html) {
-            let text = cap[1].trim();
-            let lower = text.to_lowercase();
-            let is_reward = lower.contains("prime")
-                || lower.starts_with("forma")
-                || lower.ends_with("blueprint")
-                || lower.ends_with("neuroptics")
-                || lower.ends_with("chassis")
-                || lower.ends_with("systems")
-                || lower.ends_with("barrel")
-                || lower.ends_with("receiver")
-                || lower.ends_with("stock")
-                || lower.ends_with("handle")
-                || lower.ends_with("blade")
-                || lower.ends_with("carapace")
-                || lower.ends_with("cerebrum")
-                || lower.ends_with("disc")
-                || lower.ends_with("pouch")
-                || lower.ends_with("gauntlet")
-                || lower.ends_with("wings");
-            if is_reward {
-                names.insert(lower);
-            }
-        }
-    }
-
-    names
 }
 
 // ==============================================================================
@@ -1307,23 +1213,6 @@ fn fetch_from_wfcd(
             }
         }
 
-        // Debug: write counts to temp file so we can diagnose issues
-        let sentinel_in_recipes = export_recipes.keys()
-            .filter(|k| k.starts_with("/Lotus/Types/Sentinels/SentinelParts/")).count();
-        let _ = std::fs::write(
-            std::env::temp_dir().join("frameforge_wfcd_debug.txt"),
-            format!(
-                "export_recipes total={} powersuits_entries={} sentinel_parts_entries={}\n\
-                 strategy_a bp_items added={}\n\
-                 first 10 bp items:\n{}",
-                export_recipes.len(),
-                export_recipes.keys().filter(|k| k.starts_with("/Lotus/Powersuits/")).count(),
-                sentinel_in_recipes,
-                bp_items.len(),
-                bp_items.iter().take(10).map(|i| format!("  {} = {}", i.unique_name, i.name)).collect::<Vec<_>>().join("\n")
-            )
-        );
-
         items.extend(bp_items);
     }
 
@@ -1467,11 +1356,6 @@ fn fetch_from_wfcd(
         })
         .collect();
 
-    // Fetch the canonical reward name list from the Warframe Wiki.
-    // This is non-blocking on failure — if the wiki is unreachable, we fall back
-    // to the existing prime/forma filters in the overlay catalog builder.
-    let wiki_reward_names = fetch_wiki_reward_names();
-
     // Propagate imageName from items that have one to same-named items that don't.
     // StoreItems proxy entries (e.g. /Lotus/StoreItems/.../Kuva) often lack imageName while
     // the canonical inventory path (/Lotus/Types/.../Kuva) has it. If the scanner ever
@@ -1495,7 +1379,7 @@ fn fetch_from_wfcd(
         .filter_map(|i| i.omega_attenuation.map(|d| (i.unique_name.clone(), d)))
         .collect();
 
-    Ok(FetchResult { items, recipes, relic_drops, relic_rewards, blueprint_names, wiki_reward_names, syndicate_catalog, weapon_dispositions })
+    Ok(FetchResult { items, recipes, relic_drops, relic_rewards, blueprint_names, syndicate_catalog, weapon_dispositions })
 }
 
 pub fn fallback_items() -> Vec<WfcdItem> {
