@@ -26,6 +26,7 @@ pub(crate) struct SyndicateStore {
 }
 
 /// Returns all syndicate stores with owned quantities cross-referenced from the live inventory.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_syndicate_stores(state: State<AppState>) -> Vec<SyndicateStore> {
     // Preferred display order; any extra syndicates found in the catalog are appended after.
@@ -110,6 +111,7 @@ pub(crate) fn get_syndicate_stores(state: State<AppState>) -> Vec<SyndicateStore
 ///
 /// Consumable / resource categories (Gear, Resources, Misc) are excluded since
 /// owning 0 restores does not mean the research is incomplete.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_research_lab_stores(state: State<AppState>) -> Vec<SyndicateStore> {
     // Hardcoded item display names per lab (base name, no " Blueprint" suffix).

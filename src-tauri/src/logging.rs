@@ -14,6 +14,24 @@ use tracing_subscriber::{
 /// panic) never reach disk.
 static FILE_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
 
+static PROCESS_START: OnceLock<std::time::Instant> = OnceLock::new();
+
+pub fn mark_process_start() {
+    let _ = PROCESS_START.set(std::time::Instant::now());
+}
+
+pub fn since_start_ms() -> u128 {
+    PROCESS_START.get().map_or(0, |t| t.elapsed().as_millis())
+}
+
+/// The frontend reports its startup milestones through here so they land in
+/// the same log as the backend's, on the same clock.
+#[tracing::instrument(level = "debug", skip_all)]
+#[tauri::command]
+pub(crate) fn startup_mark(label: String) {
+    tracing::info!(elapsed_ms = since_start_ms(), label, "startup: frontend");
+}
+
 /// Installs the global subscriber, log-crate bridge and panic hook. Safe to
 /// call more than once; later calls do nothing.
 pub fn init(state_dir: &std::path::Path) {

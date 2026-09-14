@@ -36,11 +36,13 @@ pub(crate) async fn factory_reset(app: tauri::AppHandle, state: State<'_, AppSta
 
 /// Hard-exit the process. Called from the frontend close handler when destroy()
 /// is unreliable (e.g. after a Promise.race timeout on a hanging WFM API call).
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn force_quit() {
     std::process::exit(0);
 }
 
+#[tracing::instrument(level = "info", skip_all)]
 #[tauri::command]
 pub(crate) fn load_settings(state: State<AppState>) -> String {
     std::fs::read_to_string(&state.settings_path).unwrap_or_default()
@@ -72,6 +74,7 @@ fn merge_settings(path: &std::path::Path, apply: impl FnOnce(&mut serde_json::Ma
     atomic_write(path, serde_json::Value::Object(map).to_string().as_bytes()).map_err(|e| e.to_string())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn save_settings(app: tauri::AppHandle, state: State<AppState>, json: String) -> Result<(), String> {
     // Merge over existing file so geometry fields written by save_window_state are never erased
@@ -85,6 +88,7 @@ pub(crate) fn save_settings(app: tauri::AppHandle, state: State<AppState>, json:
     Ok(())
 }
 
+#[tracing::instrument(level = "info", skip_all, fields(prefix = %prefix))]
 pub(crate) fn save_window_state(window: &tauri::WebviewWindow, settings_path: &std::path::Path, prefix: &str) {
     let maximized = window.is_maximized().unwrap_or(false);
     let minimized = window.is_minimized().unwrap_or(false);
@@ -116,6 +120,7 @@ pub(crate) fn save_window_state(window: &tauri::WebviewWindow, settings_path: &s
     }
 }
 
+#[tracing::instrument(level = "info", skip_all)]
 pub(crate) fn restore_window_state(app: &tauri::AppHandle, window: &tauri::WebviewWindow, settings_path: &std::path::Path, prefix: &str, min_w: u32, min_h: u32) {
     let Ok(map) = read_settings_map(settings_path) else { return };
 

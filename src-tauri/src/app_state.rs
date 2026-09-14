@@ -16,6 +16,7 @@ type WorldstateCache = (std::time::Instant, Arc<serde_json::Value>, Arc<serde_js
 const BUNDLED_CORRECTIONS: &str = include_str!("../resources/corrections.json");
 
 /// Load and merge corrections: bundled entries first, then user file overrides on a per-path basis.
+#[tracing::instrument(level = "info", skip_all)]
 pub(crate) fn load_corrections(user_path: &std::path::Path) -> HashMap<String, CorrectionEntry> {
     let mut map: HashMap<String, CorrectionEntry> = serde_json::from_str::<Vec<CorrectionEntry>>(BUNDLED_CORRECTIONS)
         .unwrap_or_default()
@@ -70,8 +71,6 @@ pub struct AppState {
     pub relic_rewards: Mutex<HashMap<String, Vec<wfcd::RelicReward>>>,
     /// blueprint_unique → (display_name, ducats). Used to enrich virtual catalog entries.
     pub blueprint_to_result: Mutex<HashMap<String, (String, Option<u32>)>>,
-    /// Canonical relic reward display names from the Warframe Wiki (lower-cased).
-    pub wiki_reward_names: Mutex<std::collections::HashSet<String>>,
     /// weapon unique_name → riven disposition (omegaAttenuation). Populated from All.json.
     pub weapon_dispositions: Mutex<HashMap<String, f32>>,
     /// Last-known quantities from memory scans. Shared with monitor thread.

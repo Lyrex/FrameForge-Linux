@@ -161,6 +161,7 @@ fn unix_seconds(time: SystemTime) -> u64 {
 /// the file's mtime (see `confirm`). A freshly stored payload has an mtime at
 /// or after its embedded timestamp, so taking the later of the two never ages
 /// a copy and a replacement cannot inherit its predecessor's confirmation.
+#[tracing::instrument(level = "info", skip_all, fields(name = %name))]
 pub fn load<T: DeserializeOwned>(name: &str) -> Option<Cached<T>> {
     let file = std::fs::File::open(path_of(name)).ok()?;
     let confirmed = file.metadata().and_then(|m| m.modified()).ok();
@@ -211,6 +212,7 @@ fn confirm(name: &str, unix: u64) -> std::io::Result<()> {
 /// `fetch` receives the cached ETag so it can ask the server whether anything
 /// changed. Returns the data, the rung that supplied it, and, when the answer
 /// is not current, what went wrong, for the caller to surface.
+#[tracing::instrument(level = "info", skip_all, fields(name = %name))]
 pub fn get_or_refresh<T>(
     name: &str,
     ttl: Duration,

@@ -7,6 +7,7 @@ use crate::db;
 
 // ─── Change log ───────────────────────────────────────────────────────────────
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_change_log(state: State<AppState>, limit: i64) -> Result<Vec<QuantityChange>, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
@@ -23,24 +24,28 @@ pub(crate) fn get_change_log(state: State<AppState>, limit: i64) -> Result<Vec<Q
 
 // ─── Tracked items / snapshots ───────────────────────────────────────────────
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_tracked_items(state: State<AppState>) -> Result<Vec<TrackedItem>, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     db::get_tracked_items(&conn).map_err(|e| e.to_string())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn add_tracked_item(state: State<AppState>, unique_name: String, display_name: String) -> Result<(), String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     db::add_tracked_item(&conn, &unique_name, &display_name).map_err(|e| e.to_string())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn remove_tracked_item(state: State<AppState>, unique_name: String) -> Result<(), String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     db::remove_tracked_item(&conn, &unique_name).map_err(|e| e.to_string())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_item_snapshots(state: State<AppState>, unique_name: String, days: Option<u32>) -> Result<Vec<SnapshotPoint>, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
@@ -49,12 +54,14 @@ pub(crate) fn get_item_snapshots(state: State<AppState>, unique_name: String, da
 
 // ─── Arbitration run history ─────────────────────────────────────────────────
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_arbitration_runs(state: State<AppState>) -> Result<Vec<db::RunRecord>, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     db::list_arbitration_runs(&conn).map_err(|e| e.to_string())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn delete_arbitration_run(app: tauri::AppHandle, state: State<AppState>, uid: String) -> Result<(), String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;

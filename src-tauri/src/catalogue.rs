@@ -264,6 +264,7 @@ fn prime_set_prefix(name: &str) -> Option<String> {
     Some(name[..pos + 5].to_string()) // 5 = "prime".len()
 }
 
+#[tracing::instrument(level = "info", skip_all)]
 fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
     // Clone data and release locks immediately — the catalog build below is O(n²)
     // and holding the locks blocks the monitor thread and other commands.
@@ -513,6 +514,7 @@ fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
     result
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
     get_all_items_inner(&state)
@@ -521,6 +523,7 @@ pub(crate) fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
 /// Return catalog items for the given unique-name paths plus all set-sibling items
 /// (every item whose name shares the same "X Prime" prefix).  Used by the relic
 /// overlay so it never needs the full 19 000-item catalog at startup.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_items_by_paths(paths: Vec<String>, state: State<AppState>) -> Vec<CatalogItem> {
     let all = get_all_items_inner(&state);
@@ -552,6 +555,7 @@ pub(crate) fn get_items_by_paths(paths: Vec<String>, state: State<AppState>) -> 
         .collect()
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_current_quantities(state: State<AppState>) -> HashMap<String, i64> {
     let mut q = state.current_quantities.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -571,11 +575,13 @@ pub(crate) fn get_player_name(state: State<AppState>) -> Option<String> {
     state.local_player_name.lock().ok().and_then(|name| name.clone())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_current_crafting(state: State<AppState>) -> Vec<CraftingJob> {
     state.current_crafting.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+#[tracing::instrument(level = "info", skip_all)]
 #[tauri::command]
 pub(crate) fn get_item_list_status(state: State<AppState>) -> serde_json::Value {
     let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
@@ -597,6 +603,7 @@ const CATALOGUE_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 3
 
 /// Corrections that live in the code rather than in the payload, so they are
 /// reapplied on every load and a new build never needs the cache cleared.
+#[tracing::instrument(level = "info", skip_all)]
 pub(crate) fn patch_catalogue_items(items: Vec<WfcdItem>) -> Vec<WfcdItem> {
     dedup_known_aliases(
         items
@@ -610,6 +617,7 @@ pub(crate) fn patch_catalogue_items(items: Vec<WfcdItem>) -> Vec<WfcdItem> {
     )
 }
 
+#[tracing::instrument(level = "info", skip_all)]
 #[tauri::command]
 pub(crate) async fn fetch_item_list(state: State<'_, AppState>, force: Option<bool>) -> Result<usize, String> {
     let force = force.unwrap_or(false);
@@ -647,6 +655,7 @@ pub(crate) fn refresh_catalogue(app: &tauri::AppHandle, force: bool) -> Result<(
     }
 }
 
+#[tracing::instrument(level = "info", skip_all)]
 fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> usize {
     let count = result.items.len();
     let deduped = patch_catalogue_items(result.items);
@@ -685,9 +694,6 @@ fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> usize {
     if !result.weapon_dispositions.is_empty() {
         *state.weapon_dispositions.lock().unwrap_or_else(|e| e.into_inner()) = result.weapon_dispositions;
     }
-    if !result.wiki_reward_names.is_empty() {
-        *state.wiki_reward_names.lock().unwrap_or_else(|e| e.into_inner()) = result.wiki_reward_names;
-    }
     if !result.syndicate_catalog.is_empty() {
         *state.syndicate_catalog.lock().unwrap_or_else(|e| e.into_inner()) = result.syndicate_catalog;
     }
@@ -706,6 +712,7 @@ fn acquired_source_label(name: &str, path: &str) -> &'static str {
 }
 
 /// Returns all items that have a crafting recipe (for the Foundry search list).
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
     // Collect recipe keys first, drop the lock, then lock items separately
@@ -807,12 +814,14 @@ pub(crate) fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
 
 /// Returns the recipe component tree for a single item (empty vec = not found).
 /// Returns Vec instead of Option to avoid Tauri serialization edge cases.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_recipe(state: State<AppState>, unique_name: String) -> Vec<RecipeComponent> {
     let recipes = state.recipes.lock().unwrap_or_else(|e| e.into_inner());
     recipes.get(&unique_name).cloned().unwrap_or_default()
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_recipes_bulk(state: State<AppState>, unique_names: Vec<String>) -> HashMap<String, Vec<RecipeComponent>> {
     let recipes = state.recipes.lock().unwrap_or_else(|e| e.into_inner());
@@ -825,6 +834,7 @@ pub(crate) fn get_recipes_bulk(state: State<AppState>, unique_names: Vec<String>
 }
 
 /// Returns the relic drop map: component unique_name → relic unique_names.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_relic_drops(state: State<AppState>) -> HashMap<String, Vec<String>> {
     state.relic_drops.lock().unwrap_or_else(|e| e.into_inner()).clone()

@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { mark } from "./startupMark";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -178,12 +179,23 @@ const CATEGORIES = [
 
 // RelicAndRivenTab is kept but now just shows RelicHelper — Rivens moved to own tab
 
+// Render-time, so it fires even if the first commit never happens.
+let firstRenderMarked = false;
+let renderBodyMarked = false;
+
 export default function App() {
   // If we're the overlay window, render only the overlay UI
   if (IS_OVERLAY) return <Overlay />;
   if (IS_RIVEN_OVERLAY) return <RivenOverlayWindow />;
   if (IS_RELIC_PICK_OVERLAY) return <RelicPickOverlay />;
   if (IS_ARBITRATION_OVERLAY) return <ArbitrationOverlay />;
+  if (!firstRenderMarked) {
+    firstRenderMarked = true;
+    mark("App first render");
+  }
+  useEffect(() => {
+    mark("App mounted");
+  }, []);
   // If we're the pop-out modular window, render the standalone modular UI
   if (IS_MODULAR) return <ModularWindowPage />;
 
@@ -767,11 +779,13 @@ if (typeof s.autoDiagEnabled === "boolean") {
   // it behind the UI so a launch never waits on the network, and leave the
   // monitor running since the refresh is a no-op while the cache is fresh.
   useEffect(() => {
+    mark("catalogue revalidate start");
     invoke<number>("fetch_item_list").then(async count => {
       setItemCount(count);
       const items = await invoke<CatalogItem[]>("get_all_items");
       setCatalog(items);
       catalogRef.current = items;
+      mark("catalog state set");
       const status = await invoke<{ count: number; recipe_count: number }>("get_item_list_status");
       setRecipeCount(status.recipe_count);
       setItemsRefreshKey(k => k + 1);
@@ -1381,6 +1395,10 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
   // ─── Render ─────────────────────────────────────────────────────────────────
 
+  if (!renderBodyMarked) {
+    renderBodyMarked = true;
+    mark("App render body done");
+  }
   return (
     <ImgCacheDirContext.Provider value={imgCacheDir}>
     <div className="shell">
