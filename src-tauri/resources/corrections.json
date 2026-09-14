@@ -1015,5 +1015,11 @@
     {
         "path": "/Lotus/Weapons/Tenno/Melee/LongSword/SkanaPrime",
         "unobtainable": "founders"
+    },
+    {
+        "path": "/Lotus/Types/Game/CrewShip/RailJack/DefaultHarness",
+        "name": "Plexus",
+        "category": "Railjack",
+        "masterable": true
     }
 ]

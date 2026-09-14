@@ -123,7 +123,17 @@ pub(crate) fn build_mastery_overview(
     }
     let mut sources: HashMap<String, MasterySource> = HashMap::new();
 
-    for i in items {
+    // The Plexus has no WFCD entry. A stand-in carrying only the path is
+    // enough: the loop reads name, category and cap from the table row.
+    let catalogued: HashSet<&str> = items.iter().map(|i| i.unique_name.as_str()).collect();
+    let table_only: Vec<WfcdItem> = corrections.values()
+        .filter(|c| !catalogued.contains(c.path.as_str())
+            && c.name.as_deref().is_some_and(|n| !n.is_empty())
+            && mastery_rules::masterable(Some(c), None, &c.path) == Some(true))
+        .map(|c| WfcdItem { unique_name: c.path.clone(), ..Default::default() })
+        .collect();
+
+    for i in items.iter().chain(&table_only) {
         if i.unique_name.contains("PvPVariant") { continue; }
         // Alias secondaries carry no credit of their own; the canonical entry does.
         if aliases.contains_key(i.unique_name.as_str()) { continue; }
@@ -181,7 +191,8 @@ pub(crate) fn build_mastery_overview(
 }
 
 /// Inventory display categories file modular chambers, decks and mechs under
-/// Parts or Warframes; the Collection files them where the game's profile does.
+/// Parts or Warframes and the Plexus under Railjack; the Collection files
+/// them where the game's profile does.
 fn collection_category(item_type: &str, display_category: &str) -> Option<&'static str> {
     match item_type {
         "Companion Weapon" => Some("Companion Weapons"),
@@ -189,6 +200,7 @@ fn collection_category(item_type: &str, display_category: &str) -> Option<&'stat
         "Kitgun Component" => Some("Secondary"),
         "Zaw Component" => Some("Melee"),
         "Amp" => Some("Operator Weapons"),
+        _ if display_category == "Railjack" => Some("Vehicles"),
         _ => COLLECTION_CATEGORIES.iter().copied().find(|c| *c == display_category),
     }
 }
@@ -221,6 +233,7 @@ mod tests {
     const EXCALIBUR_UMBRA: &str = "/Lotus/Powersuits/Excalibur/ExcaliburUmbra";
     const SNIPETRON: &str = "/Lotus/Weapons/Tenno/Rifle/SniperRifle";
     const VENARI: &str = "/Lotus/Powersuits/Khora/Kavat/KhoraKavatPowerSuit";
+    const PLEXUS: &str = "/Lotus/Types/Game/CrewShip/RailJack/DefaultHarness";
 
     fn item(name: &str, path: &str, item_type: &str, product_category: &str, category: &str, masterable: Option<bool>) -> WfcdItem {
         WfcdItem {
@@ -386,6 +399,27 @@ mod tests {
         assert_eq!(names(&overview, "Warframes"), ["Excalibur Umbra", "Sirius & Orion"]);
         assert_eq!(names(&overview, "Secondary"), ["Grimoire", "Sporelacer"]);
         assert_eq!((source(&overview, SICKLE).cap, source(&overview, SICKLE).earned_rank, source(&overview, SICKLE).state), (40, Some(30), MasteryState::Partial));
+    }
+
+    /// WFCD ships no Plexus entry while XPInfo credits it.
+    #[test]
+    fn a_table_row_lists_a_source_the_catalogue_lacks() {
+        let mut corrections = corrections();
+        corrections.insert(PLEXUS.into(), CorrectionEntry {
+            path: PLEXUS.into(), name: Some("Plexus".into()), category: Some("Railjack".into()),
+            masterable: Some(true), ..Default::default()
+        });
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(PLEXUS, 640_341)]);
+        let overview = build_mastery_overview(&catalog(), &corrections, Some(&progress), &HashSet::new());
+        assert_eq!(names(&overview, "Vehicles"), ["Bad Baby", "Plexus", "Voidrig"]);
+        let plexus = source(&overview, PLEXUS);
+        assert_eq!((plexus.cap, plexus.earned_rank, plexus.state), (30, Some(25), MasteryState::Partial));
+        assert_eq!((plexus.image_name.as_deref(), plexus.mastery_req), (None, None));
+        assert_eq!(overview.counts.total, 17);
+
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
+        let overview = build_mastery_overview(&catalog(), &corrections, Some(&progress), &HashSet::new());
+        assert_eq!((source(&overview, PLEXUS).earned_rank, source(&overview, PLEXUS).state), (Some(0), MasteryState::Missing));
     }
 
     #[test]
