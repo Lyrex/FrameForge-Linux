@@ -668,7 +668,7 @@ fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> usize {
                 "Warframes" | "Primary" | "Secondary" | "Melee"
                 | "Companions" | "Archwing" | "Operator Weapons");
             if levelable {
-                entry.max_level_cap = Some(mastery_rules::rank_cap(&item.unique_name, item.max_level_cap));
+                entry.max_level_cap = Some(mastery_rules::rank_cap(state.corrections.get(&item.unique_name), &item.unique_name, item.max_level_cap));
             }
         }
         if let Ok(json) = serde_json::to_string(&inv) {
@@ -737,7 +737,7 @@ pub(crate) fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
                 ducats:        i.ducats,
                 mastery_req:   i.mastery_req,
                 max_level_cap: i.max_level_cap,
-                masterable:    mastery_rules::masterable(i.masterable, &i.unique_name),
+                masterable:    mastery_rules::masterable(corrections.get(&i.unique_name), i.masterable, &i.unique_name),
                 tradeable_wfm: None,
                 source_type:   None,
             })

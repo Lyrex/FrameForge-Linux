@@ -4,8 +4,34 @@
 //! non-masterable although the game's XPInfo credits them. Every consumer
 //! derives rank, cap, and masterability through here rather than from the
 //! catalogue fields directly.
+//!
+//! Precedence: a corrections-table entry for the path, then the path rules
+//! below, then the catalogue. The table carries per-source facts; the rules
+//! carry whole classes the catalogue gets wrong, so a new prism or Necramech
+//! needs no table row.
+
+use crate::app_state::CorrectionEntry;
 
 pub(crate) const DEFAULT_RANK_CAP: u32 = 30;
+
+/// Why no account can earn a mastery source any more. Settings exclude each
+/// class from the progress denominator independently.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum Unobtainable {
+    Founders,
+    /// Only rewards no recurring event, Baro Ki'Teer or Nightwave brings
+    /// back; the wiki's Exclusive Mastery page lists none today, so the
+    /// bundled table has no row of this class.
+    RetiredEvent,
+    /// Players who cleared a node before its removal keep the credit.
+    /// TODO: no node sources exist yet; rows land with node extraction.
+    RemovedNode,
+}
+
+impl Unobtainable {
+    pub(crate) const ALL: [Unobtainable; 3] = [Self::Founders, Self::RetiredEvent, Self::RemovedNode];
+}
 
 /// Warframe-like equipment needs 1000·rank² affinity per rank and awards 200
 /// mastery per rank; everything else masterable is a weapon at 500·rank² and
@@ -36,15 +62,20 @@ pub(crate) fn rank_to_affinity(rank: u32, path: &str) -> i64 {
     i64::from(rank) * i64::from(rank) * affinity_base(path)
 }
 
-pub(crate) fn rank_cap(path: &str, catalogue_cap: Option<u32>) -> u32 {
-    catalogue_cap.unwrap_or(if path.contains("/EntratiMech/") { 40 } else { DEFAULT_RANK_CAP })
+pub(crate) fn known_cap(correction: Option<&CorrectionEntry>, catalogue_cap: Option<u32>) -> Option<u32> {
+    correction.and_then(|c| c.rank_cap).or(catalogue_cap)
 }
 
-pub(crate) fn earned_rank(xp: i64, path: &str, catalogue_cap: Option<u32>) -> u32 {
-    xp_to_rank(xp, path).min(rank_cap(path, catalogue_cap))
+pub(crate) fn rank_cap(correction: Option<&CorrectionEntry>, path: &str, catalogue_cap: Option<u32>) -> u32 {
+    known_cap(correction, catalogue_cap).unwrap_or(if path.contains("/EntratiMech/") { 40 } else { DEFAULT_RANK_CAP })
 }
 
-pub(crate) fn masterable(wfcd: Option<bool>, path: &str) -> Option<bool> {
+pub(crate) fn earned_rank(xp: i64, path: &str, known_cap: Option<u32>) -> u32 {
+    xp_to_rank(xp, path).min(rank_cap(None, path, known_cap))
+}
+
+pub(crate) fn masterable(correction: Option<&CorrectionEntry>, wfcd: Option<bool>, path: &str) -> Option<bool> {
+    if let Some(masterable) = correction.and_then(|c| c.masterable) { return Some(masterable); }
     if !path.ends_with("Blueprint") {
         // Bare "Barrel": the Mote Prism path has no `/Barrel/` segment.
         if path.contains("/OperatorAmplifiers/") && path.contains("Barrel") {
@@ -99,10 +130,10 @@ mod tests {
         const PARACESIS: &str = "/Lotus/Weapons/Orokin/BallasSword/BallasSwordWeapon";
         const TENET_EXEC: &str = "/Lotus/Weapons/Tenno/Melee/Swords/CrpBigSlash/CrpBigSlash";
         for path in [KUVA_NUKOR, CODA_POX, PARACESIS, TENET_EXEC] {
-            assert_eq!(rank_cap(path, Some(40)), 40, "{path}");
+            assert_eq!(rank_cap(None, path, Some(40)), 40, "{path}");
         }
-        assert_eq!(rank_cap(VOIDRIG, None), 40);
-        assert_eq!(rank_cap(KUBROW, None), 30);
+        assert_eq!(rank_cap(None, VOIDRIG, None), 40);
+        assert_eq!(rank_cap(None, KUBROW, None), 30);
         // Rank 40 on the weapon base is 800,000 affinity; on the Necramech base 1,600,000.
         assert_eq!(earned_rank(799_999, KUVA_NUKOR, Some(40)), 39);
         assert_eq!(earned_rank(129_043_438, KUVA_NUKOR, Some(40)), 40);
@@ -126,5 +157,15 @@ mod tests {
     #[test]
     fn negative_xp_is_rank_zero() {
         assert_eq!(xp_to_rank(-1, KUBROW), 0);
+    }
+
+    #[test]
+    fn a_table_entry_beats_the_path_rules_and_the_catalogue() {
+        const MOTE_PRISM: &str = "/Lotus/Weapons/Sentients/OperatorAmplifiers/SentTrainingAmplifier/SentAmpTrainingBarrel";
+        let entry = CorrectionEntry { masterable: Some(false), rank_cap: Some(40), ..Default::default() };
+        assert_eq!(masterable(None, Some(false), MOTE_PRISM), Some(true));
+        assert_eq!(masterable(Some(&entry), Some(false), MOTE_PRISM), Some(false));
+        assert_eq!(rank_cap(Some(&entry), KUBROW, Some(30)), 40);
+        assert_eq!(rank_cap(Some(&CorrectionEntry::default()), KUBROW, None), 30);
     }
 }

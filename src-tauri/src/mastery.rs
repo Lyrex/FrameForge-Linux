@@ -1,10 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use tauri::State;
 use crate::app_state::{AppState, CorrectionEntry};
 use crate::catalogue::fix_category;
 use crate::inventory_state::inventory_path_aliases;
 use crate::mastery_progress::{PlayerProgress, Provenance, ProvenanceState};
-use crate::mastery_rules;
+use crate::mastery_rules::{self, Unobtainable};
+use crate::settings::read_settings_map;
 use crate::wfcd::WfcdItem;
 
 const COLLECTION_CATEGORIES: [&str; 9] = [
@@ -26,8 +28,14 @@ pub(crate) struct MasterySource {
     pub(crate) cap: u32,
     pub(crate) earned_rank: Option<u32>,
     pub(crate) state: MasteryState,
+    /// The table's class, regardless of settings.
+    pub(crate) unobtainable: Option<Unobtainable>,
+    /// Settings exclude the class: the source sits in the Unobtainable
+    /// bucket, outside `total`, with its progress still shown.
+    pub(crate) excluded: bool,
 }
 
+/// `unobtainable` counts excluded sources and is not part of `total`.
 #[derive(serde::Serialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub(crate) struct MasteryCounts {
     pub(crate) total: u32,
@@ -35,12 +43,17 @@ pub(crate) struct MasteryCounts {
     pub(crate) partial: u32,
     pub(crate) missing: u32,
     pub(crate) unknown: u32,
+    pub(crate) unobtainable: u32,
 }
 
 impl MasteryCounts {
-    fn add(&mut self, state: MasteryState) {
+    fn add(&mut self, source: &MasterySource) {
+        if source.excluded {
+            self.unobtainable += 1;
+            return;
+        }
         self.total += 1;
-        match state {
+        match source.state {
             MasteryState::Mastered => self.mastered += 1,
             MasteryState::Partial => self.partial += 1,
             MasteryState::Missing => self.missing += 1,
@@ -75,15 +88,29 @@ pub(crate) struct MasteryOverview {
 #[tauri::command]
 pub(crate) fn get_mastery_overview(state: State<AppState>) -> MasteryOverview {
     let player = state.local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let excluded = excluded_classes(&state.settings_path);
     let progress = state.mastery_progress.lock().unwrap_or_else(|e| e.into_inner());
     let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
-    build_mastery_overview(&items, &state.corrections, progress.current(player.as_deref()))
+    build_mastery_overview(&items, &state.corrections, progress.current(player.as_deref()), &excluded)
+}
+
+/// The `masteryExclude` map in settings.json, one boolean per class; only an
+/// explicit `false` lifts a class's exclusion.
+pub(crate) fn excluded_classes(settings_path: &Path) -> HashSet<Unobtainable> {
+    let mut excluded: HashSet<Unobtainable> = Unobtainable::ALL.into();
+    let settings = read_settings_map(settings_path).unwrap_or_default();
+    let lifted = settings.get("masteryExclude").and_then(|v| v.as_object()).into_iter().flatten()
+        .filter(|(_, on)| on.as_bool() == Some(false))
+        .filter_map(|(key, _)| serde_json::from_value::<Unobtainable>(key.as_str().into()).ok());
+    for class in lifted { excluded.remove(&class); }
+    excluded
 }
 
 pub(crate) fn build_mastery_overview(
     items: &[WfcdItem],
     corrections: &HashMap<String, CorrectionEntry>,
     progress: Option<&PlayerProgress>,
+    excluded: &HashSet<Unobtainable>,
 ) -> MasteryOverview {
     let aliases = inventory_path_aliases();
     let equipment = progress.map(|p| p.equipment).unwrap_or_default();
@@ -102,7 +129,7 @@ pub(crate) fn build_mastery_overview(
         if aliases.contains_key(i.unique_name.as_str()) { continue; }
         let correction = corrections.get(&i.unique_name);
         if correction.and_then(|c| c.category.as_deref()) == Some("Ignored") { continue; }
-        if mastery_rules::masterable(i.masterable, &i.unique_name) != Some(true) { continue; }
+        if mastery_rules::masterable(correction, i.masterable, &i.unique_name) != Some(true) { continue; }
         let display_category = correction.and_then(|c| c.category.clone())
             .unwrap_or_else(|| fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name));
         let Some(category) = collection_category(&i.item_type, &display_category) else { continue };
@@ -113,9 +140,11 @@ pub(crate) fn build_mastery_overview(
             category: category.into(),
             image_name: i.image_name.clone(),
             mastery_req: i.mastery_req,
-            cap: mastery_rules::rank_cap(&i.unique_name, i.max_level_cap),
+            cap: mastery_rules::rank_cap(correction, &i.unique_name, i.max_level_cap),
             earned_rank: None,
             state: MasteryState::Unknown,
+            unobtainable: correction.and_then(|c| c.unobtainable),
+            excluded: correction.and_then(|c| c.unobtainable).is_some_and(|class| excluded.contains(&class)),
         });
     }
 
@@ -140,8 +169,8 @@ pub(crate) fn build_mastery_overview(
                 else { MasteryState::Missing };
         }
         let category = categories.iter_mut().find(|c| c.category == source.category).expect("category comes from COLLECTION_CATEGORIES");
-        category.counts.add(source.state);
-        counts.add(source.state);
+        category.counts.add(&source);
+        counts.add(&source);
         category.sources.push(source);
     }
     categories.retain(|c| !c.sources.is_empty());
@@ -188,6 +217,9 @@ mod tests {
     const GRIMOIRE: &str = "/Lotus/Weapons/Tenno/Grimoire/TnGrimoire";
     const GRIMOIRE_ALIAS: &str = "/Lotus/Weapons/Tenno/Grimoire/TnDoppelgangerGrimoire";
     const ZAW_WEAPON: &str = "/Lotus/Weapons/Ostron/Melee/LotusModularWeapon";
+    const EXCALIBUR_PRIME: &str = "/Lotus/Powersuits/Excalibur/ExcaliburPrime";
+    const EXCALIBUR_UMBRA: &str = "/Lotus/Powersuits/Excalibur/ExcaliburUmbra";
+    const SNIPETRON: &str = "/Lotus/Weapons/Tenno/Rifle/SniperRifle";
 
     fn item(name: &str, path: &str, item_type: &str, product_category: &str, category: &str, masterable: Option<bool>) -> WfcdItem {
         WfcdItem {
@@ -201,8 +233,7 @@ mod tests {
 
     fn correction(path: &str, name: Option<&str>, category: &str) -> (String, CorrectionEntry) {
         (path.into(), CorrectionEntry {
-            path: path.into(), name: name.map(Into::into), category: Some(category.into()),
-            tradeable_wfm: None, is_stackable: None,
+            path: path.into(), name: name.map(Into::into), category: Some(category.into()), ..Default::default()
         })
     }
 
@@ -264,7 +295,7 @@ mod tests {
 
     #[test]
     fn every_masterable_category_is_listed_once_by_canonical_identity() {
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&observed(ProvenanceState::Confirmed, Some(1_000), &[])));
+        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&observed(ProvenanceState::Confirmed, Some(1_000), &[])), &HashSet::new());
         let categories: Vec<&str> = overview.categories.iter().map(|c| c.category.as_str()).collect();
         assert_eq!(categories, ["Warframes", "Primary", "Secondary", "Melee", "Operator Weapons",
             "Archwing", "Companions", "Companion Weapons", "Vehicles"]);
@@ -292,7 +323,7 @@ mod tests {
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[
             (ORION, 900_000), (BRATON, 450_000), (KUVA, 612_500), (STRIKE, 72_000),
         ]);
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress));
+        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
         assert_eq!(overview.provenance.equipment, Provenance { state: ProvenanceState::Confirmed, observed_at: Some(1_000) });
         assert_eq!(overview.provenance.intrinsics.state, ProvenanceState::Unknown);
         assert_eq!((source(&overview, SIRIUS).earned_rank, source(&overview, SIRIUS).state), (Some(30), MasteryState::Mastered));
@@ -301,16 +332,16 @@ mod tests {
         assert_eq!(source(&overview, STRIKE).state, MasteryState::Partial);
         assert_eq!((source(&overview, CHAMBER).earned_rank, source(&overview, CHAMBER).state), (Some(0), MasteryState::Missing));
         let primary = overview.categories.iter().find(|c| c.category == "Primary").expect("primary");
-        assert_eq!(primary.counts, MasteryCounts { total: 2, mastered: 1, partial: 1, missing: 0, unknown: 0 });
-        assert_eq!(overview.counts, MasteryCounts { total: 15, mastered: 2, partial: 2, missing: 11, unknown: 0 });
+        assert_eq!(primary.counts, MasteryCounts { total: 2, mastered: 1, partial: 1, missing: 0, unknown: 0, unobtainable: 0 });
+        assert_eq!(overview.counts, MasteryCounts { total: 15, mastered: 2, partial: 2, missing: 11, unknown: 0, unobtainable: 0 });
     }
 
     #[test]
     fn no_observation_means_unknown_not_missing() {
-        let overview = build_mastery_overview(&catalog(), &corrections(), None);
+        let overview = build_mastery_overview(&catalog(), &corrections(), None, &HashSet::new());
         assert!(overview.categories.iter().flat_map(|c| &c.sources)
             .all(|s| s.state == MasteryState::Unknown && s.earned_rank.is_none()));
-        assert_eq!(overview.counts, MasteryCounts { total: 15, mastered: 0, partial: 0, missing: 0, unknown: 15 });
+        assert_eq!(overview.counts, MasteryCounts { total: 15, mastered: 0, partial: 0, missing: 0, unknown: 15, unobtainable: 0 });
         for kind in [overview.provenance.equipment, overview.provenance.intrinsics, overview.provenance.nodes, overview.provenance.junctions] {
             assert_eq!(kind, Provenance::default());
         }
@@ -319,11 +350,76 @@ mod tests {
     #[test]
     fn unconfirmed_progress_shows_saved_ranks_and_leaves_absent_entries_unknown() {
         let progress = observed(ProvenanceState::Unconfirmed, None, &[(BRATON, 450_000), (KUVA, 612_500)]);
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress));
+        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
         assert_eq!(overview.provenance.equipment, Provenance { state: ProvenanceState::Unconfirmed, observed_at: None });
         assert_eq!((source(&overview, BRATON).earned_rank, source(&overview, BRATON).state), (Some(30), MasteryState::Mastered));
         assert_eq!((source(&overview, KUVA).earned_rank, source(&overview, KUVA).state), (Some(35), MasteryState::Partial));
         assert_eq!((source(&overview, CHAMBER).earned_rank, source(&overview, CHAMBER).state), (None, MasteryState::Unknown));
-        assert_eq!(overview.counts, MasteryCounts { total: 15, mastered: 1, partial: 1, missing: 0, unknown: 13 });
+        assert_eq!(overview.counts, MasteryCounts { total: 15, mastered: 1, partial: 1, missing: 0, unknown: 13, unobtainable: 0 });
+    }
+
+    #[test]
+    fn settings_exclude_every_class_until_they_say_otherwise() {
+        let dir = std::env::temp_dir().join("frameforge-mastery-tests");
+        std::fs::create_dir_all(&dir).expect("temp dir is always writable");
+        let path = dir.join(format!("settings-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(excluded_classes(&path), Unobtainable::ALL.into());
+        std::fs::write(&path, r#"{"tracked":[],"masteryExclude":{"founders":false,"removedNode":true}}"#).expect("scratch file is writable");
+        assert_eq!(excluded_classes(&path), [Unobtainable::RetiredEvent, Unobtainable::RemovedNode].into());
+        std::fs::write(&path, r#"{"masteryExclude":{"founders":false,"retiredEvent":false,"removedNode":false}}"#).expect("scratch file is writable");
+        assert!(excluded_classes(&path).is_empty());
+    }
+
+    #[test]
+    fn a_table_entry_decides_eligibility_and_cap_over_the_catalogue() {
+        let mut items = catalog();
+        items.push(item("Excalibur Umbra", EXCALIBUR_UMBRA, "Warframe", "Suits", "Warframes", Some(false)));
+        let mut corrections = corrections();
+        corrections.insert(EXCALIBUR_UMBRA.into(), CorrectionEntry { path: EXCALIBUR_UMBRA.into(), masterable: Some(true), ..Default::default() });
+        corrections.insert(CHAMBER.into(), CorrectionEntry { path: CHAMBER.into(), masterable: Some(false), ..Default::default() });
+        corrections.insert(SICKLE.into(), CorrectionEntry { path: SICKLE.into(), rank_cap: Some(40), ..Default::default() });
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(SICKLE, 450_000)]);
+        let overview = build_mastery_overview(&items, &corrections, Some(&progress), &HashSet::new());
+        assert_eq!(names(&overview, "Warframes"), ["Excalibur Umbra", "Sirius & Orion"]);
+        assert_eq!(names(&overview, "Secondary"), ["Grimoire", "Sporelacer"]);
+        assert_eq!((source(&overview, SICKLE).cap, source(&overview, SICKLE).earned_rank, source(&overview, SICKLE).state), (40, Some(30), MasteryState::Partial));
+    }
+
+    #[test]
+    fn each_excluded_class_leaves_the_denominator_and_returns_when_its_toggle_is_off() {
+        let mut items = catalog();
+        items.push(item("Excalibur Prime", EXCALIBUR_PRIME, "Warframe", "Suits", "Warframes", Some(true)));
+        items.push(item("Snipetron", SNIPETRON, "Rifle", "LongGuns", "Primary", Some(true)));
+        let marked = [
+            (EXCALIBUR_PRIME, Unobtainable::Founders),
+            (SNIPETRON, Unobtainable::RetiredEvent),
+            (IMPERATOR, Unobtainable::RemovedNode),
+        ];
+        let mut corrections = corrections();
+        for (path, class) in marked {
+            corrections.insert(path.into(), CorrectionEntry { path: path.into(), unobtainable: Some(class), ..Default::default() });
+        }
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(EXCALIBUR_PRIME, 900_000)]);
+        let all: HashSet<Unobtainable> = Unobtainable::ALL.into();
+
+        let overview = build_mastery_overview(&items, &corrections, Some(&progress), &all);
+        assert_eq!(overview.counts, MasteryCounts { total: 14, mastered: 0, partial: 0, missing: 14, unknown: 0, unobtainable: 3 });
+        let excalibur = source(&overview, EXCALIBUR_PRIME);
+        assert_eq!((excalibur.excluded, excalibur.unobtainable), (true, Some(Unobtainable::Founders)));
+        assert_eq!((excalibur.state, excalibur.earned_rank), (MasteryState::Mastered, Some(30)));
+        let warframes = overview.categories.iter().find(|c| c.category == "Warframes").expect("warframes");
+        assert_eq!(warframes.counts, MasteryCounts { total: 1, mastered: 0, partial: 0, missing: 1, unknown: 0, unobtainable: 1 });
+
+        for (path, class) in marked {
+            let mut excluded = all.clone();
+            excluded.remove(&class);
+            let overview = build_mastery_overview(&items, &corrections, Some(&progress), &excluded);
+            assert_eq!((source(&overview, path).excluded, source(&overview, path).unobtainable), (false, Some(class)));
+            assert_eq!((overview.counts.total, overview.counts.unobtainable), (15, 2), "{class:?}");
+        }
+
+        let overview = build_mastery_overview(&items, &corrections, Some(&progress), &HashSet::new());
+        assert_eq!(overview.counts, MasteryCounts { total: 17, mastered: 1, partial: 0, missing: 16, unknown: 0, unobtainable: 0 });
     }
 }

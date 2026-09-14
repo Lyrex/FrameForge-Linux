@@ -5,25 +5,36 @@ import ItemImg from "../ItemImg";
 import SearchBar from "../shared/SearchBar";
 import "./Mastery.css";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
+import { MASTERY_EXCLUDE_OPTIONS } from "../constants/settings";
 import { groupSources } from "./masteryGroups";
 import { formatAge } from "../lib/formatters";
 import { fmtClock, type ClockFormat } from "../lib/clockFormat";
 import type { InventoryItem } from "../types/items";
 import type { MasteryCounts, MasteryOverview, MasteryProvenance, MasterySource, MasteryState, Provenance } from "../types/mastery";
 
-const BUCKETS: { state: MasteryState; label: string }[] = [
-  { state: "mastered", label: "Mastered" },
-  { state: "partial",  label: "Partial" },
-  { state: "missing",  label: "Missing" },
-  { state: "unknown",  label: "Unknown" },
+type Bucket = MasteryState | "unobtainable";
+
+const BUCKETS: { bucket: Bucket; label: string }[] = [
+  { bucket: "mastered",     label: "Mastered" },
+  { bucket: "partial",      label: "Partial" },
+  { bucket: "missing",      label: "Missing" },
+  { bucket: "unknown",      label: "Unknown" },
+  { bucket: "unobtainable", label: "Unobtainable" },
 ];
+
+function inBucket(source: MasterySource, bucket: Bucket | null): boolean {
+  if (bucket === "unobtainable") return source.excluded;
+  return !source.excluded && (bucket == null || source.state === bucket);
+}
 
 function SourceRow({ source }: { source: MasterySource }) {
   const rank = source.earned_rank == null ? "?" : `R${source.earned_rank}/${source.cap}`;
+  const classNoun = MASTERY_EXCLUDE_OPTIONS.find(o => o.key === source.unobtainable)?.noun;
   return (
     <div className={`mst-item mst-${source.state}`}>
       <ItemImg imageName={source.image_name ?? undefined} fallback={<div className="img-fallback">{source.name[0]?.toUpperCase() ?? "?"}</div>} />
       <span className="mst-name">{source.name}</span>
+      {classNoun && <span className="mst-mr" title={source.excluded ? "Not counted toward progress; see Settings › Mastery" : undefined}>{classNoun}</span>}
       {source.mastery_req != null && source.mastery_req > 0 && (
         <span className="mst-mr" title={`Mastery Rank ${source.mastery_req} required`}>MR{source.mastery_req}</span>
       )}
@@ -69,6 +80,7 @@ function Progress({ counts, label }: { counts: MasteryCounts; label: string }) {
       <span className="mst-progress-label">
         {label} {counts.mastered} / {counts.total} mastered
         {counts.unknown > 0 && <> · {counts.unknown} unknown</>}
+        {counts.unobtainable > 0 && <> · {counts.unobtainable} unobtainable</>}
       </span>
     </div>
   );
@@ -86,16 +98,20 @@ export default function Mastery({ inventory, refreshKey, clockFormat }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [bucket, setBucket] = useState<MasteryState | null>(null);
-  // Provenance changes (a re-observation, a player switch) leave the inventory
-  // prop untouched, so the backend announces them separately.
+  const [bucket, setBucket] = useState<Bucket | null>(null);
+  // Provenance changes (a re-observation, a player switch) and the exclusion
+  // settings leave the inventory prop untouched, so the backend announces them.
   const [observationKey, setObservationKey] = useState(0);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
   useEffect(() => {
-    const unlisten = listen(TAURI_EVENTS.MASTERY_UPDATE, () => setObservationKey(k => k + 1));
+    const refetch = () => setObservationKey(k => k + 1);
+    const unlisten = Promise.all([
+      listen(TAURI_EVENTS.MASTERY_UPDATE, refetch),
+      listen(TAURI_EVENTS.SETTINGS_UPDATED, refetch),
+    ]);
     const tick = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 60_000);
-    return () => { clearInterval(tick); unlisten.then(f => f()); };
+    return () => { clearInterval(tick); unlisten.then(fs => fs.forEach(f => f())); };
   }, []);
 
   useEffect(() => {
@@ -115,7 +131,7 @@ export default function Mastery({ inventory, refreshKey, clockFormat }: Props) {
     if (!category) return [];
     const q = search.toLowerCase();
     const visible = category.sources.filter(s =>
-      (bucket == null || s.state === bucket) && (!q || s.name.toLowerCase().includes(q)));
+      inBucket(s, bucket) && (!q || s.name.toLowerCase().includes(q)));
     return groupSources(visible);
   }, [category, search, bucket]);
 
@@ -146,14 +162,14 @@ export default function Mastery({ inventory, refreshKey, clockFormat }: Props) {
       </div>
       <div className="mst-toolbar mst-buckets" role="group" aria-label="Progress filter">
         {BUCKETS.map(b => {
-          const n = category?.counts[b.state] ?? 0;
-          if (b.state === "unknown" && n === 0) return null;
+          const n = category?.counts[b.bucket] ?? 0;
+          if ((b.bucket === "unknown" || b.bucket === "unobtainable") && n === 0) return null;
           return (
             <button
-              key={b.state}
-              className={`mst-filter-btn ${bucket === b.state ? "active" : ""}`}
-              aria-pressed={bucket === b.state}
-              onClick={() => setBucket(v => v === b.state ? null : b.state)}
+              key={b.bucket}
+              className={`mst-filter-btn ${bucket === b.bucket ? "active" : ""}`}
+              aria-pressed={bucket === b.bucket}
+              onClick={() => setBucket(v => v === b.bucket ? null : b.bucket)}
             >
               {b.label} <span className="mst-count">{n}</span>
             </button>
