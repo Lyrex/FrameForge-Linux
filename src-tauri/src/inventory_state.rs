@@ -248,10 +248,14 @@ pub(crate) fn build_inventory_from_blob(
         // The generic modular weapon type is catalog-Ignored, so the part must
         // resolve before the excluded_paths guard. "Barrel" is a bare substring:
         // the Mote Amp prism and Infested chambers lack a `/Barrel/` segment.
+        // Hound heads are named `ZanukaPetPartHeadA` and MOA heads
+        // `MoaPetHeadLambeo`, so "Head" is matched bare as well.
         let keyed_part = entry.modular_parts.iter().find(|part| {
             (entry.section == "OperatorAmps" && part.contains("Barrel"))
                 || (entry.item_type.contains("LotusModularWeapon") && part.contains("/Tip/"))
                 || (entry.item_type.contains("/SolarisUnited/") && part.contains("Barrel"))
+                || (entry.section == "Hoverboards" && part.ends_with("Deck"))
+                || (entry.section == "MoaPets" && part.contains("Head"))
         });
         let path = keyed_part.unwrap_or(&entry.item_type);
         let canonical = path_aliases.get(path.as_str()).copied().unwrap_or(path);
@@ -570,6 +574,42 @@ mod inventory_quantity_tests {
             blob.mastery_xp = Some([(part.to_string(), 800_000)].into());
             blob.unique_items.clear();
             assert_eq!(cache(&blob).items[part].mastery_rank, 30);
+        }
+    }
+
+    /// Starts from raw JSON because the parser has to read the Hoverboards and
+    /// MoaPets sections before any deck or head can be resolved. The MoaPets
+    /// shape comes from a captured account; the Hoverboards shape is assumed to
+    /// match it, as no captured account owned a K-Drive.
+    #[test]
+    fn kdrives_and_modular_companions_resolve_to_deck_and_head() {
+        const BOARD: &str = "/Lotus/Types/Vehicles/Hoverboard/HoverboardSuit";
+        const DECK: &str = "/Lotus/Types/Vehicles/Hoverboard/HoverboardParts/PartComponents/HoverboardSolarisA/HoverboardSolarisADeck";
+        const JET: &str = "/Lotus/Types/Vehicles/Hoverboard/HoverboardParts/PartComponents/HoverboardCorpusA/HoverboardCorpusAJet";
+        const HOUND: &str = "/Lotus/Types/Friendly/Pets/ZanukaPets/ZanukaPetAPowerSuit";
+        const HOUND_HEAD: &str = "/Lotus/Types/Friendly/Pets/ZanukaPets/ZanukaPetParts/ZanukaPetPartHeadA";
+        const HOUND_BODY: &str = "/Lotus/Types/Friendly/Pets/ZanukaPets/ZanukaPetParts/ZanukaPetPartBodyB";
+        const MOA: &str = "/Lotus/Types/Friendly/Pets/MoaPets/MoaPetPowerSuit";
+        const MOA_HEAD: &str = "/Lotus/Types/Friendly/Pets/MoaPets/MoaPetParts/MoaPetHeadLambeo";
+        const MOA_ENGINE: &str = "/Lotus/Types/Friendly/Pets/MoaPets/MoaPetParts/MoaPetEngineThricore";
+        // The parser rejects a blob under 50 KB.
+        let filler = "x".repeat(60_000);
+        let raw = format!(
+            r#"{{"SubscribedToEmails":0,"RegularCredits":0,"FusionPoints":0,"MiscItems":[],"Suits":[{{"ItemType":"/Lotus/Powersuits/Mag/Mag","XP":0}}],
+                "Hoverboards":[{{"ItemType":"{BOARD}","ModularParts":["{DECK}","{JET}"],"XP":400000}}],
+                "MoaPets":[{{"ItemType":"{HOUND}","ModularParts":["{HOUND_BODY}","{HOUND_HEAD}"],"XP":900000}},
+                           {{"ItemType":"{MOA}","ModularParts":["{MOA_ENGINE}","{MOA_HEAD}"],"XP":0}}],
+                "XPInfo":[{{"ItemType":"{DECK}","XP":400000}},{{"ItemType":"{HOUND_HEAD}","XP":900000}}],"Filler":"{filler}","DeathSquadable":false}}"#
+        );
+        let blob = memory_scanner::parse_full_account_blob(raw.as_bytes()).expect("complete account");
+        let owned = cache(&blob);
+        for (part, level, rank) in [(DECK, 20, 20), (HOUND_HEAD, 30, 30), (MOA_HEAD, 0, 0)] {
+            assert_eq!(owned.items[part].owned_levels, [level], "{part}");
+            assert_eq!(owned.items[part].mastery_rank, rank, "{part}");
+            assert_eq!(owned.items[part].amount, 1, "{part}");
+        }
+        for generic in [BOARD, HOUND, MOA, JET, HOUND_BODY, MOA_ENGINE] {
+            assert!(!owned.items.contains_key(generic), "{generic}");
         }
     }
 

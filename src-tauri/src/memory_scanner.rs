@@ -421,8 +421,8 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
     const UNIQUE_SECS: &[&str] = &[
         "Suits", "LongGuns", "Pistols", "Melee",
         "SpaceSuits", "SpaceMelee", "SpaceGuns",
-        "Sentinels", "SentinelWeapons", "KubrowPets",
-        "OperatorAmps", "MechSuits",
+        "Sentinels", "SentinelWeapons", "KubrowPets", "MoaPets",
+        "OperatorAmps", "MechSuits", "Hoverboards",
     ];
     let mut unique_items = Vec::new();
     for &sec in UNIQUE_SECS {
