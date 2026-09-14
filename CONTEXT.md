@@ -94,6 +94,10 @@ account state. The canonical identity of a node everywhere in FrameForge; the
 planet and node name are labels.
 _Avoid_: node name, planet/node string (when identity is meant)
 
+**Provenance**:
+What a source kind's progress rests on: one of Confirmed, Unconfirmed, or
+Unknown, plus the observation time when there is one.
+
 **Confirmed**:
 Progress for a mastery source kind that a game observation with a known time
 established. An entry absent from a confirmed field is zero credit, not

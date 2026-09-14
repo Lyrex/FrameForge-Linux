@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use tauri::State;
 use crate::app_state::{AppState, CorrectionEntry};
 use crate::catalogue::fix_category;
-use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache};
+use crate::inventory_state::inventory_path_aliases;
+use crate::mastery_progress::{PlayerProgress, Provenance, ProvenanceState};
 use crate::mastery_rules;
 use crate::wfcd::WfcdItem;
 
@@ -55,28 +56,44 @@ pub(crate) struct MasteryCategory {
     pub(crate) sources: Vec<MasterySource>,
 }
 
+/// Intrinsics, nodes and junctions have no extraction yet and stay Unknown.
+#[derive(serde::Serialize, Clone, Copy, Default, Debug)]
+pub(crate) struct MasteryProvenance {
+    pub(crate) equipment: Provenance,
+    pub(crate) intrinsics: Provenance,
+    pub(crate) nodes: Provenance,
+    pub(crate) junctions: Provenance,
+}
+
 #[derive(serde::Serialize, Clone, Debug)]
 pub(crate) struct MasteryOverview {
     pub(crate) counts: MasteryCounts,
     pub(crate) categories: Vec<MasteryCategory>,
+    pub(crate) provenance: MasteryProvenance,
 }
 
 #[tauri::command]
 pub(crate) fn get_mastery_overview(state: State<AppState>) -> MasteryOverview {
-    let cache = load_inventory_state_cache(&state.inventory_state_cache_path);
-    let earned = cache.has_account_observation().then(|| cache.mastery_data());
+    let player = state.local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let progress = state.mastery_progress.lock().unwrap_or_else(|e| e.into_inner());
     let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
-    build_mastery_overview(&items, &state.corrections, earned.as_ref())
+    build_mastery_overview(&items, &state.corrections, progress.current(player.as_deref()))
 }
 
-/// `earned` is None until a full account observation exists: every source is
-/// then Unknown rather than Missing, since unknown is never zero.
 pub(crate) fn build_mastery_overview(
     items: &[WfcdItem],
     corrections: &HashMap<String, CorrectionEntry>,
-    earned: Option<&HashMap<String, u32>>,
+    progress: Option<&PlayerProgress>,
 ) -> MasteryOverview {
     let aliases = inventory_path_aliases();
+    let equipment = progress.map(|p| p.equipment).unwrap_or_default();
+    // XPInfo credits some aliases directly; the overview lists canonical entries only.
+    let mut affinity: HashMap<&str, i64> = HashMap::new();
+    for (path, &earned) in progress.iter().flat_map(|p| &p.affinity) {
+        let canonical = aliases.get(path.as_str()).copied().unwrap_or(path);
+        let credit = affinity.entry(canonical).or_insert(earned);
+        *credit = (*credit).max(earned);
+    }
     let mut sources: HashMap<String, MasterySource> = HashMap::new();
 
     for i in items {
@@ -107,8 +124,16 @@ pub(crate) fn build_mastery_overview(
         .map(|c| MasteryCategory { category: (*c).into(), counts: MasteryCounts::default(), sources: vec![] })
         .collect();
     for mut source in sources.into_values() {
-        if let Some(earned) = earned {
-            let rank = earned.get(&source.unique_name).copied().unwrap_or(0);
+        let rank = affinity.get(source.unique_name.as_str())
+            .map(|&earned| mastery_rules::xp_to_rank(earned, &source.unique_name).min(source.cap));
+        // An Unconfirmed record came from a cache that dropped rank-0 rows, so
+        // absence there says nothing.
+        let rank = match (equipment.state, rank) {
+            (ProvenanceState::Unknown, _) | (ProvenanceState::Unconfirmed, None) => None,
+            (ProvenanceState::Confirmed, None) => Some(0),
+            (_, Some(rank)) => Some(rank),
+        };
+        if let Some(rank) = rank {
             source.earned_rank = Some(rank);
             source.state = if rank >= source.cap { MasteryState::Mastered }
                 else if rank > 0 { MasteryState::Partial }
@@ -123,7 +148,7 @@ pub(crate) fn build_mastery_overview(
     for category in &mut categories {
         category.sources.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.unique_name.cmp(&b.unique_name)));
     }
-    MasteryOverview { counts, categories }
+    MasteryOverview { counts, categories, provenance: MasteryProvenance { equipment, ..Default::default() } }
 }
 
 /// Inventory display categories file modular chambers, decks and mechs under
@@ -142,6 +167,7 @@ fn collection_category(item_type: &str, display_category: &str) -> Option<&'stat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mastery_progress::{PlayerProgress, Provenance, ProvenanceState};
 
     const ORION: &str = "/Lotus/Powersuits/SiriusOrion/OrionSuit";
     const SIRIUS: &str = "/Lotus/Powersuits/SiriusOrion/SiriusSuit";
@@ -217,6 +243,13 @@ mod tests {
         ].into()
     }
 
+    fn observed(state: ProvenanceState, observed_at: Option<i64>, affinity: &[(&str, i64)]) -> PlayerProgress {
+        PlayerProgress {
+            affinity: affinity.iter().map(|(path, earned)| ((*path).to_string(), *earned)).collect(),
+            equipment: Provenance { state, observed_at },
+        }
+    }
+
     fn source<'a>(overview: &'a MasteryOverview, path: &str) -> &'a MasterySource {
         overview.categories.iter().flat_map(|c| &c.sources)
             .find(|s| s.unique_name == path)
@@ -231,7 +264,7 @@ mod tests {
 
     #[test]
     fn every_masterable_category_is_listed_once_by_canonical_identity() {
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&HashMap::new()));
+        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&observed(ProvenanceState::Confirmed, Some(1_000), &[])));
         let categories: Vec<&str> = overview.categories.iter().map(|c| c.category.as_str()).collect();
         assert_eq!(categories, ["Warframes", "Primary", "Secondary", "Melee", "Operator Weapons",
             "Archwing", "Companions", "Companion Weapons", "Vehicles"]);
@@ -256,10 +289,12 @@ mod tests {
 
     #[test]
     fn buckets_follow_catalog_caps_and_alias_credit_lands_on_canonical() {
-        let earned: HashMap<String, u32> = [
-            (SIRIUS.into(), 30), (BRATON.into(), 30), (KUVA.into(), 35), (STRIKE.into(), 12),
-        ].into();
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&earned));
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[
+            (ORION, 900_000), (BRATON, 450_000), (KUVA, 612_500), (STRIKE, 72_000),
+        ]);
+        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress));
+        assert_eq!(overview.provenance.equipment, Provenance { state: ProvenanceState::Confirmed, observed_at: Some(1_000) });
+        assert_eq!(overview.provenance.intrinsics.state, ProvenanceState::Unknown);
         assert_eq!((source(&overview, SIRIUS).earned_rank, source(&overview, SIRIUS).state), (Some(30), MasteryState::Mastered));
         assert_eq!(source(&overview, BRATON).state, MasteryState::Mastered);
         assert_eq!((source(&overview, KUVA).cap, source(&overview, KUVA).state), (40, MasteryState::Partial));
@@ -276,5 +311,19 @@ mod tests {
         assert!(overview.categories.iter().flat_map(|c| &c.sources)
             .all(|s| s.state == MasteryState::Unknown && s.earned_rank.is_none()));
         assert_eq!(overview.counts, MasteryCounts { total: 15, mastered: 0, partial: 0, missing: 0, unknown: 15 });
+        for kind in [overview.provenance.equipment, overview.provenance.intrinsics, overview.provenance.nodes, overview.provenance.junctions] {
+            assert_eq!(kind, Provenance::default());
+        }
+    }
+
+    #[test]
+    fn unconfirmed_progress_shows_saved_ranks_and_leaves_absent_entries_unknown() {
+        let progress = observed(ProvenanceState::Unconfirmed, None, &[(BRATON, 450_000), (KUVA, 612_500)]);
+        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress));
+        assert_eq!(overview.provenance.equipment, Provenance { state: ProvenanceState::Unconfirmed, observed_at: None });
+        assert_eq!((source(&overview, BRATON).earned_rank, source(&overview, BRATON).state), (Some(30), MasteryState::Mastered));
+        assert_eq!((source(&overview, KUVA).earned_rank, source(&overview, KUVA).state), (Some(35), MasteryState::Partial));
+        assert_eq!((source(&overview, CHAMBER).earned_rank, source(&overview, CHAMBER).state), (None, MasteryState::Unknown));
+        assert_eq!(overview.counts, MasteryCounts { total: 15, mastered: 1, partial: 1, missing: 0, unknown: 13 });
     }
 }

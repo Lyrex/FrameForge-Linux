@@ -21,9 +21,19 @@ pub(crate) fn is_warframe_like(path: &str) -> bool {
         || path.ends_with("/RailJack/DefaultHarness")
 }
 
+fn affinity_base(path: &str) -> i64 {
+    if is_warframe_like(path) { 1000 } else { 500 }
+}
+
 pub(crate) fn xp_to_rank(xp: i64, path: &str) -> u32 {
-    let base = if is_warframe_like(path) { 1000.0f64 } else { 500.0f64 };
-    (xp.max(0) as f64 / base).sqrt().floor() as u32
+    (xp.max(0) as f64 / affinity_base(path) as f64).sqrt().floor() as u32
+}
+
+/// Lowest affinity that reaches `rank`. A stored rank round-trips through
+/// [`xp_to_rank`], and a rank that was capped at 30 on an item now capped at
+/// 40 comes back as a lower bound.
+pub(crate) fn rank_to_affinity(rank: u32, path: &str) -> i64 {
+    i64::from(rank) * i64::from(rank) * affinity_base(path)
 }
 
 pub(crate) fn rank_cap(path: &str, catalogue_cap: Option<u32>) -> u32 {
@@ -97,6 +107,20 @@ mod tests {
         assert_eq!(earned_rank(799_999, KUVA_NUKOR, Some(40)), 39);
         assert_eq!(earned_rank(129_043_438, KUVA_NUKOR, Some(40)), 40);
         assert_eq!(earned_rank(3_527_278, VOIDRIG, None), 40);
+    }
+
+    /// The affinity thresholds the game shows: 450k for a rank-30 weapon,
+    /// 900k for a rank-30 Warframe, 800k for a rank-40 Kuva weapon.
+    #[test]
+    fn rank_to_affinity_is_the_threshold_xp_to_rank_accepts() {
+        let braton = "/Lotus/Weapons/Tenno/Rifle/Braton";
+        let kuva = "/Lotus/Weapons/Grineer/KuvaLich/LongGuns/Karak/KuvaKarak";
+        let mag = "/Lotus/Powersuits/Mag/Mag";
+        assert_eq!(rank_to_affinity(30, braton), 450_000);
+        assert_eq!(rank_to_affinity(30, mag), 900_000);
+        assert_eq!(rank_to_affinity(40, kuva), 800_000);
+        assert_eq!(rank_to_affinity(0, mag), 0);
+        assert_eq!(xp_to_rank(rank_to_affinity(30, braton) - 1, braton), 29);
     }
 
     #[test]

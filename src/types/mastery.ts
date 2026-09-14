@@ -26,7 +26,23 @@ export interface MasteryCategory {
   sources: MasterySource[];
 }
 
+export type ProvenanceState = "confirmed" | "unconfirmed" | "unknown";
+
+export interface Provenance {
+  state: ProvenanceState;
+  /** Unix seconds; only Confirmed carries one. */
+  observed_at: number | null;
+}
+
+export interface MasteryProvenance {
+  equipment: Provenance;
+  intrinsics: Provenance;
+  nodes: Provenance;
+  junctions: Provenance;
+}
+
 export interface MasteryOverview {
   counts: MasteryCounts;
   categories: MasteryCategory[];
+  provenance: MasteryProvenance;
 }

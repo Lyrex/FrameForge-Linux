@@ -106,8 +106,9 @@ pub struct BlobInventory {
     pub flavour_items:   HashMap<String, i64>,
     /// WeaponSkins — sigils and cosmetic weapon overlays. Path → occurrence count.
     pub weapon_skins:    HashMap<String, i64>,
-    /// XPInfo: earned mastery XP per item.
-    pub mastery_xp:      HashMap<String, i64>,
+    /// XPInfo: affinity per equipment type. `None` when the section was not an
+    /// array; an empty array is a real zero.
+    pub mastery_xp:      Option<HashMap<String, i64>>,
     pub pending_recipes: Vec<BlobPendingRecipe>,
     /// Warframe paths fed to Helminth (InfestedFoundry.ConsumedSuits).
     pub consumed_suits:  Vec<String>,
@@ -577,13 +578,9 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
         }
     }
 
-    let mut mastery_xp: HashMap<String, i64> = HashMap::new();
-    if let Some(arr) = json["XPInfo"].as_array() {
-        for e in arr {
-            let Some(it) = e["ItemType"].as_str() else { continue };
-            if let Some(xp) = e["XP"].as_i64() { mastery_xp.insert(it.to_string(), xp); }
-        }
-    }
+    let mastery_xp: Option<HashMap<String, i64>> = json["XPInfo"].as_array().map(|arr| {
+        arr.iter().filter_map(|e| Some((e["ItemType"].as_str()?.to_string(), e["XP"].as_i64()?))).collect()
+    });
 
     // PendingRecipes (Foundry)
     let pending_recipes: Vec<BlobPendingRecipe> = json["PendingRecipes"].as_array()
@@ -1717,17 +1714,36 @@ mod sync_marker_tests {
 
 #[cfg(test)]
 mod stitch_engine_tests {
-    use super::{blob_digest_test_guard, stitch_blobs, BlobInventory};
+    use super::{blob_digest_test_guard, parse_full_account_blob, stitch_blobs, BlobInventory};
     use crate::mem_regions::RecordedRegions;
 
     /// The parser rejects a blob under 50 KB, and one with no owned Warframe in
     /// it, so a fixture has to carry both before the engine is reached at all.
     fn make_blob(fields: &str) -> Vec<u8> {
+        make_blob_with_xp_info(fields, "[]")
+    }
+
+    fn make_blob_with_xp_info(fields: &str, xp_info: &str) -> Vec<u8> {
         let filler = "x".repeat(60_000);
         format!(
-            r#"{{"SubscribedToEmails":0,{fields},"XPInfo":[],"FusionPoints":0,"MiscItems":[],"Suits":[{{"ItemType":"/Lotus/Powersuits/Mag/Mag","XP":0}}],"LongGuns":[],"Melee":[],"Pistols":[],"Filler":"{filler}","DeathSquadable":false}}"#
+            r#"{{"SubscribedToEmails":0,{fields},"XPInfo":{xp_info},"FusionPoints":0,"MiscItems":[],"Suits":[{{"ItemType":"/Lotus/Powersuits/Mag/Mag","XP":0}}],"LongGuns":[],"Melee":[],"Pistols":[],"Filler":"{filler}","DeathSquadable":false}}"#
         )
         .into_bytes()
+    }
+
+    #[test]
+    fn xp_info_distinguishes_empty_from_absent() {
+        let empty = parse_full_account_blob(&make_blob(r#""RegularCredits":1"#)).expect("parses");
+        assert_eq!(empty.mastery_xp.as_ref().map(|xp| xp.len()), Some(0));
+
+        let credited = parse_full_account_blob(&make_blob_with_xp_info(
+            r#""RegularCredits":1"#, r#"[{"ItemType":"/Lotus/Weapons/Tenno/Rifle/Braton","XP":450000}]"#,
+        )).expect("parses");
+        assert_eq!(credited.mastery_xp.expect("array").get("/Lotus/Weapons/Tenno/Rifle/Braton"), Some(&450_000));
+
+        let absent = parse_full_account_blob(&make_blob_with_xp_info(r#""RegularCredits":7"#, "null")).expect("still parses");
+        assert!(absent.mastery_xp.is_none());
+        assert_eq!(absent.credits, 7);
     }
 
     fn run(regions: Vec<(usize, Vec<u8>)>) -> Option<BlobInventory> {

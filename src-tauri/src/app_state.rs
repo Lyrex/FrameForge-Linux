@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+use crate::mastery_progress::MasteryProgress;
 use crate::monitor::CraftingJob;
 use crate::wfcd::{RecipeComponent, SyndicateOffer, WfcdItem};
 use crate::wfm::Wfm;
@@ -51,6 +52,7 @@ pub struct AppState {
     pub db_path: PathBuf,
     pub quantities_cache_path: PathBuf,
     pub inventory_state_cache_path: PathBuf,
+    pub mastery_progress: Arc<Mutex<MasteryProgress>>,
     pub settings_path: PathBuf,
     pub log_path: PathBuf,
     pub changes_log_path: PathBuf,
