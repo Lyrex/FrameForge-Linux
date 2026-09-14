@@ -6,9 +6,10 @@ import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import { PREFERENCE_KEYS } from "../constants/preferences";
 import { formatAge } from "../lib/formatters";
 import { fmtClock, type ClockFormat } from "../lib/clockFormat";
-import { parseControls, purchaseSlugs, VIEW_OPTIONS, type MasteryControls } from "./suggestions";
+import { parseControls, purchaseSlugs, VIEW_OPTIONS, type MasteryControls, type ResultView } from "./suggestions";
 import Collection from "./Collection";
 import WhatNext from "./WhatNext";
+import TargetMr from "./TargetMr";
 import type { InventoryItem } from "../types/items";
 import type { MasteryCounts, MasteryOverview, MasteryProvenance, Provenance } from "../types/mastery";
 
@@ -58,15 +59,19 @@ interface Props {
   inventory: Record<string, InventoryItem>;
   refreshKey: number;
   clockFormat: ClockFormat;
+  playerName: string | null;
+  tracked: string[];
+  onTrackToggle: (uniqueName: string) => void;
 }
 
-export default function Mastery({ inventory, refreshKey, clockFormat }: Props) {
+export default function Mastery({ inventory, refreshKey, clockFormat, playerName, tracked, onTrackToggle }: Props) {
   const [overview, setOverview] = useState<MasteryOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [controls, setControls] = useState<MasteryControls>(() => parseControls(localStorage.getItem(PREFERENCE_KEYS.MASTERY_CONTROLS)));
   // Provenance changes (a re-observation, a player switch) and the exclusion
   // settings leave the inventory prop untouched, so the backend announces them.
   const [observationKey, setObservationKey] = useState(0);
+  const [planView, setPlanView] = useState<ResultView | null>(null);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
   useEffect(() => {
@@ -90,7 +95,7 @@ export default function Mastery({ inventory, refreshKey, clockFormat }: Props) {
   // Quotes are fetched only once the platinum view asks for them, a few a
   // second. Each answer changes the ranking, so the overview refetches, at
   // most once every couple of seconds while the answers stream in.
-  const platinum = controls.view === "whatnext" && controls.result === "platinum";
+  const platinum = (controls.view === "whatnext" && controls.result === "platinum") || (controls.view === "target" && planView === "platinum");
   useEffect(() => {
     if (!platinum || !overview) return;
     const slugs = purchaseSlugs(overview.opportunities);
@@ -157,6 +162,10 @@ export default function Mastery({ inventory, refreshKey, clockFormat }: Props) {
       {overview && controls.view === "collection" && <Collection overview={overview} />}
       {overview && controls.view === "whatnext" && (
         <WhatNext overview={overview} controls={controls} onChange={update} nowMs={now * 1000} clockFormat={clockFormat} />
+      )}
+      {overview && controls.view === "target" && (
+        <TargetMr overview={overview} controls={controls} onChange={update} nowMs={now * 1000} clockFormat={clockFormat}
+          playerName={playerName} tracked={tracked} onTrackToggle={onTrackToggle} onView={setPlanView} />
       )}
     </div>
   );

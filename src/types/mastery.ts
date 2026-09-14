@@ -205,6 +205,64 @@ export interface MasteryOverview {
   counts: MasteryCounts;
   categories: MasteryCategory[];
   provenance: MasteryProvenance;
+  mastery_rank: number | null;
   /** The backend sorts these by stage, then remaining mastery high to low with unknown last, then name. */
   opportunities: Opportunity[];
+}
+
+/** An empty selection list is a plan the player cleared, kept until they regenerate. */
+export interface MasteryPlan {
+  target: number;
+  view: string;
+  selections: string[];
+  allowances: Record<string, number>;
+}
+
+/** A shortage the plan could cover with mastered equipment the player owns, once an allowance names how many copies it may spend. */
+export interface Allowable {
+  unique_name: string;
+  name: string;
+  owned: number;
+}
+
+export interface PlanEntry {
+  unique_name: string;
+  /** Null when the catalogue no longer lists the path. */
+  source: MasterySource | null;
+  /** The row as Suggestions would show it, planned in plan order against the plan's own ledger. Null once the source is mastered, when the path repeats an earlier selection, and when nothing suggests it. */
+  opportunity: Opportunity | null;
+  completed: boolean;
+  /** What finishing the entry adds to the projection. A repeat and a completed entry add zero. */
+  gain: number | null;
+  notes: string[];
+  allowable: Allowable[];
+}
+
+/**
+ * A total the observed Mastery Rank bounds to the range between two thresholds. `exact` is the
+ * summed earned mastery, present only when every source kind is Confirmed, every source's credit is
+ * known and the sum lands on the observed rank. `rank` follows `exact` where there is one and the
+ * lower bound otherwise.
+ */
+export interface MasteryTotal {
+  lower: number;
+  upper: number;
+  exact: number | null;
+  rank: number;
+  rank_upper: number;
+}
+
+export interface PlanEvaluation {
+  entries: PlanEntry[];
+  /** Null until the Mastery Rank is observed, as are `gap` and `projected`. */
+  total: MasteryTotal | null;
+  target_xp: number;
+  /** Mastery still to earn for the target, from the exact total or the lower bound. */
+  gap: number | null;
+  /** The known gains of every pending entry. */
+  gains: number;
+  /** Pending entries whose gain is unknown and so outside `gains`. */
+  unknown_gains: number;
+  projected: MasteryTotal | null;
+  rejected_allowances: string[];
 }

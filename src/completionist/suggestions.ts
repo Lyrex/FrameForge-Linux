@@ -2,7 +2,7 @@ import { RELIC_SUGGESTION_THRESHOLD } from "../constants/relics.ts";
 import { formatAge } from "../lib/formatters.ts";
 import type { Access, Coverage, Listing, MasteryState, Opportunity, Purchase, Stage } from "../types/mastery";
 
-export type MasteryView = "whatnext" | "collection";
+export type MasteryView = "whatnext" | "target" | "collection";
 export type ResultView = "suggestions" | "relics" | "platinum";
 export type ProgressFilter = "all" | Exclude<MasteryState, "mastered">;
 /** Unblocked includes unknown access, since a lock nobody has observed is not a confirmed one. */
@@ -53,6 +53,7 @@ export function activePreset(controls: MasteryControls): Preset | null {
 
 export const VIEW_OPTIONS: { key: MasteryView; label: string }[] = [
   { key: "whatnext",   label: "What next" },
+  { key: "target",     label: "Target MR" },
   { key: "collection", label: "Collection" },
 ];
 

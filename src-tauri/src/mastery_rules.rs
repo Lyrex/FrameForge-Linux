@@ -15,6 +15,25 @@ use crate::app_state::CorrectionEntry;
 
 pub(crate) const DEFAULT_RANK_CAP: u32 = 30;
 
+/// Mastery Rank 30 is the last rank on the quadratic curve. Every Legendary
+/// rank past it costs the same flat amount.
+const QUADRATIC_MASTERY_PER_RANK: u64 = 2_500;
+const QUADRATIC_MASTERY_RANK_CAP: u64 = 30;
+const LEGENDARY_RANK_MASTERY: u64 = 147_500;
+
+/// Total mastery the account needs to hold `rank`.
+pub(crate) fn mastery_rank_xp(rank: u32) -> u64 {
+    let rank = u64::from(rank);
+    let quadratic = rank.min(QUADRATIC_MASTERY_RANK_CAP);
+    QUADRATIC_MASTERY_PER_RANK * quadratic * quadratic + (rank - quadratic) * LEGENDARY_RANK_MASTERY
+}
+
+pub(crate) fn mastery_rank_from_xp(xp: u64) -> u32 {
+    let mut rank = 0;
+    while mastery_rank_xp(rank + 1) <= xp { rank += 1; }
+    rank
+}
+
 pub(crate) const INTRINSIC_RANK_CAP: u32 = 10;
 const INTRINSIC_MASTERY_PER_RANK: u32 = 1_500;
 
@@ -225,6 +244,24 @@ mod tests {
         assert_eq!(rank_to_affinity(40, kuva), 800_000);
         assert_eq!(rank_to_affinity(0, mag), 0);
         assert_eq!(xp_to_rank(rank_to_affinity(30, braton) - 1, braton), 29);
+    }
+
+    /// The wiki's thresholds: MR 1 at 2,500, MR 30 at 2,250,000, Legendary 1
+    /// at 2,397,500.
+    #[test]
+    fn mastery_rank_thresholds_are_quadratic_to_30_then_flat() {
+        assert_eq!(mastery_rank_xp(0), 0);
+        assert_eq!(mastery_rank_xp(1), 2_500);
+        assert_eq!(mastery_rank_xp(16), 640_000);
+        assert_eq!(mastery_rank_xp(30), 2_250_000);
+        assert_eq!(mastery_rank_xp(31), 2_397_500);
+        assert_eq!(mastery_rank_xp(35), 2_987_500);
+        assert_eq!(mastery_rank_from_xp(0), 0);
+        assert_eq!(mastery_rank_from_xp(2_499), 0);
+        assert_eq!(mastery_rank_from_xp(2_500), 1);
+        assert_eq!(mastery_rank_from_xp(2_249_999), 29);
+        assert_eq!(mastery_rank_from_xp(2_397_499), 30);
+        assert_eq!(mastery_rank_from_xp(2_397_500), 31);
     }
 
     #[test]
