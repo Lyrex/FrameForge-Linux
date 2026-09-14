@@ -2,21 +2,62 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { actionText, DEFAULT_CONTROLS, detailText, parseControls, readyText, remainingText, visibleOpportunities } from "./suggestions.ts";
-import type { Opportunity } from "../types/mastery.ts";
+import { actionText, chanceText, DEFAULT_CONTROLS, detailText, inSuggestions, parseControls, readyText, remainingText, visibleOpportunities } from "./suggestions.ts";
+import { RELIC_SUGGESTION_THRESHOLD } from "../constants/relics.ts";
+import type { Coverage, Opportunity, RelicPart } from "../types/mastery.ts";
 
 const opportunity = (name: string, over: Partial<Opportunity> = {}): Opportunity => ({
   unique_name: `/Lotus/Weapons/Tenno/${name}`, name, category: "Primary", image_name: null, mastery_req: null,
   cap: 30, earned_rank: 12, remaining_mastery: 1800, state: "partial", unobtainable: null, excluded: false,
   stage: "level_claim", action: "level", owned: true, owned_level: 12, build_completion_ms: null,
-  vendors: [], spend: null, craft: null, access: "available", blockers: [], ...over,
+  vendors: [], spend: null, craft: null, relic: null, access: "available", blockers: [], ...over,
 });
+
+const relicFarm = (name: string, coverage: Coverage, parts: RelicPart[] = [], over: Partial<Opportunity> = {}): Opportunity =>
+  opportunity(name, { stage: "acquire", action: "farm", owned: false, owned_level: null, state: "missing", earned_rank: 0, remaining_mastery: 3000,
+    craft: { requirements: [], builds: [], credits: 15_000, credits_short: 0 }, relic: { parts, coverage }, ...over });
+
+const complete = (probability: number): Coverage => ({ kind: "complete", probability });
 
 test("stored controls are validated field by field and fall back to defaults", () => {
   assert.deepEqual(parseControls(null), DEFAULT_CONTROLS);
   assert.deepEqual(parseControls("not json"), DEFAULT_CONTROLS);
-  assert.deepEqual(parseControls(JSON.stringify({ view: "collection", sort: "name", progress: "bogus", category: "Melee" })),
-    { ...DEFAULT_CONTROLS, view: "collection", sort: "name", category: "Melee" });
+  assert.deepEqual(parseControls(JSON.stringify({ view: "collection", sort: "name", progress: "bogus", category: "Melee", hideRelics: true })),
+    { ...DEFAULT_CONTROLS, view: "collection", sort: "name", category: "Melee", hideRelics: true });
+  assert.equal(parseControls(JSON.stringify({ hideRelics: "yes" })).hideRelics, false);
+});
+
+test("a relic route joins Suggestions strictly above the threshold, on the unrounded chance", () => {
+  assert.equal(RELIC_SUGGESTION_THRESHOLD, 0.85);
+  assert.equal(inSuggestions(relicFarm("Braton Prime", complete(0.8499))), false);
+  assert.equal(inSuggestions(relicFarm("Braton Prime", complete(0.85))), false);
+  assert.equal(inSuggestions(relicFarm("Braton Prime", complete(0.8501))), true);
+  assert.equal(inSuggestions(relicFarm("Braton Prime", { kind: "partial", missing: ["Barrel"], short: [] })), false);
+  assert.equal(inSuggestions(relicFarm("Braton Prime", { kind: "unknown" })), false);
+  assert.equal(inSuggestions(opportunity("Braton")), true);
+});
+
+test("Suggestions and More relics split the list, and More relics ranks by chance then partial then unknown", () => {
+  const list = [
+    opportunity("Braton"),
+    relicFarm("Akstiletto Prime", { kind: "unknown" }),
+    relicFarm("Vectis Prime", complete(0.42)),
+    relicFarm("Saryn Prime", { kind: "partial", missing: ["Neuroptics Blueprint"], short: [] }, [], { remaining_mastery: 6000 }),
+    relicFarm("Braton Prime", complete(0.9)),
+    relicFarm("Vasto Prime", complete(0.85)),
+  ];
+  const names = (o: Opportunity[]) => o.map(x => x.name);
+  assert.deepEqual(names(visibleOpportunities(list, DEFAULT_CONTROLS, "")), ["Braton", "Braton Prime"]);
+  assert.deepEqual(names(visibleOpportunities(list, { ...DEFAULT_CONTROLS, hideRelics: true }, "")), ["Braton"]);
+  const relics = { ...DEFAULT_CONTROLS, result: "relics" as const };
+  assert.deepEqual(names(visibleOpportunities(list, relics, "")), ["Vasto Prime", "Vectis Prime", "Saryn Prime", "Akstiletto Prime"]);
+  assert.deepEqual(names(visibleOpportunities(list, { ...relics, hideRelics: true }, "")), ["Vasto Prime", "Vectis Prime", "Saryn Prime", "Akstiletto Prime"]);
+  assert.deepEqual(names(visibleOpportunities(list, relics, "prime")), ["Vasto Prime", "Vectis Prime", "Saryn Prime", "Akstiletto Prime"]);
+  assert.deepEqual(names(visibleOpportunities(list, { ...relics, availability: "blocked" }, "")), []);
+  // A stock change that lifts the chance past the threshold moves the row.
+  const lifted = list.map(o => o.name === "Vectis Prime" ? relicFarm("Vectis Prime", complete(0.86)) : o);
+  assert.deepEqual(names(visibleOpportunities(lifted, DEFAULT_CONTROLS, "")), ["Braton", "Vectis Prime", "Braton Prime"]);
+  assert.deepEqual(names(visibleOpportunities(lifted, relics, "")), ["Vasto Prime", "Saryn Prime", "Akstiletto Prime"]);
 });
 
 test("filters narrow by category, progress and availability; search matches the name", () => {
@@ -91,6 +132,23 @@ test("labels spell out the action, the route and unknowns", () => {
     craft: { requirements: [chassis, ferrite], builds: [], credits: 20_000, credits_short: 5_000 } });
   assert.equal(actionText(farmed), "Farm 1 item");
   assert.equal(detailText(farmed, now), "Credits 20,000 · Short Ferrite ×100");
+  const barrel = { unique_name: "/Lotus/Types/Recipes/Weapons/WeaponParts/BratonPrimeBarrel", name: "Barrel", needed: 1, from_stock: 0, short: 1 };
+  const relicParts: RelicPart[] = [{ unique_name: barrel.unique_name, name: "Barrel", needed: 2, relics: [
+    { name: "Lith B4 Radiant", count: 3, chance: 0.1667 }, { name: "Lith B4 Intact", count: 1, chance: 0.2533 },
+  ] }];
+  const relicFarmed = relicFarm("Braton Prime", complete(0.4231), relicParts,
+    { craft: { requirements: [barrel, ferrite], builds: [], credits: 15_000, credits_short: 0 } });
+  assert.equal(actionText(relicFarmed), "Farm relics + 1 item");
+  assert.equal(actionText({ ...relicFarmed, craft: { ...relicFarmed.craft!, requirements: [barrel] } }), "Farm relics");
+  assert.equal(chanceText(relicFarmed.relic!.coverage), "42%");
+  assert.equal(chanceText(complete(0.005)), "0.5%");
+  assert.equal(chanceText(complete(0)), "0%");
+  assert.equal(chanceText({ kind: "partial", missing: [], short: ["Barrel"] }), "Partial");
+  assert.equal(chanceText({ kind: "unknown" }), "Unknown");
+  assert.equal(detailText(relicFarmed, now), "Barrel ×2 from Lith B4 Radiant ×3, Lith B4 Intact ×1 · Credits 15,000 · Short Ferrite ×100");
+  const partial = relicFarm("Braton Prime", { kind: "partial", missing: ["Blueprint"], short: ["Barrel"] },
+    [{ unique_name: "/bp", name: "Blueprint", needed: 1, relics: [] }, ...relicParts]);
+  assert.equal(detailText(partial, now), "No relic for Blueprint · Too few relics for Barrel · Barrel ×2 from Lith B4 Radiant ×3, Lith B4 Intact ×1 · Credits 15,000");
   assert.equal(readyText(5_000_000, now), "ready");
   assert.equal(readyText(now + 3_720_000, now), "ready in 1h 2m");
   assert.equal(readyText(now + 45_000, now), "ready in 1m");

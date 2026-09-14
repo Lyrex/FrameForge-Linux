@@ -3,8 +3,8 @@ import ItemImg from "../ItemImg";
 import SearchBar from "../shared/SearchBar";
 import { fmtClock, type ClockFormat } from "../lib/clockFormat";
 import {
-  actionText, detailText, remainingText, visibleOpportunities,
-  AVAILABILITY_OPTIONS, DEFAULT_CONTROLS, PROGRESS_OPTIONS, RESULT_OPTIONS, SORT_OPTIONS, STAGE_LABELS, STAGE_ORDER,
+  actionText, chanceText, detailText, remainingText, visibleOpportunities,
+  AVAILABILITY_OPTIONS, DEFAULT_CONTROLS, PROGRESS_OPTIONS, RELIC_GROUP_LABELS, RELIC_GROUP_ORDER, RESULT_OPTIONS, SORT_OPTIONS, STAGE_LABELS, STAGE_ORDER,
   type AvailabilityFilter, type MasteryControls, type ProgressFilter, type Sort,
 } from "./suggestions";
 import type { MasteryOverview, Opportunity } from "../types/mastery";
@@ -12,7 +12,7 @@ import type { MasteryOverview, Opportunity } from "../types/mastery";
 const ACCESS_LABELS = { available: "Available", blocked: "Blocked", unknown: "Unknown access" } as const;
 
 function OpportunityRow({ opportunity, nowMs, clockFormat }: { opportunity: Opportunity; nowMs: number; clockFormat: ClockFormat }) {
-  const { access, blockers, build_completion_ms, category, image_name, mastery_req, name, remaining_mastery, state } = opportunity;
+  const { access, blockers, build_completion_ms, category, image_name, mastery_req, name, relic, remaining_mastery, state } = opportunity;
   const readyAt = build_completion_ms == null ? undefined : fmtClock(Math.floor(build_completion_ms / 1000), clockFormat);
   return (
     <div className={`mst-opp mst-opp-${access}`}>
@@ -29,6 +29,11 @@ function OpportunityRow({ opportunity, nowMs, clockFormat }: { opportunity: Oppo
         {blockers.length > 0 && <div className="mst-opp-blockers">{blockers.join(" · ")}</div>}
       </div>
       <span className="mst-opp-action">{actionText(opportunity)}</span>
+      {relic && (
+        <span className={`mst-pill mst-pill-relic-${relic.coverage.kind}`} title="Chance of every missing relic part dropping from the relics you own, run solo at their current refinement">
+          <span className="mst-pill-kind">Relics</span> {chanceText(relic.coverage)}
+        </span>
+      )}
       <span className={`mst-pill mst-pill-${access}`}>{ACCESS_LABELS[access]}</span>
       <span className={`mst-rank rank-${state}`} title={remaining_mastery == null ? "Remaining mastery unknown: no account observation yet" : "Remaining mastery"}>
         {remainingText(remaining_mastery)}
@@ -51,9 +56,10 @@ export default function WhatNext({ overview, controls, onChange, nowMs, clockFor
   const visible = useMemo(
     () => visibleOpportunities(overview.opportunities, { ...controls, category }, search),
     [overview.opportunities, controls, category, search]);
-  const groups = STAGE_ORDER
-    .map(stage => ({ stage, items: visible.filter(o => o.stage === stage) }))
-    .filter(g => g.items.length > 0);
+  const groups = controls.result === "relics"
+    ? RELIC_GROUP_ORDER.map(group => ({ key: group, label: RELIC_GROUP_LABELS[group], items: visible.filter(o => o.relic?.coverage.kind === group) }))
+    : STAGE_ORDER.map(stage => ({ key: stage, label: STAGE_LABELS[stage], items: visible.filter(o => o.stage === stage) }));
+  const listed = controls.result === "suggestions" || controls.result === "relics";
   const isFiltered = search !== "" || category != null || controls.progress !== "all" || controls.availability !== "all";
 
   return (
@@ -71,7 +77,7 @@ export default function WhatNext({ overview, controls, onChange, nowMs, clockFor
         ))}
       </div>
 
-      {controls.result === "suggestions" && (
+      {listed && (
         <div className="mst-toolbar mst-filters">
           <SearchBar className="search-box mst-search" placeholder="Search…" value={search} onChange={setSearch} />
           <label className="mst-select">Category
@@ -95,6 +101,12 @@ export default function WhatNext({ overview, controls, onChange, nowMs, clockFor
               {SORT_OPTIONS.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
             </select>
           </label>
+          {controls.result === "suggestions" && (
+            <label className="mst-select">
+              <input type="checkbox" checked={controls.hideRelics} onChange={e => onChange({ hideRelics: e.target.checked })} />
+              Hide relic routes
+            </label>
+          )}
           {isFiltered && (
             <button className="fchip fchip-reset" onClick={() => {
               setSearch("");
@@ -107,21 +119,21 @@ export default function WhatNext({ overview, controls, onChange, nowMs, clockFor
       )}
 
       <div className="mst-body">
-        {controls.result === "relics" && (
-          <div className="mst-empty">Relic suggestions are not available yet.</div>
-        )}
         {controls.result === "platinum" && (
           <div className="mst-empty">Platinum suggestions are not available yet.</div>
         )}
         {controls.result === "suggestions" && overview.opportunities.length === 0 && (
           <div className="mst-empty">No suggestions yet: nothing owned or building with mastery left, and no known recipe or vendor route.</div>
         )}
-        {controls.result === "suggestions" && overview.opportunities.length > 0 && visible.length === 0 && (
+        {controls.result === "relics" && !overview.opportunities.some(o => o.relic) && (
+          <div className="mst-empty">No relic routes: nothing with mastery left is short a part that drops from a relic.</div>
+        )}
+        {listed && overview.opportunities.length > 0 && visible.length === 0 && (
           <div className="mst-empty">Nothing matches.</div>
         )}
-        {controls.result === "suggestions" && groups.map(({ stage, items }) => (
-          <section key={stage} className="mst-group" aria-label={STAGE_LABELS[stage]}>
-            <div className="mst-group-header">{STAGE_LABELS[stage]} <span className="mst-count">{items.length}</span></div>
+        {listed && groups.filter(g => g.items.length > 0).map(({ key, label, items }) => (
+          <section key={key} className="mst-group" aria-label={label}>
+            <div className="mst-group-header">{label} <span className="mst-count">{items.length}</span></div>
             <div className="mst-opp-list">
               {items.map(o => <OpportunityRow key={o.unique_name} opportunity={o} nowMs={nowMs} clockFormat={clockFormat} />)}
             </div>

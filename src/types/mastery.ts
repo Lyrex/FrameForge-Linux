@@ -111,6 +111,38 @@ export interface CraftPlan {
   credits_short: number;
 }
 
+/** One owned relic, at one refinement, that drops the part. */
+export interface RelicStock {
+  name: string;
+  count: number;
+  /** The reward's share of one roll after the refinement's table is normalized to one. Null when the table carries no chances. */
+  chance: number | null;
+}
+
+export interface RelicPart {
+  unique_name: string;
+  name: string;
+  needed: number;
+  /** Sorted with the best chance first. */
+  relics: RelicStock[];
+}
+
+/**
+ * Complete: every part has relics enough to roll, and the chance that they all drop.
+ * Partial: `missing` names parts no owned relic drops, and `short` names parts the owned relics cannot yield together.
+ * Unknown: a relevant relic's table carries no chances, or the walk would take more states than allowed.
+ */
+export type Coverage =
+  | { kind: "complete"; probability: number }
+  | { kind: "partial"; missing: string[]; short: string[] }
+  | { kind: "unknown" };
+
+/** The chance covers the relic parts only, and the other shortages stay in `craft`. */
+export interface RelicRoute {
+  parts: RelicPart[];
+  coverage: Coverage;
+}
+
 export interface Opportunity extends MasterySource {
   stage: Stage;
   action: Action;
@@ -122,6 +154,8 @@ export interface Opportunity extends MasterySource {
   spend: Spend | null;
   /** A source that is neither owned nor building carries its plan whenever a recipe exists. */
   craft: CraftPlan | null;
+  /** Present when something short in the plan drops from a relic. */
+  relic: RelicRoute | null;
   access: Access;
   blockers: string[];
 }

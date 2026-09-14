@@ -1,4 +1,5 @@
-import type { Access, MasteryState, Opportunity, Stage } from "../types/mastery";
+import { RELIC_SUGGESTION_THRESHOLD } from "../constants/relics.ts";
+import type { Access, Coverage, MasteryState, Opportunity, Stage } from "../types/mastery";
 
 export type MasteryView = "whatnext" | "collection";
 export type ResultView = "suggestions" | "relics" | "platinum";
@@ -13,10 +14,12 @@ export interface MasteryControls {
   progress: ProgressFilter;
   availability: AvailabilityFilter;
   sort: Sort;
+  /** Keeps relic routes out of Suggestions, while More relics still lists them. */
+  hideRelics: boolean;
 }
 
 export const DEFAULT_CONTROLS: MasteryControls = {
-  view: "whatnext", result: "suggestions", category: null, progress: "all", availability: "all", sort: "mastery",
+  view: "whatnext", result: "suggestions", category: null, progress: "all", availability: "all", sort: "mastery", hideRelics: false,
 };
 
 export const VIEW_OPTIONS: { key: MasteryView; label: string }[] = [
@@ -65,6 +68,7 @@ export function parseControls(raw: string | null): MasteryControls {
     progress: pick(PROGRESS_OPTIONS, stored.progress, DEFAULT_CONTROLS.progress),
     availability: pick(AVAILABILITY_OPTIONS, stored.availability, DEFAULT_CONTROLS.availability),
     sort: pick(SORT_OPTIONS, stored.sort, DEFAULT_CONTROLS.sort),
+    hideRelics: stored.hideRelics === true,
   };
 }
 
@@ -76,16 +80,48 @@ export const STAGE_LABELS: Record<Stage, string> = {
   acquire: "Acquire",
 };
 
+export const RELIC_GROUP_ORDER: readonly Coverage["kind"][] = ["complete", "partial", "unknown"];
+
+export const RELIC_GROUP_LABELS: Record<Coverage["kind"], string> = {
+  complete: "By completion chance",
+  partial: "Partial coverage",
+  unknown: "Chance unknown",
+};
+
+/** Classifies on the unrounded probability, so exactly the threshold stays in More relics. */
+export function inSuggestions(o: Opportunity): boolean {
+  return o.relic == null || (o.relic.coverage.kind === "complete" && o.relic.coverage.probability > RELIC_SUGGESTION_THRESHOLD);
+}
+
+function chance(o: Opportunity): number {
+  return o.relic?.coverage.kind === "complete" ? o.relic.coverage.probability : -1;
+}
+
 export function visibleOpportunities(list: Opportunity[], controls: MasteryControls, search: string): Opportunity[] {
   const q = search.trim().toLowerCase();
   const visible = list.filter(o =>
-    (controls.category == null || o.category === controls.category)
+    (controls.result === "relics" ? o.relic != null && !inSuggestions(o) : inSuggestions(o) && !(controls.hideRelics && o.relic != null))
+    && (controls.category == null || o.category === controls.category)
     && (controls.progress === "all" || o.state === controls.progress)
     && (controls.availability === "all" || o.access === controls.availability)
     && (!q || o.name.toLowerCase().includes(q)));
+  if (controls.result === "relics") {
+    return visible.sort((a, b) =>
+      RELIC_GROUP_ORDER.indexOf(a.relic!.coverage.kind) - RELIC_GROUP_ORDER.indexOf(b.relic!.coverage.kind)
+      || chance(b) - chance(a)
+      || (controls.sort === "name" ? a.name.localeCompare(b.name) : 0));
+  }
   if (controls.sort !== "name") return visible;
   return visible.sort((a, b) =>
     STAGE_ORDER.indexOf(a.stage) - STAGE_ORDER.indexOf(b.stage) || a.name.localeCompare(b.name));
+}
+
+export function chanceText(coverage: Coverage): string {
+  switch (coverage.kind) {
+    case "complete": return `${(coverage.probability * 100).toFixed(coverage.probability < 0.01 && coverage.probability > 0 ? 1 : 0)}%`;
+    case "partial": return "Partial";
+    case "unknown": return "Unknown";
+  }
 }
 
 export function remainingText(remaining: number | null): string {
@@ -107,8 +143,10 @@ export function actionText(o: Opportunity): string {
       return `Build ${n} ${n === 1 ? "part" : "parts"}, then craft`;
     }
     case "farm": {
-      const n = o.craft?.requirements.filter(r => r.short > 0).length ?? 0;
-      return `Farm ${n} ${n === 1 ? "item" : "items"}`;
+      const relicParts = new Set(o.relic?.parts.map(p => p.unique_name));
+      const n = o.craft?.requirements.filter(r => r.short > 0 && !relicParts.has(r.unique_name)).length ?? 0;
+      const items = `${n} ${n === 1 ? "item" : "items"}`;
+      return o.relic ? (n > 0 ? `Farm relics + ${items}` : "Farm relics") : `Farm ${items}`;
     }
     case "buy": {
       const first = o.vendors[0];
@@ -142,10 +180,23 @@ export function detailText(o: Opportunity, nowMs: number, readyAt?: string): str
     parts.push(`+${o.spend.mastery.toLocaleString("en-US")} mastery`);
     for (const t of o.spend.tracks) parts.push(`${t.track} R${t.from} → R${t.to}`);
   }
+  if (o.relic) {
+    const { coverage } = o.relic;
+    if (coverage.kind === "partial") {
+      if (coverage.missing.length) parts.push(`No relic for ${coverage.missing.join(", ")}`);
+      if (coverage.short.length) parts.push(`Too few relics for ${coverage.short.join(", ")}`);
+    }
+    for (const p of o.relic.parts) {
+      if (p.relics.length === 0) continue;
+      const count = p.needed > 1 ? ` ×${p.needed}` : "";
+      parts.push(`${p.name}${count} from ${p.relics.map(r => `${r.name} ×${r.count}`).join(", ")}`);
+    }
+  }
   if (o.craft) {
     parts.push(o.craft.credits == null ? "Credits unknown" : `Credits ${o.craft.credits.toLocaleString("en-US")}`);
     if (o.craft.builds.length) parts.push(`Build ${o.craft.builds.map(b => b.crafts > 1 ? `${b.name} ×${b.crafts}` : b.name).join(", ")}`);
-    const short = o.craft.requirements.filter(r => r.short > 0);
+    const relicParts = new Set(o.relic?.parts.map(p => p.unique_name));
+    const short = o.craft.requirements.filter(r => r.short > 0 && !relicParts.has(r.unique_name));
     if (short.length) parts.push(`Short ${short.map(r => `${r.name} ×${r.short.toLocaleString("en-US")}`).join(", ")}`);
   }
   return parts.join(" · ");

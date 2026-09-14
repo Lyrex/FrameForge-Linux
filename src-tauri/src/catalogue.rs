@@ -595,7 +595,7 @@ pub(crate) fn get_item_list_status(state: State<AppState>) -> serde_json::Value 
     })
 }
 
-pub(crate) const CATALOGUE_CACHE: &str = "catalogue-v2.json";
+pub(crate) const CATALOGUE_CACHE: &str = "catalogue-v3.json";
 
 /// Game updates land far more slowly than once a day, and a conditional GET
 /// makes an unchanged catalogue nearly free anyway.
