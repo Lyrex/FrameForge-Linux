@@ -323,11 +323,15 @@ export function detailText(o: Opportunity, nowMs: number, readyAt?: string): str
       parts.push(`${p.name}${count} from ${p.relics.map(r => `${r.name} ×${r.count}`).join(", ")}`);
     }
   }
+  for (const p of o.drop?.parts ?? []) {
+    const count = p.needed > 1 ? ` ×${p.needed}` : "";
+    parts.push(`${p.name}${count} from ${p.locations.map(l => l.chance == null ? l.location : `${l.location} (${l.chance}%)`).join(", ")}`);
+  }
   if (o.craft) {
     parts.push(o.craft.credits == null ? "Credits unknown" : `Credits ${o.craft.credits.toLocaleString("en-US")}`);
     if (o.craft.builds.length) parts.push(`Build ${o.craft.builds.map(b => b.crafts > 1 ? `${b.name} ×${b.crafts}` : b.name).join(", ")}`);
-    const relicParts = new Set(o.relic?.parts.map(p => p.unique_name));
-    const short = o.craft.requirements.filter(r => r.short > 0 && !relicParts.has(r.unique_name));
+    const located = new Set([...o.relic?.parts ?? [], ...o.drop?.parts ?? []].map(p => p.unique_name));
+    const short = o.craft.requirements.filter(r => r.short > 0 && !located.has(r.unique_name));
     if (short.length) parts.push(`Short ${short.map(r => `${r.name} ×${r.short.toLocaleString("en-US")}`).join(", ")}`);
   }
   return parts.join(" · ");

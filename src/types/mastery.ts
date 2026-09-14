@@ -156,6 +156,25 @@ export interface RelicRoute {
   coverage: Coverage;
 }
 
+/** A place other than a relic that drops an item. `location` is WFCD's free text. */
+export interface DropLocation {
+  location: string;
+  chance: number | null;
+}
+
+export interface DropPart {
+  unique_name: string;
+  name: string;
+  needed: number;
+  /** Sorted with the best chance first and cut to the best few by the backend. */
+  locations: DropLocation[];
+}
+
+/** Drop locations for the shortages the relic route leaves out. Nothing estimates the whole item. */
+export interface DropRoute {
+  parts: DropPart[];
+}
+
 /**
  * A warframe.market listing. A price with a fetch time is a quote of that age; a price without one
  * came from a cache written before quotes were stamped; no price with a fetch time means the market
@@ -209,6 +228,8 @@ export interface Opportunity extends MasterySource {
   craft: CraftPlan | null;
   /** Present when something short in the plan drops from a relic. */
   relic: RelicRoute | null;
+  /** Present when a shortage outside the relic route has a known drop location. */
+  drop: DropRoute | null;
   purchase: Purchase | null;
   access: Access;
   blockers: Blocker[];
