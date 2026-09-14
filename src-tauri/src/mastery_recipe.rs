@@ -179,13 +179,22 @@ pub(crate) fn plan_all(inventory: &InventoryStateCache, recipes: &HashMap<String
     targets.iter().map(|target| ledger.plan(target, recipes.get(target).map_or(&[], Vec::as_slice))).collect()
 }
 
+/// Plans each target against the whole stock, as if it were the only one.
+/// The Foundry grid reads this so a card agrees with its modal, which plans
+/// the item alone.
+pub(crate) fn plan_each(inventory: &InventoryStateCache, recipes: &HashMap<String, Vec<RecipeComponent>>, targets: &[String]) -> Vec<CraftPlan> {
+    let (stock, owned) = (inventory.stackable_quantities(), inventory.unique_quantities());
+    let (ledger, _) = Ledger::new(&stock, &owned, &HashSet::new(), &HashMap::new());
+    targets.iter().map(|target| ledger.clone().plan(target, recipes.get(target).map_or(&[], Vec::as_slice))).collect()
+}
+
 #[tauri::command]
-pub(crate) async fn plan_crafts(app: tauri::AppHandle, unique_names: Vec<String>) -> Result<Vec<CraftPlan>, String> {
+pub(crate) async fn plan_crafts(app: tauri::AppHandle, unique_names: Vec<String>, standalone: Option<bool>) -> Result<Vec<CraftPlan>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
         let recipes = state.recipes.lock().unwrap_or_else(|e| e.into_inner());
-        plan_all(&inventory, &recipes, &unique_names)
+        if standalone.unwrap_or(false) { plan_each(&inventory, &recipes, &unique_names) } else { plan_all(&inventory, &recipes, &unique_names) }
     }).await.map_err(|e| e.to_string())
 }
 
@@ -490,6 +499,20 @@ mod tests {
         assert_eq!(short(&frost), [(CELL, 1)]);
 
         assert!(plan_all(&inventory, &recipes, &["/Lotus/Types/Unknown".into()])[0].requirements.is_empty());
+    }
+
+    #[test]
+    fn standalone_targets_each_see_the_whole_stock() {
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [(FROST.to_string(), frost()), (TARGET.to_string(), vec![blueprint(TARGET_BP, None, false), cell(1)])].into();
+        let mut inventory = InventoryStateCache::default();
+        for (path, amount, category) in [(FROST_BP, 1, "Blueprints"), (CHASSIS, 1, "Parts"), (TARGET_BP, 1, "Blueprints"), (CELL, 1, "Resources")] {
+            inventory.items.insert(path.into(), CachedItem { unique_name: path.into(), amount, category: category.into(), ..Default::default() });
+        }
+        let targets = [FROST.to_string(), TARGET.to_string()];
+        let shared = plan_all(&inventory, &recipes, &targets);
+        assert_eq!(short(&shared[1]), [(CELL, 1)]);
+        let alone = plan_each(&inventory, &recipes, &targets);
+        assert!(alone.iter().all(CraftPlan::craftable_now));
     }
 
     #[test]
