@@ -10,8 +10,9 @@ export interface MasterySource {
   image_name: string | null;
   mastery_req: number | null;
   cap: number;
-  /** Absent while equipment progress is Unknown. */
+  /** Absent while the source kind's progress is Unknown. */
   earned_rank: number | null;
+  remaining_mastery: number | null;
   state: MasteryState;
   /** The corrections table's class, whatever the settings say. */
   unobtainable: Unobtainable | null;
@@ -51,7 +52,7 @@ export interface MasteryProvenance {
 }
 
 export type Stage = "level_claim" | "acquire";
-export type Action = "level" | "claim" | "buy";
+export type Action = "level" | "claim" | "spend" | "buy";
 export type Access = "available" | "blocked" | "unknown";
 
 export interface VendorOffer {
@@ -60,15 +61,30 @@ export interface VendorOffer {
   blueprint: boolean;
 }
 
+export interface TrackSpend {
+  track: string;
+  from: number;
+  to: number;
+}
+
+/** The ranks that banked Intrinsic points buy today, cheapest first. */
+export interface Spend {
+  ranks: number;
+  points: number;
+  mastery: number;
+  /** Lists only the tracks that gain a rank, in the game's order. */
+  tracks: TrackSpend[];
+}
+
 export interface Opportunity extends MasterySource {
   stage: Stage;
   action: Action;
-  remaining_mastery: number | null;
   owned: boolean;
   /** Null on caches from before levels were stored. */
   owned_level: number | null;
   build_completion_ms: number | null;
   vendors: VendorOffer[];
+  spend: Spend | null;
   access: Access;
   blockers: string[];
 }

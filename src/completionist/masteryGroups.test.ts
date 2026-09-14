@@ -7,7 +7,7 @@ import type { MasterySource } from "../types/mastery.ts";
 
 const source = (name: string, unique_name = `/Lotus/Weapons/Tenno/${name}`): MasterySource => ({
   unique_name, name, category: "Melee", image_name: null, mastery_req: null,
-  cap: 30, earned_rank: 0, state: "missing", unobtainable: null, excluded: false,
+  cap: 30, earned_rank: 0, remaining_mastery: 3000, state: "missing", unobtainable: null, excluded: false,
 });
 
 test("variant prefixes and modular paths decide the group", () => {
@@ -23,6 +23,7 @@ test("variant prefixes and modular paths decide the group", () => {
   assert.equal(masteryGroup(source("Balla", "/Lotus/Weapons/Ostron/Melee/ModularMelee01/Tip/TipOne")), "Zaw");
   assert.equal(masteryGroup(source("Catchmoon", "/Lotus/Weapons/SolarisUnited/Secondary/SUModularSecondarySet1/Barrel/A")), "Kitgun");
   assert.equal(masteryGroup(source("Raplak Prism", "/Lotus/Weapons/Sentients/OperatorAmplifiers/Set1/Barrel/A")), "Amp");
+  assert.equal(masteryGroup({ ...source("Railjack", "LPP_SPACE"), category: "Intrinsics" }), "Intrinsics");
 });
 
 test("groups keep the fixed order and unknown groups trail", () => {

@@ -406,11 +406,14 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                 if blob.mastery_xp.is_none() {
                     warn!("XPInfo is not an array; inventory applied, equipment progress left as it was");
                 }
+                if blob.player_skills.is_none() {
+                    warn!("PlayerSkills is not an object; inventory applied, Intrinsics progress left as it was");
+                }
                 if capture_player != player {
-                    warn!(captured_as = ?capture_player, drained_as = ?player, "player changed while blob was queued; inventory applied, equipment progress left as it was");
+                    warn!(captured_as = ?capture_player, drained_as = ?player, "player changed while blob was queued; inventory applied, mastery progress left as it was");
                     mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).discard_blob();
                 } else if mastery_progress.lock().unwrap_or_else(|e| e.into_inner())
-                    .apply_blob(player.as_deref(), blob.mastery_xp.as_ref(), now)
+                    .apply_blob(player.as_deref(), blob.mastery_xp.as_ref(), blob.player_skills.as_ref(), now)
                 {
                     let _ = app.emit("mastery-update", ());
                 }

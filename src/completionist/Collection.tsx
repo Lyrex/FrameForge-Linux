@@ -32,6 +32,9 @@ function SourceRow({ source }: { source: MasterySource }) {
       {source.mastery_req != null && source.mastery_req > 0 && (
         <span className="mst-mr" title={`Mastery Rank ${source.mastery_req} required`}>MR{source.mastery_req}</span>
       )}
+      {source.remaining_mastery != null && source.remaining_mastery > 0 && (
+        <span className="mst-mr" title="Remaining mastery">+{source.remaining_mastery.toLocaleString("en-US")}</span>
+      )}
       <span className={`mst-rank rank-${source.state}`} title={source.state === "unknown" ? "No account observation yet" : undefined}>
         {source.state === "mastered" ? "✓" : rank}
       </span>

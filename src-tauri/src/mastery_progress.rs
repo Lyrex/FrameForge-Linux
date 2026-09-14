@@ -26,6 +26,13 @@ pub(crate) struct PlayerProgress {
     /// so a later rank-cap change recomputes instead of freezing.
     pub(crate) affinity: HashMap<String, i64>,
     pub(crate) equipment: Provenance,
+    /// `PlayerSkills` as the game reports it, with ranks and banked points
+    /// derived at read. Files written before Intrinsics were tracked lack
+    /// this and `intrinsics`.
+    #[serde(default)]
+    pub(crate) skills: HashMap<String, i64>,
+    #[serde(default)]
+    pub(crate) intrinsics: Provenance,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
@@ -44,13 +51,20 @@ enum Owner {
     Player(String),
 }
 
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct ConfirmedKinds {
+    owner: Owner,
+    equipment: bool,
+    intrinsics: bool,
+}
+
 pub(crate) struct MasteryProgress {
     path: PathBuf,
     cache: MasteryProgressCache,
-    /// Whose record the last applied blob confirmed; `None` when that blob
-    /// confirmed nothing. An unchanged scan is only a re-observation of this
-    /// player, never of whoever logged in since.
-    last_confirmed: Option<Owner>,
+    /// What the last applied blob confirmed, or `None` when it confirmed
+    /// nothing. An unchanged scan re-observes only those kinds for that
+    /// player, never whoever logged in since.
+    last_confirmed: Option<ConfirmedKinds>,
     /// Set when the file exists but cannot be read: the session runs in
     /// memory and never overwrites history it could not load.
     write_blocked: bool,
@@ -84,25 +98,41 @@ impl MasteryProgress {
         self.cache.last_seen_player = Some(name.to_string());
         if let Some(unassigned) = self.cache.unassigned.take() {
             self.cache.players.entry(name.to_string()).or_insert(unassigned);
-            if self.last_confirmed == Some(Owner::Unassigned) {
-                self.last_confirmed = Some(Owner::Player(name.to_string()));
+            if let Some(confirmed) = self.last_confirmed.as_mut().filter(|c| c.owner == Owner::Unassigned) {
+                confirmed.owner = Owner::Player(name.to_string());
             }
         }
         self.save();
         true
     }
 
-    pub(crate) fn apply_blob(&mut self, name: Option<&str>, affinity: Option<&HashMap<String, i64>>, now: i64) -> bool {
+    /// `affinity` is `XPInfo` and `skills` is `PlayerSkills`. Each confirms
+    /// its own source kind, and one that was not an array or object leaves
+    /// its kind as it was.
+    pub(crate) fn apply_blob(
+        &mut self,
+        name: Option<&str>,
+        affinity: Option<&HashMap<String, i64>>,
+        skills: Option<&HashMap<String, i64>>,
+        now: i64,
+    ) -> bool {
         self.select_player(name);
-        let Some(affinity) = affinity else {
+        if affinity.is_none() && skills.is_none() {
             self.last_confirmed = None;
             return false;
-        };
+        }
         let owner = self.owner(name);
         let record = self.record_mut(&owner);
-        record.affinity = affinity.clone();
-        record.equipment = Provenance { state: ProvenanceState::Confirmed, observed_at: Some(now) };
-        self.last_confirmed = Some(owner);
+        let confirmed = Provenance { state: ProvenanceState::Confirmed, observed_at: Some(now) };
+        if let Some(affinity) = affinity {
+            record.affinity = affinity.clone();
+            record.equipment = confirmed;
+        }
+        if let Some(skills) = skills {
+            record.skills = skills.clone();
+            record.intrinsics = confirmed;
+        }
+        self.last_confirmed = Some(ConfirmedKinds { owner, equipment: affinity.is_some(), intrinsics: skills.is_some() });
         self.save();
         true
     }
@@ -115,8 +145,10 @@ impl MasteryProgress {
 
     pub(crate) fn reobserve(&mut self, name: Option<&str>, now: i64) -> bool {
         let owner = self.owner(name);
-        if self.last_confirmed.as_ref() != Some(&owner) { return false; }
-        self.record_mut(&owner).equipment.observed_at = Some(now);
+        let Some(confirmed) = self.last_confirmed.clone().filter(|c| c.owner == owner) else { return false };
+        let record = self.record_mut(&owner);
+        if confirmed.equipment { record.equipment.observed_at = Some(now); }
+        if confirmed.intrinsics { record.intrinsics.observed_at = Some(now); }
         self.save();
         true
     }
@@ -166,6 +198,7 @@ fn import_pre_provenance(cache: &InventoryStateCache) -> Option<PlayerProgress> 
             .map(|(path, rank)| { let affinity = rank_to_affinity(rank, &path); (path, affinity) })
             .collect(),
         equipment: Provenance { state: ProvenanceState::Unconfirmed, observed_at: None },
+        ..Default::default()
     })
 }
 
@@ -233,18 +266,18 @@ mod tests {
     fn accepted_blob_confirms_equipment_and_replaces_the_previous_map() {
         let (path, mut progress) = fresh("apply");
         let first = affinity(&[(BRATON, 450_000), (MAG, 144_000)]);
-        assert!(progress.apply_blob(Some("Tenno"), Some(&first), 1_000));
+        assert!(progress.apply_blob(Some("Tenno"), Some(&first), None, 1_000));
         let record = progress.current(Some("Tenno")).expect("confirmed");
         assert_eq!(record.equipment, Provenance { state: ProvenanceState::Confirmed, observed_at: Some(1_000) });
         assert_eq!(record.affinity, first);
 
         let second = affinity(&[(BRATON, 450_000)]);
-        assert!(progress.apply_blob(Some("Tenno"), Some(&second), 2_000));
+        assert!(progress.apply_blob(Some("Tenno"), Some(&second), None, 2_000));
         let record = progress.current(Some("Tenno")).expect("still confirmed");
         assert_eq!(record.affinity, second, "absent from a confirmed field is zero, not carried over");
         assert_eq!(record.equipment.observed_at, Some(2_000));
 
-        assert!(!progress.apply_blob(Some("Tenno"), None, 3_000), "XPInfo not an array confirms nothing");
+        assert!(!progress.apply_blob(Some("Tenno"), None, None, 3_000), "XPInfo not an array confirms nothing");
         let record = progress.current(Some("Tenno")).expect("previous observation kept");
         assert_eq!((record.affinity.clone(), record.equipment.observed_at), (second, Some(2_000)));
         std::fs::remove_file(path).expect("test cache removable");
@@ -254,7 +287,7 @@ mod tests {
     fn unchanged_scan_reobserves_only_for_the_confirmed_owner() {
         let (path, mut progress) = fresh("reobserve");
         assert!(!progress.reobserve(Some("A"), 500), "nothing confirmed yet");
-        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), 1_000);
+        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, 1_000);
         assert!(progress.reobserve(Some("A"), 1_060));
         assert_eq!(progress.current(Some("A")).expect("A").equipment.observed_at, Some(1_060));
 
@@ -262,10 +295,10 @@ mod tests {
         assert!(progress.current(Some("B")).is_none());
         assert_eq!(progress.current(Some("A")).expect("A").equipment.observed_at, Some(1_060));
 
-        progress.apply_blob(Some("A"), None, 1_200);
+        progress.apply_blob(Some("A"), None, None, 1_200);
         assert!(!progress.reobserve(Some("A"), 1_260), "last blob confirmed nothing");
 
-        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), 1_300);
+        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, 1_300);
         progress.discard_blob();
         assert!(!progress.reobserve(Some("A"), 1_360), "rejected bytes are not an observation");
         assert_eq!(progress.current(Some("A")).expect("A").equipment.observed_at, Some(1_300));
@@ -277,14 +310,14 @@ mod tests {
         let (path, mut progress) = fresh("switch");
         let braton = affinity(&[(BRATON, 450_000)]);
         let mag = affinity(&[(MAG, 900_000)]);
-        progress.apply_blob(Some("A"), Some(&braton), 1_000);
-        progress.apply_blob(Some("B"), Some(&mag), 2_000);
+        progress.apply_blob(Some("A"), Some(&braton), None, 1_000);
+        progress.apply_blob(Some("B"), Some(&mag), None, 2_000);
         assert_eq!(progress.current(Some("A")).expect("A").affinity, braton);
         assert_eq!(progress.current(Some("B")).expect("B").affinity, mag);
         assert_eq!(progress.current(None).expect("last seen is B").affinity, mag);
 
         let kuva = affinity(&[(KUVA, 800_000)]);
-        progress.apply_blob(None, Some(&kuva), 3_000);
+        progress.apply_blob(None, Some(&kuva), None, 3_000);
         assert_eq!(progress.current(Some("B")).expect("B").affinity, kuva);
         assert_eq!(progress.current(Some("A")).expect("A").equipment.observed_at, Some(1_000));
 
@@ -294,7 +327,7 @@ mod tests {
         assert_eq!(reloaded.current(Some("A")).expect("A survives restart").affinity, braton);
 
         let braton_and_mag = affinity(&[(BRATON, 450_000), (MAG, 900_000)]);
-        reloaded.apply_blob(Some("A"), Some(&braton_and_mag), 4_000);
+        reloaded.apply_blob(Some("A"), Some(&braton_and_mag), None, 4_000);
         assert_eq!(reloaded.current(Some("A")).expect("A").affinity, braton_and_mag);
         assert_eq!(reloaded.current(Some("B")).expect("B untouched by A's return").affinity, kuva);
         std::fs::remove_file(path).expect("test cache removable");
@@ -305,7 +338,7 @@ mod tests {
         let path = scratch("unassigned");
         let mut progress = MasteryProgress::load(path.clone(), &pre_provenance_cache(&[(BRATON, 30)], true));
         let mag = affinity(&[(MAG, 900_000)]);
-        assert!(progress.apply_blob(None, Some(&mag), 1_000), "no name known yet: replaces the import");
+        assert!(progress.apply_blob(None, Some(&mag), None, 1_000), "no name known yet: replaces the import");
         assert_eq!(progress.current(None).expect("unassigned").equipment.state, ProvenanceState::Confirmed);
 
         assert!(progress.select_player(Some("A")));
@@ -325,7 +358,7 @@ mod tests {
         std::fs::write(&path, b"{ not json").expect("scratch writable");
         let mut progress = MasteryProgress::load(path.clone(), &pre_provenance_cache(&[(BRATON, 30)], true));
         assert!(progress.current(None).is_none(), "no import over an existing file");
-        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), 1_000);
+        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, 1_000);
         assert_eq!(progress.current(Some("A")).expect("in-memory progress works").equipment.observed_at, Some(1_000));
         assert_eq!(std::fs::read(&path).expect("file kept"), b"{ not json");
         std::fs::remove_file(path).expect("test cache removable");
@@ -336,12 +369,44 @@ mod tests {
         let path = scratch("clear");
         std::fs::write(&path, b"{ not json").expect("scratch writable");
         let mut progress = MasteryProgress::load(path.clone(), &InventoryStateCache::default());
-        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), 1_000);
+        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, 1_000);
         progress.clear();
         assert!(progress.current(Some("A")).is_none());
         assert!(!path.exists());
-        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), 2_000);
+        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, 2_000);
         assert!(path.exists(), "writes resume after clear");
+        std::fs::remove_file(path).expect("test cache removable");
+    }
+
+    #[test]
+    fn intrinsics_confirm_apart_from_equipment_and_a_legacy_file_leaves_them_unknown() {
+        let path = scratch("intrinsics");
+        std::fs::write(&path, r#"{"last_seen_player":"A","players":{"A":{"affinity":{},"equipment":{"state":"confirmed","observed_at":900}}},"unassigned":null}"#)
+            .expect("scratch writable");
+        let mut progress = MasteryProgress::load(path.clone(), &InventoryStateCache::default());
+        let a = progress.current(Some("A")).expect("A loaded");
+        assert_eq!((a.equipment.state, a.intrinsics), (ProvenanceState::Confirmed, Provenance::default()));
+
+        let skills = affinity(&[("LPS_GUNNERY", 8), ("LPP_SPACE", 89_930)]);
+        assert!(progress.apply_blob(Some("A"), None, Some(&skills), 1_000), "skills alone confirm something");
+        let a = progress.current(Some("A")).expect("A");
+        assert_eq!(a.intrinsics, Provenance { state: ProvenanceState::Confirmed, observed_at: Some(1_000) });
+        assert_eq!((a.skills.clone(), a.equipment.observed_at), (skills.clone(), Some(900)));
+
+        assert!(progress.reobserve(Some("A"), 1_060));
+        let a = progress.current(Some("A")).expect("A");
+        assert_eq!((a.intrinsics.observed_at, a.equipment.observed_at), (Some(1_060), Some(900)), "only what the last blob confirmed re-observes");
+
+        assert!(progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, 2_000));
+        let a = progress.current(Some("A")).expect("A");
+        assert_eq!((a.equipment.observed_at, a.intrinsics.observed_at), (Some(2_000), Some(1_060)), "skills not an object: intrinsics kept as they were");
+        assert!(progress.reobserve(Some("A"), 2_060));
+        let a = progress.current(Some("A")).expect("A");
+        assert_eq!((a.equipment.observed_at, a.intrinsics.observed_at), (Some(2_060), Some(1_060)));
+
+        let reloaded = MasteryProgress::load(path.clone(), &InventoryStateCache::default());
+        let a = reloaded.current(Some("A")).expect("A survives restart");
+        assert_eq!((a.skills.clone(), a.intrinsics.observed_at), (skills, Some(1_060)));
         std::fs::remove_file(path).expect("test cache removable");
     }
 }
