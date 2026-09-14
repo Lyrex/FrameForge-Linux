@@ -3,9 +3,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  actionText, alsoNeedsText, chanceText, costText, DEFAULT_CONTROLS, detailText, inSuggestions, parseControls, quoteText, rankPurchases, readyText, remainingText, visibleOpportunities,
+  actionText, activePreset, alsoNeedsText, chanceText, costText, DEFAULT_CONTROLS, detailText, inSuggestions, parseControls, quoteText, PRESETS, rankPurchases, readyText, remainingText, shownControls, visibleOpportunities, visiblePurchases,
 } from "./suggestions.ts";
 import { RELIC_SUGGESTION_THRESHOLD } from "../constants/relics.ts";
+import type { MasteryControls, Preset } from "./suggestions.ts";
 import type { Coverage, Listing, Opportunity, PartListing, Purchase, RelicPart } from "../types/mastery.ts";
 
 const opportunity = (name: string, over: Partial<Opportunity> = {}): Opportunity => ({
@@ -105,6 +106,45 @@ test("stored controls are validated field by field and fall back to defaults", (
   assert.deepEqual(parseControls(JSON.stringify({ view: "collection", sort: "name", progress: "bogus", category: "Melee", hideRelics: true })),
     { ...DEFAULT_CONTROLS, view: "collection", sort: "name", category: "Melee", hideRelics: true });
   assert.equal(parseControls(JSON.stringify({ hideRelics: "yes" })).hideRelics, false);
+  assert.equal(parseControls(JSON.stringify({ easy: true })).easy, true);
+  assert.equal(parseControls(JSON.stringify({ easy: "yes" })).easy, false);
+  assert.equal(parseControls(JSON.stringify({ availability: "unblocked" })).availability, "unblocked");
+});
+
+test("presets set filters and sort only, and the active one is read back from the controls", () => {
+  const custom = { ...DEFAULT_CONTROLS, result: "relics" as const, category: "Melee", comparison: "full" as const, easy: true };
+  const applyPreset = (controls: MasteryControls, key: Preset) => ({ ...controls, ...PRESETS.find(p => p.key === key)!.patch });
+  const quick = applyPreset(custom, "quick");
+  assert.deepEqual(quick, { ...custom, availability: "available", progress: "all", sort: "mastery", hideRelics: true });
+  assert.equal(activePreset(quick), "quick");
+  const early = applyPreset(custom, "early");
+  assert.deepEqual(early, { ...custom, availability: "unblocked", progress: "all", sort: "mastery", hideRelics: false });
+  assert.equal(activePreset(early), "early");
+  const all = applyPreset(custom, "completionist");
+  assert.deepEqual(all, { ...custom, availability: "all", progress: "all", sort: "mastery", hideRelics: false });
+  assert.equal(activePreset(all), "completionist");
+  // A manual change afterwards leaves no preset active, and the defaults show everything.
+  assert.equal(activePreset({ ...quick, sort: "name" }), null);
+  assert.equal(activePreset(DEFAULT_CONTROLS), "completionist");
+  assert.equal(activePreset(parseControls(JSON.stringify(early))), "early");
+});
+
+test("Easy mode shows everything not blocked, over the stored filters, in every result view", () => {
+  const list = [
+    opportunity("Braton"),
+    opportunity("Hek", { state: "missing", earned_rank: 0, remaining_mastery: 3000, access: "blocked", blockers: ["Requires MR 4"], purchase: bratonPrime() }),
+    opportunity("Skana", { category: "Melee", state: "unknown", earned_rank: null, remaining_mastery: null, access: "unknown", purchase: bratonPrime() }),
+  ];
+  const names = (o: Opportunity[]) => o.map(x => x.name);
+  // The stored filters alone show only Hek. Easy mode looks past them without changing them.
+  const stored = { ...DEFAULT_CONTROLS, category: "Primary", availability: "blocked" as const, sort: "name" as const, hideRelics: true };
+  assert.deepEqual(names(visibleOpportunities(list, stored, "")), ["Hek"]);
+  const easy = shownControls({ ...stored, easy: true });
+  assert.deepEqual(easy, { ...DEFAULT_CONTROLS, availability: "unblocked", easy: true });
+  assert.deepEqual(shownControls(stored), stored);
+  assert.deepEqual(names(visibleOpportunities(list, easy, "")), ["Braton", "Skana"]);
+  assert.deepEqual(names(visiblePurchases(list, easy, "")), ["Skana"]);
+  assert.deepEqual(names(visiblePurchases(list, DEFAULT_CONTROLS, "")), ["Hek", "Skana"]);
 });
 
 test("a relic route joins Suggestions strictly above the threshold, on the unrounded chance", () => {

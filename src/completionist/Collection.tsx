@@ -27,7 +27,7 @@ function SourceRow({ source }: { source: MasterySource }) {
   const unknownTitle = steelPath ? "Steel Path clears are not read from the account yet" : "No account observation yet";
   const classNoun = MASTERY_EXCLUDE_OPTIONS.find(o => o.key === source.unobtainable)?.noun;
   return (
-    <div className={`mst-item mst-${source.state}`}>
+    <div className={`mst-item mst-${source.state}`} tabIndex={0}>
       <ItemImg imageName={source.image_name ?? undefined} fallback={<div className="img-fallback">{source.name[0]?.toUpperCase() ?? "?"}</div>} />
       <span className="mst-name">{source.name}</span>
       {steelPath && <span className="mst-mr">Steel Path</span>}

@@ -5,9 +5,11 @@ import type { Access, Coverage, Listing, MasteryState, Opportunity, Purchase, St
 export type MasteryView = "whatnext" | "collection";
 export type ResultView = "suggestions" | "relics" | "platinum";
 export type ProgressFilter = "all" | Exclude<MasteryState, "mastered">;
-export type AvailabilityFilter = "all" | Access;
+/** Unblocked includes unknown access, since a lock nobody has observed is not a confirmed one. */
+export type AvailabilityFilter = "all" | "unblocked" | Access;
 export type Sort = "mastery" | "name";
 export type Comparison = "cheapest" | "per_platinum" | "full";
+export type Preset = "quick" | "early" | "completionist";
 export type Priced = Opportunity & { purchase: Purchase };
 
 export interface MasteryControls {
@@ -20,11 +22,34 @@ export interface MasteryControls {
   /** Keeps relic routes out of Suggestions, while More relics still lists them. */
   hideRelics: boolean;
   comparison: Comparison;
+  easy: boolean;
 }
 
 export const DEFAULT_CONTROLS: MasteryControls = {
-  view: "whatnext", result: "suggestions", category: null, progress: "all", availability: "all", sort: "mastery", hideRelics: false, comparison: "cheapest",
+  view: "whatnext", result: "suggestions", category: null, progress: "all", availability: "all", sort: "mastery", hideRelics: false, comparison: "cheapest", easy: false,
 };
+
+type PresetPatch = Pick<MasteryControls, "availability" | "progress" | "sort" | "hideRelics">;
+
+/** A preset holds only filters and a sort, so the active one is derived from the controls instead of stored. */
+export const PRESETS: { key: Preset; label: string; title: string; patch: PresetPatch }[] = [
+  { key: "quick", label: "Quick gains", title: "Only what you can do right now, without relic runs",
+    patch: { availability: "available", progress: "all", sort: "mastery", hideRelics: true } },
+  { key: "early", label: "Early progression", title: "Everything not confirmed blocked; unknown access stays in",
+    patch: { availability: "unblocked", progress: "all", sort: "mastery", hideRelics: false } },
+  { key: "completionist", label: "Completionist", title: "Everything, blocked and unavailable included",
+    patch: { availability: "all", progress: "all", sort: "mastery", hideRelics: false } },
+];
+
+/** Easy mode leaves the stored filters in place, so they come back when it is switched off. */
+export function shownControls(controls: MasteryControls): MasteryControls {
+  return controls.easy ? { ...DEFAULT_CONTROLS, view: controls.view, result: controls.result, comparison: controls.comparison, availability: "unblocked", easy: true } : controls;
+}
+
+export function activePreset(controls: MasteryControls): Preset | null {
+  const match = PRESETS.find(p => (Object.keys(p.patch) as (keyof PresetPatch)[]).every(k => controls[k] === p.patch[k]));
+  return match?.key ?? null;
+}
 
 export const VIEW_OPTIONS: { key: MasteryView; label: string }[] = [
   { key: "whatnext",   label: "What next" },
@@ -46,6 +71,7 @@ export const PROGRESS_OPTIONS: { key: ProgressFilter; label: string }[] = [
 
 export const AVAILABILITY_OPTIONS: { key: AvailabilityFilter; label: string }[] = [
   { key: "all",       label: "Any availability" },
+  { key: "unblocked", label: "Not blocked" },
   { key: "available", label: "Available now" },
   { key: "blocked",   label: "Blocked" },
   { key: "unknown",   label: "Unknown access" },
@@ -80,6 +106,7 @@ export function parseControls(raw: string | null): MasteryControls {
     sort: pick(SORT_OPTIONS, stored.sort, DEFAULT_CONTROLS.sort),
     hideRelics: stored.hideRelics === true,
     comparison: pick(COMPARISON_OPTIONS, stored.comparison, DEFAULT_CONTROLS.comparison),
+    easy: stored.easy === true,
   };
 }
 
@@ -108,11 +135,15 @@ function chance(o: Opportunity): number {
   return o.relic?.coverage.kind === "complete" ? o.relic.coverage.probability : -1;
 }
 
+function matchesAccess(access: Access, filter: AvailabilityFilter): boolean {
+  return filter === "all" || (filter === "unblocked" ? access !== "blocked" : access === filter);
+}
+
 function matches(o: Opportunity, controls: MasteryControls, search: string): boolean {
   const q = search.trim().toLowerCase();
   return (controls.category == null || o.category === controls.category)
     && (controls.progress === "all" || o.state === controls.progress)
-    && (controls.availability === "all" || o.access === controls.availability)
+    && matchesAccess(o.access, controls.availability)
     && (!q || o.name.toLowerCase().includes(q));
 }
 
