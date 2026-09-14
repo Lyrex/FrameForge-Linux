@@ -2,14 +2,14 @@ import { useState, useEffect, useMemo, useCallback, memo, startTransition, useRe
 import { invoke } from "@tauri-apps/api/core";
 import ItemImg from "./ItemImg";
 import { useModal } from "./shared/useModal";
-import { fmt } from "./utils";
 import { HelpTip } from "./shared/HelpTip";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import { FOUNDRY_FILTERS_DEFAULT } from "./constants/filters";
 import { WARFRAME_WIKI_BASE } from "./constants/urls";
 import { TAURI_COMMANDS } from "./constants/tauri";
-import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeComponentStatus, RecipeMap, RelicDropMap } from "./types/items";
-import { craftRows } from "./lib/craftPlan";
+import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeMap, RelicDropMap } from "./types/items";
+import type { CraftPlan } from "./types/mastery";
+import { componentStatus, craftableNow, craftRows, type CraftRow } from "./lib/craftPlan";
 import { usePlanCrafts } from "./shared/usePlanCrafts";
 import { CraftCounts } from "./shared/CraftCounts";
 import type { FoundryFilters } from "./types/filters";
@@ -31,27 +31,12 @@ interface Props {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function compStatus(comp: RecipeComponent, inventory: Record<string, InventoryItem>): RecipeComponentStatus {
-  if ((inventory[comp.unique_name]?.quantity ?? 0) >= (comp.count || 1)) return "part";
-  const bpUnique = comp.components[0]?.unique_name;
-  if (bpUnique && (inventory[bpUnique]?.quantity ?? 0) > 0) return "blueprint";
-  return "none";
+/** Akbolto lists Bolto twice. The plan already sums duplicates onto one line, so only the names need deduplicating here. */
+function distinct(comps: RecipeComponent[]): RecipeComponent[] {
+  return comps.filter((c, i) => comps.findIndex(o => o.unique_name === c.unique_name) === i);
 }
 
-/** Merge recipe components that share the same unique_name, summing their counts.
- *  Some recipes (e.g. Akbolto needing 2x Bolto) list the same item twice. */
-function mergeComponents(comps: RecipeComponent[]): RecipeComponent[] {
-  const seen = new Map<string, RecipeComponent>();
-  for (const c of comps) {
-    const existing = seen.get(c.unique_name);
-    if (existing) {
-      seen.set(c.unique_name, { ...existing, count: existing.count + c.count });
-    } else {
-      seen.set(c.unique_name, { ...c });
-    }
-  }
-  return [...seen.values()];
-}
+const isReady = (plan: CraftPlan | undefined) => !!plan && craftableNow(plan);
 
 function isLichWeapon(item: CatalogItem): boolean {
   return item.name.startsWith("Kuva ") || item.name.startsWith("Tenet ");
@@ -163,11 +148,11 @@ function ownsRelicVariant(relicUnique: string, inventory: Record<string, Invento
 
 // ─── Comp row (used inside modal tree) ───────────────────────────────────────
 
-function CompRow({ comp, inventory, relicDrops, relicNames }: {
-  comp: RecipeComponent; inventory: Record<string, InventoryItem>;
+function CompRow({ comp, plan, inventory, relicDrops, relicNames }: {
+  comp: RecipeComponent; plan: CraftPlan | undefined; inventory: Record<string, InventoryItem>;
   relicDrops: RelicDropMap; relicNames: Record<string, string>;
 }) {
-  const status = compStatus(comp, inventory);
+  const status = plan ? componentStatus(comp, plan) : "none";
   const ownedRelics = [...new Set(
     (relicDrops[comp.unique_name] ?? [])
       .filter(r => ownsRelicVariant(r, inventory))
@@ -192,18 +177,19 @@ function CompRow({ comp, inventory, relicDrops, relicNames }: {
 
 // ─── Tree node (modal recipe tree) ───────────────────────────────────────────
 
-function TreeNode({ node, inventory, depth }: {
-  node: RecipeComponent; inventory: Record<string, InventoryItem>; depth: number;
+/** A node the plan never reached (its parent came out of stock, or waits on a reusable
+ *  blueprint) keeps its place in the tree but shows no counts. */
+function TreeNode({ node, rows, depth }: {
+  node: RecipeComponent; rows: CraftRow[]; depth: number;
 }) {
-  const owned = inventory[node.unique_name]?.quantity ?? 0;
-  const enough = owned >= node.count;
+  const row = rows.find(r => r.unique_name === node.unique_name);
   const hasChildren = node.components.length > 0;
-  // Don't auto-expand satisfied nodes — hides unnecessary sub-trees (e.g. Control Module Blueprint when you have 443)
-  const [open, setOpen] = useState(!enough && depth < 3);
+  // Only a built intermediate has children the plan counted, so only those open by default.
+  const [open, setOpen] = useState(depth < 3 && (row?.crafts ?? 0) > 0);
   return (
     <div style={{ marginLeft: depth * 16 }}>
       <div
-        className={`recipe-row ${enough ? "recipe-ok" : "recipe-missing"}`}
+        className={`recipe-row ${!row ? "" : row.short > 0 ? "recipe-missing" : "recipe-ok"}`}
         onClick={() => hasChildren && setOpen(o => !o)}
         style={{ cursor: hasChildren ? "pointer" : "default" }}
       >
@@ -211,15 +197,10 @@ function TreeNode({ node, inventory, depth }: {
           ? <span className="recipe-chevron">{open ? "▾" : "▸"}</span>
           : <span className="recipe-chevron recipe-chevron-leaf">·</span>}
         <span className="recipe-name">{node.name}</span>
-        <span className="recipe-counts">
-          <span className={enough ? "qty-have" : "qty-need"}>{fmt(owned)}</span>
-          <span className="qty-sep">/</span>
-          <span className="qty-required">{fmt(node.count)}</span>
-        </span>
-        {!enough && <span className="recipe-shortage">−{fmt(node.count - owned)}</span>}
+        {row && <CraftCounts row={row} className="recipe-counts" />}
       </div>
-      {hasChildren && open && mergeComponents(node.components).map((child, i) => (
-        <TreeNode key={i} node={child} inventory={inventory} depth={depth + 1} />
+      {hasChildren && open && distinct(node.components).map((child, i) => (
+        <TreeNode key={i} node={child} rows={rows} depth={depth + 1} />
       ))}
     </div>
   );
@@ -239,7 +220,8 @@ function RecipeModal({ item, recipe, inventory, isTracked, onTrack, onClose, bui
 
   const targets = useMemo(() => [item.unique_name], [item.unique_name]);
   const plan = usePlanCrafts(targets, inventory)[item.unique_name];
-  const needs = useMemo(() => plan ? craftRows(plan).filter(r => r.short > 0 || r.crafts > 0) : [], [plan]);
+  const rows = useMemo(() => plan ? craftRows(plan) : [], [plan]);
+  const needs = useMemo(() => rows.filter(r => r.short > 0 || r.crafts > 0), [rows]);
 
   const modal = useModal(onClose);
   return (
@@ -284,14 +266,12 @@ function RecipeModal({ item, recipe, inventory, isTracked, onTrack, onClose, bui
               <button className={`toggle-btn ${mode === "needs" ? "toggle-active" : ""}`} onClick={() => setMode("needs")}>What I need</button>
             </div>
             <div className="craft-modal-body">
-              {!recipe ? (
+              {!recipe || !plan ? (
                 <div className="empty-msg">Loading…</div>
               ) : recipe.length === 0 ? (
                 <div className="empty-msg">No recipe data.</div>
               ) : mode === "tree" ? (
-                mergeComponents(recipe).map((node, i) => <TreeNode key={i} node={node} inventory={inventory} depth={0} />)
-              ) : !plan ? (
-                <div className="empty-msg">Loading…</div>
+                distinct(recipe).map((node, i) => <TreeNode key={i} node={node} rows={rows} depth={0} />)
               ) : needs.length === 0 ? (
                 <div className="empty-msg">✓ You have everything needed.</div>
               ) : (
@@ -314,8 +294,8 @@ function RecipeModal({ item, recipe, inventory, isTracked, onTrack, onClose, bui
 
 // ─── Craft card ───────────────────────────────────────────────────────────────
 
-const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops, relicNames, building, isTracked, onTrack, onOpen, subsummedWarframes, view }: {
-  item: CatalogItem; recipe: RecipeComponent[] | null;
+const CraftCard = memo(function CraftCard({ item, recipe, plan, inventory, relicDrops, relicNames, building, isTracked, onTrack, onOpen, subsummedWarframes, view }: {
+  item: CatalogItem; recipe: RecipeComponent[] | null; plan: CraftPlan | undefined;
   inventory: Record<string, InventoryItem>; relicDrops: RelicDropMap;
   relicNames: Record<string, string>;
   building: Set<string>; isTracked: boolean;
@@ -334,27 +314,24 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
   const formaCount  = invEntry?.forma_count ?? 0;
   const isCrafting = building.has(item.unique_name);
   const isKuva     = isLichWeapon(item);
-  const mergedRecipe = recipe ? mergeComponents(recipe) : recipe;
-  // ⚡ Ready = you have every ingredient itself (not just its blueprint).
-  const allParts = mergedRecipe && mergedRecipe.length > 0 && mergedRecipe.every(c =>
-    (inventory[c.unique_name]?.quantity ?? 0) >= (c.count || 1)
-  );
+  const parts = recipe ? distinct(recipe) : null;
+  const ready = isReady(plan);
 
   if (view === "icons") {
     return (
-      <div className={`craft-icon-card${isOwned ? " craft-card-owned" : ""}${allParts && !isOwned ? " craft-card-ready" : ""}`}
-        title={`${item.name}${isOwned ? " (owned)" : allParts ? " (ready)" : ""}`}
+      <div className={`craft-icon-card${isOwned ? " craft-card-owned" : ""}${ready && !isOwned ? " craft-card-ready" : ""}`}
+        title={`${item.name}${isOwned ? " (owned)" : ready ? " (ready)" : ""}`}
         onClick={() => onOpen(item)}>
         <ItemImg imageName={item.image_name} category={item.category} size={72} />
         {isOwned && <span className="craft-icon-badge craft-icon-badge-owned">✓✓</span>}
-        {!isOwned && allParts && <span className="craft-icon-badge craft-icon-badge-ready">⚡</span>}
+        {!isOwned && ready && <span className="craft-icon-badge craft-icon-badge-ready">⚡</span>}
       </div>
     );
   }
 
   if (view === "list" || view === "list-compact") {
     return (
-      <div className={`craft-row${isOwned ? " craft-row-owned" : ""}${allParts && !isOwned ? " craft-row-ready" : ""}`}
+      <div className={`craft-row${isOwned ? " craft-row-owned" : ""}${ready && !isOwned ? " craft-row-ready" : ""}`}
         onClick={() => onOpen(item)}>
         {view === "list" && (
           <div className="craft-row-icon">
@@ -367,14 +344,14 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
         <div className="craft-row-status">
           {isMastered && <span className="craft-icon-tag craft-icon-mastered" title="Mastered">★</span>}
           {isOwned && !isMastered && <span className="craft-icon-tag craft-icon-owned">✓✓</span>}
-          {!isOwned && allParts && <span className="craft-icon-tag craft-icon-ready">⚡</span>}
+          {!isOwned && ready && <span className="craft-icon-tag craft-icon-ready">⚡</span>}
           {isCrafting && <span className="craft-icon-tag craft-icon-foundry" title="Building">⚒</span>}
           {formaCount > 0 && <FormaIcon count={formaCount} />}
         </div>
         {item.source_type
           ? <span className="craft-row-parts craft-row-acquired-tag">Acquired in-game</span>
-          : mergedRecipe && mergedRecipe.length > 0
-            ? <span className="craft-row-parts">{mergedRecipe.length} part{mergedRecipe.length !== 1 ? "s" : ""}</span>
+          : parts && parts.length > 0
+            ? <span className="craft-row-parts">{parts.length} part{parts.length !== 1 ? "s" : ""}</span>
             : null}
       </div>
     );
@@ -382,7 +359,7 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
 
   if (view === "text-cards") {
     return (
-      <div className={`craft-text-card${isOwned ? " craft-card-owned" : ""}${allParts && !isOwned ? " craft-card-ready" : ""}`}
+      <div className={`craft-text-card${isOwned ? " craft-card-owned" : ""}${ready && !isOwned ? " craft-card-ready" : ""}`}
         onClick={() => onOpen(item)}>
         <div className="ctc-name">{item.name}</div>
         <div className="ctc-meta">
@@ -394,7 +371,7 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
         <div className="ctc-tags">
           {isMastered && <span className="craft-icon-tag craft-icon-mastered" title="Mastered">★</span>}
           {isOwned && !isMastered && <span className="craft-icon-tag craft-icon-owned">✓✓</span>}
-          {!isOwned && allParts && <span className="craft-icon-tag craft-icon-ready">⚡</span>}
+          {!isOwned && ready && <span className="craft-icon-tag craft-icon-ready">⚡</span>}
           {isCrafting && <span className="craft-icon-tag craft-icon-foundry" title="Building">⚒</span>}
           {formaCount > 0 && <FormaIcon count={formaCount} />}
         </div>
@@ -404,7 +381,7 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
 
   return (
     <div
-      className={`craft-card${isOwned ? " craft-card-owned" : ""}${allParts && !isOwned ? " craft-card-ready" : ""}`}
+      className={`craft-card${isOwned ? " craft-card-owned" : ""}${ready && !isOwned ? " craft-card-ready" : ""}`}
       onClick={() => onOpen(item)}
     >
       {/* Col 1, rows 1-4: image block with star/wiki/name overlaid */}
@@ -439,7 +416,7 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
         {formaCount > 0 && <FormaIcon count={formaCount} />}
         {shards.length > 0 && <ArchonCrystalIcon shards={shards} />}
         {isOwned     && <span className="foundry-cb-badge foundry-cb-owned">✓✓</span>}
-        {!isOwned && allParts && <span className="foundry-cb-badge foundry-cb-ready">⚡</span>}
+        {!isOwned && ready && <span className="foundry-cb-badge foundry-cb-ready">⚡</span>}
       </div>
 
       {/* Col 2, rows 1-7: ingredient list — rows grow to fill available height */}
@@ -451,8 +428,8 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
         ) : recipe.length === 0 ? (
           <div className="comp-row-loading">No recipe</div>
         ) : (
-          mergedRecipe!.map((comp, i) => (
-            <CompRow key={i} comp={comp} inventory={inventory} relicDrops={relicDrops} relicNames={relicNames} />
+          parts!.map((comp, i) => (
+            <CompRow key={i} comp={comp} plan={plan} inventory={inventory} relicDrops={relicDrops} relicNames={relicNames} />
           ))
         )}
       </div>
@@ -471,16 +448,11 @@ const CraftCard = memo(function CraftCard({ item, recipe, inventory, relicDrops,
   if (prev.relicDrops    !== next.relicDrops)    return false;
   if (prev.relicNames    !== next.relicNames)    return false;
   if (prev.subsummedWarframes !== next.subsummedWarframes) return false;
-  // Inventory: only check keys this specific card reads
-  const keys = new Set<string>([prev.item.unique_name]);
-  for (const c of (prev.recipe ?? [])) {
-    keys.add(c.unique_name);
-    if (c.components[0]) keys.add(c.components[0].unique_name);
-  }
-  for (const k of keys) {
-    if ((prev.inventory[k]?.quantity    ?? 0)    !== (next.inventory[k]?.quantity    ?? 0))    return false;
-    if ((prev.inventory[k]?.mastery_rank ?? null) !== (next.inventory[k]?.mastery_rank ?? null)) return false;
-  }
+  // Every re-plan yields fresh plan objects, so compare by content.
+  if (JSON.stringify(prev.plan) !== JSON.stringify(next.plan)) return false;
+  const k = prev.item.unique_name;
+  if ((prev.inventory[k]?.quantity    ?? 0)    !== (next.inventory[k]?.quantity    ?? 0))    return false;
+  if ((prev.inventory[k]?.mastery_rank ?? null) !== (next.inventory[k]?.mastery_rank ?? null)) return false;
   const pShards = prev.inventory[prev.item.unique_name]?.archon_shards;
   const nShards = next.inventory[next.item.unique_name]?.archon_shards;
   if ((pShards?.length ?? 0) !== (nShards?.length ?? 0)) return false;
@@ -551,7 +523,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
     new Set(crafting.map(c => blueprintResults[c.unique_name] ?? c.unique_name)),
     [crafting, blueprintResults]);
 
-  const visible = useMemo(() => {
+  const candidates = useMemo(() => {
     const q = search.toLowerCase();
     return craftable
       .filter(i => i.category === activeCat || activeCat === "All")
@@ -573,21 +545,24 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
         const owned = (inventory[i.unique_name]?.quantity ?? 0) > 0;
         return filterOwned ? owned : !owned;
       })
-      .filter(i => {
-        if (!filterReady) return true;
-        const r = recipes.get(i.unique_name);
-        if (!r || r.length === 0) return false;
-        if ((inventory[i.unique_name]?.quantity ?? 0) > 0) return false;
-        return mergeComponents(r).every(c => (inventory[c.unique_name]?.quantity ?? 0) >= (c.count || 1));
-      })
+      .filter(i => !filterReady || (inventory[i.unique_name]?.quantity ?? 0) === 0)
       .filter(i => !filterLvlCap || (i.max_level_cap != null && i.max_level_cap > 30));
   }, [craftable, activeCat, search, filterPrime, filterNonPrime, filterVaulted, filterUnvaulted,
       filterMastered, filterUnmastered, filterOwned, filterUnowned, filterReady, filterLvlCap, ignoreFormaKuva,
-      // Only pull in inventory/recipes when a filter that actually reads them is active.
+      // Only pull in inventory when a filter that actually reads it is active.
       // Without this guard, every 10-second scanner update re-renders all 100+ cards.
       (filterMastered || filterUnmastered || filterOwned || filterUnowned || filterReady) ? inventory : null,
-      filterReady ? recipes : null,
   ]);
+
+  const PAGE_SIZE = pageSize;
+  const pageOf = useCallback((items: CatalogItem[]) => items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE), [page, PAGE_SIZE]);
+
+  // One standalone plan per card, so a badge agrees with the modal, which plans its item alone.
+  // When the ⚡ filter is on every candidate needs a plan, and otherwise only the page does.
+  const planTargets = useMemo(() => (filterReady ? candidates : pageOf(candidates)).map(i => i.unique_name), [candidates, filterReady, pageOf]);
+  const plans = usePlanCrafts(planTargets, inventory, true);
+
+  const visible = useMemo(() => filterReady ? candidates.filter(i => isReady(plans[i.unique_name])) : candidates, [candidates, filterReady, plans]);
 
   // Reset to page 1 when the user changes a filter, search, or category —
   // but NOT when inventory or recipes update in the background.
@@ -597,9 +572,8 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
     filterMastered, filterUnmastered, filterOwned, filterUnowned, filterReady, filterLvlCap, ignoreFormaKuva,
     craftable, pageSize,
   ]);
-  const PAGE_SIZE = pageSize;
   const pageCount = Math.ceil(visible.length / PAGE_SIZE);
-  const pagedItems = useMemo(() => visible.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE), [visible, page, PAGE_SIZE]);
+  const pagedItems = useMemo(() => pageOf(visible), [visible, pageOf]);
 
   // Load recipes for visible items — one bulk IPC call instead of N concurrent calls
   useEffect(() => {
@@ -722,6 +696,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
               key={item.unique_name}
               item={item}
               recipe={recipes.has(item.unique_name) ? recipes.get(item.unique_name)! : null}
+              plan={plans[item.unique_name]}
               inventory={inventory}
               relicDrops={relicDrops}
               relicNames={relicNames}
