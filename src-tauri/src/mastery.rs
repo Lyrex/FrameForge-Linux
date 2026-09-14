@@ -220,6 +220,7 @@ mod tests {
     const EXCALIBUR_PRIME: &str = "/Lotus/Powersuits/Excalibur/ExcaliburPrime";
     const EXCALIBUR_UMBRA: &str = "/Lotus/Powersuits/Excalibur/ExcaliburUmbra";
     const SNIPETRON: &str = "/Lotus/Weapons/Tenno/Rifle/SniperRifle";
+    const VENARI: &str = "/Lotus/Powersuits/Khora/Kavat/KhoraKavatPowerSuit";
 
     fn item(name: &str, path: &str, item_type: &str, product_category: &str, category: &str, masterable: Option<bool>) -> WfcdItem {
         WfcdItem {
@@ -257,6 +258,7 @@ mod tests {
             item("Bad Baby", DECK, "K-Drive Component", "Pistols", "Resources", Some(true)),
             item("Voidrig", MECH, "Necramech", "MechSuits", "Warframes", Some(true)),
             item("Bhaira Hound", HOUND_HEAD, "Pets", "Pistols", "Companions", Some(true)),
+            item("Venari", VENARI, "Warframe", "SpecialItems", "Pets", Some(false)),
             item("Sweeper", SWEEPER, "Companion Weapon", "SentinelWeapons", "Primary", Some(true)),
             item("Imperator", IMPERATOR, "Arch-Gun", "SpaceGuns", "Archwing", Some(true)),
             item("Dual Viciss", SICKLE, "Rifle", "Melee", "Melee", Some(true)),
@@ -306,10 +308,10 @@ mod tests {
         assert_eq!(names(&overview, "Melee"), ["Balla", "Dual Viciss"]);
         assert_eq!(names(&overview, "Operator Weapons"), ["Mote Prism", "Raplak Prism"]);
         assert_eq!(names(&overview, "Archwing"), ["Imperator"]);
-        assert_eq!(names(&overview, "Companions"), ["Bhaira Hound"]);
+        assert_eq!(names(&overview, "Companions"), ["Bhaira Hound", "Venari"]);
         assert_eq!(names(&overview, "Companion Weapons"), ["Sweeper"]);
         assert_eq!(names(&overview, "Vehicles"), ["Bad Baby", "Voidrig"]);
-        assert_eq!(overview.counts.total, 15);
+        assert_eq!(overview.counts.total, 16);
         let all: Vec<&str> = overview.categories.iter().flat_map(|c| &c.sources).map(|s| s.unique_name.as_str()).collect();
         assert_eq!(all.len(), all.iter().collect::<std::collections::HashSet<_>>().len());
         for absent in [ORION, GRIMOIRE_ALIAS, ZAW_WEAPON, VINQUIBUS_MELEE] {
@@ -333,7 +335,7 @@ mod tests {
         assert_eq!((source(&overview, CHAMBER).earned_rank, source(&overview, CHAMBER).state), (Some(0), MasteryState::Missing));
         let primary = overview.categories.iter().find(|c| c.category == "Primary").expect("primary");
         assert_eq!(primary.counts, MasteryCounts { total: 2, mastered: 1, partial: 1, missing: 0, unknown: 0, unobtainable: 0 });
-        assert_eq!(overview.counts, MasteryCounts { total: 15, mastered: 2, partial: 2, missing: 11, unknown: 0, unobtainable: 0 });
+        assert_eq!(overview.counts, MasteryCounts { total: 16, mastered: 2, partial: 2, missing: 12, unknown: 0, unobtainable: 0 });
     }
 
     #[test]
@@ -341,7 +343,7 @@ mod tests {
         let overview = build_mastery_overview(&catalog(), &corrections(), None, &HashSet::new());
         assert!(overview.categories.iter().flat_map(|c| &c.sources)
             .all(|s| s.state == MasteryState::Unknown && s.earned_rank.is_none()));
-        assert_eq!(overview.counts, MasteryCounts { total: 15, mastered: 0, partial: 0, missing: 0, unknown: 15, unobtainable: 0 });
+        assert_eq!(overview.counts, MasteryCounts { total: 16, mastered: 0, partial: 0, missing: 0, unknown: 16, unobtainable: 0 });
         for kind in [overview.provenance.equipment, overview.provenance.intrinsics, overview.provenance.nodes, overview.provenance.junctions] {
             assert_eq!(kind, Provenance::default());
         }
@@ -355,7 +357,7 @@ mod tests {
         assert_eq!((source(&overview, BRATON).earned_rank, source(&overview, BRATON).state), (Some(30), MasteryState::Mastered));
         assert_eq!((source(&overview, KUVA).earned_rank, source(&overview, KUVA).state), (Some(35), MasteryState::Partial));
         assert_eq!((source(&overview, CHAMBER).earned_rank, source(&overview, CHAMBER).state), (None, MasteryState::Unknown));
-        assert_eq!(overview.counts, MasteryCounts { total: 15, mastered: 1, partial: 1, missing: 0, unknown: 13, unobtainable: 0 });
+        assert_eq!(overview.counts, MasteryCounts { total: 16, mastered: 1, partial: 1, missing: 0, unknown: 14, unobtainable: 0 });
     }
 
     #[test]
@@ -404,7 +406,7 @@ mod tests {
         let all: HashSet<Unobtainable> = Unobtainable::ALL.into();
 
         let overview = build_mastery_overview(&items, &corrections, Some(&progress), &all);
-        assert_eq!(overview.counts, MasteryCounts { total: 14, mastered: 0, partial: 0, missing: 14, unknown: 0, unobtainable: 3 });
+        assert_eq!(overview.counts, MasteryCounts { total: 15, mastered: 0, partial: 0, missing: 15, unknown: 0, unobtainable: 3 });
         let excalibur = source(&overview, EXCALIBUR_PRIME);
         assert_eq!((excalibur.excluded, excalibur.unobtainable), (true, Some(Unobtainable::Founders)));
         assert_eq!((excalibur.state, excalibur.earned_rank), (MasteryState::Mastered, Some(30)));
@@ -416,10 +418,10 @@ mod tests {
             excluded.remove(&class);
             let overview = build_mastery_overview(&items, &corrections, Some(&progress), &excluded);
             assert_eq!((source(&overview, path).excluded, source(&overview, path).unobtainable), (false, Some(class)));
-            assert_eq!((overview.counts.total, overview.counts.unobtainable), (15, 2), "{class:?}");
+            assert_eq!((overview.counts.total, overview.counts.unobtainable), (16, 2), "{class:?}");
         }
 
         let overview = build_mastery_overview(&items, &corrections, Some(&progress), &HashSet::new());
-        assert_eq!(overview.counts, MasteryCounts { total: 17, mastered: 1, partial: 0, missing: 16, unknown: 0, unobtainable: 0 });
+        assert_eq!(overview.counts, MasteryCounts { total: 18, mastered: 1, partial: 0, missing: 17, unknown: 0, unobtainable: 0 });
     }
 }
