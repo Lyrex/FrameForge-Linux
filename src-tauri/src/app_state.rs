@@ -15,17 +15,24 @@ type WorldstateCache = (std::time::Instant, Arc<serde_json::Value>, Arc<serde_js
 /// Bundled corrections file embedded at compile time. Never absent at runtime.
 const BUNDLED_CORRECTIONS: &str = include_str!("../resources/corrections.json");
 
-/// Load and merge corrections: bundled entries first, then user file overrides on a per-path basis.
 #[tracing::instrument(level = "info", skip_all)]
 pub(crate) fn load_corrections(user_path: &std::path::Path) -> HashMap<String, CorrectionEntry> {
-    let mut map: HashMap<String, CorrectionEntry> = serde_json::from_str::<Vec<CorrectionEntry>>(BUNDLED_CORRECTIONS)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|e| (e.path.clone(), e))
-        .collect();
-    if let Ok(content) = std::fs::read_to_string(user_path) {
-        if let Ok(entries) = serde_json::from_str::<Vec<CorrectionEntry>>(&content) {
-            for e in entries { map.insert(e.path.clone(), e); }
+    let bundled = serde_json::from_str::<Vec<CorrectionEntry>>(BUNDLED_CORRECTIONS).unwrap_or_default();
+    let user = std::fs::read_to_string(user_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Vec<CorrectionEntry>>(&content).ok())
+        .unwrap_or_default();
+    merge_corrections(bundled, user)
+}
+
+/// A user entry cannot clear a bundled field by leaving it out. That would need an
+/// explicit null convention, and no entry has needed one yet.
+fn merge_corrections(bundled: Vec<CorrectionEntry>, user: Vec<CorrectionEntry>) -> HashMap<String, CorrectionEntry> {
+    let mut map: HashMap<String, CorrectionEntry> = bundled.into_iter().map(|e| (e.path.clone(), e)).collect();
+    for e in user {
+        match map.get_mut(&e.path) {
+            Some(base) => base.overlay(e),
+            None => { map.insert(e.path.clone(), e); }
         }
     }
     map
@@ -48,6 +55,18 @@ pub struct CorrectionEntry {
     pub masterable:    Option<bool>,
     pub rank_cap:      Option<u32>,
     pub unobtainable:  Option<Unobtainable>,
+}
+
+impl CorrectionEntry {
+    fn overlay(&mut self, other: CorrectionEntry) {
+        self.name          = other.name.or(self.name.take());
+        self.category      = other.category.or(self.category.take());
+        self.tradeable_wfm = other.tradeable_wfm.or(self.tradeable_wfm);
+        self.is_stackable  = other.is_stackable.or(self.is_stackable);
+        self.masterable    = other.masterable.or(self.masterable);
+        self.rank_cap      = other.rank_cap.or(self.rank_cap);
+        self.unobtainable  = other.unobtainable.or(self.unobtainable);
+    }
 }
 
 pub struct AppState {
@@ -150,4 +169,57 @@ pub struct AppState {
     /// relic reward screen open/close events instead of relying solely on EE.log.
     pub mem_trigger_enabled: Arc<AtomicBool>,
     pub arbitration_overlay_enabled: Arc<AtomicBool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EXCAL: &str = "/Lotus/Powersuits/Excalibur/ExcaliburPrime";
+
+    fn bundled_excal() -> CorrectionEntry {
+        CorrectionEntry {
+            path: EXCAL.into(),
+            category: Some("Warframes".into()),
+            tradeable_wfm: Some(false),
+            masterable: Some(true),
+            unobtainable: Some(Unobtainable::Founders),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn user_rename_keeps_bundled_fields() {
+        let user = CorrectionEntry { path: EXCAL.into(), name: Some("Excal P".into()), ..Default::default() };
+        let map = merge_corrections(vec![bundled_excal()], vec![user]);
+        let e = &map[EXCAL];
+        assert_eq!(e.name.as_deref(), Some("Excal P"));
+        assert_eq!(e.category.as_deref(), Some("Warframes"));
+        assert_eq!(e.tradeable_wfm, Some(false));
+        assert_eq!(e.masterable, Some(true));
+        assert_eq!(e.unobtainable, Some(Unobtainable::Founders));
+    }
+
+    #[test]
+    fn user_overrides_single_field() {
+        let user = CorrectionEntry { path: EXCAL.into(), masterable: Some(false), ..Default::default() };
+        let map = merge_corrections(vec![bundled_excal()], vec![user]);
+        let e = &map[EXCAL];
+        assert_eq!(e.masterable, Some(false));
+        assert_eq!(e.unobtainable, Some(Unobtainable::Founders));
+    }
+
+    #[test]
+    fn user_only_path_is_added() {
+        let user = CorrectionEntry { path: "/Lotus/New".into(), rank_cap: Some(40), ..Default::default() };
+        let map = merge_corrections(vec![bundled_excal()], vec![user]);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["/Lotus/New"].rank_cap, Some(40));
+    }
+
+    #[test]
+    fn bundled_file_parses() {
+        let bundled: Vec<CorrectionEntry> = serde_json::from_str(BUNDLED_CORRECTIONS).expect("bundled corrections.json is valid");
+        assert!(bundled.iter().any(|e| e.path == EXCAL && e.unobtainable == Some(Unobtainable::Founders)));
+    }
 }
