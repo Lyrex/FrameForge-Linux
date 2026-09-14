@@ -7,9 +7,9 @@ import type { Opportunity } from "../types/mastery.ts";
 
 const opportunity = (name: string, over: Partial<Opportunity> = {}): Opportunity => ({
   unique_name: `/Lotus/Weapons/Tenno/${name}`, name, category: "Primary", image_name: null, mastery_req: null,
-  cap: 30, earned_rank: 12, state: "partial", unobtainable: null, excluded: false,
-  stage: "level_claim", action: "level", remaining_mastery: 1800, owned: true, owned_level: 12, build_completion_ms: null,
-  vendors: [], access: "available", blockers: [], ...over,
+  cap: 30, earned_rank: 12, remaining_mastery: 1800, state: "partial", unobtainable: null, excluded: false,
+  stage: "level_claim", action: "level", owned: true, owned_level: 12, build_completion_ms: null,
+  vendors: [], spend: null, access: "available", blockers: [], ...over,
 });
 
 test("stored controls are validated field by field and fall back to defaults", () => {
@@ -61,6 +61,15 @@ test("labels spell out the action, the route and unknowns", () => {
   assert.equal(detailText(opportunity("Braton"), now), "Owned copy");
   assert.equal(detailText(opportunity("Braton", { build_completion_ms: 5_000_000 }), now), "Owned copy · Build ready");
   assert.equal(detailText(opportunity("Braton", { build_completion_ms: now + 60_000 }), now, "14:32"), "Owned copy · Build ready in 1m (14:32)");
+  const spend = opportunity("Railjack", {
+    unique_name: "LPP_SPACE", category: "Intrinsics", cap: 50, earned_rank: 45, remaining_mastery: 7500, owned: false, owned_level: null,
+    action: "spend", spend: { ranks: 5, points: 2048, mastery: 7500, tracks: [
+      { track: "Piloting", from: 9, to: 10 }, { track: "Gunnery", from: 8, to: 10 }, { track: "Engineering", from: 8, to: 10 },
+    ] },
+  });
+  assert.equal(actionText(spend), "Spend 2,048 points for 5 ranks");
+  assert.equal(detailText(spend, now), "+7,500 mastery · Piloting R9 → R10 · Gunnery R8 → R10 · Engineering R8 → R10");
+  assert.equal(actionText(opportunity("Drifter", { action: "spend", spend: { ranks: 1, points: 205, mastery: 1500, tracks: [{ track: "Endurance", from: 8, to: 9 }] } })), "Spend 205 points for 1 rank");
   assert.equal(readyText(5_000_000, now), "ready");
   assert.equal(readyText(now + 3_720_000, now), "ready in 1h 2m");
   assert.equal(readyText(now + 45_000, now), "ready in 1m");

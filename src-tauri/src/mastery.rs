@@ -10,9 +10,9 @@ use crate::monitor::CraftingJob;
 use crate::settings::read_settings_map;
 use crate::wfcd::{RecipeComponent, SyndicateOffer, WfcdItem};
 
-const COLLECTION_CATEGORIES: [&str; 9] = [
+const COLLECTION_CATEGORIES: [&str; 10] = [
     "Warframes", "Primary", "Secondary", "Melee", "Operator Weapons",
-    "Archwing", "Companions", "Companion Weapons", "Vehicles",
+    "Archwing", "Companions", "Companion Weapons", "Vehicles", "Intrinsics",
 ];
 
 #[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -28,6 +28,7 @@ pub(crate) struct MasterySource {
     pub(crate) mastery_req: Option<u32>,
     pub(crate) cap: u32,
     pub(crate) earned_rank: Option<u32>,
+    pub(crate) remaining_mastery: Option<u32>,
     pub(crate) state: MasteryState,
     /// The table's class, regardless of settings.
     pub(crate) unobtainable: Option<Unobtainable>,
@@ -70,7 +71,7 @@ pub(crate) struct MasteryCategory {
     pub(crate) sources: Vec<MasterySource>,
 }
 
-/// Intrinsics, nodes and junctions have no extraction yet and stay Unknown.
+/// Nodes and junctions have no extraction yet and stay Unknown.
 #[derive(serde::Serialize, Clone, Copy, Default, Debug)]
 pub(crate) struct MasteryProvenance {
     pub(crate) equipment: Provenance,
@@ -86,7 +87,7 @@ pub(crate) enum Stage { LevelClaim, Acquire }
 
 #[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Action { Level, Claim, Buy }
+pub(crate) enum Action { Level, Claim, Spend, Buy }
 
 #[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -99,18 +100,34 @@ pub(crate) struct VendorOffer {
     pub(crate) blueprint: bool,
 }
 
+#[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct TrackSpend {
+    pub(crate) track: String,
+    pub(crate) from: u32,
+    pub(crate) to: u32,
+}
+
+#[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct Spend {
+    pub(crate) ranks: u32,
+    pub(crate) points: u32,
+    pub(crate) mastery: u32,
+    /// Lists only the tracks that gain a rank, in the game's order.
+    pub(crate) tracks: Vec<TrackSpend>,
+}
+
 #[derive(serde::Serialize, Clone, Debug)]
 pub(crate) struct Opportunity {
     #[serde(flatten)]
     pub(crate) source: MasterySource,
     pub(crate) stage: Stage,
     pub(crate) action: Action,
-    pub(crate) remaining_mastery: Option<u32>,
     pub(crate) owned: bool,
     /// None on caches from before levels were stored.
     pub(crate) owned_level: Option<u32>,
     pub(crate) build_completion_ms: Option<i64>,
     pub(crate) vendors: Vec<VendorOffer>,
+    pub(crate) spend: Option<Spend>,
     pub(crate) access: Access,
     pub(crate) blockers: Vec<String>,
 }
@@ -130,6 +147,8 @@ pub(crate) struct Observed<'a> {
     pub(crate) crafting: &'a [CraftingJob],
     pub(crate) recipes: &'a HashMap<String, Vec<RecipeComponent>>,
     pub(crate) offers: &'a HashMap<String, Vec<SyndicateOffer>>,
+    /// The record's `PlayerSkills`, or `None` while Intrinsics are Unknown.
+    pub(crate) skills: Option<&'a HashMap<String, i64>>,
     pub(crate) now_ms: i64,
 }
 
@@ -137,10 +156,12 @@ pub(crate) struct Observed<'a> {
 pub(crate) fn get_mastery_overview(state: State<AppState>) -> MasteryOverview {
     let player = state.local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let excluded = excluded_classes(&state.settings_path);
-    let mut overview = {
+    let (mut overview, skills) = {
         let progress = state.mastery_progress.lock().unwrap_or_else(|e| e.into_inner());
         let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
-        build_mastery_overview(&items, &state.corrections, progress.current(player.as_deref()), &excluded)
+        let record = progress.current(player.as_deref());
+        let skills = record.filter(|r| r.intrinsics.state != ProvenanceState::Unknown).map(|r| r.skills.clone());
+        (build_mastery_overview(&items, &state.corrections, record, &excluded), skills)
     };
     let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
     // Without an inventory scan we have no idea what the player owns, so skip suggestions.
@@ -155,9 +176,41 @@ pub(crate) fn get_mastery_overview(state: State<AppState>) -> MasteryOverview {
         crafting: &crafting,
         recipes: &recipes,
         offers: &offers,
+        skills: skills.as_ref(),
         now_ms: chrono::Utc::now().timestamp_millis(),
     });
     overview
+}
+
+/// Buys the cheapest next rank across the system's tracks, ties in track
+/// order, until the cheapest rank left costs more than the balance. Every
+/// rank pays the same mastery, so no other order gains more.
+fn plan_spend(system: &mastery_rules::IntrinsicSystem, skills: &HashMap<String, i64>) -> Option<Spend> {
+    let banked = system.banked(skills);
+    let mut left = banked;
+    let from = system.track_ranks(skills);
+    let mut ranks = from.clone();
+    while let Some(next) = (0..ranks.len())
+        .filter(|&i| ranks[i] < mastery_rules::INTRINSIC_RANK_CAP)
+        .min_by_key(|&i| system.rank_costs[ranks[i] as usize])
+    {
+        let cost = system.rank_costs[ranks[next] as usize];
+        if cost > left { break; }
+        left -= cost;
+        ranks[next] += 1;
+    }
+    let tracks: Vec<TrackSpend> = system.tracks.iter().zip(&from).zip(&ranks)
+        .filter(|((_, from), to)| to > from)
+        .map(|(((track, _), &from), &to)| TrackSpend { track: (*track).into(), from, to })
+        .collect();
+    if tracks.is_empty() { return None; }
+    let gained: u32 = tracks.iter().map(|t| t.to - t.from).sum();
+    Some(Spend {
+        ranks: gained,
+        points: banked - left,
+        mastery: gained * mastery_rules::mastery_per_rank(system.points),
+        tracks,
+    })
 }
 
 /// A Foundry job carries the blueprint path. Each recipe lists its own
@@ -196,6 +249,14 @@ pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Op
     let mut opportunities: Vec<Opportunity> = overview.categories.iter().flat_map(|c| &c.sources)
         .filter(|s| !s.excluded && s.state != MasteryState::Mastered)
         .filter_map(|source| {
+            if let Some(system) = mastery_rules::intrinsic_system(&source.unique_name) {
+                let spend = plan_spend(system, observed.skills?)?;
+                return Some(Opportunity {
+                    source: source.clone(), stage: Stage::LevelClaim, action: Action::Spend,
+                    owned: false, owned_level: None, build_completion_ms: None, vendors: vec![], spend: Some(spend),
+                    access: Access::Available, blockers: vec![],
+                });
+            }
             let owned_level = observed.owned_levels.get(&source.unique_name).and_then(|levels| levels.iter().max().copied());
             let owned = owned_level.is_some() || observed.owned.get(&source.unique_name).is_some_and(|&copies| copies > 0);
             let build_completion_ms = building.get(source.unique_name.as_str()).copied();
@@ -205,10 +266,9 @@ pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Op
                 else if !vendors.is_empty() { Action::Buy }
                 else { return None };
             let stage = if action == Action::Buy { Stage::Acquire } else { Stage::LevelClaim };
-            let remaining_mastery = source.earned_rank
-                .map(|rank| source.cap.saturating_sub(rank) * mastery_rules::mastery_per_rank(&source.unique_name));
             let (access, blockers) = match action {
                 Action::Level => (Access::Available, vec![]),
+                Action::Spend => unreachable!("Intrinsic rows returned above"),
                 Action::Claim if build_completion_ms.is_some_and(|done| done > observed.now_ms) => (Access::Blocked, vec!["Still building".into()]),
                 Action::Claim => (Access::Available, vec![]),
                 Action::Buy => {
@@ -228,12 +288,15 @@ pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Op
                 }
             };
             Some(Opportunity {
-                source: source.clone(), stage, action, remaining_mastery, owned, owned_level, build_completion_ms, vendors, access, blockers,
+                source: source.clone(), stage, action, owned, owned_level, build_completion_ms, vendors, spend: None, access, blockers,
             })
         })
         .collect();
+    // A spend ranks by what the banked points buy, which can be less than
+    // the system's remaining mastery.
+    let gain = |o: &Opportunity| o.spend.as_ref().map(|s| s.mastery).or(o.source.remaining_mastery);
     opportunities.sort_by(|a, b| a.stage.cmp(&b.stage)
-        .then_with(|| match (a.remaining_mastery, b.remaining_mastery) {
+        .then_with(|| match (gain(a), gain(b)) {
             (Some(x), Some(y)) => y.cmp(&x),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
@@ -264,6 +327,7 @@ pub(crate) fn build_mastery_overview(
 ) -> MasteryOverview {
     let aliases = inventory_path_aliases();
     let equipment = progress.map(|p| p.equipment).unwrap_or_default();
+    let intrinsics = progress.map(|p| p.intrinsics).unwrap_or_default();
     // XPInfo credits some aliases directly; the overview lists canonical entries only.
     let mut affinity: HashMap<&str, i64> = HashMap::new();
     for (path, &earned) in progress.iter().flat_map(|p| &p.affinity) {
@@ -302,6 +366,7 @@ pub(crate) fn build_mastery_overview(
             mastery_req: i.mastery_req,
             cap: mastery_rules::rank_cap(correction, &i.unique_name, i.max_level_cap),
             earned_rank: None,
+            remaining_mastery: None,
             state: MasteryState::Unknown,
             unobtainable: correction.and_then(|c| c.unobtainable),
             excluded: correction.and_then(|c| c.unobtainable).is_some_and(|class| excluded.contains(&class)),
@@ -312,7 +377,20 @@ pub(crate) fn build_mastery_overview(
     let mut categories: Vec<MasteryCategory> = COLLECTION_CATEGORIES.iter()
         .map(|c| MasteryCategory { category: (*c).into(), counts: MasteryCounts::default(), sources: vec![] })
         .collect();
-    for mut source in sources.into_values() {
+    let mut place = |mut source: MasterySource, rank: Option<u32>| {
+        if let Some(rank) = rank {
+            source.earned_rank = Some(rank);
+            source.remaining_mastery = Some(source.cap.saturating_sub(rank) * mastery_rules::mastery_per_rank(&source.unique_name));
+            source.state = if rank >= source.cap { MasteryState::Mastered }
+                else if rank > 0 { MasteryState::Partial }
+                else { MasteryState::Missing };
+        }
+        let category = categories.iter_mut().find(|c| c.category == source.category).expect("category comes from COLLECTION_CATEGORIES");
+        category.counts.add(&source);
+        counts.add(&source);
+        category.sources.push(source);
+    };
+    for source in sources.into_values() {
         let rank = affinity.get(source.unique_name.as_str())
             .map(|&earned| mastery_rules::xp_to_rank(earned, &source.unique_name).min(source.cap));
         // An Unconfirmed record came from a cache that dropped rank-0 rows, so
@@ -322,22 +400,31 @@ pub(crate) fn build_mastery_overview(
             (ProvenanceState::Confirmed, None) => Some(0),
             (_, Some(rank)) => Some(rank),
         };
-        if let Some(rank) = rank {
-            source.earned_rank = Some(rank);
-            source.state = if rank >= source.cap { MasteryState::Mastered }
-                else if rank > 0 { MasteryState::Partial }
-                else { MasteryState::Missing };
-        }
-        let category = categories.iter_mut().find(|c| c.category == source.category).expect("category comes from COLLECTION_CATEGORIES");
-        category.counts.add(&source);
-        counts.add(&source);
-        category.sources.push(source);
+        place(source, rank);
+    }
+    for system in &mastery_rules::INTRINSIC_SYSTEMS {
+        let source = MasterySource {
+            unique_name: system.points.into(),
+            name: system.name.into(),
+            category: "Intrinsics".into(),
+            image_name: None,
+            mastery_req: None,
+            cap: system.rank_cap(),
+            earned_rank: None,
+            remaining_mastery: None,
+            state: MasteryState::Unknown,
+            unobtainable: None,
+            excluded: false,
+        };
+        let rank = progress.filter(|p| p.intrinsics.state != ProvenanceState::Unknown)
+            .map(|p| system.track_ranks(&p.skills).iter().sum());
+        place(source, rank);
     }
     categories.retain(|c| !c.sources.is_empty());
     for category in &mut categories {
         category.sources.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.unique_name.cmp(&b.unique_name)));
     }
-    MasteryOverview { counts, categories, provenance: MasteryProvenance { equipment, ..Default::default() }, opportunities: vec![] }
+    MasteryOverview { counts, categories, provenance: MasteryProvenance { equipment, intrinsics, ..Default::default() }, opportunities: vec![] }
 }
 
 /// Inventory display categories file modular chambers, decks and mechs under
@@ -385,6 +472,8 @@ mod tests {
     const SNIPETRON: &str = "/Lotus/Weapons/Tenno/Rifle/SniperRifle";
     const VENARI: &str = "/Lotus/Powersuits/Khora/Kavat/KhoraKavatPowerSuit";
     const PLEXUS: &str = "/Lotus/Types/Game/CrewShip/RailJack/DefaultHarness";
+    const RAILJACK: &str = "LPP_SPACE";
+    const DRIFTER: &str = "LPP_DRIFTER";
 
     fn item(name: &str, path: &str, item_type: &str, product_category: &str, category: &str, masterable: Option<bool>) -> WfcdItem {
         WfcdItem {
@@ -444,8 +533,21 @@ mod tests {
         PlayerProgress {
             affinity: affinity.iter().map(|(path, earned)| ((*path).to_string(), *earned)).collect(),
             equipment: Provenance { state, observed_at },
+            ..Default::default()
         }
     }
+
+    fn with_skills(mut progress: PlayerProgress, state: ProvenanceState, skills: &[(&str, i64)]) -> PlayerProgress {
+        progress.skills = skills.iter().map(|(field, value)| ((*field).to_string(), *value)).collect();
+        progress.intrinsics = Provenance { state, observed_at: Some(2_000) };
+        progress
+    }
+
+    /// The saved capture's `PlayerSkills`.
+    const CAPTURED_SKILLS: [(&str, i64); 11] = [
+        ("LPP_SPACE", 89_930), ("LPS_GUNNERY", 8), ("LPS_ENGINEERING", 8), ("LPS_TACTICAL", 10), ("LPS_PILOTING", 9), ("LPS_COMMAND", 10),
+        ("LPP_DRIFTER", 0), ("LPS_DRIFT_RIDING", 10), ("LPS_DRIFT_COMBAT", 10), ("LPS_DRIFT_OPPORTUNITY", 10), ("LPS_DRIFT_ENDURANCE", 10),
+    ];
 
     fn source<'a>(overview: &'a MasteryOverview, path: &str) -> &'a MasterySource {
         overview.categories.iter().flat_map(|c| &c.sources)
@@ -464,7 +566,7 @@ mod tests {
         let overview = build_mastery_overview(&catalog(), &corrections(), Some(&observed(ProvenanceState::Confirmed, Some(1_000), &[])), &HashSet::new());
         let categories: Vec<&str> = overview.categories.iter().map(|c| c.category.as_str()).collect();
         assert_eq!(categories, ["Warframes", "Primary", "Secondary", "Melee", "Operator Weapons",
-            "Archwing", "Companions", "Companion Weapons", "Vehicles"]);
+            "Archwing", "Companions", "Companion Weapons", "Vehicles", "Intrinsics"]);
         assert_eq!(names(&overview, "Warframes"), ["Sirius & Orion"]);
         assert_eq!(source(&overview, SIRIUS).category, "Warframes");
         assert_eq!(names(&overview, "Primary"), ["Braton", "Kuva Karak"]);
@@ -475,7 +577,8 @@ mod tests {
         assert_eq!(names(&overview, "Companions"), ["Bhaira Hound", "Venari"]);
         assert_eq!(names(&overview, "Companion Weapons"), ["Sweeper"]);
         assert_eq!(names(&overview, "Vehicles"), ["Bad Baby", "Voidrig"]);
-        assert_eq!(overview.counts.total, 16);
+        assert_eq!(names(&overview, "Intrinsics"), ["Drifter", "Railjack"]);
+        assert_eq!(overview.counts.total, 18);
         let all: Vec<&str> = overview.categories.iter().flat_map(|c| &c.sources).map(|s| s.unique_name.as_str()).collect();
         assert_eq!(all.len(), all.iter().collect::<std::collections::HashSet<_>>().len());
         for absent in [ORION, GRIMOIRE_ALIAS, ZAW_WEAPON, VINQUIBUS_MELEE] {
@@ -493,21 +596,22 @@ mod tests {
         assert_eq!(overview.provenance.equipment, Provenance { state: ProvenanceState::Confirmed, observed_at: Some(1_000) });
         assert_eq!(overview.provenance.intrinsics.state, ProvenanceState::Unknown);
         assert_eq!((source(&overview, SIRIUS).earned_rank, source(&overview, SIRIUS).state), (Some(30), MasteryState::Mastered));
-        assert_eq!(source(&overview, BRATON).state, MasteryState::Mastered);
-        assert_eq!((source(&overview, KUVA).cap, source(&overview, KUVA).state), (40, MasteryState::Partial));
+        assert_eq!((source(&overview, BRATON).state, source(&overview, BRATON).remaining_mastery), (MasteryState::Mastered, Some(0)));
+        assert_eq!((source(&overview, KUVA).cap, source(&overview, KUVA).state, source(&overview, KUVA).remaining_mastery), (40, MasteryState::Partial, Some(500)));
         assert_eq!(source(&overview, STRIKE).state, MasteryState::Partial);
-        assert_eq!((source(&overview, CHAMBER).earned_rank, source(&overview, CHAMBER).state), (Some(0), MasteryState::Missing));
+        assert_eq!((source(&overview, CHAMBER).earned_rank, source(&overview, CHAMBER).state, source(&overview, CHAMBER).remaining_mastery), (Some(0), MasteryState::Missing, Some(3_000)));
+        assert_eq!(source(&overview, MECH).remaining_mastery, Some(8_000));
         let primary = overview.categories.iter().find(|c| c.category == "Primary").expect("primary");
         assert_eq!(primary.counts, MasteryCounts { total: 2, mastered: 1, partial: 1, missing: 0, unknown: 0, unobtainable: 0 });
-        assert_eq!(overview.counts, MasteryCounts { total: 16, mastered: 2, partial: 2, missing: 12, unknown: 0, unobtainable: 0 });
+        assert_eq!(overview.counts, MasteryCounts { total: 18, mastered: 2, partial: 2, missing: 12, unknown: 2, unobtainable: 0 });
     }
 
     #[test]
     fn no_observation_means_unknown_not_missing() {
         let overview = build_mastery_overview(&catalog(), &corrections(), None, &HashSet::new());
         assert!(overview.categories.iter().flat_map(|c| &c.sources)
-            .all(|s| s.state == MasteryState::Unknown && s.earned_rank.is_none()));
-        assert_eq!(overview.counts, MasteryCounts { total: 16, mastered: 0, partial: 0, missing: 0, unknown: 16, unobtainable: 0 });
+            .all(|s| s.state == MasteryState::Unknown && s.earned_rank.is_none() && s.remaining_mastery.is_none()));
+        assert_eq!(overview.counts, MasteryCounts { total: 18, mastered: 0, partial: 0, missing: 0, unknown: 18, unobtainable: 0 });
         for kind in [overview.provenance.equipment, overview.provenance.intrinsics, overview.provenance.nodes, overview.provenance.junctions] {
             assert_eq!(kind, Provenance::default());
         }
@@ -521,7 +625,7 @@ mod tests {
         assert_eq!((source(&overview, BRATON).earned_rank, source(&overview, BRATON).state), (Some(30), MasteryState::Mastered));
         assert_eq!((source(&overview, KUVA).earned_rank, source(&overview, KUVA).state), (Some(35), MasteryState::Partial));
         assert_eq!((source(&overview, CHAMBER).earned_rank, source(&overview, CHAMBER).state), (None, MasteryState::Unknown));
-        assert_eq!(overview.counts, MasteryCounts { total: 16, mastered: 1, partial: 1, missing: 0, unknown: 14, unobtainable: 0 });
+        assert_eq!(overview.counts, MasteryCounts { total: 18, mastered: 1, partial: 1, missing: 0, unknown: 16, unobtainable: 0 });
     }
 
     #[test]
@@ -566,7 +670,7 @@ mod tests {
         let plexus = source(&overview, PLEXUS);
         assert_eq!((plexus.cap, plexus.earned_rank, plexus.state), (30, Some(25), MasteryState::Partial));
         assert_eq!((plexus.image_name.as_deref(), plexus.mastery_req), (None, None));
-        assert_eq!(overview.counts.total, 17);
+        assert_eq!(overview.counts.total, 19);
 
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
         let overview = build_mastery_overview(&catalog(), &corrections, Some(&progress), &HashSet::new());
@@ -591,7 +695,7 @@ mod tests {
         let all: HashSet<Unobtainable> = Unobtainable::ALL.into();
 
         let overview = build_mastery_overview(&items, &corrections, Some(&progress), &all);
-        assert_eq!(overview.counts, MasteryCounts { total: 15, mastered: 0, partial: 0, missing: 15, unknown: 0, unobtainable: 3 });
+        assert_eq!(overview.counts, MasteryCounts { total: 17, mastered: 0, partial: 0, missing: 15, unknown: 2, unobtainable: 3 });
         let excalibur = source(&overview, EXCALIBUR_PRIME);
         assert_eq!((excalibur.excluded, excalibur.unobtainable), (true, Some(Unobtainable::Founders)));
         assert_eq!((excalibur.state, excalibur.earned_rank), (MasteryState::Mastered, Some(30)));
@@ -603,11 +707,11 @@ mod tests {
             excluded.remove(&class);
             let overview = build_mastery_overview(&items, &corrections, Some(&progress), &excluded);
             assert_eq!((source(&overview, path).excluded, source(&overview, path).unobtainable), (false, Some(class)));
-            assert_eq!((overview.counts.total, overview.counts.unobtainable), (16, 2), "{class:?}");
+            assert_eq!((overview.counts.total, overview.counts.unobtainable), (18, 2), "{class:?}");
         }
 
         let overview = build_mastery_overview(&items, &corrections, Some(&progress), &HashSet::new());
-        assert_eq!(overview.counts, MasteryCounts { total: 18, mastered: 1, partial: 0, missing: 17, unknown: 0, unobtainable: 0 });
+        assert_eq!(overview.counts, MasteryCounts { total: 20, mastered: 1, partial: 0, missing: 17, unknown: 2, unobtainable: 0 });
     }
 
     fn with_suggestions(items: &[WfcdItem], corrections: &HashMap<String, CorrectionEntry>, progress: Option<&PlayerProgress>, excluded: &HashSet<Unobtainable>, observed: &Observed) -> MasteryOverview {
@@ -617,7 +721,15 @@ mod tests {
     }
 
     fn observed_gear<'a>(owned: &'a HashMap<String, i64>, owned_levels: &'a HashMap<String, Vec<u32>>, crafting: &'a [CraftingJob], recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, mastery_rank: Option<u32>) -> Observed<'a> {
-        Observed { owned, owned_levels, mastery_rank, crafting, recipes, offers, now_ms: 1_000_000 }
+        Observed { owned, owned_levels, mastery_rank, crafting, recipes, offers, skills: None, now_ms: 1_000_000 }
+    }
+
+    fn observed_skills<'a>(progress: &'a PlayerProgress, recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, owned: &'a HashMap<String, i64>, levels: &'a HashMap<String, Vec<u32>>) -> Observed<'a> {
+        Observed { owned, owned_levels: levels, mastery_rank: Some(30), crafting: &[], recipes, offers, skills: Some(&progress.skills), now_ms: 1_000_000 }
+    }
+
+    fn track(track: &str, from: u32, to: u32) -> TrackSpend {
+        TrackSpend { track: track.into(), from, to }
     }
 
     fn recipe(source: &str, blueprint: &str) -> (String, Vec<RecipeComponent>) {
@@ -640,7 +752,7 @@ mod tests {
     }
 
     fn summary(opportunities: &[Opportunity]) -> Vec<(&str, Action, Option<u32>, Access)> {
-        opportunities.iter().map(|o| (o.source.name.as_str(), o.action, o.remaining_mastery, o.access)).collect()
+        opportunities.iter().map(|o| (o.source.name.as_str(), o.action, o.source.remaining_mastery, o.access)).collect()
     }
 
     #[test]
@@ -748,5 +860,90 @@ mod tests {
         assert_eq!(summary(&overview.opportunities), [("Kuva Karak", Action::Level, Some(3_000), Access::Available)]);
         let kuva = &overview.opportunities[0];
         assert_eq!((kuva.owned_level, kuva.build_completion_ms, kuva.vendors.len()), (Some(10), Some(0), 1));
+    }
+
+    #[test]
+    fn each_intrinsic_system_is_one_row_of_summed_track_ranks() {
+        let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &CAPTURED_SKILLS);
+        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        assert_eq!(overview.provenance.intrinsics, Provenance { state: ProvenanceState::Confirmed, observed_at: Some(2_000) });
+        assert_eq!(names(&overview, "Intrinsics"), ["Drifter", "Railjack"]);
+        let railjack = source(&overview, RAILJACK);
+        assert_eq!((railjack.cap, railjack.earned_rank, railjack.remaining_mastery, railjack.state), (50, Some(45), Some(7_500), MasteryState::Partial));
+        assert_eq!((railjack.image_name.as_deref(), railjack.mastery_req, railjack.unobtainable), (None, None, None));
+        let drifter = source(&overview, DRIFTER);
+        assert_eq!((drifter.cap, drifter.earned_rank, drifter.remaining_mastery, drifter.state), (40, Some(40), Some(0), MasteryState::Mastered));
+        let intrinsics = overview.categories.iter().find(|c| c.category == "Intrinsics").expect("intrinsics");
+        assert_eq!(intrinsics.counts, MasteryCounts { total: 2, mastered: 1, partial: 1, missing: 0, unknown: 0, unobtainable: 0 });
+
+        // A confirmed object with no track fields is an account that never earned a rank.
+        let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &[]);
+        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        assert_eq!((source(&overview, RAILJACK).earned_rank, source(&overview, RAILJACK).state), (Some(0), MasteryState::Missing));
+
+        // A rank past 10 or below 0 is not one the game hands out.
+        let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &[("LPS_DRIFT_RIDING", 12), ("LPS_DRIFT_COMBAT", -3)]);
+        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        assert_eq!(source(&overview, DRIFTER).earned_rank, Some(10));
+    }
+
+    #[test]
+    fn intrinsics_stay_unknown_while_equipment_is_confirmed() {
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(BRATON, 450_000)]);
+        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        assert_eq!(overview.provenance.intrinsics, Provenance::default());
+        assert_eq!(source(&overview, BRATON).state, MasteryState::Mastered);
+        for system in [RAILJACK, DRIFTER] {
+            assert_eq!((source(&overview, system).earned_rank, source(&overview, system).state), (None, MasteryState::Unknown), "{system}");
+        }
+        assert_eq!(overview.counts.unknown, 2);
+    }
+
+    /// Worked by hand from the wiki's cost tables. 18 of the 20 Railjack
+    /// points buy seven ranks and the eighth, Tactical 4 at 8, is out of
+    /// reach. Of the 460 Drifter points, Endurance 9 at 205 goes first and
+    /// Combat 10 at 255 wins the tie with Endurance 10.
+    #[test]
+    fn banked_points_buy_the_cheapest_rank_first_across_a_systems_tracks() {
+        let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &[
+            ("LPP_SPACE", 20), ("LPS_TACTICAL", 3), ("LPS_PILOTING", 5), ("LPS_COMMAND", 2),
+            ("LPP_DRIFTER", 460), ("LPS_DRIFT_COMBAT", 9), ("LPS_DRIFT_RIDING", 10), ("LPS_DRIFT_OPPORTUNITY", 10), ("LPS_DRIFT_ENDURANCE", 8),
+        ]);
+        let owned = HashMap::new();
+        let levels: HashMap<String, Vec<u32>> = [(KUVA.to_string(), vec![0])].into();
+        let (recipes, offers) = (HashMap::new(), HashMap::new());
+        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_skills(&progress, &recipes, &offers, &owned, &levels));
+        assert_eq!(summary(&overview.opportunities), [
+            ("Railjack", Action::Spend, Some(60_000), Access::Available),
+            ("Kuva Karak", Action::Level, Some(4_000), Access::Available),
+            ("Drifter", Action::Spend, Some(4_500), Access::Available),
+        ], "a spend sorts by what the points buy");
+        assert!(overview.opportunities.iter().all(|o| o.stage == Stage::LevelClaim && o.blockers.is_empty() && o.vendors.is_empty()));
+        let railjack = overview.opportunities[0].spend.as_ref().expect("spend");
+        assert_eq!((railjack.ranks, railjack.points, railjack.mastery), (7, 18, 10_500));
+        assert_eq!(railjack.tracks, [track("Gunnery", 0, 3), track("Engineering", 0, 3), track("Command", 2, 3)]);
+        let drifter = overview.opportunities[2].spend.as_ref().expect("spend");
+        assert_eq!((drifter.ranks, drifter.points, drifter.mastery), (2, 460, 3_000));
+        assert_eq!(drifter.tracks, [track("Combat", 9, 10), track("Endurance", 8, 9)]);
+    }
+
+    #[test]
+    fn no_spend_without_enough_banked_points_or_without_an_observation() {
+        let (owned, levels, recipes, offers) = (HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new());
+        let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &CAPTURED_SKILLS);
+        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_skills(&progress, &recipes, &offers, &owned, &levels));
+        assert_eq!(summary(&overview.opportunities), [("Railjack", Action::Spend, Some(7_500), Access::Available)], "a mastered Drifter has nothing to buy");
+        let railjack = overview.opportunities[0].spend.as_ref().expect("spend");
+        assert_eq!((railjack.ranks, railjack.points, railjack.mastery), (5, 2_048, 7_500));
+        assert_eq!(railjack.tracks, [track("Piloting", 9, 10), track("Gunnery", 8, 10), track("Engineering", 8, 10)]);
+
+        // One system has nothing banked and the other sits one point short of its cheapest rank.
+        let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &[("LPS_GUNNERY", 4), ("LPP_DRIFTER", 19)]);
+        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_skills(&progress, &recipes, &offers, &owned, &levels));
+        assert!(overview.opportunities.is_empty(), "{:?}", summary(&overview.opportunities));
+
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
+        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)));
+        assert!(overview.opportunities.is_empty(), "Unknown Intrinsics suggest nothing");
     }
 }

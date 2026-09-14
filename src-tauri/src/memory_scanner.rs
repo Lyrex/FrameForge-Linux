@@ -109,6 +109,10 @@ pub struct BlobInventory {
     /// XPInfo: affinity per equipment type. `None` when the section was not an
     /// array; an empty array is a real zero.
     pub mastery_xp:      Option<HashMap<String, i64>>,
+    /// PlayerSkills: Intrinsic ranks (`LPS_*`) and banked points (`LPP_*`)
+    /// under the game's own field names. `None` when the section was not an
+    /// object, while an empty object is a real zero everywhere.
+    pub player_skills:   Option<HashMap<String, i64>>,
     pub pending_recipes: Vec<BlobPendingRecipe>,
     /// Warframe paths fed to Helminth (InfestedFoundry.ConsumedSuits).
     pub consumed_suits:  Vec<String>,
@@ -582,6 +586,10 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
         arr.iter().filter_map(|e| Some((e["ItemType"].as_str()?.to_string(), e["XP"].as_i64()?))).collect()
     });
 
+    let player_skills: Option<HashMap<String, i64>> = json["PlayerSkills"].as_object().map(|skills| {
+        skills.iter().filter_map(|(field, value)| Some((field.clone(), value.as_i64()?))).collect()
+    });
+
     // PendingRecipes (Foundry)
     let pending_recipes: Vec<BlobPendingRecipe> = json["PendingRecipes"].as_array()
         .map(|a| a.iter().filter_map(|e| {
@@ -610,7 +618,7 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
     Some(BlobInventory {
         credits, endo, platinum, free_platinum, mastery_level,
         unique_items, stackable_items, mods,
-        flavour_items, weapon_skins, mastery_xp, pending_recipes, consumed_suits,
+        flavour_items, weapon_skins, mastery_xp, player_skills, pending_recipes, consumed_suits,
         rivens,
     })
 }
@@ -1744,6 +1752,25 @@ mod stitch_engine_tests {
         let absent = parse_full_account_blob(&make_blob_with_xp_info(r#""RegularCredits":7"#, "null")).expect("still parses");
         assert!(absent.mastery_xp.is_none());
         assert_eq!(absent.credits, 7);
+    }
+
+    /// A capture with every Drifter track at 10 carried `LPP_DRIFTER: 0`
+    /// while `LPP_SPACE` held 89,930 next to unmaxed Railjack tracks, so the
+    /// `LPP_*` fields are banked points, not lifetime earnings.
+    #[test]
+    fn player_skills_are_carried_as_named_numbers_and_absent_when_missing() {
+        let captured = parse_full_account_blob(&make_blob(
+            r#""RegularCredits":1,"PlayerSkills":{"LPP_SPACE":89930,"LPS_GUNNERY":8,"LPS_ENGINEERING":8,"LPS_TACTICAL":10,"LPS_PILOTING":9,"LPP_DRIFTER":0,"LPS_DRIFT_RIDING":10,"LPS_DRIFT_COMBAT":10,"LPS_DRIFT_OPPORTUNITY":10,"LPS_DRIFT_ENDURANCE":10,"LPS_COMMAND":10,"Note":"ignored"}"#,
+        )).expect("parses");
+        let skills = captured.player_skills.expect("object");
+        assert_eq!(skills.len(), 11);
+        assert_eq!((skills["LPP_SPACE"], skills["LPS_GUNNERY"], skills["LPP_DRIFTER"], skills["LPS_DRIFT_ENDURANCE"]), (89_930, 8, 0, 10));
+
+        let empty = parse_full_account_blob(&make_blob(r#""RegularCredits":1,"PlayerSkills":{}"#)).expect("parses");
+        assert_eq!(empty.player_skills.as_ref().map(|s| s.len()), Some(0));
+
+        assert!(parse_full_account_blob(&make_blob(r#""RegularCredits":1"#)).expect("parses").player_skills.is_none());
+        assert!(parse_full_account_blob(&make_blob(r#""RegularCredits":1,"PlayerSkills":null"#)).expect("parses").player_skills.is_none());
     }
 
     fn run(regions: Vec<(usize, Vec<u8>)>) -> Option<BlobInventory> {
