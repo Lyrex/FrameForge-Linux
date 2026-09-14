@@ -390,7 +390,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                         .items.into_iter()
                         .filter_map(|(k, v)| v.wfm_price.map(|p| (k, p)))
                         .collect();
-                let sc = build_inventory_from_blob(BlobBuildParams {
+                let mut sc = build_inventory_from_blob(BlobBuildParams {
                     blob: &blob,
                     path_to_name: &path_to_name, path_to_category: &path_to_category,
                     path_to_ducat: &path_to_ducat, path_to_vaulted: &path_to_vaulted,
@@ -399,6 +399,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     relic_drops: &relic_drops_snapshot, existing_wfm_prices: &existing_wfm,
                     excluded_paths: &alias_excluded,
                 });
+                sc.player = capture_player.clone();
                 if !persist_complete_inventory(&blob, &unique_quantities, &sc, &inventory_state_cache_path) {
                     mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).discard_blob();
                     continue;
