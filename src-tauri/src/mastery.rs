@@ -258,7 +258,7 @@ mod tests {
             item("Bad Baby", DECK, "K-Drive Component", "Pistols", "Resources", Some(true)),
             item("Voidrig", MECH, "Necramech", "MechSuits", "Warframes", Some(true)),
             item("Bhaira Hound", HOUND_HEAD, "Pets", "Pistols", "Companions", Some(true)),
-            item("Venari", VENARI, "Warframe", "SpecialItems", "Pets", Some(false)),
+            item("Venari", VENARI, "Warframe", "SpecialItems", "Companions", Some(false)),
             item("Sweeper", SWEEPER, "Companion Weapon", "SentinelWeapons", "Primary", Some(true)),
             item("Imperator", IMPERATOR, "Arch-Gun", "SpaceGuns", "Archwing", Some(true)),
             item("Dual Viciss", SICKLE, "Rifle", "Melee", "Melee", Some(true)),

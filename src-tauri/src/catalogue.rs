@@ -104,7 +104,7 @@ pub(crate) fn fix_category(name: &str, item_type: &str, product_category: &str, 
     // ── Tier 3: type field — most reliable, covers all 17 000 items ───────────
     match item_type {
         // Venari carries type Warframe; the game's profile files it with Kavats.
-        "Warframe" => return if wfcd_cat == "Pets" { "Companions" } else { "Warframes" }.to_string(),
+        "Warframe" => return if wfcd_cat == "Companions" { "Companions" } else { "Warframes" }.to_string(),
 
         // Companion weapons MUST come before Primary/Secondary checks — WFCD stores
         // Sentinel weapons (Akaten, Sweeper, Verglas, etc.) with category=Primary.
