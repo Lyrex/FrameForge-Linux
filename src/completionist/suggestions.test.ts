@@ -255,7 +255,8 @@ test("labels spell out the action, the route and unknowns", () => {
   assert.equal(detailText(farmed, now), "Credits 20,000 · Short Ferrite ×100");
   const barrel = { unique_name: "/Lotus/Types/Recipes/Weapons/WeaponParts/BratonPrimeBarrel", name: "Barrel", needed: 1, from_stock: 0, short: 1 };
   const relicParts: RelicPart[] = [{ unique_name: barrel.unique_name, name: "Barrel", needed: 2, relics: [
-    { name: "Lith B4 Radiant", count: 3, chance: 0.1667 }, { name: "Lith B4 Intact", count: 1, chance: 0.2533 },
+    { unique_name: "/Lotus/Types/Game/Projections/T1VoidProjectionBPlatinum", name: "Lith B4 Radiant", count: 3, chance: 0.1667 },
+    { unique_name: "/Lotus/Types/Game/Projections/T1VoidProjectionBBronze", name: "Lith B4 Intact", count: 1, chance: 0.2533 },
   ] }];
   const relicFarmed = relicFarm("Braton Prime", complete(0.4231), relicParts,
     { craft: { requirements: [barrel, ferrite], builds: [], credits: 15_000, credits_short: 0 } });

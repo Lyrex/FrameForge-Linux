@@ -678,8 +678,6 @@ fn allowable(o: &Opportunity, observed: &Observed, mastered: &HashSet<&str>) -> 
 /// Runs the plan's selections in their order against one ledger, so an
 /// earlier target takes stock first and a later one shows the shortage.
 /// Without an inventory the entries carry their remaining mastery and no row.
-// TODO: put a planned set purchase's parts into the ledger. Today a later
-// target short those parts still shows the shortage.
 pub(crate) fn evaluate(overview: &MasteryOverview, observed: Option<&Observed>, plan: &MasteryPlan) -> PlanEvaluation {
     let by_name = sources_by_name(overview);
     let mastered = mastered_sources(overview);
@@ -706,11 +704,61 @@ pub(crate) fn evaluate(overview: &MasteryOverview, observed: Option<&Observed>, 
             return entry;
         }
         if source.excluded { entry.notes.push("Unobtainable".into()); entry.gain = Some(0); return entry; }
+        if let Some(system) = mastery_rules::intrinsic_system(path) {
+            let Some(targets) = plan.intrinsic_targets.get(path).filter(|targets| !targets.is_empty()
+                && targets.iter().all(|(track, rank)| *rank <= mastery_rules::INTRINSIC_RANK_CAP && system.tracks.iter().any(|(name, _)| name == track))) else {
+                entry.notes.push("Intrinsic target ranks not saved; regenerate this plan".into());
+                return entry;
+            };
+            let Some(skills) = observed.and_then(|o| o.skills) else {
+                entry.notes.push("Intrinsic progress unknown".into());
+                return entry;
+            };
+            let ranks = system.track_ranks(skills);
+            let tracks: Vec<TrackSpend> = system.tracks.iter().zip(ranks).filter_map(|((track, _), from)| {
+                targets.get(*track).filter(|&&to| to > from).map(|&to| TrackSpend { track: (*track).into(), from, to })
+            }).collect();
+            let ranks: u32 = tracks.iter().map(|t| t.to - t.from).sum();
+            let points: u32 = tracks.iter().map(|t| system.rank_costs[t.from as usize..t.to as usize].iter().sum::<u32>()).sum();
+            let mastery = ranks * mastery_rules::mastery_per_rank(system.points);
+            entry.gain = Some(mastery);
+            entry.completed = tracks.is_empty();
+            if !entry.completed {
+                let missing_points = points.saturating_sub(system.banked(skills));
+                if missing_points > 0 { entry.notes.push(format!("Needs {missing_points} more Intrinsic points")); }
+                entry.opportunity = Some(Opportunity {
+                    source: source.clone(), stage: Stage::LevelClaim, action: Action::Spend,
+                    owned: false, owned_level: None, build_completion_ms: None, vendors: vec![],
+                    spend: Some(Spend { ranks, points, mastery, tracks }),
+                    access: if missing_points > 0 { Access::Blocked } else { Access::Available },
+                    blockers: vec![], craft: None, relic: None, drop: None, purchase: None,
+                });
+            }
+            return entry;
+        }
         entry.gain = source.remaining_mastery;
         match (&rows, observed, ledger.as_mut()) {
             (Some(rows), Some(observed), Some(ledger)) => match rows.row(source, observed) {
                 Some(mut o) => {
-                    settle(&mut o, ledger, observed);
+                    if plan.view == "platinum" {
+                        let mut preview = ledger.clone();
+                        settle(&mut o, &mut preview, observed);
+                        let purchase = o.purchase.clone();
+                        let cost = purchase.as_ref().and_then(|p| if plan.purchase_comparison == "full" { p.full_purchase } else { p.cheapest_finish });
+                        if let (Some(purchase), Some(cost), Some(recipe)) = (purchase, cost, observed.recipes.get(path)) {
+                            let mut quantities = purchase.parts.iter().map(|p| (p.unique_name.as_str(),
+                                if cost.route == Route::Set || plan.purchase_comparison == "full" { p.needed } else { p.short })).collect();
+                            ledger.supply(recipe, &mut quantities);
+                            o = rows.row(source, observed).expect("the same source still has a route");
+                            settle(&mut o, ledger, observed);
+                            entry.notes.push(format!("Plan buys {} for {} platinum", if cost.route == Route::Set { "a complete set" } else { "parts" }, cost.platinum));
+                            o.purchase = Some(purchase);
+                        } else {
+                            *ledger = preview;
+                        }
+                    } else {
+                        settle(&mut o, ledger, observed);
+                    }
                     entry.gain = gain(&o);
                     entry.allowable = allowable(&o, observed, &mastered);
                     entry.opportunity = Some(o);
@@ -730,10 +778,12 @@ pub(crate) fn evaluate(overview: &MasteryOverview, observed: Option<&Observed>, 
         let Some(route) = &o.relic else { continue };
         let name = o.source.name.clone();
         let mut shared = vec![];
+        let mut seen = HashSet::new();
         for relic in route.parts.iter().flat_map(|p| &p.relics) {
-            match first_holder.get(&relic.name) {
+            if !seen.insert(&relic.unique_name) { continue; }
+            match first_holder.get(&relic.unique_name) {
                 Some(holder) => shared.push(format!("Shares {relic} with {holder}", relic = relic.name)),
-                None => { first_holder.insert(relic.name.clone(), name.clone()); }
+                None => { first_holder.insert(relic.unique_name.clone(), name.clone()); }
             }
         }
         entries[i].notes.extend(shared);
@@ -1991,13 +2041,83 @@ mod tests {
     }
 
     fn plan(target: u32, selections: &[&str]) -> MasteryPlan {
-        MasteryPlan { target, view: "suggestions".into(), selections: selections.iter().map(|s| (*s).to_string()).collect(), allowances: HashMap::new() }
+        MasteryPlan { target, view: "suggestions".into(), selections: selections.iter().map(|s| (*s).to_string()).collect(), allowances: HashMap::new(), intrinsic_targets: HashMap::new(), purchase_comparison: String::new() }
     }
 
     fn entry_summary(evaluation: &PlanEvaluation) -> Vec<(&str, Option<Action>, Option<u32>, bool, Vec<String>)> {
         evaluation.entries.iter()
             .map(|e| (e.unique_name.as_str(), e.opportunity.as_ref().map(|o| o.action), e.gain, e.completed, e.notes.clone()))
             .collect()
+    }
+
+    #[test]
+    fn saved_intrinsic_targets_finish_without_mastering_the_system() {
+        let (owned, levels, recipes, offers) = (HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new());
+        let mut selected = plan(8, &[RAILJACK]);
+        selected.intrinsic_targets.insert(RAILJACK.into(), [("Tactical".into(), 2)].into());
+        let selected: MasteryPlan = serde_json::from_str(&serde_json::to_string(&selected).expect("plan serializes")).expect("plan round trips");
+        let legacy: MasteryPlan = serde_json::from_str(r#"{"target":8,"view":"suggestions","selections":["LPP_SPACE"],"allowances":{}}"#).expect("legacy plan loads");
+        for (rank, banked, expected_gain, completed) in [(0, 3, 3_000, false), (1, 2, 1_500, false), (1, 0, 1_500, false), (2, 0, 0, true), (2, 20, 0, true)] {
+            let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed,
+                &[("LPS_TACTICAL", rank), ("LPP_SPACE", banked)]);
+            let observed = observed_skills(&progress, &recipes, &offers, &owned, &levels);
+            let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+            let evaluated = evaluate(&overview, Some(&observed), &selected);
+            assert_eq!((evaluated.entries[0].gain, evaluated.entries[0].completed), (Some(expected_gain), completed));
+            assert_eq!(evaluated.gains, u64::from(expected_gain));
+            if !completed {
+                let spend = evaluated.entries[0].opportunity.as_ref().and_then(|o| o.spend.as_ref()).expect("pending spend");
+                assert_eq!(spend.tracks, [track("Tactical", rank as u32, 2)]);
+                assert_eq!(evaluated.entries[0].opportunity.as_ref().expect("pending spend").access,
+                    if banked == 0 { Access::Blocked } else { Access::Available });
+            }
+            assert_eq!(evaluate(&overview, Some(&observed), &legacy).entries[0].gain, None, "legacy target is unknown");
+            assert_eq!(evaluate(&overview, None, &selected).entries[0].gain, None, "missing observation is unknown");
+        }
+    }
+
+    #[test]
+    fn platinum_plan_credits_set_surplus_before_expanding_later_targets() {
+        const RECEIVER_BLUEPRINT: &str = "/Lotus/Types/Recipes/Weapons/WeaponParts/BratonPrimeReceiverBlueprint";
+        let (owned, levels, offers) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let (braton, mut components) = braton_prime_recipe();
+        components[2].components[0].unique_name = RECEIVER_BLUEPRINT.into();
+        let barrel = components[1].clone();
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [(braton, components), (DERA_VANDAL.into(), vec![barrel])].into();
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
+        let stock: HashMap<String, i64> = [(BARREL, 1), (FERRITE, 100), (CREDITS_PATH, 50_000)]
+            .into_iter().map(|(p, n)| (p.into(), n)).collect();
+        let tradeable: HashSet<String> = [BRATON_PRIME_BP, BARREL, RECEIVER_BLUEPRINT].into_iter().map(String::from).collect();
+        let mut market = quotes(&[("braton_prime_blueprint", quote(Some(10), Some(NOW))),
+            ("braton_prime_receiver_blueprint", quote(Some(10), Some(NOW))),
+            ("braton_prime_barrel", quote(Some(10), Some(NOW)))]);
+        let overview = build_mastery_overview(&catalog_with_market(), &corrections(), Some(&progress), &HashSet::new());
+        for (set_price, comparison, route, price, second_purchase) in [
+            (5, "cheapest", Route::Set, 5, false), (25, "cheapest", Route::Parts, 20, true),
+            (25, "full", Route::Set, 25, false), (35, "full", Route::Parts, 30, false),
+        ] {
+            market.insert("braton_prime_set".into(), quote(Some(set_price), Some(NOW)));
+            let observed = Observed { stock: &stock, tradeable: &tradeable, quotes: &market, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
+            let mut selected = plan(31, &[BRATON_PRIME, DERA_VANDAL]);
+            selected.view = "platinum".into();
+            selected.purchase_comparison = comparison.into();
+            let evaluation = evaluate(&overview, Some(&observed), &selected);
+            for entry in &evaluation.entries {
+                let craft = entry.opportunity.as_ref().and_then(|o| o.craft.as_ref()).expect("recipe target");
+                assert_eq!(craft.shortages().count(), 0, "purchases cover parts and preserve surplus");
+            }
+            assert_eq!(evaluation.entries[1].opportunity.as_ref().expect("later target").purchase.is_some(), second_purchase);
+            let first = evaluation.entries[0].opportunity.as_ref().expect("first target");
+            let purchase = first.purchase.as_ref().expect("purchased parts");
+            assert_eq!(if comparison == "full" { purchase.full_purchase } else { purchase.cheapest_finish }, Some(Cost { platinum: price, route }));
+            assert_eq!(first.craft.as_ref().expect("craft").credits, Some(20_000));
+            selected.view = "suggestions".into();
+            assert!(evaluate(&overview, Some(&observed), &selected).entries[0].opportunity.as_ref().and_then(|o| o.craft.as_ref()).expect("craft").shortages().next().is_some());
+        }
+        let unknown = Observed { stock: &stock, tradeable: &tradeable, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
+        let mut selected = plan(31, &[BRATON_PRIME]);
+        selected.view = "platinum".into();
+        assert!(evaluate(&overview, Some(&unknown), &selected).entries[0].opportunity.as_ref().and_then(|o| o.craft.as_ref()).expect("craft").shortages().next().is_some(), "unpriced routes never create stock");
     }
 
     #[test]
@@ -2089,33 +2209,49 @@ mod tests {
     }
 
     #[test]
-    fn two_targets_rolling_the_same_relic_are_flagged_on_the_later_one() {
+    fn shared_relic_notes_use_identity_and_count_each_target_once() {
         use crate::wfcd::RelicReward;
         const SIRIUS_BP: &str = "/Lotus/Types/Recipes/WarframeRecipes/SiriusOrionBlueprint";
         const BRATON_BP: &str = "/Lotus/Types/Recipes/Weapons/BratonBlueprint";
         const LITH: &str = "/Lotus/Types/Game/Projections/T1VoidProjectionGBronze";
+        const MESO: &str = "/Lotus/Types/Game/Projections/T2VoidProjectionHBronze";
         let owned = HashMap::new();
         let levels = HashMap::new();
-        let without_chassis = |(path, mut components): (String, Vec<RecipeComponent>)| {
+        let two_parts = |(path, mut components): (String, Vec<RecipeComponent>)| {
             components.retain(|c| c.unique_name != CHASSIS);
+            let mut second = components[0].clone();
+            second.unique_name.push_str("Part");
+            second.name = "Part".into();
+            second.credits = None;
+            components.push(second);
             (path, components)
         };
-        let recipes: HashMap<String, Vec<RecipeComponent>> = [without_chassis(recipe(SIRIUS, SIRIUS_BP)), without_chassis(recipe(BRATON, BRATON_BP))].into();
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [two_parts(recipe(SIRIUS, SIRIUS_BP)), two_parts(recipe(BRATON, BRATON_BP))].into();
         let offers = HashMap::new();
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
-        let reward = |unique_name: &str, chance: f64| RelicReward { unique_name: unique_name.into(), name: String::new(), rarity: String::new(), image_name: None, chance: Some(chance) };
-        let tables: HashMap<String, Vec<RelicReward>> = [(LITH.to_string(), vec![reward(SIRIUS_BP, 25.0), reward(BRATON_BP, 25.0), reward("/Lotus/Upgrades/Mods/Immortal/ImmortalOneMod", 50.0)])].into();
-        let names: HashMap<String, String> = [(LITH.to_string(), "Lith A1 Intact".to_string())].into();
-        let stock: HashMap<String, i64> = [(LITH, 3), (FERRITE, 1_000), (CREDITS_PATH, 100_000)]
+        let rewards = |blueprint: &str| [blueprint.to_string(), format!("{blueprint}Part")].into_iter()
+            .map(|unique_name| RelicReward { unique_name, name: String::new(), rarity: String::new(), image_name: None, chance: Some(25.0) }).collect::<Vec<_>>();
+        let names: HashMap<String, String> = [LITH, MESO].into_iter().map(|path| (path.into(), "Lith A1 Intact".into())).collect();
+        let stock: HashMap<String, i64> = [(LITH, 3), (MESO, 3), (FERRITE, 1_000), (CREDITS_PATH, 100_000)]
             .into_iter().map(|(path, n)| (path.to_string(), n)).collect();
-        let relics = Relics::new(&stock, &tables, &names);
-        let observed_stock = Observed { stock: &stock, relics: &relics, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
         let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
-        let evaluation = evaluate(&overview, Some(&observed_stock), &plan(31, &[BRATON, SIRIUS]));
-        assert_eq!(entry_summary(&evaluation), [
-            (BRATON, Some(Action::Farm), Some(3_000), false, vec![]),
-            (SIRIUS, Some(Action::Farm), Some(6_000), false, vec!["Shares Lith A1 Intact with Braton".into()]),
-        ]);
+        for shared in [false, true] {
+            let tables = if shared {
+                [(LITH.into(), [rewards(BRATON_BP), rewards(SIRIUS_BP)].concat())].into()
+            } else {
+                [(LITH.into(), rewards(BRATON_BP)), (MESO.into(), rewards(SIRIUS_BP))].into()
+            };
+            let relics = Relics::new(&stock, &tables, &names);
+            let observed_stock = Observed { stock: &stock, relics: &relics, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
+            let solo = evaluate(&overview, Some(&observed_stock), &plan(31, &[BRATON]));
+            assert!(solo.entries[0].notes.is_empty(), "a target cannot share relics with itself");
+            let evaluation = evaluate(&overview, Some(&observed_stock), &plan(31, &[BRATON, SIRIUS]));
+            assert_eq!(entry_summary(&evaluation), [
+                (BRATON, Some(Action::Farm), Some(3_000), false, vec![]),
+                (SIRIUS, Some(Action::Farm), Some(6_000), false,
+                    if shared { vec!["Shares Lith A1 Intact with Braton".into()] } else { vec![] }),
+            ], "shared canonical relic: {shared}");
+        }
     }
 
     #[test]
