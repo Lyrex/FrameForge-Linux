@@ -45,6 +45,11 @@ pub(crate) struct MasteryPlan {
     pub(crate) selections: Vec<String>,
     #[serde(default)]
     pub(crate) allowances: HashMap<String, u32>,
+    /// Saved targets stay fixed when the player earns more Intrinsic points.
+    #[serde(default)]
+    pub(crate) intrinsic_targets: HashMap<String, HashMap<String, u32>>,
+    #[serde(default)]
+    pub(crate) purchase_comparison: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
@@ -484,7 +489,7 @@ mod tests {
     fn a_plan_sits_under_its_player_and_outlives_observations_and_restarts() {
         let (path, mut progress) = fresh("plan");
         let plan = |target: u32, selections: &[&str]| MasteryPlan {
-            target, view: "suggestions".into(), selections: selections.iter().map(|s| (*s).to_string()).collect(), allowances: HashMap::new(),
+            target, view: "suggestions".into(), selections: selections.iter().map(|s| (*s).to_string()).collect(), allowances: HashMap::new(), intrinsic_targets: HashMap::new(), purchase_comparison: String::new(),
         };
         progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, 1_000);
         assert_eq!(progress.current(Some("A")).and_then(|p| p.plan.as_ref()), None, "no plan until one is saved");

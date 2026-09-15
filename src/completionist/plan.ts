@@ -13,9 +13,20 @@ export function gainOf(o: Opportunity): number | null {
   return o.spend?.mastery ?? o.remaining_mastery;
 }
 
-export function candidates(list: Opportunity[], controls: MasteryControls, view: ResultView): Opportunity[] {
+export function candidates(list: Opportunity[], controls: MasteryControls, view: ResultView, search: string): Opportunity[] {
   const scoped = shownControls({ ...controls, result: view });
-  return view === "platinum" ? visiblePurchases(list, scoped, "") : visibleOpportunities(list, scoped, "");
+  return view === "platinum" ? visiblePurchases(list, scoped, search) : visibleOpportunities(list, scoped, search);
+}
+
+export function snapshotIntrinsicTargets(plan: MasteryPlan, opportunities: Opportunity[]): Record<string, Record<string, number>> {
+  const targets: Record<string, Record<string, number>> = {};
+  for (const path of plan.selections) {
+    const saved = plan.intrinsic_targets?.[path];
+    const spend = opportunities.find(o => o.unique_name === path)?.spend;
+    if (saved) targets[path] = saved;
+    else if (spend) targets[path] = Object.fromEntries(spend.tracks.map(t => [t.track, t.to]));
+  }
+  return targets;
 }
 
 // ponytail: takes candidates greedily in view order. The smallest covering set would need a search.

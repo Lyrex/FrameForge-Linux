@@ -5,7 +5,7 @@ import Filters from "./Filters";
 import { OpportunityRow } from "./WhatNext";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import type { ClockFormat } from "../lib/clockFormat";
-import { addable, candidates, moved, planView, prefill, rangeText, summaryText, TARGET_RANK_MAX } from "./plan";
+import { addable, candidates, moved, planView, prefill, rangeText, snapshotIntrinsicTargets, summaryText, TARGET_RANK_MAX } from "./plan";
 import { RESULT_OPTIONS, remainingText, type MasteryControls, type ResultView } from "./suggestions";
 import type { MasteryOverview, MasteryPlan, PlanEntry, PlanEvaluation } from "../types/mastery";
 
@@ -41,7 +41,7 @@ function Placeholder({ path, entry, overview }: { path: string; entry: PlanEntry
         {!entry && <div className="mst-opp-detail">Evaluating…</div>}
       </div>
       {entry?.completed && <span className="mst-pill mst-pill-done">Completed</span>}
-      {source && <span className={`mst-rank rank-${source.state}`}>{remainingText(source.remaining_mastery)}</span>}
+      {source && <span className={`mst-rank rank-${source.state}`}>{remainingText(entry ? entry.gain : source.remaining_mastery)}</span>}
     </div>
   );
 }
@@ -72,17 +72,18 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
   useEffect(() => {
     if (!plan) return;
     let stale = false;
-    invoke<PlanEvaluation>(TAURI_COMMANDS.EVALUATE_MASTERY_PLAN, { plan })
+    invoke<PlanEvaluation>(TAURI_COMMANDS.EVALUATE_MASTERY_PLAN, { plan: { ...plan, purchase_comparison: controls.comparison } })
       .then(e => { if (!stale) setEvaluation(e); })
       .catch(() => {});
     return () => { stale = true; };
-  }, [plan, overview]);
+  }, [plan, overview, controls.comparison]);
 
   const view = plan ? planView(plan.view) : "suggestions";
   useEffect(() => { onView(view); }, [view]); // eslint-disable-line
-  const pool = useMemo(() => candidates(overview.opportunities, controls, view), [overview.opportunities, controls, view]);
+  const pool = useMemo(() => candidates(overview.opportunities, controls, view, search), [overview.opportunities, controls, view, search]);
 
   const save = (next: MasteryPlan) => {
+    next = { ...next, intrinsic_targets: snapshotIntrinsicTargets(next, overview.opportunities), purchase_comparison: controls.comparison };
     setPlan(next);
     setFresh(false);
     invoke(TAURI_COMMANDS.SAVE_MASTERY_PLAN, { plan: next }).catch(() => {});
@@ -130,7 +131,7 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
           ))}
         </div>
         <button className="mst-filter-btn" disabled={evaluation?.gap == null} title="Fill the plan again from the chosen view, replacing the current selections"
-          onClick={() => evaluation?.gap != null && save({ ...plan, selections: prefill(pool, evaluation.gap) })}>
+          onClick={() => evaluation?.gap != null && save({ ...plan, selections: prefill(pool, evaluation.gap), intrinsic_targets: {} })}>
           Regenerate
         </button>
         <button className="mst-filter-btn" disabled={plan.selections.length === 0} onClick={() => save({ ...plan, selections: [] })}>Clear all</button>

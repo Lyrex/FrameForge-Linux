@@ -108,7 +108,7 @@ pub(crate) enum Unobtainable {
     /// bundled table has no row of this class.
     RetiredEvent,
     /// Players who cleared a node before its removal keep the credit.
-    /// TODO: no node sources exist yet; rows land with node extraction.
+    /// TODO: add removed-node catalogue entries to preserve their mastery credit.
     RemovedNode,
 }
 

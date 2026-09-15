@@ -129,6 +129,16 @@ impl<'a> Ledger<'a> {
         plan
     }
 
+    pub(crate) fn supply(&mut self, components: &'a [RecipeComponent], quantities: &mut HashMap<&str, u32>) {
+        for component in components {
+            if let Some(count) = quantities.remove(component.unique_name.as_str()) {
+                *self.stock.entry(&component.unique_name).or_insert(0) += i64::from(count);
+            } else {
+                self.supply(&component.components, quantities);
+            }
+        }
+    }
+
     fn expand(&mut self, target: &str, components: &'a [RecipeComponent], crafts: u32, plan: &mut CraftPlan) {
         let mut priced = false;
         for (count, component) in merged(components) {
