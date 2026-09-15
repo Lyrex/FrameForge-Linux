@@ -14,6 +14,7 @@ use crate::wfcd::RelicReward;
 /// One owned relic, at one refinement, that drops the part.
 #[derive(serde::Serialize, Clone, PartialEq, Debug)]
 pub(crate) struct RelicStock {
+    pub(crate) unique_name: String,
     pub(crate) name: String,
     pub(crate) count: u32,
     /// The reward's share of one roll after the refinement's table is
@@ -53,6 +54,7 @@ pub(crate) struct RelicRoute {
 }
 
 struct OwnedRelic {
+    unique_name: String,
     name: String,
     count: u32,
     /// A table that repeats an item has its chances summed. Every value is
@@ -94,7 +96,7 @@ impl Relics {
                 }
                 let name = names.get(unique_name).cloned()
                     .unwrap_or_else(|| unique_name.rsplit('/').next().expect("rsplit yields at least one piece").to_string());
-                Some(OwnedRelic { name, count: u32::try_from(count).unwrap_or(u32::MAX), rewards })
+                Some(OwnedRelic { unique_name: unique_name.clone(), name, count: u32::try_from(count).unwrap_or(u32::MAX), rewards })
             })
             .collect();
         owned.sort_by(|a, b| a.name.cmp(&b.name));
@@ -110,7 +112,7 @@ impl Relics {
             .filter(|r| self.is_part(&r.unique_name))
             .map(|r| {
                 let mut relics: Vec<RelicStock> = self.owned.iter()
-                    .filter_map(|o| o.rewards.get(&r.unique_name).map(|&chance| RelicStock { name: o.name.clone(), count: o.count, chance }))
+                    .filter_map(|o| o.rewards.get(&r.unique_name).map(|&chance| RelicStock { unique_name: o.unique_name.clone(), name: o.name.clone(), count: o.count, chance }))
                     .collect();
                 relics.sort_by(|a, b| b.chance.partial_cmp(&a.chance).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.name.cmp(&b.name)));
                 RelicPart { unique_name: r.unique_name.clone(), name: r.name.clone(), needed: r.short, relics }

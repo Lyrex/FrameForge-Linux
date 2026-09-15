@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { addable, candidates, moved, planView, prefill, rangeText, summaryText } from "./plan.ts";
+import { addable, candidates, moved, planView, prefill, rangeText, snapshotIntrinsicTargets, summaryText } from "./plan.ts";
 import { DEFAULT_CONTROLS } from "./suggestions.ts";
 import type { MasteryPlan, MasteryTotal, Opportunity, PlanEvaluation } from "../types/mastery.ts";
 
@@ -34,10 +34,15 @@ test("candidates follow the chosen view with the shared filters, and the addable
   const priced = opportunity("Lex Prime", 3000, { purchase: { parts: [], set: { slug: "lex_prime_set", name: "Lex Prime Set", price: 20, fetched_at: null }, missing_total: null, full_total: null, cheapest_finish: { platinum: 20, route: "set" }, full_purchase: { platinum: 20, route: "set" } } });
   const trade = opportunity("Prisma Gorgon", 3000, { action: "trade", purchase: { parts: [], set: { slug: "prisma_gorgon", name: "Prisma Gorgon", price: 90, fetched_at: null }, missing_total: null, full_total: null, cheapest_finish: { platinum: 90, route: "set" }, full_purchase: { platinum: 90, route: "set" } } });
   const list = [opportunity("Hek", 3000, { category: "Melee" }), relic, priced, trade];
-  assert.deepEqual(paths(candidates(list, DEFAULT_CONTROLS, "suggestions")), paths([list[0], priced]));
-  assert.deepEqual(paths(candidates(list, DEFAULT_CONTROLS, "relics")), [relic.unique_name]);
-  assert.deepEqual(paths(candidates(list, DEFAULT_CONTROLS, "platinum")), paths([priced, trade]));
-  assert.deepEqual(paths(candidates(list, { ...DEFAULT_CONTROLS, category: "Melee" }, "suggestions")), [list[0].unique_name]);
+  assert.deepEqual(paths(candidates(list, DEFAULT_CONTROLS, "suggestions", "")), paths([list[0], priced]));
+  assert.deepEqual(paths(candidates(list, DEFAULT_CONTROLS, "relics", "")), [relic.unique_name]);
+  assert.deepEqual(paths(candidates(list, DEFAULT_CONTROLS, "platinum", "")), paths([priced, trade]));
+  assert.deepEqual(paths(candidates(list, { ...DEFAULT_CONTROLS, category: "Melee" }, "suggestions", "")), [list[0].unique_name]);
+  for (const view of ["suggestions", "relics", "platinum"] as const) {
+    const matching = view === "relics" ? relic : priced;
+    assert.deepEqual(prefill(candidates(list, DEFAULT_CONTROLS, view, ` ${matching.name.toUpperCase()} `), 10_000), [matching.unique_name]);
+    assert.deepEqual(prefill(candidates(list, DEFAULT_CONTROLS, view, "no match"), 10_000), []);
+  }
   const plan: MasteryPlan = { target: 5, view: "suggestions", selections: [priced.unique_name], allowances: {} };
   assert.deepEqual(paths(addable(list, plan, "")), paths([list[0], relic, trade]));
   assert.deepEqual(paths(addable(list, plan, "gorg")), [trade.unique_name]);
@@ -50,6 +55,23 @@ test("reordering swaps neighbours and stops at the ends", () => {
   assert.deepEqual(moved(["a", "b", "c"], 2, -1), ["a", "c", "b"]);
   assert.deepEqual(moved(["a", "b", "c"], 0, -1), ["a", "b", "c"]);
   assert.deepEqual(moved(["a", "b", "c"], 2, 1), ["a", "b", "c"]);
+});
+
+test("Intrinsic targets stay fixed until a selection is removed or regenerated", () => {
+  const railjack = opportunity("Railjack", 3000, { action: "spend", spend: {
+    ranks: 2, points: 3, mastery: 3000, tracks: [{ track: "Piloting", from: 0, to: 2 }],
+  } });
+  const plan: MasteryPlan = { target: 5, view: "suggestions", selections: [railjack.unique_name], allowances: {} };
+  const intrinsic_targets = snapshotIntrinsicTargets(plan, [railjack]);
+  assert.deepEqual(intrinsic_targets, { [railjack.unique_name]: { Piloting: 2 } });
+  const saved = { ...plan, intrinsic_targets };
+  const later = { ...railjack, spend: { ...railjack.spend!, tracks: [{ track: "Piloting", from: 2, to: 4 }] } };
+  assert.deepEqual(snapshotIntrinsicTargets(saved, [later]), intrinsic_targets);
+  assert.deepEqual(snapshotIntrinsicTargets(saved, []), intrinsic_targets, "completed selections keep their targets");
+  const cleared = snapshotIntrinsicTargets({ ...saved, selections: [] }, [later]);
+  assert.deepEqual(cleared, {});
+  assert.deepEqual(snapshotIntrinsicTargets({ ...saved, intrinsic_targets: cleared }, [later]), { [railjack.unique_name]: { Piloting: 4 } });
+  assert.deepEqual(snapshotIntrinsicTargets({ ...saved, intrinsic_targets: {} }, [later]), { [railjack.unique_name]: { Piloting: 4 } });
 });
 
 test("the summary shows lower bounds as at least and the details show the range", () => {

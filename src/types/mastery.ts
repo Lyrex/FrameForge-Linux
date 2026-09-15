@@ -126,6 +126,7 @@ export interface CraftPlan {
 
 /** One owned relic, at one refinement, that drops the part. */
 export interface RelicStock {
+  unique_name: string;
   name: string;
   count: number;
   /** The reward's share of one roll after the refinement's table is normalized to one. Null when the table carries no chances. */
@@ -250,6 +251,8 @@ export interface MasteryPlan {
   view: string;
   selections: string[];
   allowances: Record<string, number>;
+  intrinsic_targets?: Record<string, Record<string, number>>;
+  purchase_comparison?: string;
 }
 
 /** A shortage the plan could cover with mastered equipment the player owns, once an allowance names how many copies it may spend. */
