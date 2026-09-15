@@ -254,7 +254,7 @@ test("labels spell out the action, the route and unknowns", () => {
   assert.equal(actionText(farmed), "Farm 1 item");
   assert.equal(detailText(farmed, now), "Credits 20,000 · Short Ferrite ×100");
   const barrel = { unique_name: "/Lotus/Types/Recipes/Weapons/WeaponParts/BratonPrimeBarrel", name: "Barrel", needed: 1, from_stock: 0, short: 1 };
-  const relicParts: RelicPart[] = [{ unique_name: barrel.unique_name, name: "Barrel", needed: 2, relics: [
+  const relicParts: RelicPart[] = [{ unique_name: barrel.unique_name, name: "Barrel", short: 2, relics: [
     { unique_name: "/Lotus/Types/Game/Projections/T1VoidProjectionBPlatinum", name: "Lith B4 Radiant", count: 3, chance: 0.1667 },
     { unique_name: "/Lotus/Types/Game/Projections/T1VoidProjectionBBronze", name: "Lith B4 Intact", count: 1, chance: 0.2533 },
   ] }];
@@ -269,16 +269,16 @@ test("labels spell out the action, the route and unknowns", () => {
   assert.equal(chanceText({ kind: "unknown" }), "Unknown");
   assert.equal(detailText(relicFarmed, now), "Barrel ×2 from Lith B4 Radiant ×3, Lith B4 Intact ×1 · Credits 15,000 · Short Ferrite ×100");
   const partial = relicFarm("Braton Prime", { kind: "partial", missing: ["Blueprint"], short: ["Barrel"] },
-    [{ unique_name: "/bp", name: "Blueprint", needed: 1, relics: [] }, ...relicParts]);
+    [{ unique_name: "/bp", name: "Blueprint", short: 1, relics: [] }, ...relicParts]);
   assert.equal(detailText(partial, now), "No relic for Blueprint · Too few relics for Barrel · Barrel ×2 from Lith B4 Radiant ×3, Lith B4 Intact ×1 · Credits 15,000");
   const cell = { unique_name: "/Lotus/Types/Items/MiscItems/OrokinCell", name: "Orokin Cell", needed: 10, from_stock: 7, short: 3 };
-  const dropParts: DropPart[] = [{ unique_name: cell.unique_name, name: "Orokin Cell", needed: 3, locations: [
+  const dropParts: DropPart[] = [{ unique_name: cell.unique_name, name: "Orokin Cell", short: 3, locations: [
     { location: "Corrupted Vor", chance: 50 }, { location: "Saturn/Titan (Survival), Rotation C", chance: 12.5 }, { location: "Cephalon Simaris", chance: null },
   ] }];
   const dropFarmed = { ...relicFarmed, craft: { ...relicFarmed.craft!, requirements: [barrel, cell, ferrite] }, drop: { parts: dropParts } };
   assert.equal(actionText(dropFarmed), "Farm relics + 2 items");
   assert.equal(detailText(dropFarmed, now), "Barrel ×2 from Lith B4 Radiant ×3, Lith B4 Intact ×1 · Orokin Cell ×3 from Corrupted Vor (50%), Saturn/Titan (Survival), Rotation C (12.5%), Cephalon Simaris · Credits 15,000 · Short Ferrite ×100");
-  const onlyDrops = { ...dropFarmed, relic: null, craft: { ...dropFarmed.craft, requirements: [cell] }, drop: { parts: [{ ...dropParts[0], needed: 1 }] } };
+  const onlyDrops = { ...dropFarmed, relic: null, craft: { ...dropFarmed.craft, requirements: [cell] }, drop: { parts: [{ ...dropParts[0], short: 1 }] } };
   assert.equal(actionText(onlyDrops), "Farm 1 item");
   assert.equal(detailText(onlyDrops, now), "Orokin Cell from Corrupted Vor (50%), Saturn/Titan (Survival), Rotation C (12.5%), Cephalon Simaris · Credits 15,000");
   assert.equal(readyText(5_000_000, now), "ready");
