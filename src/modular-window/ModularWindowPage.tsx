@@ -37,6 +37,7 @@ export default function ModularWindowPage() {
         wfm_price: null,
         image_name: cat?.image_name ?? null,
         mastery_req: cat?.mastery_req ?? null,
+        max_level_cap: cat?.max_level_cap ?? null,
       };
       inv[name] = entry;
       if (path !== name) inv[path] = entry;

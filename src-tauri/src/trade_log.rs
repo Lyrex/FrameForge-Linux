@@ -122,12 +122,14 @@ pub(crate) fn parse_trade_dialog(raw: &str) -> Option<ParsedTrade> {
 
 // ─── Trade log ────────────────────────────────────────────────────────────────
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_trades(state: State<AppState>) -> Result<Vec<Trade>, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     db::get_trades(&conn).map_err(|e| e.to_string())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn add_trade(
     app: tauri::AppHandle,

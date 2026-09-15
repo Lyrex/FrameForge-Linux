@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { CacheStatuses } from "../types/cache";
 import { useClickOutside } from "../shared/useClickOutside";
+import { formatAge } from "../lib/formatters";
 
 function overall(statuses: CacheStatuses): "online" | "warn" | "offline" {
   const values = Object.values(statuses);
@@ -10,15 +11,6 @@ function overall(statuses: CacheStatuses): "online" | "warn" | "offline" {
   if (values.some((s) => s.source === "fallback")) return "offline";
   if (values.some((s) => s.source === "stale" || s.warning)) return "warn";
   return "online";
-}
-
-function age(ts: number | null): string {
-  if (ts == null) return "never";
-  const secs = Math.floor(Date.now() / 1000) - ts;
-  if (secs < 60) return `${secs}s ago`;
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-  return `${Math.floor(secs / 86400)}d ago`;
 }
 
 const DISPLAY: Record<string, string> = {
@@ -95,7 +87,7 @@ export default function CacheStatusChip() {
                   fontVariantNumeric: "tabular-nums",
                   fontSize: 11,
                 }}>
-                  {s.source} · {age(s.last_updated)}
+                  {s.source} · {formatAge(s.last_updated)}
                 </span>
               </div>
             ))}

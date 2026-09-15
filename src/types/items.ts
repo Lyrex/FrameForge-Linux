@@ -11,15 +11,6 @@ export interface CatalogItem {
   source_type?: string;
 }
 
-export interface WeaponItem {
-  unique_name: string;
-  name: string;
-  category: string;
-  image_name?: string;
-  mastery_req?: number;
-  max_level_cap?: number;
-}
-
 export interface CraftingJob {
   unique_name: string;
   item_name: string;
@@ -36,6 +27,10 @@ export interface RecipeComponent {
   count: number;
   result_count: number;
   components: RecipeComponent[];
+  /** Build price of the recipe this blueprint unlocks. Absent when the export carries none. */
+  credits?: number;
+  /** Set when this blueprint survives the craft. */
+  reusable?: boolean;
 }
 
 export type RecipeComponentStatus = "none" | "blueprint" | "part";
@@ -58,6 +53,7 @@ export interface InventoryItem {
   unique_name: string;
   quantity: number;
   mastery_rank: number;
+  owned_levels?: number[];
   archon_shards: ArchonShard[];
   forma_count: number;
   subsumed: boolean;
@@ -67,4 +63,5 @@ export interface InventoryItem {
   wfm_price: number | null;
   image_name: string | null;
   mastery_req: number | null;
+  max_level_cap: number | null;
 }

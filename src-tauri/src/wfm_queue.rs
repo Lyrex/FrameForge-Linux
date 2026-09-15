@@ -8,7 +8,9 @@ use crate::catalogue::fix_category;
 use crate::inventory_state::{load_inventory_state_cache, CachedItem};
 use crate::resolver::ItemResolver;
 use crate::resolver;
-use crate::wfm::to_wfm_slug;
+use crate::wfm::{to_wfm_slug, PriceQuote};
+
+const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 // ─── WFM price queue ──────────────────────────────────────────────────────────
 // All warframe.market price fetches are routed through a single background
@@ -24,24 +26,23 @@ struct WfmPriceUpdate {
 
 /// Start the WFM price queue drain thread (no-op if already running).
 /// Must be called after fetch_item_list so wfcd_items is populated.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     if state.wfm_queue_started.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
 
-    // Pre-populate the in-memory price cache from inventory_state_cache.json so that
-    // wfm_get_cached_prices() returns previously-fetched prices immediately on startup
-    // and the queue drain skips slugs that already have a fresh price.
+    // Prices in inventory_state_cache.json predate the stamped quote file, so
+    // they replay with no age and get refetched as soon as anything asks.
     {
         let disk = load_inventory_state_cache(&state.inventory_state_cache_path);
         for item in disk.items.values() {
             if !item.name.is_empty() {
                 let slug = to_wfm_slug(&item.name);
                 if !slug.is_empty() {
-                    // Only insert if we have a price; None entries are kept absent so they get re-queued.
                     if let Some(p) = item.wfm_price {
-                        state.wfm.cache_price(slug, Some(p));
+                        state.wfm.seed_price(slug, PriceQuote { price: Some(p), fetched_at: None });
                     }
                 }
             }
@@ -76,24 +77,47 @@ pub(crate) fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>)
         m
     };
 
-    let queue      = state.wfm_price_queue.clone();
-    let wfm        = state.wfm.clone();
-    let cache_path = state.inventory_state_cache_path.clone();
+    let queue       = state.wfm_price_queue.clone();
+    let wfm         = state.wfm.clone();
+    let cache_path  = state.inventory_state_cache_path.clone();
+    let quotes_path = state.wfm_quotes_path.clone();
 
     std::thread::spawn(move || {
+        // The inventory cache is a megabyte file, so one rewrite per quote
+        // would dominate the drain.
+        let mut pending: HashMap<String, (Option<u32>, bool)> = HashMap::new();
+        let mut last_flush = std::time::Instant::now();
+        let flush = |pending: &mut HashMap<String, (Option<u32>, bool)>, last_flush: &mut std::time::Instant| {
+            wfm.flush_quotes(&quotes_path);
+            if !pending.is_empty() {
+                let mut inv = load_inventory_state_cache(&cache_path);
+                for (unique_name, (price, tradeable)) in pending.drain() {
+                    let entry = inv.items.entry(unique_name.clone())
+                        .or_insert_with(|| CachedItem { unique_name, ..Default::default() });
+                    entry.wfm_price     = price;
+                    entry.tradeable_wfm = tradeable;
+                }
+                if let Ok(json) = serde_json::to_string(&inv) {
+                    let _ = atomic_write(&cache_path, json.as_bytes());
+                }
+            }
+            *last_flush = std::time::Instant::now();
+        };
         loop {
             let slug = queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
 
             let slug = match slug {
                 Some(s) => s,
                 None => {
+                    flush(&mut pending, &mut last_flush);
                     std::thread::sleep(std::time::Duration::from_millis(200));
                     continue;
                 }
             };
+            if last_flush.elapsed() >= FLUSH_INTERVAL { flush(&mut pending, &mut last_flush); }
 
             // Skip if already cached (avoid redundant API calls within a session).
-            if wfm.is_price_cached(&slug) { continue; }
+            if resolver::slug_variants(&slug).iter().any(|s| wfm.is_price_cached(s)) { continue; }
 
             // Fetch — the rate limiter inside enforces the 3 req/sec limit.
             let price = match wfm.price_with_fallback(&slug) {
@@ -105,19 +129,9 @@ pub(crate) fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>)
             };
             let tradeable = price.is_some();
 
-            // Update in-memory cache.
             wfm.cache_price(slug.clone(), price);
-
-            // Write price + tradeable_wfm into inventory_state_cache.json if we know the item.
             if let Some((unique_name, _)) = slug_map.get(&slug) {
-                let mut inv = load_inventory_state_cache(&cache_path);
-                let entry = inv.items.entry(unique_name.clone())
-                    .or_insert_with(|| CachedItem { unique_name: unique_name.clone(), ..Default::default() });
-                entry.wfm_price     = price;
-                entry.tradeable_wfm = tradeable;
-                if let Ok(json) = serde_json::to_string(&inv) {
-                    let _ = atomic_write(&cache_path, json.as_bytes());
-                }
+                pending.insert(unique_name.clone(), (price, tradeable));
             }
 
             // Notify the frontend.
@@ -130,15 +144,17 @@ pub(crate) fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>)
     Ok(())
 }
 
-/// Add slugs to the normal-priority WFM price queue.
-/// Slugs already cached in-memory are silently skipped.
+/// Add slugs to the normal-priority WFM price queue. A slug with a live
+/// quote under either blueprint spelling is skipped.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn wfm_queue_prices(state: State<'_, AppState>, url_names: Vec<String>) {
     let mut q = state.wfm_price_queue.lock().unwrap_or_else(|e| e.into_inner());
     // Snapshot existing queue entries to deduplicate without holding a borrow during push_back.
     let already_queued: std::collections::HashSet<String> = q.iter().cloned().collect();
     for slug in url_names {
-        if !state.wfm.is_price_cached(&slug) && !already_queued.contains(&slug) {
+        let cached = resolver::slug_variants(&slug).iter().any(|s| state.wfm.is_price_cached(s));
+        if !cached && !already_queued.contains(&slug) {
             q.push_back(slug);
         }
     }
@@ -146,6 +162,7 @@ pub(crate) fn wfm_queue_prices(state: State<'_, AppState>, url_names: Vec<String
 
 /// Return the current in-memory WFM price cache (slug → price).
 /// Frontend calls this on startup to populate prices without waiting for the queue.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn wfm_get_cached_prices(state: State<'_, AppState>) -> HashMap<String, Option<u32>> {
     state.wfm.cached_prices()

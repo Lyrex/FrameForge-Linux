@@ -1,58 +1,17 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import { TIMER_LABELS } from "../constants/timers";
 import "./ModularWindow.css";
 import { getTimerInfo, fmtMs, matchesWatch } from "../TimerHelper";
 import type { FissureWatch } from "../types/settings";
-import type { CatalogItem, InventoryItem, RecipeComponent, RecipeComponentStatus } from "../types/items";
+import type { CatalogItem, InventoryItem } from "../types/items";
 import type { MatchedFissure } from "../types/worldstate";
 import { useWorldState } from "../worldstate";
 import { fmt } from "../utils";
-
-
-function compStatus(comp: RecipeComponent, inventory: Record<string, InventoryItem>): RecipeComponentStatus {
-  if ((inventory[comp.unique_name]?.quantity ?? 0) >= (comp.count || 1)) return "part";
-  const bpUnique = comp.components[0]?.unique_name;
-  if (bpUnique && (inventory[bpUnique]?.quantity ?? 0) > 0) return "blueprint";
-  return "none";
-}
-
-function mergeComponents(comps: RecipeComponent[]): RecipeComponent[] {
-  const seen = new Map<string, RecipeComponent>();
-  for (const c of comps) {
-    const existing = seen.get(c.unique_name);
-    if (existing) {
-      seen.set(c.unique_name, { ...existing, count: existing.count + c.count });
-    } else {
-      seen.set(c.unique_name, { ...c });
-    }
-  }
-  return [...seen.values()];
-}
-
-function collectNeeds(
-  nodes: RecipeComponent[],
-  multiplier: number,
-  acc: Map<string, { name: string; needed: number }>,
-  inventory: Record<string, InventoryItem>
-) {
-  for (const node of mergeComponents(nodes)) {
-    const resultCount = node.result_count ?? 1;
-    const craftsNeeded = Math.ceil((node.count * multiplier) / resultCount);
-    const totalNeeded = node.count * multiplier;
-    const owned = inventory[node.unique_name]?.quantity ?? 0;
-    if (node.components.length === 0 || owned > 0) {
-      // Leaf node (raw material), or player already has some of this crafted intermediate —
-      // show it directly so the display can compare owned vs needed instead of expanding.
-      const prev = acc.get(node.unique_name);
-      acc.set(node.unique_name, { name: node.name, needed: (prev?.needed ?? 0) + totalNeeded });
-    } else {
-      // Player has zero of this intermediate — recurse into its raw ingredients.
-      collectNeeds(node.components, craftsNeeded, acc, inventory);
-    }
-  }
-}
+import { buildable, craftableNow, craftRows } from "../lib/craftPlan";
+import { usePlanCrafts } from "../shared/usePlanCrafts";
+import { CraftCounts } from "../shared/CraftCounts";
 
 interface Props {
   tracked: string[];
@@ -82,7 +41,9 @@ export default function ModularWindow({
   sectionOrder, onSectionOrderChange,
 }: Props) {
   const [craftable, setCraftable] = useState<CatalogItem[]>([]);
-  const [trackedRecipes, setTrackedRecipes] = useState<Map<string, RecipeComponent[]>>(new Map());
+  // Targets plan in list order against one stock, so moving a target up can
+  // take a shared ingredient from the one below it.
+  const plans = usePlanCrafts(tracked, inventory);
   const [trackingView, setTrackingView] = useState<"need" | "all">("need");
   const [collapsedReqs, setCollapsedReqs] = useState<Set<string>>(new Set());
   const { worldState } = useWorldState();
@@ -125,60 +86,9 @@ export default function ModularWindow({
   }, [tracked]);
 
   useEffect(() => {
-    const toLoad = tracked.filter(id => !trackedRecipes.has(id));
-    setTrackedRecipes(prev => {
-      const next = new Map(prev);
-      for (const k of next.keys()) if (!tracked.includes(k)) next.delete(k);
-      return next;
-    });
-    if (toLoad.length === 0) return;
-    Promise.all(
-      toLoad.map(id =>
-        invoke<RecipeComponent[]>(TAURI_COMMANDS.GET_RECIPE, { uniqueName: id })
-          .then(r => [id, r ?? []] as [string, RecipeComponent[]])
-          .catch(() => [id, []] as [string, RecipeComponent[]])
-      )
-    ).then(results => {
-      setTrackedRecipes(prev => {
-        const next = new Map(prev);
-        for (const [id, r] of results) if (r.length) next.set(id, r);
-        return next;
-      });
-    });
-  }, [tracked]); // eslint-disable-line
-
-  useEffect(() => {
     const iv = setInterval(() => setTimerNow(Date.now()), 1000);
     return () => clearInterval(iv);
   }, []);
-
-  const perItemNeeds = useMemo(() => {
-    return tracked.map(id => {
-      const recipe = trackedRecipes.get(id);
-      if (!recipe || recipe.length === 0) return [];
-      const acc = new Map<string, { name: string; needed: number }>();
-      collectNeeds(recipe, 1, acc, inventory);
-      // Remove the tracked item itself if it appears in its own requirements (data quirk)
-      acc.delete(id);
-      // Deduplicate by display name: recipe data can store the same item under multiple unique_names.
-      // Use max(owned) across all matching keys to avoid double-counting.
-      const byName = new Map<string, { unique_name: string; name: string; needed: number; allKeys: string[] }>();
-      for (const [unique_name, { name, needed }] of acc.entries()) {
-        const existing = byName.get(name);
-        if (existing) {
-          byName.set(name, { ...existing, needed: existing.needed + needed, allKeys: [...existing.allKeys, unique_name] });
-        } else {
-          byName.set(name, { unique_name, name, needed, allKeys: [unique_name] });
-        }
-      }
-      return Array.from(byName.values())
-        .map(({ unique_name, name, needed, allKeys }) => {
-          const owned = Math.max(...allKeys.map(k => inventory[k]?.quantity ?? 0));
-          return { unique_name, name, needed, owned, shortage: Math.max(0, needed - owned) };
-        })
-        .sort((a, b) => a.name.localeCompare(b.name));
-    });
-  }, [tracked, trackedRecipes, inventory]);
 
   const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
     if (!onWidthChange) return;
@@ -248,15 +158,14 @@ export default function ModularWindow({
         {tracked.map((id, idx) => {
           const item = craftable.find(c => c.unique_name === id);
           if (!item) return null;
-          const recipe = trackedRecipes.get(id);
+          const plan = plans[id];
           const isOwned = (inventory[item.unique_name]?.quantity ?? 0) > 0;
-          const allDone = recipe && recipe.length > 0 &&
-            mergeComponents(recipe).every(c => compStatus(c, inventory) === "part");
-          const needs = perItemNeeds[idx] ?? [];
-          const collapsed = collapsedReqs.has(id);
-          const rows = needs.filter(r => trackingView === "all" || r.shortage > 0);
-          const allCovered = needs.length > 0 && needs.every(r => r.shortage === 0);
+          const needs = plan ? craftRows(plan) : [];
           const hasNeeds = needs.length > 0;
+          const allDone = hasNeeds && craftableNow(plan);
+          const allCovered = hasNeeds && buildable(plan);
+          const collapsed = collapsedReqs.has(id);
+          const rows = needs.filter(r => trackingView === "all" || r.short > 0 || r.crafts > 0);
 
           return (
             <div key={id} className={`modular-tracked-group${isOwned ? " tracking-owned" : allDone ? " tracking-ready" : ""}`}>
@@ -292,14 +201,9 @@ export default function ModularWindow({
                     <div className="modular-req-all-good">✓ All resources covered</div>
                   ) : (
                     rows.map(r => (
-                      <div key={`${id}-${r.unique_name}`} className={`modular-req-row${r.shortage > 0 ? " req-missing" : " req-ok"}`}>
+                      <div key={`${id}-${r.unique_name}`} className={`modular-req-row${r.short > 0 || r.crafts > 0 ? " req-missing" : " req-ok"}`}>
                         <span className="modular-req-name">{r.name}</span>
-                        <span className="modular-req-counts">
-                          <span className={r.shortage === 0 ? "qty-have" : "qty-need"}>{fmt(r.owned)}</span>
-                          <span className="qty-sep">/</span>
-                          <span className="qty-required">{fmt(r.needed)}</span>
-                          {r.shortage > 0 && <span className="recipe-shortage">−{fmt(r.shortage)}</span>}
-                        </span>
+                        <CraftCounts row={r} className="modular-req-counts" />
                       </div>
                     ))
                   )}

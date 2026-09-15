@@ -5,7 +5,7 @@ use crate::catalogue::fix_category;
 use crate::credentials::wfm_delete_credentials;
 use crate::inventory_state::{load_inventory_state_cache, CachedItem};
 use crate::resolver::ItemResolver;
-use crate::wfm::{to_wfm_slug, WfmItem, WfmRivenAttribute};
+use crate::wfm::{to_wfm_slug, Wfm, WfmItem, WfmRivenAttribute};
 
 #[derive(serde::Deserialize)]
 pub(crate) struct RivenAuctionParams {
@@ -31,10 +31,22 @@ pub(crate) struct RivenAuctionParams {
 // over `state.wfm`. Session acquisition and keyring persistence stay here at
 // the Tauri boundary.
 
+/// Runs a warframe.market call off the GTK thread. A sync command executes on
+/// that thread, and the request's latency plus the client's rate-limit sleep
+/// would hold every IPC reply and window event behind it.
+async fn off_main<T: Send + 'static>(
+    state: &State<'_, AppState>,
+    call: impl FnOnce(&Wfm) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let wfm = state.wfm.clone();
+    tauri::async_runtime::spawn_blocking(move || call(&wfm)).await.map_err(|e| e.to_string())?
+}
+
 /// Use the stored refresh token to silently get a new access token.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn wfm_refresh_token(state: State<AppState>) -> Result<(), String> {
-    state.wfm.refresh()
+pub(crate) async fn wfm_refresh_token(state: State<'_, AppState>) -> Result<(), String> {
+    off_main(&state, |wfm| wfm.refresh()).await
 }
 
 /// Restore a session from saved token data (JSON string).
@@ -56,9 +68,10 @@ pub(crate) async fn wfm_set_jwt(state: State<'_, AppState>, jwt: String) -> Resu
 /// Log in via v1 signin (current recommended method per WFM Discord).
 /// Token is returned in the set-cookie header: "JWT=eyJ...; Path=/; ..."
 /// Use it as: Authorization: Bearer <token>
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn wfm_login(state: State<AppState>, email: String, password: String) -> Result<String, String> {
-    state.wfm.login(&email, &password)
+pub(crate) async fn wfm_login(state: State<'_, AppState>, email: String, password: String) -> Result<String, String> {
+    off_main(&state, move |wfm| wfm.login(&email, &password)).await
 }
 
 // The popup sends the info, statistics, and orders requests at the same time.
@@ -97,6 +110,7 @@ pub(crate) async fn wfm_logout(state: State<'_, AppState>) -> Result<(), String>
 }
 
 /// Return (username, status) for the current session, or None if not logged in.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn wfm_get_session(state: State<AppState>) -> Option<(String, String)> {
     state.wfm.identity()
@@ -106,21 +120,24 @@ pub(crate) fn wfm_get_session(state: State<AppState>) -> Option<(String, String)
 /// Returns one of: "online" | "ingame" | "invisible" | "offline".
 /// Call this after session restore so the UI reflects what WFM actually has,
 /// not just the hardcoded default.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn wfm_fetch_status(state: State<AppState>) -> Result<String, String> {
-    state.wfm.fetch_status()
+pub(crate) async fn wfm_fetch_status(state: State<'_, AppState>) -> Result<String, String> {
+    off_main(&state, |wfm| wfm.fetch_status()).await
 }
 
 /// Return the current session token data as JSON for saving.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn wfm_get_jwt(state: State<AppState>) -> Option<String> {
     state.wfm.token_json()
 }
 
 /// Fetch the authenticated user's active buy + sell orders.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn wfm_get_orders(state: State<AppState>) -> Result<serde_json::Value, String> {
-    state.wfm.my_orders()
+pub(crate) async fn wfm_get_orders(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    off_main(&state, |wfm| wfm.my_orders()).await
 }
 
 /// Set WFM online status via WebSocket.
@@ -137,17 +154,19 @@ pub(crate) async fn wfm_set_status(state: State<'_, AppState>, status: String) -
 }
 
 /// Debug: return the raw JSON from any authenticated WFM endpoint.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn wfm_debug_dump(state: State<AppState>, path: String) -> Result<String, String> {
-    state.wfm.debug_dump(&path)
+pub(crate) async fn wfm_debug_dump(state: State<'_, AppState>, path: String) -> Result<String, String> {
+    off_main(&state, move |wfm| wfm.debug_dump(&path)).await
 }
 
 /// Collect known riven attribute url_names by sampling real auction listings.
 /// /v1/riven/attributes was removed; this scrapes url_names from search results instead.
 /// Exposed so the browser console can call: window.__wfmAttrs()
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn wfm_get_riven_attributes(state: State<AppState>) -> Result<Vec<String>, String> {
-    state.wfm.riven_attributes()
+pub(crate) async fn wfm_get_riven_attributes(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    off_main(&state, |wfm| wfm.riven_attributes()).await
 }
 
 /// Get the internal WFM item ID for a URL slug (needed to create orders).
@@ -179,35 +198,39 @@ pub(crate) async fn wfm_get_item_info(state: State<'_, AppState>, url_name: Stri
 }
 
 /// Create a new buy or sell order. `mod_rank` must be set for mods — WFM returns 400 without it.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn wfm_create_order(state: State<AppState>, item_id: String, order_type: String, platinum: u32, quantity: u32, visible: bool, mod_rank: Option<u32>) -> Result<serde_json::Value, String> {
-    state.wfm.create_order(&item_id, &order_type, platinum, quantity, visible, mod_rank)
+pub(crate) async fn wfm_create_order(state: State<'_, AppState>, item_id: String, order_type: String, platinum: u32, quantity: u32, visible: bool, mod_rank: Option<u32>) -> Result<serde_json::Value, String> {
+    off_main(&state, move |wfm| wfm.create_order(&item_id, &order_type, platinum, quantity, visible, mod_rank)).await
 }
 
 /// Update an existing order's price, quantity, or visibility.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn wfm_update_order(state: State<AppState>, order_id: String, platinum: u32, quantity: u32, visible: bool) -> Result<serde_json::Value, String> {
-    state.wfm.update_order(&order_id, platinum, quantity, visible)
+pub(crate) async fn wfm_update_order(state: State<'_, AppState>, order_id: String, platinum: u32, quantity: u32, visible: bool) -> Result<serde_json::Value, String> {
+    off_main(&state, move |wfm| wfm.update_order(&order_id, platinum, quantity, visible)).await
 }
 
 /// Delete an order.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn wfm_delete_order(state: State<AppState>, order_id: String) -> Result<(), String> {
-    state.wfm.delete_order(&order_id)
+pub(crate) async fn wfm_delete_order(state: State<'_, AppState>, order_id: String) -> Result<(), String> {
+    off_main(&state, move |wfm| wfm.delete_order(&order_id)).await
 }
 
 /// Post a revealed riven as an auction on warframe.market.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn wfm_create_riven_auction(
-    state: State<AppState>,
+pub(crate) async fn wfm_create_riven_auction(
+    state: State<'_, AppState>,
     params: RivenAuctionParams,
 ) -> Result<serde_json::Value, String> {
-    let json = state.wfm.create_riven_auction(
+    let json = off_main(&state, move |wfm| wfm.create_riven_auction(
         &params.weapon_url_name, &params.riven_name, params.mastery_level, params.mod_rank,
         params.re_rolls, &params.polarity, &params.attributes, params.starting_price,
         params.buyout_price, params.minimal_reputation, &params.note, params.visible,
         params.is_direct_sell,
-    )?;
+    )).await?;
     record_new_auction_id(&state, &json);
     Ok(json)
 }
@@ -248,16 +271,20 @@ fn record_new_auction_id(state: &State<AppState>, json: &serde_json::Value) {
 /// Switch a riven auction between Auction and Direct Sale types.
 /// The close-and-recreate lives in `Wfm`; here we reconcile the stored auction
 /// ids — drop the closed one, record its replacement.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn wfm_switch_riven_type(
-    state: State<AppState>,
+pub(crate) async fn wfm_switch_riven_type(
+    state: State<'_, AppState>,
     auction_id: String,
     new_is_direct_sell: bool,
     starting_price: u32,
     buyout_price: Option<u32>,
     visible: bool,
 ) -> Result<serde_json::Value, String> {
-    let json = state.wfm.switch_riven_type(&auction_id, new_is_direct_sell, starting_price, buyout_price, visible)?;
+    let json = {
+        let auction_id = auction_id.clone();
+        off_main(&state, move |wfm| wfm.switch_riven_type(&auction_id, new_is_direct_sell, starting_price, buyout_price, visible)).await?
+    };
     // The old listing is now closed; drop its id and record the replacement.
     state.auction_ids.lock().unwrap_or_else(|e| e.into_inner()).retain(|id| id != &auction_id);
     save_auction_ids(&state);
@@ -266,9 +293,13 @@ pub(crate) fn wfm_switch_riven_type(
 }
 
 /// Delete a riven auction via the /close endpoint.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn wfm_delete_auction(state: State<AppState>, auction_id: String) -> Result<(), String> {
-    state.wfm.delete_auction(&auction_id)?;
+pub(crate) async fn wfm_delete_auction(state: State<'_, AppState>, auction_id: String) -> Result<(), String> {
+    {
+        let auction_id = auction_id.clone();
+        off_main(&state, move |wfm| wfm.delete_auction(&auction_id)).await?;
+    }
     state.auction_ids.lock().unwrap_or_else(|e| e.into_inner()).retain(|id| id != &auction_id);
     save_auction_ids(&state);
     Ok(())
@@ -276,28 +307,32 @@ pub(crate) fn wfm_delete_auction(state: State<AppState>, auction_id: String) -> 
 
 /// Update a riven auction's starting price, buyout price, and visibility.
 /// Sends PUT /v1/auctions/entry/{id}. Pass buyout_price=None to clear the buyout.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn wfm_update_auction(state: State<AppState>, auction_id: String, starting_price: u32, buyout_price: Option<u32>, visible: bool) -> Result<(), String> {
-    state.wfm.update_auction(&auction_id, starting_price, buyout_price, visible)
+pub(crate) async fn wfm_update_auction(state: State<'_, AppState>, auction_id: String, starting_price: u32, buyout_price: Option<u32>, visible: bool) -> Result<(), String> {
+    off_main(&state, move |wfm| wfm.update_auction(&auction_id, starting_price, buyout_price, visible)).await
 }
 
 /// Toggle visibility of a riven auction (visible / hidden).
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn wfm_set_auction_visible(state: State<AppState>, auction_id: String, visible: bool) -> Result<(), String> {
-    state.wfm.set_auction_visible(&auction_id, visible)
+pub(crate) async fn wfm_set_auction_visible(state: State<'_, AppState>, auction_id: String, visible: bool) -> Result<(), String> {
+    off_main(&state, move |wfm| wfm.set_auction_visible(&auction_id, visible)).await
 }
 
 /// Fetch warframe.market item list using v2 API (v1 /items returns 404).
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn fetch_wfm_items(state: State<AppState>) -> Result<Vec<WfmItem>, String> {
-    state.wfm.items()
+pub(crate) async fn fetch_wfm_items(state: State<'_, AppState>) -> Result<Vec<WfmItem>, String> {
+    off_main(&state, |wfm| wfm.items()).await
 }
 
 /// Fetch the 48-hour median sell price for an item by display name.
 /// Results are cached in AppState so the overlay and main window share them.
 /// Returns None when the item is not listed on warframe.market.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
-pub(crate) fn get_item_price(item_name: String, state: State<AppState>) -> Result<Option<u32>, String> {
+pub(crate) async fn get_item_price(item_name: String, state: State<'_, AppState>) -> Result<Option<u32>, String> {
     // 1. Check relics.run bulk price cache (no network call needed)
     {
         let prices = state.relics_run_prices.lock().map_err(|e| e.to_string())?;
@@ -317,14 +352,18 @@ pub(crate) fn get_item_price(item_name: String, state: State<AppState>) -> Resul
     // display names, where a prime component's name carries "Blueprint" but WFM lists
     // it without the suffix. A non-blueprint name must NOT fall back to a _blueprint
     // slug, or a frame would be priced as its blueprint.
-    let price = match state.wfm.price_for_slug(&slug)? {
-        Some(p) => Some(p),
-        None => match slug.strip_suffix("_blueprint") {
-            Some(base) => state.wfm.price_for_slug(base)?,
-            None => None,
-        },
+    let price = {
+        let slug = slug.clone();
+        off_main(&state, move |wfm| match wfm.price_for_slug(&slug)? {
+            Some(p) => Ok(Some(p)),
+            None => match slug.strip_suffix("_blueprint") {
+                Some(base) => wfm.price_for_slug(base),
+                None => Ok(None),
+            },
+        }).await?
     };
     state.wfm.cache_price(slug, price);
+    state.wfm.save_quotes(&state.wfm_quotes_path);
 
     // Persist WFM price into the inventory cache file so it survives restarts.
     // Only write for tradeable items: prime parts/blueprints (have ducats) and mods/arcanes.

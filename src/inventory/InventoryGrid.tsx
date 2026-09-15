@@ -20,7 +20,7 @@ interface InventoryGridProps {
   loading: boolean;
   monitoring: boolean;
   view: ViewMode;
-  inventory: Record<string, { mastery_rank: number }>;
+  inventory: Record<string, { mastery_rank: number; max_level_cap?: number | null }>;
   modCopies: Record<string, { rank: number | null; count: number }[]>;
   favorites: Set<string>;
   lastChanged: Record<string, number>;
@@ -125,18 +125,19 @@ interface InvCardProps {
   recentDelta: number | null;
   craftJobName: string | null;
   masteryRank: number | undefined;
+  masteryCap: number;
   onToggleFavorite: (id: string) => void;
   view: ViewMode;
 }
 const InvCard = memo(function InvCard({
   unique_name, name, category, image_name, qty,
-  isFavorite, changedAt, recentDelta, craftJobName, masteryRank, onToggleFavorite, view,
+  isFavorite, changedAt, recentDelta, craftJobName, masteryRank, masteryCap, onToggleFavorite, view,
 }: InvCardProps) {
   const nowSec = Date.now() / 1000;
   const secAgo = changedAt != null ? nowSec - changedAt : null;
   const isRecent = secAgo !== null && secAgo < 300;
   const isZero = qty === 0 && !craftJobName;
-  const isMastered = masteryRank != null && masteryRank >= 30;
+  const isMastered = masteryRank != null && masteryRank >= masteryCap;
   const showRank = masteryRank != null && masteryRank > 0;
   const recentLabel = secAgo !== null ? (Math.floor(secAgo / 60) === 0 ? "· now" : `· ${Math.floor(secAgo / 60)}m`) : null;
   const baseClass = `inv-card${isZero ? " inv-card-zero" : ""}${isRecent ? (recentDelta != null && recentDelta > 0 ? " inv-card-gained" : " inv-card-lost") : ""}`;
@@ -215,6 +216,7 @@ const InvCard = memo(function InvCard({
     prev.isFavorite !== next.isFavorite ||
     prev.image_name !== next.image_name ||
     prev.masteryRank !== next.masteryRank ||
+    prev.masteryCap !== next.masteryCap ||
     prev.craftJobName !== next.craftJobName ||
     prev.recentDelta !== next.recentDelta ||
     prev.changedAt !== next.changedAt
@@ -294,6 +296,7 @@ export default memo(function InventoryGrid({
               recentDelta={recentChange?.delta ?? null}
               craftJobName={craftJob?.item_name ?? null}
               masteryRank={inventory[item.unique_name]?.mastery_rank}
+              masteryCap={inventory[item.unique_name]?.max_level_cap ?? 30}
               onToggleFavorite={onToggleFavorite}
               view={view} />
           )];

@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { mark } from "./startupMark";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -107,11 +108,13 @@ import {
   CLOCK_FORMAT_OPTIONS,
   DEFAULT_CLOCK_FORMAT,
   DEFAULT_FOUNDRY_PAGE_SIZE,
+  DEFAULT_MASTERY_EXCLUDE,
   DEFAULT_RELIC_OVERLAY_PRIORITY,
   DEFAULT_RELIC_PICK_LINES,
   DEFAULT_RELIC_PICK_PRIORITY,
   DEFAULT_RELIC_PICK_REFINEMENT,
   FOUNDRY_PAGE_SIZE_OPTIONS,
+  MASTERY_EXCLUDE_OPTIONS,
   MODULAR_SECTION_ORDER_DEFAULT,
   RELIC_PICK_LINES_OPTIONS,
   RELIC_PICK_PRIORITY_OPTIONS,
@@ -124,7 +127,7 @@ import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, QuantityMap 
 import type { ChangeLogEntry, InventoryUpdate, ModCopy } from "./types/inventory";
 import type { RivenAnalysis, RivenAnalysisUpdate } from "./types/rivens";
 import type { ClockFormat } from "./lib/clockFormat";
-import type { FissureWatch, FoundryPageSize, RelicOverlayPriority, RelicPickLines, RelicPickPriority, RelicRefinement, SettingsSnapshot } from "./types/settings";
+import type { FissureWatch, FoundryPageSize, MasteryExclude, RelicOverlayPriority, RelicPickLines, RelicPickPriority, RelicRefinement, SettingsSnapshot } from "./types/settings";
 import type { SeenFissures } from "./types/worldstate";
 import type { TradeCompletedEvent } from "./types/trades";
 import type { AddTradeArgs, AnalyzeRivenArgs, BlobStatusPayload, InventoryRewardPayload, ItemListStatus, OcrRivenScreenResult, OverlayWindowBounds, RelicRewardsPayload, SettingsFile, SettingsPatch, WarframeWindowRect, WfmCredentials, WfmSession } from "./types/tauri";
@@ -176,12 +179,23 @@ const CATEGORIES = [
 
 // RelicAndRivenTab is kept but now just shows RelicHelper — Rivens moved to own tab
 
+// Render-time, so it fires even if the first commit never happens.
+let firstRenderMarked = false;
+let renderBodyMarked = false;
+
 export default function App() {
   // If we're the overlay window, render only the overlay UI
   if (IS_OVERLAY) return <Overlay />;
   if (IS_RIVEN_OVERLAY) return <RivenOverlayWindow />;
   if (IS_RELIC_PICK_OVERLAY) return <RelicPickOverlay />;
   if (IS_ARBITRATION_OVERLAY) return <ArbitrationOverlay />;
+  if (!firstRenderMarked) {
+    firstRenderMarked = true;
+    mark("App first render");
+  }
+  useEffect(() => {
+    mark("App mounted");
+  }, []);
   // If we're the pop-out modular window, render the standalone modular UI
   if (IS_MODULAR) return <ModularWindowPage />;
 
@@ -194,6 +208,7 @@ export default function App() {
   const [crafting, setCrafting] = useState<CraftingJob[]>([]);
   const [masteryRank, setMasteryRank] = useState<number | null>(null);
   const [masteryData, setMasteryData] = useState<Record<string, number>>({});
+  const [ownedLevels, setOwnedLevels] = useState<Record<string, number[]>>({});
   const [playerName, setPlayerName] = useState<string | null>(null);
   const [poking, setPoking] = useState(false);
   const [autoDiagEnabled, setAutoDiagEnabled] = useState(false);
@@ -260,6 +275,7 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   const [relicPickPriority,   setRelicPickPriority]   = useState<RelicPickPriority>(DEFAULT_RELIC_PICK_PRIORITY);
   const [relicPickRefinement, setRelicPickRefinement] = useState<RelicRefinement>(DEFAULT_RELIC_PICK_REFINEMENT);
   const [relicPickLines,      setRelicPickLines]      = useState<RelicPickLines>(DEFAULT_RELIC_PICK_LINES);
+  const [masteryExclude,      setMasteryExclude]      = useState<MasteryExclude>(DEFAULT_MASTERY_EXCLUDE);
   const [appVersion, setAppVersion] = useState("");
   const [updateAvailable, setUpdateAvailable] = useState<UpdateAvailable | null>(null);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
@@ -317,8 +333,9 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     relicPickEnabled: true, relicPickPriority: DEFAULT_RELIC_PICK_PRIORITY, relicPickRefinement: DEFAULT_RELIC_PICK_REFINEMENT, relicPickLines: DEFAULT_RELIC_PICK_LINES,
     foundryPageSize: DEFAULT_FOUNDRY_PAGE_SIZE,
     memTriggerEnabled: false,
+    masteryExclude: DEFAULT_MASTERY_EXCLUDE,
   });
-  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, arbitrationOverlayEnabled: arbOverlayEnabled, arbitrationTierFilter: arbTierFilter, arbitrationAlertTiers: arbAlertTiers, arbitrationScheduleDays: arbScheduleDays, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled };
+  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, arbitrationOverlayEnabled: arbOverlayEnabled, arbitrationTierFilter: arbTierFilter, arbitrationAlertTiers: arbAlertTiers, arbitrationScheduleDays: arbScheduleDays, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled, masteryExclude };
 
   const saveAllSettings = useCallback(() => {
     // Until the on-disk settings have been applied, settingsRef still holds
@@ -486,6 +503,11 @@ if (typeof s.autoDiagEnabled === "boolean") {
         if (RELIC_PICK_REFINEMENT_OPTIONS.includes(s.relicPickRefinement)) setRelicPickRefinement(s.relicPickRefinement);
         if (RELIC_PICK_LINES_OPTIONS.includes(s.relicPickLines)) setRelicPickLines(s.relicPickLines);
         if (FOUNDRY_PAGE_SIZE_OPTIONS.includes(s.foundryPageSize)) setFoundryPageSize(s.foundryPageSize);
+        if (typeof s.masteryExclude === "object" && s.masteryExclude != null) {
+          const stored = s.masteryExclude as Partial<MasteryExclude>;
+          setMasteryExclude(Object.fromEntries(MASTERY_EXCLUDE_OPTIONS.map(o =>
+            [o.key, typeof stored[o.key] === "boolean" ? stored[o.key] : DEFAULT_MASTERY_EXCLUDE[o.key]])) as MasteryExclude);
+        }
       } catch {}
       // Unblock saving even if the file failed to parse, since the backend
       // refuses to overwrite a settings.json that is not a valid JSON object.
@@ -552,8 +574,10 @@ if (typeof s.autoDiagEnabled === "boolean") {
       if (p.crafting) setCrafting(p.crafting);
       if (p.mastery_rank != null) setMasteryRank(p.mastery_rank);
       if (p.player_name) setPlayerName(p.player_name);
-      if (p.mastery_data && Object.keys(p.mastery_data).length > 0)
-        setMasteryData(prev => ({ ...prev, ...p.mastery_data }));
+      if (p.mastery_data && (p.is_full_pass || Object.keys(p.mastery_data).length > 0))
+        setMasteryData(p.mastery_data);
+      if (p.owned_levels && (p.is_full_pass || Object.keys(p.owned_levels).length > 0))
+        setOwnedLevels(p.owned_levels);
       setWarframeRunning(p.warframe_running);
       if (p.consumed_suits && p.consumed_suits.length > 0) {
         setSubsummedWarframes(prev => {
@@ -755,11 +779,13 @@ if (typeof s.autoDiagEnabled === "boolean") {
   // it behind the UI so a launch never waits on the network, and leave the
   // monitor running since the refresh is a no-op while the cache is fresh.
   useEffect(() => {
+    mark("catalogue revalidate start");
     invoke<number>("fetch_item_list").then(async count => {
       setItemCount(count);
       const items = await invoke<CatalogItem[]>("get_all_items");
       setCatalog(items);
       catalogRef.current = items;
+      mark("catalog state set");
       const status = await invoke<{ count: number; recipe_count: number }>("get_item_list_status");
       setRecipeCount(status.recipe_count);
       setItemsRefreshKey(k => k + 1);
@@ -1197,6 +1223,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         unique_name:   path,
         quantity:      qty,
         mastery_rank:  masteryData[path] ?? 0,
+        owned_levels:  ownedLevels[path] ?? [],
         archon_shards: archonShards[path] ?? [],
         forma_count:   formaData[path] ?? 0,
         subsumed:      subsummedWarframes.has(path),
@@ -1206,12 +1233,13 @@ if (typeof s.autoDiagEnabled === "boolean") {
         wfm_price:     null,
         image_name:    cat?.image_name ?? null,
         mastery_req:   cat?.mastery_req ?? null,
+        max_level_cap: cat?.max_level_cap ?? null,
       };
       inv[name] = entry;
       if (path !== name) inv[path] = entry; // path alias so existing unique_name lookups still work
     }
     return inv;
-  }, [catalog, quantities, masteryData, archonShards, formaData, subsummedWarframes, scannerMods]);
+  }, [catalog, quantities, masteryData, ownedLevels, archonShards, formaData, subsummedWarframes, scannerMods]);
 
   const modCopiesMap = useMemo(() => {
     const map: Record<string, ModCopy[]> = {};
@@ -1367,6 +1395,10 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
   // ─── Render ─────────────────────────────────────────────────────────────────
 
+  if (!renderBodyMarked) {
+    renderBodyMarked = true;
+    mark("App render body done");
+  }
   return (
     <ImgCacheDirContext.Provider value={imgCacheDir}>
     <div className="shell">
@@ -1443,7 +1475,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         </div>
       </header>
 
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} {...{ settingsTab, setSettingsTab, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setItemsRefreshKey, blobLogEnabled, setBlobLogEnabled, setShowInventoryBatchPreview, autoDiagEnabled, setAutoDiagEnabled, appVersion, arbOverlayEnabled, setArbOverlayEnabled }} onUpdateFound={u => { setUpdateAvailable(u); setShowUpdateDialog(true); }} />}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} {...{ settingsTab, setSettingsTab, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, masteryExclude, setMasteryExclude, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setItemsRefreshKey, blobLogEnabled, setBlobLogEnabled, setShowInventoryBatchPreview, autoDiagEnabled, setAutoDiagEnabled, appVersion, arbOverlayEnabled, setArbOverlayEnabled }} onUpdateFound={u => { setUpdateAvailable(u); setShowUpdateDialog(true); }} />}
       {showUpdateDialog && updateAvailable && (
         <UpdateDialog update={updateAvailable} onDismiss={() => setShowUpdateDialog(false)} />
       )}
@@ -1592,7 +1624,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         {/* ── Completionist module ── */}
         {activeModule === "completionist" && (
           <ErrorBoundary>
-            <CompletionistTabs inventory={inventory} />
+            <CompletionistTabs inventory={inventory} refreshKey={itemsRefreshKey} clockFormat={clockFormat} playerName={playerName} tracked={tracked} onTrackToggle={toggleTracked} />
           </ErrorBoundary>
         )}
 

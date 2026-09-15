@@ -8,6 +8,7 @@ use crate::catalogue::{fix_category, sanitize_chat_item_name, DebugUnmatched};
 use crate::db::QuantityChange;
 use crate::diagnostics::write_bmp;
 use crate::inventory_state::{load_inventory_state_cache, build_inventory_from_blob, inventory_path_aliases, persist_complete_inventory, compare_inventory_quantities, BlobBuildParams};
+use crate::mastery_rules;
 use crate::relic_pick::park_overlay_offscreen;
 use crate::worldstate::store_to_unique;
 use crate::{db, log_parser, memory_scanner, memory_scanner_linux, ocr};
@@ -44,6 +45,7 @@ pub struct InventoryUpdate {
     pub crafting: Vec<CraftingJob>,
     pub mastery_rank: Option<u32>,
     pub mastery_data: HashMap<String, u32>,
+    pub owned_levels: HashMap<String, Vec<u32>>,
     pub changes: Vec<QuantityChange>,
     pub warframe_running: bool,
     pub scanned_at: i64,
@@ -162,8 +164,13 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
     let path_to_tradable: HashMap<String, bool> = items.iter()
         .filter_map(|i| i.tradable.map(|t| (i.unique_name.clone(), t)))
         .collect();
-    let path_to_masterable: HashMap<String, bool> = items.iter()
-        .filter_map(|i| i.masterable.map(|m| (i.unique_name.clone(), m)))
+    let mut path_to_max_level_cap: HashMap<String, u32> = items.iter()
+        .filter_map(|i| mastery_rules::known_cap(state.corrections.get(&i.unique_name), i.max_level_cap)
+            .map(|cap| (i.unique_name.clone(), cap)))
+        .collect();
+    let mut path_to_masterable: HashMap<String, bool> = items.iter()
+        .filter_map(|i| mastery_rules::masterable(state.corrections.get(&i.unique_name), i.masterable, &i.unique_name)
+            .map(|m| (i.unique_name.clone(), m)))
         .collect();
     // Owned maps for debug capture — cloned once, no borrow from `items`.
     let path_to_item_type: HashMap<String, String> = items.iter()
@@ -202,6 +209,15 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
         if let Some(ref cat) = c.category {
             path_to_category.insert(path.clone(), cat.clone());
         }
+        // The Plexus has no WFCD entry, so its table row is all the rules see.
+        if !path_to_item_type.contains_key(path) {
+            if let Some(masterable) = mastery_rules::masterable(Some(c), None, path) {
+                path_to_masterable.insert(path.clone(), masterable);
+            }
+            if let Some(cap) = mastery_rules::known_cap(Some(c), None) {
+                path_to_max_level_cap.insert(path.clone(), cap);
+            }
+        }
     }
     // Ignored paths are suppressed from the inventory cache just like alias secondaries.
     alias_excluded.extend(ignored_paths.iter().cloned());
@@ -212,6 +228,8 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
     let flag = state.monitor_active.clone();
     let db_path = state.db_path.clone();
     let inventory_state_cache_path = state.inventory_state_cache_path.clone();
+    let mastery_progress     = state.mastery_progress.clone();
+    let local_player_name    = state.local_player_name.clone();
     let shared_quantities    = state.current_quantities.clone();
     let shared_unique        = state.unique_quantities.clone();
     let shared_mods          = state.current_mods.clone();
@@ -295,10 +313,8 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                 quantities: initial_qty,
                 crafting: vec![],
                 mastery_rank: startup_cache.mastery_rank,
-                mastery_data: startup_cache.items.iter()
-                    .filter(|(_, v)| v.mastery_rank > 0)
-                    .map(|(k, v)| (k.clone(), v.mastery_rank))
-                    .collect(),
+                mastery_data: startup_cache.mastery_data(),
+                owned_levels: startup_cache.owned_levels(),
                 changes: vec![],
                 consumed_suits: startup_cache.consumed_suits(),
                 mods: known_mods.clone(),
@@ -318,10 +334,8 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
         }
 
         let mut current_mastery_rank: Option<u32> = startup_cache.mastery_rank;
-        let mut current_mastery_data: HashMap<String, u32> = startup_cache.items.iter()
-            .filter(|(_, v)| v.mastery_rank > 0)
-            .map(|(k, v)| (k.clone(), v.mastery_rank))
-            .collect();
+        let mut current_mastery_data: HashMap<String, u32> = startup_cache.mastery_data();
+        let mut current_owned_levels = startup_cache.owned_levels();
         let mut current_recipes: Vec<memory_scanner::PendingRecipe> = Vec::new();
         let mut current_consumed_suits: Vec<String> = startup_cache.consumed_suits();
         let mut current_socketed_shards: HashMap<String, Vec<memory_scanner::ArchonShard>> = startup_cache.items.iter()
@@ -333,6 +347,10 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
             .collect();
         let mut last_walk_time: Option<std::time::Instant> = None;
         let mut last_probe_time: Option<std::time::Instant> = None;
+        // Name under which every blob still in the channel was captured. A
+        // probe drains one tick later and a walk one or two, and the log tail
+        // can rename the player in between; such a blob confirms nobody.
+        let mut capture_player: Option<String> = None;
         let mut last_blob_probe: Option<std::time::Instant> = None;
         // Guard against overlapping captures: a full memory walk can take >10 s on large
         // game processes, so without this flag we'd stack up concurrent scan threads.
@@ -360,6 +378,11 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
 
             let now = chrono::Utc::now().timestamp();
 
+            let player = local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).select_player(player.as_deref()) {
+                let _ = app.emit("mastery-update", ());
+            }
+
             // Process any incoming blob (non-blocking)
             while let Ok(blob) = blob_rx.try_recv() {
                 let existing_wfm: HashMap<String, u32> =
@@ -367,16 +390,36 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                         .items.into_iter()
                         .filter_map(|(k, v)| v.wfm_price.map(|p| (k, p)))
                         .collect();
-                let sc = build_inventory_from_blob(BlobBuildParams {
+                let mut sc = build_inventory_from_blob(BlobBuildParams {
                     blob: &blob,
                     path_to_name: &path_to_name, path_to_category: &path_to_category,
                     path_to_ducat: &path_to_ducat, path_to_vaulted: &path_to_vaulted,
                     path_to_tradable: &path_to_tradable, path_to_masterable: &path_to_masterable,
+                    path_to_max_level_cap: &path_to_max_level_cap,
                     relic_drops: &relic_drops_snapshot, existing_wfm_prices: &existing_wfm,
                     excluded_paths: &alias_excluded,
                 });
+                sc.player = capture_player.clone();
                 if !persist_complete_inventory(&blob, &unique_quantities, &sc, &inventory_state_cache_path) {
+                    mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).discard_blob();
                     continue;
+                }
+                if blob.mastery_xp.is_none() {
+                    warn!("XPInfo is not an array; inventory applied, equipment progress left as it was");
+                }
+                if blob.player_skills.is_none() {
+                    warn!("PlayerSkills is not an object; inventory applied, Intrinsics progress left as it was");
+                }
+                if blob.missions.is_none() {
+                    warn!("Missions is not an array; inventory applied, node progress left as it was");
+                }
+                if capture_player != player {
+                    warn!(captured_as = ?capture_player, drained_as = ?player, "player changed while blob was queued; inventory applied, mastery progress left as it was");
+                    mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).discard_blob();
+                } else if mastery_progress.lock().unwrap_or_else(|e| e.into_inner())
+                    .apply_blob(player.as_deref(), blob.mastery_xp.as_ref(), blob.player_skills.as_ref(), blob.missions.as_ref(), now)
+                {
+                    let _ = app.emit("mastery-update", ());
                 }
 
                 // Snapshot previous full inventory (known + uniques + mods) for change detection.
@@ -510,9 +553,8 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
 
                 // Meta
                 current_mastery_rank = Some(blob.mastery_level);
-                for (path, &rank) in &blob.mastery_data {
-                    current_mastery_data.insert(path.clone(), rank);
-                }
+                current_mastery_data = sc.mastery_data();
+                current_owned_levels = sc.owned_levels();
                 current_consumed_suits = blob.consumed_suits.clone();
                 current_recipes = blob.pending_recipes.iter().map(|r| memory_scanner::PendingRecipe {
                     unique_name:   r.item_type.clone(),
@@ -592,6 +634,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     crafting,
                     mastery_rank: current_mastery_rank,
                     mastery_data: current_mastery_data.clone(),
+                    owned_levels: current_owned_levels.clone(),
                     changes,
                     warframe_running: true,
                     scanned_at:   now,
@@ -660,6 +703,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                 let mut should_capture = false;
                 if probe_due && !walk_in_flight {
                     last_probe_time = Some(std::time::Instant::now());
+                    capture_player = player.clone();
                     let stitch_due = last_blob_probe
                         .is_none_or(|t: std::time::Instant| t.elapsed() >= BLOB_PROBE_FALLBACK)
                         || blob_sync_pending.load(Ordering::SeqCst)
@@ -670,6 +714,13 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     };
                     if outcome.is_some() {
                         last_blob_probe = Some(std::time::Instant::now());
+                    }
+                    // A full overview refetch would rerun the planning pass
+                    // to move one pill, so the stamp goes out on its own.
+                    if outcome == Some(memory_scanner::ScanOutcome::Unchanged)
+                        && mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).reobserve(player.as_deref(), now)
+                    {
+                        let _ = app.emit("mastery-observed", now);
                     }
                     if sync_marker {
                         blob_sync_pending.store(true, Ordering::SeqCst);
@@ -742,6 +793,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                         quantities: emit_qty, crafting,
                         mastery_rank: current_mastery_rank,
                         mastery_data: if send_mastery { current_mastery_data.clone() } else { HashMap::new() },
+                        owned_levels: if send_mastery { current_owned_levels.clone() } else { HashMap::new() },
                         changes: vec![], warframe_running: false, scanned_at: now,
                         consumed_suits: current_consumed_suits.clone(),
                         mods: known_mods.clone(),
@@ -2054,26 +2106,31 @@ pub(crate) fn append_to_file(path: &std::path::Path, text: &str) -> std::io::Res
     f.write_all(text.as_bytes())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn stop_monitor(state: State<AppState>) {
     state.monitor_active.store(false, Ordering::SeqCst);
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn poke_scan(state: State<AppState>) {
     state.force_pid_check.store(true, Ordering::SeqCst);
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn set_relic_pick_enabled(state: State<AppState>, enabled: bool) {
     state.relic_pick_overlay_enabled.store(enabled, Ordering::SeqCst);
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn set_mem_trigger_enabled(state: State<AppState>, enabled: bool) {
     state.mem_trigger_enabled.store(enabled, Ordering::SeqCst);
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_monitor_status(state: State<AppState>) -> bool {
     state.monitor_active.load(Ordering::SeqCst)
