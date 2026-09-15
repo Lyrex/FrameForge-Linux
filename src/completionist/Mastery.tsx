@@ -76,8 +76,16 @@ export default function Mastery({ inventory, refreshKey, clockFormat, playerName
 
   useEffect(() => {
     const refetch = () => setObservationKey(k => k + 1);
+    // An unchanged scan moves only the observation stamps, which is not
+    // worth rerunning the planning pass for.
+    const restamp = ({ payload: at }: { payload: number }) => setOverview(o => o && {
+      ...o,
+      provenance: Object.fromEntries(Object.entries(o.provenance).map(([k, p]) =>
+        [k, p.state === "confirmed" ? { ...p, observed_at: at } : p])) as MasteryProvenance,
+    });
     const unlisten = Promise.all([
       listen(TAURI_EVENTS.MASTERY_UPDATE, refetch),
+      listen<number>(TAURI_EVENTS.MASTERY_OBSERVED, restamp),
       listen(TAURI_EVENTS.SETTINGS_UPDATED, refetch),
     ]);
     const tick = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 60_000);

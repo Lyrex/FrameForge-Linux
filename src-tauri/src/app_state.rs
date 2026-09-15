@@ -83,11 +83,11 @@ pub struct AppState {
     pub conn: Mutex<rusqlite::Connection>,
     pub wfcd_items: Mutex<Vec<WfcdItem>>,
     /// parent unique_name → recipe component tree
-    pub recipes: Mutex<HashMap<String, Vec<RecipeComponent>>>,
+    pub recipes: Mutex<Arc<HashMap<String, Vec<RecipeComponent>>>>,
     /// component unique_name → relic unique_names that drop it
     pub relic_drops: Mutex<HashMap<String, Vec<String>>>,
     /// item or component unique_name → non-relic places it drops
-    pub drop_locations: Mutex<HashMap<String, Vec<DropLocation>>>,
+    pub drop_locations: Mutex<Arc<HashMap<String, Vec<DropLocation>>>>,
     /// relic unique_name → sorted reward list (Bronze×3, Silver×2, Gold×1)
     pub relic_rewards: Mutex<HashMap<String, Vec<wfcd::RelicReward>>>,
     /// blueprint_unique → (display_name, ducats). Used to enrich virtual catalog entries.
@@ -127,7 +127,7 @@ pub struct AppState {
     /// Set to true once the WFM queue drain thread has been started.
     pub wfm_queue_started: Arc<AtomicBool>,
     /// syndicate name → purchasable items (all known syndicates)
-    pub syndicate_catalog: Mutex<HashMap<String, Vec<SyndicateOffer>>>,
+    pub syndicate_catalog: Mutex<Arc<HashMap<String, Vec<SyndicateOffer>>>>,
     /// IDs of riven auctions created via FrameForge — persisted so hidden auctions survive restarts.
     pub auction_ids: Mutex<Vec<String>>,
     pub auction_ids_path: PathBuf,

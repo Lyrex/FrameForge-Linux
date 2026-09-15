@@ -10,6 +10,8 @@ use crate::resolver::ItemResolver;
 use crate::resolver;
 use crate::wfm::{to_wfm_slug, PriceQuote};
 
+const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
 // ─── WFM price queue ──────────────────────────────────────────────────────────
 // All warframe.market price fetches are routed through a single background
 // thread that enforces the ≤3 req/sec rate limit globally. The frontend enqueues
@@ -81,16 +83,38 @@ pub(crate) fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>)
     let quotes_path = state.wfm_quotes_path.clone();
 
     std::thread::spawn(move || {
+        // The inventory cache is a megabyte file, so one rewrite per quote
+        // would dominate the drain.
+        let mut pending: HashMap<String, (Option<u32>, bool)> = HashMap::new();
+        let mut last_flush = std::time::Instant::now();
+        let flush = |pending: &mut HashMap<String, (Option<u32>, bool)>, last_flush: &mut std::time::Instant| {
+            wfm.flush_quotes(&quotes_path);
+            if !pending.is_empty() {
+                let mut inv = load_inventory_state_cache(&cache_path);
+                for (unique_name, (price, tradeable)) in pending.drain() {
+                    let entry = inv.items.entry(unique_name.clone())
+                        .or_insert_with(|| CachedItem { unique_name, ..Default::default() });
+                    entry.wfm_price     = price;
+                    entry.tradeable_wfm = tradeable;
+                }
+                if let Ok(json) = serde_json::to_string(&inv) {
+                    let _ = atomic_write(&cache_path, json.as_bytes());
+                }
+            }
+            *last_flush = std::time::Instant::now();
+        };
         loop {
             let slug = queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
 
             let slug = match slug {
                 Some(s) => s,
                 None => {
+                    flush(&mut pending, &mut last_flush);
                     std::thread::sleep(std::time::Duration::from_millis(200));
                     continue;
                 }
             };
+            if last_flush.elapsed() >= FLUSH_INTERVAL { flush(&mut pending, &mut last_flush); }
 
             // Skip if already cached (avoid redundant API calls within a session).
             if resolver::slug_variants(&slug).iter().any(|s| wfm.is_price_cached(s)) { continue; }
@@ -106,18 +130,8 @@ pub(crate) fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>)
             let tradeable = price.is_some();
 
             wfm.cache_price(slug.clone(), price);
-            wfm.save_quotes(&quotes_path);
-
-            // Write price + tradeable_wfm into inventory_state_cache.json if we know the item.
             if let Some((unique_name, _)) = slug_map.get(&slug) {
-                let mut inv = load_inventory_state_cache(&cache_path);
-                let entry = inv.items.entry(unique_name.clone())
-                    .or_insert_with(|| CachedItem { unique_name: unique_name.clone(), ..Default::default() });
-                entry.wfm_price     = price;
-                entry.tradeable_wfm = tradeable;
-                if let Ok(json) = serde_json::to_string(&inv) {
-                    let _ = atomic_write(&cache_path, json.as_bytes());
-                }
+                pending.insert(unique_name.clone(), (price, tradeable));
             }
 
             // Notify the frontend.

@@ -140,8 +140,7 @@ function matchesAccess(access: Access, filter: AvailabilityFilter): boolean {
   return filter === "all" || (filter === "unblocked" ? access !== "blocked" : access === filter);
 }
 
-function matches(o: Opportunity, controls: MasteryControls, search: string): boolean {
-  const q = search.trim().toLowerCase();
+function matches(o: Opportunity, controls: MasteryControls, q: string): boolean {
   return (controls.category == null || o.category === controls.category)
     && (controls.progress === "all" || o.state === controls.progress)
     && matchesAccess(o.access, controls.availability)
@@ -150,10 +149,11 @@ function matches(o: Opportunity, controls: MasteryControls, search: string): boo
 
 /** Suggestions are actions without platinum, so a whole item only players sell stays out. */
 export function visibleOpportunities(list: Opportunity[], controls: MasteryControls, search: string): Opportunity[] {
+  const q = search.trim().toLowerCase();
   const visible = list.filter(o =>
     o.action !== "trade"
     && (controls.result === "relics" ? o.relic != null && !inSuggestions(o) : inSuggestions(o) && !(controls.hideRelics && o.relic != null))
-    && matches(o, controls, search));
+    && matches(o, controls, q));
   if (controls.result === "relics") {
     return visible.sort((a, b) =>
       RELIC_GROUP_ORDER.indexOf(a.relic!.coverage.kind) - RELIC_GROUP_ORDER.indexOf(b.relic!.coverage.kind)
@@ -174,7 +174,7 @@ export function chanceText(coverage: Coverage): string {
 }
 
 export function visiblePurchases(list: Opportunity[], controls: MasteryControls, search: string): Priced[] {
-  return rankPurchases(list.filter(o => matches(o, controls, search)), controls.comparison);
+  return rankPurchases(list.filter(o => matches(o, controls, search.trim().toLowerCase())), controls.comparison);
 }
 
 export function remainingText(remaining: number | null): string {
@@ -219,7 +219,7 @@ export function comparisonValue(o: Opportunity, comparison: Comparison): number 
     case "full": return p.full_purchase?.platinum ?? null;
     case "per_platinum": {
       const cost = p.cheapest_finish?.platinum;
-      return cost && o.remaining_mastery != null ? o.remaining_mastery / cost : null;
+      return cost != null && o.remaining_mastery != null ? (cost > 0 ? o.remaining_mastery / cost : Infinity) : null;
     }
   }
 }
@@ -319,12 +319,12 @@ export function detailText(o: Opportunity, nowMs: number, readyAt?: string): str
     }
     for (const p of o.relic.parts) {
       if (p.relics.length === 0) continue;
-      const count = p.needed > 1 ? ` ×${p.needed}` : "";
+      const count = p.short > 1 ? ` ×${p.short}` : "";
       parts.push(`${p.name}${count} from ${p.relics.map(r => `${r.name} ×${r.count}`).join(", ")}`);
     }
   }
   for (const p of o.drop?.parts ?? []) {
-    const count = p.needed > 1 ? ` ×${p.needed}` : "";
+    const count = p.short > 1 ? ` ×${p.short}` : "";
     parts.push(`${p.name}${count} from ${p.locations.map(l => l.chance == null ? l.location : `${l.location} (${l.chance}%)`).join(", ")}`);
   }
   if (o.craft) {

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tauri::Manager;
@@ -15,7 +16,7 @@ use crate::settings::read_settings_map;
 use crate::wfcd::{DropLocation, RecipeComponent, SyndicateOffer, WfcdItem};
 use crate::wfm::{to_wfm_slug, PriceQuote};
 
-const COLLECTION_CATEGORIES: [&str; 11] = [
+const COLLECTION_CATEGORIES: &[&str] = &[
     "Warframes", "Primary", "Secondary", "Melee", "Operator Weapons",
     "Archwing", "Companions", "Companion Weapons", "Vehicles", "Intrinsics", STAR_CHART,
 ];
@@ -215,7 +216,7 @@ pub(crate) struct Purchase {
 pub(crate) struct DropPart {
     pub(crate) unique_name: String,
     pub(crate) name: String,
-    pub(crate) needed: u32,
+    pub(crate) short: u32,
     /// Sorted with the best chance first and cut at `DROP_LOCATIONS_SHOWN`.
     pub(crate) locations: Vec<DropLocation>,
 }
@@ -346,7 +347,7 @@ fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Ob
         (build_mastery_overview(&items, &state.corrections, record, &excluded), skills, relic_names, market_items(&items), owner)
     };
     let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
-    if inventory.items.is_empty() || !owner.trusts_inventory(inventory.player.as_deref()) { return f(overview, None); }
+    if inventory.items.is_empty() || !owner.trusts_inventory(inventory.stamped, inventory.player.as_deref()) { return f(overview, None); }
     overview.mastery_rank = inventory.mastery_rank;
     let stock = inventory.stackable_quantities();
     let relics = {
@@ -354,11 +355,12 @@ fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Ob
         Relics::new(&stock, &tables, &relic_names)
     };
     let crafting = state.current_crafting.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let recipes = state.recipes.lock().unwrap_or_else(|e| e.into_inner());
-    let offers = state.syndicate_catalog.lock().unwrap_or_else(|e| e.into_inner());
-    let drops = state.drop_locations.lock().unwrap_or_else(|e| e.into_inner());
+    // Cloned out so the pass below holds no catalogue lock.
+    let recipes = Arc::clone(&state.recipes.lock().unwrap_or_else(|e| e.into_inner()));
+    let offers = Arc::clone(&state.syndicate_catalog.lock().unwrap_or_else(|e| e.into_inner()));
+    let drops = Arc::clone(&state.drop_locations.lock().unwrap_or_else(|e| e.into_inner()));
     f(overview, Some(&Observed {
-        owned: &inventory.unique_quantities(),
+        owned: &inventory.owned_copies(),
         stock: &stock,
         owned_levels: &inventory.owned_levels(),
         mastery_rank: inventory.mastery_rank,
@@ -385,7 +387,8 @@ fn market_items(items: &[WfcdItem]) -> HashSet<String> {
 
 /// Buys the cheapest next rank across the system's tracks, ties in track
 /// order, until the cheapest rank left costs more than the balance. Every
-/// rank pays the same mastery, so no other order gains more.
+/// rank pays the same mastery and each track's costs rise with rank, so no
+/// other order gains more.
 fn plan_spend(system: &mastery_rules::IntrinsicSystem, skills: &HashMap<String, i64>) -> Option<Spend> {
     let banked = system.banked(skills);
     let mut left = banked;
@@ -416,19 +419,24 @@ fn plan_spend(system: &mastery_rules::IntrinsicSystem, skills: &HashMap<String, 
 
 /// Hok and Rude Zuud offers have an empty result_unique, so they match on
 /// the part path with "Blueprint" appended.
-fn vendor_offers(source: &str, offers: &HashMap<String, Vec<SyndicateOffer>>) -> Vec<VendorOffer> {
-    let blueprint = format!("{source}Blueprint");
-    let blueprint = blueprint.as_str();
-    let mut vendors: Vec<VendorOffer> = offers.iter().flat_map(|(syndicate, offers)| {
-        offers.iter().filter_map(move |o| {
-            let is_blueprint = if o.unique_name == source { false }
-                else if o.result_unique.as_deref() == Some(source) || o.unique_name == blueprint { true }
-                else { return None };
-            Some(VendorOffer { syndicate: syndicate.clone(), tier: o.tier.clone(), blueprint: is_blueprint })
-        })
-    }).collect();
-    vendors.sort_by(|a, b| a.syndicate.cmp(&b.syndicate).then_with(|| a.tier.cmp(&b.tier)));
-    vendors
+fn vendor_index(offers: &HashMap<String, Vec<SyndicateOffer>>) -> HashMap<&str, Vec<VendorOffer>> {
+    let mut index: HashMap<&str, Vec<VendorOffer>> = HashMap::new();
+    for (syndicate, offers) in offers {
+        for o in offers {
+            let (source, blueprint) = match o.result_unique.as_deref() {
+                Some(result) => (result, true),
+                None => match o.unique_name.strip_suffix("Blueprint") {
+                    Some(part) => (part, true),
+                    None => (o.unique_name.as_str(), false),
+                },
+            };
+            index.entry(source).or_default().push(VendorOffer { syndicate: syndicate.clone(), tier: o.tier.clone(), blueprint });
+        }
+    }
+    for vendors in index.values_mut() {
+        vendors.sort_by(|a, b| a.syndicate.cmp(&b.syndicate).then_with(|| a.tier.cmp(&b.tier)));
+    }
+    index
 }
 
 /// A junction that is not cleared blocks everything on the planet behind it.
@@ -465,15 +473,18 @@ fn mastered_sources(overview: &MasteryOverview) -> HashSet<&str> {
 struct Rows<'a> {
     by_name: &'a HashMap<&'a str, &'a MasterySource>,
     building: HashMap<&'a str, i64>,
+    vendors: HashMap<&'a str, Vec<VendorOffer>>,
 }
 
 impl<'a> Rows<'a> {
     fn new(by_name: &'a HashMap<&'a str, &'a MasterySource>, observed: &Observed<'a>) -> Self {
         let blueprint_results = blueprint_results(observed.recipes);
-        let building = observed.crafting.iter()
-            .map(|job| (blueprint_results.get(job.unique_name.as_str()).copied().unwrap_or(&job.unique_name), job.completion_ms))
-            .collect();
-        Self { by_name, building }
+        let mut building: HashMap<&'a str, i64> = HashMap::new();
+        for job in observed.crafting {
+            let result = blueprint_results.get(job.unique_name.as_str()).copied().unwrap_or(&job.unique_name);
+            building.entry(result).and_modify(|done| *done = (*done).min(job.completion_ms)).or_insert(job.completion_ms);
+        }
+        Self { by_name, building, vendors: vendor_index(observed.offers) }
     }
 
     fn row(&self, source: &MasterySource, observed: &Observed) -> Option<Opportunity> {
@@ -489,7 +500,7 @@ impl<'a> Rows<'a> {
         let owned_level = observed.owned_levels.get(&source.unique_name).and_then(|levels| levels.iter().max().copied());
         let owned = owned_level.is_some() || observed.owned.get(&source.unique_name).is_some_and(|&copies| copies > 0);
         let build_completion_ms = self.building.get(source.unique_name.as_str()).copied();
-        let vendors = vendor_offers(&source.unique_name, observed.offers);
+        let vendors = self.vendors.get(source.unique_name.as_str()).cloned().unwrap_or_default();
         let action = if owned { Action::Level }
             else if build_completion_ms.is_some() { Action::Claim }
             else if observed.recipes.contains_key(&source.unique_name) { Action::Farm }
@@ -763,7 +774,7 @@ pub(crate) fn evaluate(overview: &MasteryOverview, observed: Option<&Observed>, 
                     entry.allowable = allowable(&o, observed, &mastered);
                     entry.opportunity = Some(o);
                 }
-                None => entry.notes.push("No known route".into()),
+                None => { entry.notes.push("No known route".into()); entry.gain = Some(0); }
             },
             _ => {}
         }
@@ -886,7 +897,7 @@ fn drop_route(plan: &CraftPlan, relic: Option<&RelicRoute>, drops: &HashMap<Stri
             let mut locations = drops.get(&r.unique_name)?.clone();
             locations.sort_by(|a, b| b.chance.partial_cmp(&a.chance).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.location.cmp(&b.location)));
             locations.truncate(DROP_LOCATIONS_SHOWN);
-            Some(DropPart { unique_name: r.unique_name.clone(), name: r.name.clone(), needed: r.short, locations })
+            Some(DropPart { unique_name: r.unique_name.clone(), name: r.name.clone(), short: r.short, locations })
         })
         .collect();
     if parts.is_empty() { return None; }
@@ -902,7 +913,7 @@ fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<Blocker>) {
     };
     match o.action {
         Action::Level => {}
-        Action::Spend | Action::Complete | Action::Unlock => unreachable!("settled when the row was built"),
+        Action::Spend | Action::Complete | Action::Unlock => { debug_assert!(false, "settled when the row was built"); }
         Action::Claim => if o.build_completion_ms.is_some_and(|done| done > observed.now_ms) {
             note(Access::Blocked, Blocker::StillBuilding);
         },
@@ -1352,10 +1363,7 @@ mod tests {
 
     #[test]
     fn settings_exclude_every_class_until_they_say_otherwise() {
-        let dir = std::env::temp_dir().join("frameforge-mastery-tests");
-        std::fs::create_dir_all(&dir).expect("temp dir is always writable");
-        let path = dir.join(format!("settings-{}.json", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        let (_dir, path) = crate::cache::test_scratch("mastery-settings");
         assert_eq!(excluded_classes(&path), Unobtainable::ALL.into());
         std::fs::write(&path, r#"{"tracked":[],"masteryExclude":{"founders":false,"removedNode":true}}"#).expect("scratch file is writable");
         assert_eq!(excluded_classes(&path), [Unobtainable::RetiredEvent, Unobtainable::RemovedNode].into());
@@ -1961,7 +1969,7 @@ mod tests {
         let sirius = row("Sirius & Orion");
         assert_eq!((sirius.action, sirius.stage, sirius.access, sirius.blockers.clone()), (Action::Farm, Stage::Craft, Access::Available, vec![]));
         let route = sirius.drop.as_ref().expect("the blueprint has drop locations");
-        assert_eq!(route.parts.iter().map(|p| (p.unique_name.as_str(), p.name.as_str(), p.needed)).collect::<Vec<_>>(), [(SIRIUS_BP, "Blueprint", 1)]);
+        assert_eq!(route.parts.iter().map(|p| (p.unique_name.as_str(), p.name.as_str(), p.short)).collect::<Vec<_>>(), [(SIRIUS_BP, "Blueprint", 1)]);
         assert_eq!(route.parts[0].locations.iter().map(|d| (d.location.as_str(), d.chance)).collect::<Vec<_>>(), [
             ("Corrupted Vor", Some(50.0)),
             ("Venus/Orb Vallis Bounty, Rotation A", Some(33.33)),
@@ -2020,7 +2028,7 @@ mod tests {
         assert_eq!((ferrite(braton), ferrite(sirius)), (Some((60, 90)), Some((0, 50))));
         assert!(braton.relic.is_none());
         let route = sirius.relic.as_ref().expect("a relic part is short");
-        assert_eq!(route.parts.iter().map(|p| (p.name.as_str(), p.needed, p.relics.len())).collect::<Vec<_>>(), [("Blueprint", 1, 1)]);
+        assert_eq!(route.parts.iter().map(|p| (p.name.as_str(), p.short, p.relics.len())).collect::<Vec<_>>(), [("Blueprint", 1, 1)]);
         let Coverage::Complete { probability } = route.coverage else { panic!("every part has a relic: {:?}", route.coverage) };
         assert!((probability - (1.0 - 0.75 * 0.75)).abs() < 1e-12, "{probability}");
         // The Ferrite short beyond the relic parts keeps the drop sources unknown.

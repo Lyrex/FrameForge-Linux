@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tracing::error;
+use tracing::{error, warn};
 use crate::cache::atomic_write;
 use crate::inventory_state::InventoryStateCache;
 use crate::mastery_rules::rank_to_affinity;
@@ -96,13 +96,18 @@ pub(crate) enum Owner {
 }
 
 impl Owner {
-    /// An unstamped cache predates the stamp and stays trusted, so
-    /// upgrading does not blank suggestions until the next scan.
-    pub(crate) fn trusts_inventory(&self, cache_player: Option<&str>) -> bool {
-        match (self, cache_player) {
-            (_, None) => true,
-            (Owner::Player(owner), Some(player)) => owner == player,
-            (Owner::Unassigned, Some(_)) => false,
+    /// A pre-stamp cache stays trusted, so upgrading does not blank
+    /// suggestions until the next scan. A stamped cache with no player was
+    /// scanned before EE.log named the account; it serves only while no
+    /// account has ever been seen, since any name makes it a possible leak
+    /// from a different account.
+    pub(crate) fn trusts_inventory(&self, stamped: bool, cache_player: Option<&str>) -> bool {
+        match (self, stamped, cache_player) {
+            (_, false, _) => true,
+            (Owner::Unassigned, true, None) => true,
+            (Owner::Player(_), true, None) => false,
+            (Owner::Player(owner), true, Some(player)) => owner == player,
+            (Owner::Unassigned, true, Some(_)) => false,
         }
     }
 }
@@ -122,6 +127,10 @@ pub(crate) struct MasteryProgress {
     /// nothing. An unchanged scan re-observes only those kinds for that
     /// player, never whoever logged in since.
     last_confirmed: Option<ConfirmedKinds>,
+    /// An unchanged scan moves the stamp in memory once a minute. Writing
+    /// the whole file that often bought nothing, so it reaches disk on an
+    /// interval.
+    last_reobserve_saved: Option<i64>,
     /// Set when the file exists but cannot be read: the session runs in
     /// memory and never overwrites history it could not load.
     write_blocked: bool,
@@ -131,12 +140,12 @@ impl MasteryProgress {
     pub(crate) fn load(path: PathBuf, pre_provenance: &InventoryStateCache) -> Self {
         match std::fs::read_to_string(&path) {
             Ok(text) => match serde_json::from_str(&text) {
-                Ok(cache) => Self { path, cache, last_confirmed: None, write_blocked: false },
+                Ok(cache) => Self { path, cache, last_confirmed: None, last_reobserve_saved: None, write_blocked: false },
                 Err(e) => Self::unreadable(path, &e),
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let cache = MasteryProgressCache { unassigned: import_pre_provenance(pre_provenance), ..Default::default() };
-                let progress = Self { path, cache, last_confirmed: None, write_blocked: false };
+                let progress = Self { path, cache, last_confirmed: None, last_reobserve_saved: None, write_blocked: false };
                 progress.save();
                 progress
             }
@@ -146,15 +155,19 @@ impl MasteryProgress {
 
     fn unreadable(path: PathBuf, error: &dyn std::fmt::Display) -> Self {
         error!(path = %path.display(), %error, "mastery progress unreadable; keeping the file, running in memory");
-        Self { path, cache: MasteryProgressCache::default(), last_confirmed: None, write_blocked: true }
+        Self { path, cache: MasteryProgressCache::default(), last_confirmed: None, last_reobserve_saved: None, write_blocked: true }
     }
 
     pub(crate) fn select_player(&mut self, name: Option<&str>) -> bool {
         let Some(name) = name else { return false };
         if self.cache.last_seen_player.as_deref() == Some(name) { return false; }
         self.cache.last_seen_player = Some(name.to_string());
-        if let Some(unassigned) = self.cache.unassigned.take() {
-            self.cache.players.entry(name.to_string()).or_insert(unassigned);
+        if self.cache.unassigned.is_some() {
+            if self.cache.players.contains_key(name) {
+                warn!("unassigned progress kept: {name} already has a record");
+            } else if let Some(unassigned) = self.cache.unassigned.take() {
+                self.cache.players.insert(name.to_string(), unassigned);
+            }
             if let Some(confirmed) = self.last_confirmed.as_mut().filter(|c| c.owner == Owner::Unassigned) {
                 confirmed.owner = Owner::Player(name.to_string());
             }
@@ -207,6 +220,8 @@ impl MasteryProgress {
         self.last_confirmed = None;
     }
 
+    const REOBSERVE_SAVE_INTERVAL: i64 = 300;
+
     pub(crate) fn reobserve(&mut self, name: Option<&str>, now: i64) -> bool {
         let owner = self.owner(name);
         let Some(confirmed) = self.last_confirmed.clone().filter(|c| c.owner == owner) else { return false };
@@ -214,7 +229,10 @@ impl MasteryProgress {
         if confirmed.equipment { record.equipment.observed_at = Some(now); }
         if confirmed.intrinsics { record.intrinsics.observed_at = Some(now); }
         if confirmed.nodes { record.nodes.observed_at = Some(now); }
-        self.save();
+        if self.last_reobserve_saved.is_none_or(|at| now - at >= Self::REOBSERVE_SAVE_INTERVAL) {
+            self.last_reobserve_saved = Some(now);
+            self.save();
+        }
         true
     }
 
@@ -284,13 +302,7 @@ mod tests {
     const KUVA: &str = "/Lotus/Weapons/Grineer/KuvaLich/LongGuns/Karak/KuvaKarak";
     const MAG: &str = "/Lotus/Powersuits/Mag/Mag";
 
-    fn scratch(label: &str) -> PathBuf {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tmp");
-        std::fs::create_dir_all(&dir).expect("project tmp writable");
-        let path = dir.join(format!("mastery-progress-{label}-{}.json", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        path
-    }
+    fn scratch(label: &str) -> (tempfile::TempDir, PathBuf) { crate::cache::test_scratch(label) }
 
     fn pre_provenance_cache(ranks: &[(&str, u32)], observed: bool) -> InventoryStateCache {
         let mut cache = InventoryStateCache::default();
@@ -311,15 +323,15 @@ mod tests {
         entries.iter().map(|(key, completes, tier)| ((*key).to_string(), BlobMission { completes: *completes, tier: *tier })).collect()
     }
 
-    fn fresh(label: &str) -> (PathBuf, MasteryProgress) {
-        let path = scratch(label);
+    fn fresh(label: &str) -> (tempfile::TempDir, PathBuf, MasteryProgress) {
+        let (dir, path) = scratch(label);
         let progress = MasteryProgress::load(path.clone(), &InventoryStateCache::default());
-        (path, progress)
+        (dir, path, progress)
     }
 
     #[test]
     fn pre_provenance_cache_with_account_observation_imports_as_unconfirmed() {
-        let path = scratch("import");
+        let (_dir, path) = scratch("import");
         let progress = MasteryProgress::load(path.clone(), &pre_provenance_cache(&[(BRATON, 30), (KUVA, 40), (MAG, 12)], true));
         let record = progress.current(None).expect("ranks imported");
         assert_eq!(record.equipment, Provenance { state: ProvenanceState::Unconfirmed, observed_at: None });
@@ -327,20 +339,18 @@ mod tests {
         assert_eq!(xp_to_rank(record.affinity[KUVA], KUVA), 40);
         assert_eq!(xp_to_rank(record.affinity[MAG], MAG), 12);
         assert!(path.exists(), "import persisted");
-        std::fs::remove_file(path).expect("test cache removable");
     }
 
     #[test]
     fn catalogue_only_cache_imports_nothing() {
-        let path = scratch("catalogue");
+        let (_dir, path) = scratch("catalogue");
         let progress = MasteryProgress::load(path.clone(), &pre_provenance_cache(&[(BRATON, 0)], false));
         assert!(progress.current(None).is_none());
-        std::fs::remove_file(path).expect("test cache removable");
     }
 
     #[test]
     fn accepted_blob_confirms_equipment_and_replaces_the_previous_map() {
-        let (path, mut progress) = fresh("apply");
+        let (_dir, _path, mut progress) = fresh("apply");
         let first = affinity(&[(BRATON, 450_000), (MAG, 144_000)]);
         assert!(progress.apply_blob(Some("Tenno"), Some(&first), None, None, 1_000));
         let record = progress.current(Some("Tenno")).expect("confirmed");
@@ -356,12 +366,11 @@ mod tests {
         assert!(!progress.apply_blob(Some("Tenno"), None, None, None, 3_000), "XPInfo not an array confirms nothing");
         let record = progress.current(Some("Tenno")).expect("previous observation kept");
         assert_eq!((record.affinity.clone(), record.equipment.observed_at), (second, Some(2_000)));
-        std::fs::remove_file(path).expect("test cache removable");
     }
 
     #[test]
     fn unchanged_scan_reobserves_only_for_the_confirmed_owner() {
-        let (path, mut progress) = fresh("reobserve");
+        let (_dir, _path, mut progress) = fresh("reobserve");
         assert!(!progress.reobserve(Some("A"), 500), "nothing confirmed yet");
         progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, 1_000);
         assert!(progress.reobserve(Some("A"), 1_060));
@@ -378,12 +387,11 @@ mod tests {
         progress.discard_blob();
         assert!(!progress.reobserve(Some("A"), 1_360), "rejected bytes are not an observation");
         assert_eq!(progress.current(Some("A")).expect("A").equipment.observed_at, Some(1_300));
-        std::fs::remove_file(path).expect("test cache removable");
     }
 
     #[test]
     fn player_switch_keeps_both_histories_and_a_missing_name_uses_the_last_seen() {
-        let (path, mut progress) = fresh("switch");
+        let (_dir, path, mut progress) = fresh("switch");
         let braton = affinity(&[(BRATON, 450_000)]);
         let mag = affinity(&[(MAG, 900_000)]);
         progress.apply_blob(Some("A"), Some(&braton), None, None, 1_000);
@@ -406,12 +414,11 @@ mod tests {
         reloaded.apply_blob(Some("A"), Some(&braton_and_mag), None, None, 4_000);
         assert_eq!(reloaded.current(Some("A")).expect("A").affinity, braton_and_mag);
         assert_eq!(reloaded.current(Some("B")).expect("B untouched by A's return").affinity, kuva);
-        std::fs::remove_file(path).expect("test cache removable");
     }
 
     #[test]
     fn progress_before_any_name_moves_under_the_first_name_only() {
-        let path = scratch("unassigned");
+        let (_dir, path) = scratch("unassigned");
         let mut progress = MasteryProgress::load(path.clone(), &pre_provenance_cache(&[(BRATON, 30)], true));
         let mag = affinity(&[(MAG, 900_000)]);
         assert!(progress.apply_blob(None, Some(&mag), None, None, 1_000), "no name known yet: replaces the import");
@@ -425,24 +432,22 @@ mod tests {
 
         progress.select_player(Some("B"));
         assert!(progress.current(Some("B")).is_none(), "only the first name inherits");
-        std::fs::remove_file(path).expect("test cache removable");
     }
 
     #[test]
     fn unreadable_file_is_kept_and_never_overwritten() {
-        let path = scratch("corrupt");
+        let (_dir, path) = scratch("corrupt");
         std::fs::write(&path, b"{ not json").expect("scratch writable");
         let mut progress = MasteryProgress::load(path.clone(), &pre_provenance_cache(&[(BRATON, 30)], true));
         assert!(progress.current(None).is_none(), "no import over an existing file");
         progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, 1_000);
         assert_eq!(progress.current(Some("A")).expect("in-memory progress works").equipment.observed_at, Some(1_000));
         assert_eq!(std::fs::read(&path).expect("file kept"), b"{ not json");
-        std::fs::remove_file(path).expect("test cache removable");
     }
 
     #[test]
     fn missions_confirm_nodes_separately_from_equipment() {
-        let (path, mut progress) = fresh("missions");
+        let (_dir, _path, mut progress) = fresh("missions");
         let cleared = missions(&[("SolNode27", 14, Some(1)), ("EarthToVenusJunction", 2, None)]);
         assert!(progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, Some(&cleared), 1_000));
         let record = progress.current(Some("A")).expect("confirmed");
@@ -464,7 +469,6 @@ mod tests {
 
         assert!(!progress.apply_blob(Some("A"), None, None, None, 4_000));
         assert!(!progress.reobserve(Some("A"), 4_060));
-        std::fs::remove_file(path).expect("test cache removable");
     }
 
     fn record_of(progress: &MasteryProgress) -> &PlayerProgress {
@@ -473,7 +477,7 @@ mod tests {
 
     #[test]
     fn a_file_from_before_missions_loads_them_as_unknown() {
-        let path = scratch("pre-missions");
+        let (_dir, path) = scratch("pre-missions");
         std::fs::write(&path, format!(
             r#"{{"last_seen_player":"A","players":{{"A":{{"affinity":{{"{BRATON}":450000}},"equipment":{{"state":"confirmed","observed_at":1000}}}}}},"unassigned":null}}"#
         )).expect("scratch writable");
@@ -482,12 +486,11 @@ mod tests {
         assert_eq!(record.equipment.state, ProvenanceState::Confirmed);
         assert_eq!(record.nodes, Provenance::default());
         assert!(record.missions.is_empty());
-        std::fs::remove_file(path).expect("test cache removable");
     }
 
     #[test]
     fn a_plan_sits_under_its_player_and_outlives_observations_and_restarts() {
-        let (path, mut progress) = fresh("plan");
+        let (_dir, path, mut progress) = fresh("plan");
         let plan = |target: u32, selections: &[&str]| MasteryPlan {
             target, view: "suggestions".into(), selections: selections.iter().map(|s| (*s).to_string()).collect(), allowances: HashMap::new(), intrinsic_targets: HashMap::new(), purchase_comparison: String::new(),
         };
@@ -502,12 +505,11 @@ mod tests {
         assert_eq!(reloaded.current(Some("A")).and_then(|p| p.plan.clone()), Some(plan(12, &[KUVA, MAG])));
         assert_eq!(reloaded.current(Some("B")).and_then(|p| p.plan.clone()), Some(plan(5, &[])), "a cleared plan is still a plan");
         assert_eq!(reloaded.current(None).and_then(|p| p.plan.clone()), Some(plan(12, &[KUVA, MAG])), "no name reads the last seen player's plan");
-        std::fs::remove_file(path).expect("test cache removable");
     }
 
     #[test]
     fn clear_forgets_every_player_and_unblocks_writes() {
-        let path = scratch("clear");
+        let (_dir, path) = scratch("clear");
         std::fs::write(&path, b"{ not json").expect("scratch writable");
         let mut progress = MasteryProgress::load(path.clone(), &InventoryStateCache::default());
         progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, 1_000);
@@ -516,12 +518,11 @@ mod tests {
         assert!(!path.exists());
         progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, 2_000);
         assert!(path.exists(), "writes resume after clear");
-        std::fs::remove_file(path).expect("test cache removable");
     }
 
     #[test]
     fn intrinsics_confirm_apart_from_equipment_and_a_legacy_file_leaves_them_unknown() {
-        let path = scratch("intrinsics");
+        let (_dir, path) = scratch("intrinsics");
         std::fs::write(&path, r#"{"last_seen_player":"A","players":{"A":{"affinity":{},"equipment":{"state":"confirmed","observed_at":900}}},"unassigned":null}"#)
             .expect("scratch writable");
         let mut progress = MasteryProgress::load(path.clone(), &InventoryStateCache::default());
@@ -548,19 +549,19 @@ mod tests {
         let reloaded = MasteryProgress::load(path.clone(), &InventoryStateCache::default());
         let a = reloaded.current(Some("A")).expect("A survives restart");
         assert_eq!((a.skills.clone(), a.intrinsics.observed_at), (skills, Some(1_060)));
-        std::fs::remove_file(path).expect("test cache removable");
     }
 
     #[test]
     fn inventory_is_trusted_only_when_stamped_for_the_progress_owner_or_not_at_all() {
-        let (path, mut progress) = fresh("inventory-owner");
-        assert!(progress.owner(None).trusts_inventory(None), "pre-stamp cache, nobody seen");
-        assert!(!progress.owner(None).trusts_inventory(Some("A")), "A's scan, nobody seen: not ours");
+        let (_dir, _path, mut progress) = fresh("inventory-owner");
+        assert!(progress.owner(None).trusts_inventory(false, None), "pre-stamp cache, nobody seen");
+        assert!(progress.owner(None).trusts_inventory(true, None), "scan before login, nobody ever seen");
+        assert!(!progress.owner(None).trusts_inventory(true, Some("A")), "A's scan, nobody seen: not ours");
         progress.select_player(Some("A"));
-        assert!(progress.owner(None).trusts_inventory(Some("A")), "resolves through the last seen player");
-        assert!(progress.owner(Some("B")).trusts_inventory(None), "pre-stamp cache is trusted as before");
-        assert!(!progress.owner(Some("B")).trusts_inventory(Some("A")), "A's scan must not serve B");
-        assert!(progress.owner(Some("B")).trusts_inventory(Some("B")));
-        std::fs::remove_file(path).expect("test cache removable");
+        assert!(progress.owner(None).trusts_inventory(true, Some("A")), "resolves through the last seen player");
+        assert!(progress.owner(Some("B")).trusts_inventory(false, None), "pre-stamp cache is trusted as before");
+        assert!(!progress.owner(Some("B")).trusts_inventory(true, None), "scan before login could be anyone's");
+        assert!(!progress.owner(Some("B")).trusts_inventory(true, Some("A")), "A's scan must not serve B");
+        assert!(progress.owner(Some("B")).trusts_inventory(true, Some("B")));
     }
 }

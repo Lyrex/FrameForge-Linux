@@ -124,6 +124,11 @@ fn is_zero_u32(v: &u32) -> bool { *v == 0 }
 pub(crate) struct InventoryStateCache {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) player: Option<String>,
+    /// False only for a file written before the player stamp existed. A live
+    /// scan whose player is still unknown is stamped too, so the two cases
+    /// stay distinguishable.
+    #[serde(default)]
+    pub(crate) stamped: bool,
     /// All owned items: unique_name → item entry.
     #[serde(default)]
     pub(crate) items: HashMap<String, CachedItem>,
@@ -154,6 +159,17 @@ impl InventoryStateCache {
                 && is_unique_path(path))
             .map(|(path, item)| (path.clone(), item.amount))
             .collect()
+    }
+
+    /// `amount` is a binary owned flag for ordinary equipment, so the copy
+    /// count planning can spend comes from the levels seen per copy.
+    pub(crate) fn owned_copies(&self) -> HashMap<String, i64> {
+        let mut copies = self.unique_quantities();
+        for (path, n) in copies.iter_mut() {
+            let levels = self.items[path].owned_levels.len() as i64;
+            if levels > *n { *n = levels; }
+        }
+        copies
     }
 
     pub(crate) fn stackable_quantities(&self) -> HashMap<String, i64> {
@@ -357,6 +373,7 @@ pub(crate) fn build_inventory_from_blob(
 
     InventoryStateCache {
         player: None,
+        stamped: true,
         items,
         mastery_rank: if blob.mastery_level > 0 { Some(blob.mastery_level) } else { None },
         rivens: blob.rivens.clone(),
@@ -488,7 +505,7 @@ mod inventory_quantity_tests {
             assert_eq!(live.items[path].mastery_rank, rank, "{path}");
         }
 
-        let file = std::env::temp_dir().join(format!("frameforge-stale-cache-{}.json", std::process::id()));
+        let (_dir, file) = crate::cache::test_scratch("inventory-stale-cache");
         assert!(persist_complete_inventory(&blob, &stale.unique_quantities(), &live, &file));
         let restarted = load_inventory_state_cache(&file);
         let _ = std::fs::remove_file(&file);
@@ -749,9 +766,7 @@ mod inventory_quantity_tests {
 
     #[test]
     fn rejected_blob_preserves_persisted_cache_and_baseline() {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tmp");
-        std::fs::create_dir_all(&dir).expect("project tmp writable");
-        let path = dir.join(format!("inventory-regression-{}.json", std::process::id()));
+        let (_dir, path) = crate::cache::test_scratch("inventory-regression");
         let blob = modular_blob();
         let accepted = cache(&blob);
         assert!(persist_complete_inventory(&blob, &HashMap::new(), &accepted, &path));
@@ -762,7 +777,6 @@ mod inventory_quantity_tests {
         assert_eq!(std::fs::read(&path).expect("cache retained"), before);
         assert!(changes(&previous, &quantities(&load_inventory_state_cache(&path))).is_empty());
         assert!(changes(&previous, &quantities(&cache(&blob))).is_empty());
-        std::fs::remove_file(path).expect("test cache removable");
     }
 
     #[test]
