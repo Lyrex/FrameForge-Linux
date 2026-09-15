@@ -26,7 +26,7 @@ pub(crate) struct RelicStock {
 pub(crate) struct RelicPart {
     pub(crate) unique_name: String,
     pub(crate) name: String,
-    pub(crate) needed: u32,
+    pub(crate) short: u32,
     /// Sorted with the best chance first.
     pub(crate) relics: Vec<RelicStock>,
 }
@@ -70,8 +70,9 @@ pub(crate) struct Relics {
     owned: Vec<OwnedRelic>,
 }
 
-// Bounds the walk. A recipe whose part counts multiply past this is not
-// a relic build, so the route reads as Unknown instead of stalling.
+// Bounds the walk, which costs states × relic copies × drops per route. A
+// recipe whose part counts multiply past this is not a relic build, so the
+// route reads as Unknown instead of stalling.
 const STATE_LIMIT: usize = 1 << 12;
 
 impl Relics {
@@ -115,13 +116,13 @@ impl Relics {
                     .filter_map(|o| o.rewards.get(&r.unique_name).map(|&chance| RelicStock { unique_name: o.unique_name.clone(), name: o.name.clone(), count: o.count, chance }))
                     .collect();
                 relics.sort_by(|a, b| b.chance.partial_cmp(&a.chance).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.name.cmp(&b.name)));
-                RelicPart { unique_name: r.unique_name.clone(), name: r.name.clone(), needed: r.short, relics }
+                RelicPart { unique_name: r.unique_name.clone(), name: r.name.clone(), short: r.short, relics }
             })
             .collect();
         if parts.is_empty() { return None; }
         let missing: Vec<String> = parts.iter().filter(|p| p.relics.is_empty()).map(|p| p.name.clone()).collect();
         let short: Vec<String> = parts.iter()
-            .filter(|p| !p.relics.is_empty() && p.relics.iter().map(|r| r.count).sum::<u32>() < p.needed)
+            .filter(|p| !p.relics.is_empty() && p.relics.iter().map(|r| r.count).sum::<u32>() < p.short)
             .map(|p| p.name.clone())
             .collect();
         let coverage = if !missing.is_empty() || !short.is_empty() {
@@ -148,10 +149,11 @@ impl Relics {
         let mut states = 1usize;
         for part in parts {
             strides.push(states);
-            states = states.checked_mul(part.needed as usize + 1)?;
+            states = states.checked_mul(part.short as usize + 1)?;
             if states > STATE_LIMIT { return None; }
         }
         let mut dist = vec![0.0; states];
+        let mut next = vec![0.0; states];
         dist[0] = 1.0;
         for relic in &self.owned {
             let drops: Vec<(usize, f64)> = parts.iter().enumerate()
@@ -160,16 +162,16 @@ impl Relics {
             if drops.is_empty() { continue; }
             let stay = (1.0 - drops.iter().map(|(_, c)| c).sum::<f64>()).max(0.0);
             for _ in 0..relic.count {
-                let mut next = vec![0.0; states];
+                next.fill(0.0);
                 for (state, &mass) in dist.iter().enumerate().filter(|(_, &mass)| mass > 0.0) {
                     next[state] += mass * stay;
                     for &(i, chance) in &drops {
-                        let have = (state / strides[i]) % (parts[i].needed as usize + 1);
-                        let to = if have < parts[i].needed as usize { state + strides[i] } else { state };
+                        let have = (state / strides[i]) % (parts[i].short as usize + 1);
+                        let to = if have < parts[i].short as usize { state + strides[i] } else { state };
                         next[to] += mass * chance;
                     }
                 }
-                dist = next;
+                std::mem::swap(&mut dist, &mut next);
             }
         }
         Some(dist[states - 1])
@@ -308,7 +310,7 @@ mod tests {
         let one = Relics::new(&stock(&[(LITH_INTACT, 1)]), &tables, &names());
         let route = one.route(&plan(&[(BARREL, 2), (RECEIVER, 1), (FERRITE, 500)])).expect("relic parts short");
         assert_eq!(route.coverage, Coverage::Partial { missing: vec!["AkstilettoPrimeReceiver".into()], short: vec!["AkstilettoPrimeBarrel".into()] });
-        assert_eq!(route.parts.iter().map(|p| (p.name.as_str(), p.needed, p.relics.len())).collect::<Vec<_>>(),
+        assert_eq!(route.parts.iter().map(|p| (p.name.as_str(), p.short, p.relics.len())).collect::<Vec<_>>(),
             [("AkstilettoPrimeBarrel", 2, 1), ("AkstilettoPrimeReceiver", 1, 0)]);
         let [lith] = route.parts[0].relics.as_slice() else { panic!("one relic drops the barrel") };
         assert_eq!((lith.name.as_str(), lith.count), ("Lith A1 Intact", 1));

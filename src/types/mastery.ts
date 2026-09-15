@@ -136,7 +136,8 @@ export interface RelicStock {
 export interface RelicPart {
   unique_name: string;
   name: string;
-  needed: number;
+  /** Copies still missing after stock and builds. */
+  short: number;
   /** Sorted with the best chance first. */
   relics: RelicStock[];
 }
@@ -166,7 +167,8 @@ export interface DropLocation {
 export interface DropPart {
   unique_name: string;
   name: string;
-  needed: number;
+  /** Copies still missing after stock and builds. */
+  short: number;
   /** Sorted with the best chance first and cut to the best few by the backend. */
   locations: DropLocation[];
 }

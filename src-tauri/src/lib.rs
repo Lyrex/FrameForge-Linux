@@ -238,9 +238,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             changes_log_path,
             conn: Mutex::new(conn),
             wfcd_items: Mutex::new(initial_items),
-            recipes: Mutex::new(initial_recipes),
+            recipes: Mutex::new(Arc::new(initial_recipes)),
             relic_drops: Mutex::new(initial_relic_drops),
-            drop_locations: Mutex::new(initial_drop_locations),
+            drop_locations: Mutex::new(Arc::new(initial_drop_locations)),
             relic_rewards: Mutex::new(initial_relic_rewards),
             blueprint_to_result: Mutex::new(initial_blueprint_names),
             weapon_dispositions: Mutex::new(initial_weapon_dispositions),
@@ -266,7 +266,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             wfm_quotes_path,
             wfm_price_queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             wfm_queue_started: Arc::new(AtomicBool::new(false)),
-            syndicate_catalog: Mutex::new(initial_syndicate_catalog),
+            syndicate_catalog: Mutex::new(Arc::new(initial_syndicate_catalog)),
             auction_ids: Mutex::new(initial_auction_ids),
             auction_ids_path,
             img_cache_dir,
@@ -362,6 +362,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             // Sync commands and window events run on the GTK thread, so a stall
             // there delays every IPC message.
+            #[cfg(debug_assertions)]
             {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || loop {
@@ -527,6 +528,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         // State is already saved on every Moved/Resized event.
                     }
                     tauri::WindowEvent::Destroyed if label == "main" => {
+                        let state = window.app_handle().state::<AppState>();
+                        state.wfm.flush_quotes(&state.wfm_quotes_path);
                         // Kill the process only when the main window is destroyed
                         // (prevents orphaned overlay/modular windows keeping the process alive)
                         std::process::exit(0);

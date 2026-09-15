@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::collections::HashMap;
 use tauri::{Manager, State};
 use crate::app_state::AppState;
@@ -687,16 +688,16 @@ fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> usize {
     }
 
     *state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()) = deduped;
-    *state.recipes.lock().unwrap_or_else(|e| e.into_inner()) = result.recipes;
+    *state.recipes.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(result.recipes);
     *state.relic_drops.lock().unwrap_or_else(|e| e.into_inner()) = result.relic_drops;
-    *state.drop_locations.lock().unwrap_or_else(|e| e.into_inner()) = result.drop_locations;
+    *state.drop_locations.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(result.drop_locations);
     *state.relic_rewards.lock().unwrap_or_else(|e| e.into_inner()) = result.relic_rewards;
     *state.blueprint_to_result.lock().unwrap_or_else(|e| e.into_inner()) = result.blueprint_names;
     if !result.weapon_dispositions.is_empty() {
         *state.weapon_dispositions.lock().unwrap_or_else(|e| e.into_inner()) = result.weapon_dispositions;
     }
     if !result.syndicate_catalog.is_empty() {
-        *state.syndicate_catalog.lock().unwrap_or_else(|e| e.into_inner()) = result.syndicate_catalog;
+        *state.syndicate_catalog.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(result.syndicate_catalog);
     }
     count
 }

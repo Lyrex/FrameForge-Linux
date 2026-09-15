@@ -10,6 +10,7 @@ export const TAURI_EVENTS = {
   RIVEN_ROLL_SAVED: "riven-roll-saved",
   INVENTORY_UPDATE: "inventory-update",
   MASTERY_UPDATE: "mastery-update",
+  MASTERY_OBSERVED: "mastery-observed",
   WFM_PRICE_UPDATE: "wfm-price-update",
   RIVEN_OVERLAY_HIDE: "riven-overlay-hide",
   RIVEN_SCANNING_START: "riven-scanning-start",

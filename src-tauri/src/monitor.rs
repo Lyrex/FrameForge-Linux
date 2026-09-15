@@ -715,10 +715,12 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     if outcome.is_some() {
                         last_blob_probe = Some(std::time::Instant::now());
                     }
+                    // A full overview refetch would rerun the planning pass
+                    // to move one pill, so the stamp goes out on its own.
                     if outcome == Some(memory_scanner::ScanOutcome::Unchanged)
                         && mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).reobserve(player.as_deref(), now)
                     {
-                        let _ = app.emit("mastery-update", ());
+                        let _ = app.emit("mastery-observed", now);
                     }
                     if sync_marker {
                         blob_sync_pending.store(true, Ordering::SeqCst);

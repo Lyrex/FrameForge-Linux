@@ -154,6 +154,7 @@ pub struct Wfm {
     auction_limiter: Mutex<RateLimiter>,
     /// Shared with the prefetch thread.
     price_cache: Mutex<std::collections::HashMap<String, PriceQuote>>,
+    quotes_dirty: std::sync::atomic::AtomicBool,
     /// Top-items-by-volume result, cached in memory for the session.
     top_cache: Mutex<Option<(Instant, Vec<WfmTopItem>)>>,
     /// Prime-set (name, slug) pairs, fetched once per session.
@@ -180,6 +181,7 @@ impl Default for Wfm {
             limiter: Mutex::new(RateLimiter::new(3, Duration::from_secs(1))),
             auction_limiter: Mutex::new(RateLimiter::new(10, Duration::from_secs(60))),
             price_cache: Mutex::new(std::collections::HashMap::new()),
+            quotes_dirty: std::sync::atomic::AtomicBool::new(false),
             memo: Mutex::new(std::collections::HashMap::new()),
             memo_flights: Mutex::new(std::collections::HashMap::new()),
             restore_flight: Mutex::new(()),
@@ -1327,7 +1329,10 @@ impl Wfm {
     /// something asks for it.
     fn price_entry_live(quote: &PriceQuote) -> bool {
         let ttl = if quote.price.is_some() { Self::POSITIVE_PRICE_TTL } else { Self::NEGATIVE_PRICE_TTL };
-        quote.fetched_at.is_some_and(|at| crate::cache::now_unix() as i64 - at < ttl.as_secs() as i64)
+        // A stamp ahead of the clock (restored backup, skewed clock) would
+        // otherwise stay live forever, since `seed_price` keeps the newer one.
+        let now = crate::cache::now_unix() as i64;
+        quote.fetched_at.is_some_and(|at| at <= now && now - at < ttl.as_secs() as i64)
     }
 
     /// The cached price for a slug when the entry is still live: `Some(price_opt)`
@@ -1344,6 +1349,13 @@ impl Wfm {
     pub fn cache_price(&self, slug: String, price: Option<u32>) {
         let quote = PriceQuote { price, fetched_at: Some(crate::cache::now_unix() as i64) };
         self.price_cache.lock().unwrap_or_else(|e| e.into_inner()).insert(slug, quote);
+        self.quotes_dirty.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The queue lands a few quotes a second and every save rewrites the
+    /// whole file, so the queue flushes on idle and on a timer.
+    pub fn flush_quotes(&self, path: &std::path::Path) {
+        if self.quotes_dirty.swap(false, std::sync::atomic::Ordering::SeqCst) { self.save_quotes(path); }
     }
 
     /// Offers a quote replayed from disk or the bulk mirror. The newer one
@@ -1624,9 +1636,11 @@ mod tests {
         wfm.seed_price("old_set".into(), quote(Some(40), Some(now - 7 * 3600)));
         wfm.seed_price("unstamped_part".into(), quote(Some(12), None));
         wfm.seed_price("fresh_part".into(), quote(Some(9), Some(now - 60)));
+        wfm.seed_price("future_part".into(), quote(Some(3), Some(now + 7 * 24 * 3600)));
         wfm.cache_price("fetched_now".into(), None);
 
         assert_eq!(wfm.cached_price("old_set"), None);
+        assert_eq!(wfm.cached_price("future_part"), None, "a stamp ahead of the clock is not live");
         assert_eq!(wfm.cached_price("unstamped_part"), None);
         assert_eq!(wfm.cached_price("fresh_part"), Some(Some(9)));
         assert_eq!(wfm.cached_price("fetched_now"), Some(None));
@@ -1660,8 +1674,7 @@ mod tests {
 
     #[test]
     fn quotes_round_trip_through_their_file_with_negatives_included() {
-        let path = std::env::temp_dir().join(format!("frameforge-quotes-{}.json", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        let (_dir, path) = crate::cache::test_scratch("wfm-quotes-round-trip");
         let wfm = Wfm::new();
         wfm.cache_price("part".into(), Some(20));
         wfm.cache_price("unlisted".into(), None);

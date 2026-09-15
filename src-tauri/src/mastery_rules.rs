@@ -96,7 +96,6 @@ pub(crate) fn intrinsic_system(unique_name: &str) -> Option<&'static IntrinsicSy
     INTRINSIC_SYSTEMS.iter().find(|s| s.points == unique_name)
 }
 
-
 /// Why no account can earn a mastery source any more. Settings exclude each
 /// class from the progress denominator independently.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]

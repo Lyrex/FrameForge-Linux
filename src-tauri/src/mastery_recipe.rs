@@ -10,6 +10,7 @@
 //! so a resource behind one stays a shortage rather than unfolding into the
 //! hundreds of thousands of Alloy Plate its recipe asks for.
 
+use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
 use crate::app_state::AppState;
 use crate::inventory_state::{load_inventory_state_cache, InventoryStateCache, CREDITS_PATH};
@@ -184,7 +185,7 @@ impl<'a> Ledger<'a> {
 }
 
 pub(crate) fn plan_all(inventory: &InventoryStateCache, recipes: &HashMap<String, Vec<RecipeComponent>>, targets: &[String]) -> Vec<CraftPlan> {
-    let (stock, owned) = (inventory.stackable_quantities(), inventory.unique_quantities());
+    let (stock, owned) = (inventory.stackable_quantities(), inventory.owned_copies());
     let (mut ledger, _) = Ledger::new(&stock, &owned, &HashSet::new(), &HashMap::new());
     targets.iter().map(|target| ledger.plan(target, recipes.get(target).map_or(&[], Vec::as_slice))).collect()
 }
@@ -193,7 +194,7 @@ pub(crate) fn plan_all(inventory: &InventoryStateCache, recipes: &HashMap<String
 /// The Foundry grid reads this so a card agrees with its modal, which plans
 /// the item alone.
 pub(crate) fn plan_each(inventory: &InventoryStateCache, recipes: &HashMap<String, Vec<RecipeComponent>>, targets: &[String]) -> Vec<CraftPlan> {
-    let (stock, owned) = (inventory.stackable_quantities(), inventory.unique_quantities());
+    let (stock, owned) = (inventory.stackable_quantities(), inventory.owned_copies());
     let (ledger, _) = Ledger::new(&stock, &owned, &HashSet::new(), &HashMap::new());
     targets.iter().map(|target| ledger.clone().plan(target, recipes.get(target).map_or(&[], Vec::as_slice))).collect()
 }
@@ -203,7 +204,7 @@ pub(crate) async fn plan_crafts(app: tauri::AppHandle, unique_names: Vec<String>
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
-        let recipes = state.recipes.lock().unwrap_or_else(|e| e.into_inner());
+        let recipes = Arc::clone(&state.recipes.lock().unwrap_or_else(|e| e.into_inner()));
         if standalone.unwrap_or(false) { plan_each(&inventory, &recipes, &unique_names) } else { plan_all(&inventory, &recipes, &unique_names) }
     }).await.map_err(|e| e.to_string())
 }
