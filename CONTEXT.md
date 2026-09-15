@@ -35,6 +35,9 @@ _Avoid_: url_name, item_url, market id
 **Account state**:
 The player's possessions and progression, including equipment history,
 Intrinsic ranks, and mission completion. Inventory is its owned-item subset.
+Realistically one account per install: mastery progress is keyed per player
+name because switching happens, but everything else holds one account's
+state at a time, and cross-account handling stays as cheap as possible.
 _Avoid_: inventory (when progression is included)
 
 **Mastery source**:
@@ -160,6 +163,13 @@ part has relics enough to roll, partial when a part has no owned source or
 the owned relics cannot yield the parts together, unknown when a relevant
 table carries no chances. Only complete coverage carries a chance, and only a chance strictly
 above 85% puts the route in Suggestions rather than More relics.
+
+**Drop route**:
+A craft plan with a shortage that a mission, bounty, cache, or NPC drops
+outside relics, listed per part as its drop locations with the best chance
+first. It carries no whole-item chance: locations are a where-to-look list,
+not a probability model.
+_Avoid_: farm route, drop source (both name the same thing)
 
 ### The game's log
 
