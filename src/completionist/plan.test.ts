@@ -10,7 +10,7 @@ const opportunity = (name: string, remaining_mastery: number | null, over: Parti
   unique_name: `/Lotus/Weapons/Tenno/${name}`, name, category: "Primary", image_name: null, mastery_req: null,
   cap: 30, earned_rank: 0, remaining_mastery, state: "missing", unobtainable: null, excluded: false,
   stage: "acquire", action: "farm", owned: false, owned_level: null, build_completion_ms: null,
-  vendors: [], spend: null, craft: null, relic: null, purchase: null, access: "available", blockers: [], ...over,
+  vendors: [], spend: null, craft: null, relic: null, drop: null, purchase: null, access: "available", blockers: [], route: null, ...over,
 });
 
 const paths = (list: Opportunity[]) => list.map(o => o.unique_name);
@@ -27,6 +27,10 @@ test("prefill takes candidates in view order until the known gains cover the gap
   // A spend contributes only what the banked points buy.
   const railjack = opportunity("Railjack", 7500, { action: "spend", spend: { ranks: 2, points: 3, mastery: 3000, tracks: [] } });
   assert.deepEqual(prefill([railjack, list[0]], 3500), [railjack.unique_name, list[0].unique_name]);
+  // An unsourced row is never chosen, however much it would cover.
+  const unsourced = opportunity("Argonak", 3000, { stage: "unsourced", action: "acquire", access: "unknown" });
+  assert.deepEqual(prefill([unsourced, list[0]], 3000), [list[0].unique_name]);
+  assert.deepEqual(prefill([unsourced], 3000), []);
 });
 
 test("candidates follow the chosen view with the shared filters, and the addable list leaves out what is already planned", () => {

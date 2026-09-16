@@ -7,14 +7,15 @@ import {
 } from "./suggestions.ts";
 import { RELIC_SUGGESTION_THRESHOLD } from "../constants/relics.ts";
 import { blockerText } from "../constants/blockers.ts";
+import { routeText, SOURCE_UNKNOWN } from "../constants/routes.ts";
 import type { MasteryControls, Preset } from "./suggestions.ts";
-import type { Coverage, DropPart, Listing, Opportunity, PartListing, Purchase, RelicPart } from "../types/mastery.ts";
+import type { Coverage, DropPart, Listing, Opportunity, PartListing, Purchase, RelicPart, RouteKind } from "../types/mastery.ts";
 
 const opportunity = (name: string, over: Partial<Opportunity> = {}): Opportunity => ({
   unique_name: `/Lotus/Weapons/Tenno/${name}`, name, category: "Primary", image_name: null, mastery_req: null,
   cap: 30, earned_rank: 12, remaining_mastery: 1800, state: "partial", unobtainable: null, excluded: false,
   stage: "level_claim", action: "level", owned: true, owned_level: 12, build_completion_ms: null,
-  vendors: [], spend: null, craft: null, relic: null, drop: null, purchase: null, access: "available", blockers: [], ...over,
+  vendors: [], spend: null, craft: null, relic: null, drop: null, purchase: null, access: "available", blockers: [], route: null, ...over,
 });
 
 const NOW = 1_700_000_000;
@@ -202,9 +203,40 @@ test("sorting by name stays inside the stage order", () => {
     opportunity("Braton"),
     opportunity("Amprex", { stage: "acquire", action: "buy", owned: false, owned_level: null, vendors: [{ syndicate: "Steel Meridian", tier: "General", blueprint: false }] }),
     opportunity("Vectis", { stage: "acquire", action: "buy", owned: false, owned_level: null, remaining_mastery: null }),
+    opportunity("Argonak", { stage: "unsourced", action: "acquire", owned: false, owned_level: null, access: "blocked", remaining_mastery: 3000 }),
   ];
-  assert.deepEqual(visibleOpportunities(list, DEFAULT_CONTROLS, "").map(o => o.name), ["Zenith", "Braton", "Amprex", "Vectis"]);
-  assert.deepEqual(visibleOpportunities(list, { ...DEFAULT_CONTROLS, sort: "name" }, "").map(o => o.name), ["Braton", "Zenith", "Amprex", "Vectis"]);
+  assert.deepEqual(visibleOpportunities(list, DEFAULT_CONTROLS, "").map(o => o.name), ["Zenith", "Braton", "Amprex", "Vectis", "Argonak"]);
+  assert.deepEqual(visibleOpportunities(list, { ...DEFAULT_CONTROLS, sort: "name" }, "").map(o => o.name), ["Braton", "Zenith", "Amprex", "Vectis", "Argonak"]);
+  assert.deepEqual(visibleOpportunities(list, { ...DEFAULT_CONTROLS, availability: "available" }, "").map(o => o.name), ["Zenith", "Braton", "Amprex", "Vectis"], "an unsourced row filters like any other");
+});
+
+test("route labels come from the kind, and an acquire row without one reads source unknown", () => {
+  const labels: [RouteKind, string][] = [
+    [{ kind: "craft" }, "Recipe"],
+    [{ kind: "relic" }, "Relic drop"],
+    [{ kind: "drop" }, "Mission drop"],
+    [{ kind: "vendor" }, "Vendor"],
+    [{ kind: "trade" }, "Player trade"],
+    [{ kind: "adversary" }, "Lich, Sister or Technocyte Coda reward"],
+    [{ kind: "conservation" }, "Revived by Son on Deimos"],
+    [{ kind: "market_credits", credits: 25_000 }, "Market, 25,000 credits blueprint"],
+    [{ kind: "baro" }, "Baro Ki'Teer"],
+    [{ kind: "nightwave" }, "Nightwave"],
+    [{ kind: "quest" }, "Quest"],
+    [{ kind: "research", lab: "Tenno Lab" }, "Research at Tenno Lab"],
+  ];
+  for (const [route, label] of labels) assert.equal(routeText(route), label);
+  const acquire = (route: RouteKind | null) => opportunity("Fluctus", { stage: "acquire", action: "acquire", owned: false, owned_level: null, route });
+  assert.equal(actionText(acquire({ kind: "adversary" })), "Lich, Sister or Technocyte Coda reward");
+  assert.equal(actionText(acquire(null)), SOURCE_UNKNOWN);
+  assert.equal(detailText(acquire({ kind: "research", lab: "Tenno Lab" }), 0), "", "the action slot already names the route");
+  // A farm row tells its recipe, relic and drop through the plan, so only an origin kind is repeated in the detail.
+  const farm = (route: RouteKind) => opportunity("Fluctus", { stage: "craft", action: "farm", owned: false, owned_level: null, route,
+    craft: { requirements: [], builds: [], credits: 15_000, credits_short: 0 } });
+  assert.equal(detailText(farm({ kind: "research", lab: "Tenno Lab" }), 0), "Research at Tenno Lab · Credits 15,000");
+  assert.equal(detailText(farm({ kind: "market_credits", credits: 20_000 }), 0), "Market, 20,000 credits blueprint · Credits 15,000");
+  assert.equal(detailText(farm({ kind: "relic" }), 0), "Credits 15,000");
+  assert.equal(detailText(opportunity("Kuva Karak", { route: { kind: "adversary" } }), 0), "Owned copy", "an owned copy is past its route");
 });
 
 test("labels spell out the action, the route and unknowns", () => {

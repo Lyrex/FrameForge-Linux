@@ -7,12 +7,13 @@ use crate::catalogue::fix_category;
 use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache, CREDITS_PATH};
 use crate::mastery_nodes;
 use crate::mastery_progress::{MasteryPlan, PlayerProgress, Provenance, ProvenanceState};
-use crate::mastery_recipe::{blueprint_results, purchasable, CraftPlan, Ledger};
+use crate::mastery_recipe::{blueprint_results, is_blueprint, purchasable, CraftPlan, Ledger};
 use crate::mastery_relics::{Relics, RelicRoute};
 use crate::mastery_rules::{self, Unobtainable};
 use crate::monitor::CraftingJob;
 use crate::resolver::slug_variants;
 use crate::settings::read_settings_map;
+use crate::syndicates::research_lab;
 use crate::wfcd::{DropLocation, RecipeComponent, SyndicateOffer, WfcdItem};
 use crate::wfm::{to_wfm_slug, PriceQuote};
 
@@ -61,6 +62,10 @@ pub(crate) struct MasterySource {
     pub(crate) excluded: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) node: Option<NodeInfo>,
+    /// What the catalogue alone says about where the source comes from.
+    /// `suggest` fills in the mechanical kinds (craft, relic, drop, vendor,
+    /// trade) once a row's plan is known.
+    pub(crate) route: Option<RouteKind>,
 }
 
 /// `unobtainable` counts excluded sources and is not part of `total`.
@@ -106,17 +111,63 @@ pub(crate) struct MasteryProvenance {
     pub(crate) junctions: Provenance,
 }
 
+/// Unsourced holds the rows with remaining mastery and no route at all.
 #[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Stage { LevelClaim, Craft, Acquire }
+pub(crate) enum Stage { LevelClaim, Craft, Acquire, Unsourced }
 
 /// Craft means everything is in stock. Build means intermediates need
 /// crafting first. Farm means parts are short and no vendor sells them.
 /// Trade is a whole item only players sell, so it belongs to the platinum
-/// view alone.
+/// view alone. Acquire is a whole item that comes from its route, or a
+/// source with no route.
 #[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Action { Level, Claim, Spend, Craft, Build, Buy, Farm, Trade, Complete, Unlock }
+pub(crate) enum Action { Level, Claim, Spend, Craft, Build, Buy, Farm, Trade, Acquire, Complete, Unlock }
+
+/// Labels live in the frontend.
+// TODO: Baro, Nightwave and Quest wait on a curated route table, since
+// nothing in the catalogue names them.
+#[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum RouteKind {
+    Craft,
+    Relic,
+    Drop,
+    Vendor,
+    Trade,
+    Adversary,
+    Conservation,
+    MarketCredits { credits: u32 },
+    #[allow(dead_code)]
+    Baro,
+    #[allow(dead_code)]
+    Nightwave,
+    #[allow(dead_code)]
+    Quest,
+    Research { lab: String },
+}
+
+impl RouteKind {
+    /// A route of this kind hands over the item's own blueprint, and the
+    /// parts still have to drop.
+    fn supplies_blueprint(&self) -> bool {
+        matches!(self, Self::MarketCredits { .. } | Self::Research { .. } | Self::Baro | Self::Nightwave | Self::Quest)
+    }
+}
+
+/// A Kuva, Tenet or Coda weapon and a Deimos companion come whole from
+/// their route, so the stub recipe WFCD lists for them is ignored. Research
+/// wins over the blueprint price, which on a lab item is the replication
+/// cost rather than a Market price. Adversary weapons are matched on the
+/// name: Tenet weapons share no path segment and Kuva Bramma sits under
+/// `/Grineer/Bows/`.
+fn derived_route(name: &str, path: &str, bp_cost: Option<u32>) -> Option<RouteKind> {
+    if name.split(' ').any(|word| matches!(word, "Kuva" | "Tenet" | "Coda")) { return Some(RouteKind::Adversary); }
+    if path.contains("/CreaturePets/") && path.ends_with("PetPowerSuit") { return Some(RouteKind::Conservation); }
+    if let Some(lab) = research_lab(name) { return Some(RouteKind::Research { lab: lab.into() }); }
+    bp_cost.map(|credits| RouteKind::MarketCredits { credits })
+}
 
 /// The variant order runs by severity so `max` keeps a blocker over an
 /// open question.
@@ -502,11 +553,14 @@ impl<'a> Rows<'a> {
         let owned = owned_level.is_some() || observed.owned.get(&source.unique_name).is_some_and(|&copies| copies > 0);
         let build_completion_ms = self.building.get(source.unique_name.as_str()).copied();
         let vendors = self.vendors.get(source.unique_name.as_str()).cloned().unwrap_or_default();
+        let whole_from_route = matches!(source.route, Some(RouteKind::Adversary | RouteKind::Conservation));
         let action = if owned { Action::Level }
             else if build_completion_ms.is_some() { Action::Claim }
+            else if whole_from_route { Action::Acquire }
             else if observed.recipes.contains_key(&source.unique_name) { Action::Farm }
             else if !vendors.is_empty() { Action::Buy }
             else if observed.tradeable.contains(&source.unique_name) { Action::Trade }
+            else if source.route.is_some() || source.remaining_mastery.is_some_and(|left| left > 0) { Action::Acquire }
             else { return None };
         Some(Opportunity {
             source: source.clone(), stage: Stage::Acquire, action, owned, owned_level, build_completion_ms, vendors, spend: None,
@@ -527,8 +581,17 @@ fn settle<'a>(o: &mut Opportunity, ledger: &mut Ledger<'a>, observed: &Observed<
         o.craft = Some(plan);
     }
     if matches!(o.action, Action::Spend | Action::Complete | Action::Unlock) { return; }
+    if o.source.route.is_none() {
+        o.source.route = match o.action {
+            Action::Buy => Some(RouteKind::Vendor),
+            Action::Trade => Some(RouteKind::Trade),
+            Action::Craft | Action::Build | Action::Farm => Some(if o.relic.is_some() { RouteKind::Relic } else if o.drop.is_some() { RouteKind::Drop } else { RouteKind::Craft }),
+            _ => None,
+        };
+    }
     o.stage = match o.action {
         Action::Level | Action::Claim => Stage::LevelClaim,
+        Action::Acquire if o.source.route.is_none() => Stage::Unsourced,
         _ if o.craft.is_some() && o.relic.is_none() => Stage::Craft,
         _ => Stage::Acquire,
     };
@@ -832,10 +895,12 @@ fn listing(slug: String, name: String, quotes: &HashMap<String, PriceQuote>) -> 
 /// still short of, or the whole item where no part is. Craft and Build
 /// already have everything in stock, so there is nothing to buy for them.
 fn purchase(o: &Opportunity, observed: &Observed) -> Option<Purchase> {
-    if !matches!(o.action, Action::Buy | Action::Farm | Action::Trade) { return None; }
+    if !matches!(o.action, Action::Buy | Action::Farm | Action::Trade | Action::Acquire) { return None; }
     let source = &o.source;
     let tradeable = |path: &str| observed.tradeable.contains(path);
-    let recipe = observed.recipes.get(&source.unique_name);
+    // A whole item from its route is traded whole, whatever stub recipe the
+    // catalogue lists for it.
+    let recipe = if o.action == Action::Acquire { None } else { observed.recipes.get(&source.unique_name) };
     let requirements = o.craft.as_ref().map(|plan| plan.requirements.as_slice()).unwrap_or_default();
     let parts: Vec<PartListing> = recipe.map(|components| purchasable(&source.unique_name, components, &tradeable)).unwrap_or_default()
         .into_iter()
@@ -918,7 +983,7 @@ fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<Blocker>) {
         Action::Claim => if o.build_completion_ms.is_some_and(|done| done > observed.now_ms) {
             note(Access::Blocked, Blocker::StillBuilding);
         },
-        Action::Craft | Action::Build | Action::Buy | Action::Farm | Action::Trade => {
+        Action::Craft | Action::Build | Action::Buy | Action::Farm | Action::Trade | Action::Acquire => {
             match (o.source.mastery_req, observed.mastery_rank) {
                 (Some(required), Some(rank)) if required > rank => note(Access::Blocked, Blocker::MasteryRankBelow { required }),
                 (Some(required), None) if required > 0 => note(Access::Unknown, Blocker::MasteryRankNotObserved),
@@ -933,10 +998,15 @@ fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<Blocker>) {
                 }
                 // TODO: read standing from the scan. Until then every Buy stays Unknown.
                 Action::Buy => note(Access::Unknown, Blocker::StandingNotObserved),
-                Action::Trade => {}
+                Action::Trade | Action::Acquire => {}
                 _ => {
                     let plan = o.craft.as_ref().expect("a farm row carries its plan");
-                    let located: Vec<&str> = o.relic.iter().flat_map(|r| &r.parts).map(|p| p.unique_name.as_str())
+                    let route_blueprint = o.source.route.as_ref().filter(|route| route.supplies_blueprint())
+                        .and_then(|_| observed.recipes.get(&o.source.unique_name))
+                        .and_then(|components| components.iter().find(|c| is_blueprint(c)))
+                        .map(|c| c.unique_name.as_str());
+                    let located: Vec<&str> = route_blueprint.into_iter()
+                        .chain(o.relic.iter().flat_map(|r| &r.parts).map(|p| p.unique_name.as_str()))
                         .chain(o.drop.iter().flat_map(|r| &r.parts).map(|p| p.unique_name.as_str()))
                         .collect();
                     if plan.shortages().any(|r| !located.contains(&r.unique_name.as_str())) {
@@ -1000,6 +1070,7 @@ pub(crate) fn build_mastery_overview(
             .unwrap_or_else(|| fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name));
         let Some(category) = collection_category(&i.item_type, &display_category) else { continue };
         let name = correction.and_then(|c| c.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| i.name.clone());
+        let route = derived_route(&name, &i.unique_name, i.bp_cost);
         sources.entry(i.unique_name.clone()).or_insert_with(|| MasterySource {
             unique_name: i.unique_name.clone(),
             name,
@@ -1013,6 +1084,7 @@ pub(crate) fn build_mastery_overview(
             unobtainable: correction.and_then(|c| c.unobtainable),
             excluded: correction.and_then(|c| c.unobtainable).is_some_and(|class| excluded.contains(&class)),
             node: None,
+            route,
         });
     }
 
@@ -1052,6 +1124,7 @@ pub(crate) fn build_mastery_overview(
             unobtainable: None,
             excluded: false,
             node: None,
+            route: None,
         };
         let rank = progress.filter(|p| p.intrinsics.state != ProvenanceState::Unknown)
             .map(|p| system.track_ranks(&p.skills).iter().sum());
@@ -1086,6 +1159,7 @@ pub(crate) fn build_mastery_overview(
                 unobtainable: None,
                 excluded: false,
                 node: Some(NodeInfo { key: node.key, planet: node.planet.name, mode, junction: node.junction }),
+                route: None,
             };
             chart.counts.add(&source);
             counts.add(&source);
@@ -1153,7 +1227,7 @@ mod tests {
             item_type: item_type.into(), product_category: product_category.into(),
             image_name: Some(format!("{}.png", name.to_lowercase())), vaulted: None, ducats: None,
             mastery_req: Some(2), omega_attenuation: None, fusion_limit: None,
-            max_level_cap: None, tradable: None, masterable,
+            max_level_cap: None, tradable: None, masterable, bp_cost: None,
         }
     }
 
@@ -1507,6 +1581,80 @@ mod tests {
         opportunities.iter().map(|o| (o.source.name.as_str(), o.action, o.source.remaining_mastery, o.access)).collect()
     }
 
+    /// The rows before the Unsourced stage, which trails every list with
+    /// whatever the fixture left without a route.
+    fn sourced(opportunities: &[Opportunity]) -> &[Opportunity] {
+        let end = opportunities.iter().position(|o| o.stage == Stage::Unsourced).unwrap_or(opportunities.len());
+        &opportunities[..end]
+    }
+
+    #[test]
+    fn each_route_kind_resolves_from_its_source_and_a_source_with_none_is_unsourced() {
+        const FLUCTUS: &str = "/Lotus/Weapons/Tenno/Archwing/Primary/ArchwingShotgun/ArchwingShotgun";
+        const ASTILLA: &str = "/Lotus/Weapons/Tenno/Shotgun/TnSlugShotgun/TnSlugShotgunWeapon";
+        const AMPREX: &str = "/Lotus/Weapons/Tenno/LongGuns/TnElectroRifle/TnElectroRifle";
+        const VULPAPHYLA: &str = "/Lotus/Types/Friendly/Pets/CreaturePets/ArmoredInfestedCatbrowPetPowerSuit";
+        const BRAMMA: &str = "/Lotus/Weapons/Grineer/Bows/GrnBow/GrnBowWeapon";
+        const TORXICA: &str = "/Lotus/Weapons/Infested/InfestedLich/Pistols/DualCodaTorxica";
+        let mut items = catalog();
+        let mut astilla = item("Astilla", ASTILLA, "Shotgun", "LongGuns", "Primary", Some(true));
+        astilla.bp_cost = Some(20_000);
+        let mut amprex = item("Amprex", AMPREX, "Rifle", "LongGuns", "Primary", Some(true));
+        amprex.bp_cost = Some(50_000);
+        items.extend([
+            item("Fluctus", FLUCTUS, "Arch-Gun", "SpaceGuns", "Archwing", Some(true)),
+            astilla, amprex,
+            item("Vulpaphyla", VULPAPHYLA, "Pets", "KubrowPets", "Companions", Some(true)),
+            item("Kuva Bramma", BRAMMA, "Bow", "LongGuns", "Primary", Some(true)),
+            item("Dual Coda Torxica", TORXICA, "Pistol", "Pistols", "Secondary", Some(true)),
+        ]);
+        let owned = HashMap::new();
+        let levels = HashMap::new();
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [
+            recipe(FLUCTUS, "/Lotus/Types/Recipes/Weapons/FluctusBlueprint"),
+            recipe(KUVA, "/Lotus/Types/Recipes/Weapons/KuvaKarakBlueprint"),
+            (ASTILLA.into(), vec![RecipeComponent {
+                unique_name: "/Lotus/Types/Recipes/Weapons/AstillaBlueprint".into(), name: "Astilla Blueprint".into(),
+                count: 1, result_count: 1, components: vec![], credits: Some(25_000), reusable: false,
+            }]),
+        ].into();
+        let offers: HashMap<String, Vec<SyndicateOffer>> = [("Steel Meridian".to_string(), vec![offer(SWEEPER, "General", None)])].into();
+        let tradeable: HashSet<String> = [KUVA.to_string()].into();
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
+        let observed_market = Observed { tradeable: &tradeable, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
+        let overview = with_suggestions(&items, &corrections(), Some(&progress), &HashSet::new(), &observed_market);
+        let row = |name: &str| overview.opportunities.iter().find(|o| o.source.name == name).expect("listed");
+        let routed = |name: &str| { let o = row(name); (o.action, o.stage, o.access, o.source.route.clone()) };
+
+        // A lab item's blueprint price is its replication cost, so research wins.
+        assert_eq!(routed("Fluctus"), (Action::Farm, Stage::Craft, Access::Unknown, Some(RouteKind::Research { lab: "Tenno Lab".into() })));
+        assert_eq!(routed("Amprex"), (Action::Acquire, Stage::Acquire, Access::Available, Some(RouteKind::Research { lab: "Energy Lab".into() })));
+        // The route locates the blueprint itself, so Fluctus is left with
+        // only its chassis blueprint unlocated.
+        assert_eq!(routed("Astilla"), (Action::Farm, Stage::Craft, Access::Available, Some(RouteKind::MarketCredits { credits: 20_000 })));
+        assert_eq!((row("Astilla").blockers.clone(), row("Fluctus").blockers.clone()), (vec![], vec![Blocker::DropSourcesUnknown]));
+        assert_eq!(routed("Vulpaphyla"), (Action::Acquire, Stage::Acquire, Access::Available, Some(RouteKind::Conservation)));
+        assert_eq!(routed("Kuva Bramma"), (Action::Acquire, Stage::Acquire, Access::Available, Some(RouteKind::Adversary)));
+        assert_eq!(routed("Dual Coda Torxica"), (Action::Acquire, Stage::Acquire, Access::Available, Some(RouteKind::Adversary)));
+        assert_eq!(routed("Sweeper"), (Action::Buy, Stage::Acquire, Access::Unknown, Some(RouteKind::Vendor)));
+        // The stub recipe and the market listing do not turn an adversary
+        // weapon into a farm or a trade, and it stays in Suggestions.
+        let kuva = row("Kuva Karak");
+        assert_eq!((kuva.action, kuva.source.route.clone(), kuva.craft.is_none()), (Action::Acquire, Some(RouteKind::Adversary), true));
+        assert_eq!(kuva.purchase.as_ref().and_then(|p| p.set.as_ref()).map(|s| s.slug.as_str()), Some("kuva_karak"));
+
+        // Everything else with mastery left has no route, so it trails as
+        // Unsourced, sorted by mastery then name, with nothing chosen for it.
+        let unsourced: Vec<(&str, u32)> = overview.opportunities.iter().filter(|o| o.stage == Stage::Unsourced)
+            .map(|o| (o.source.name.as_str(), o.source.remaining_mastery.expect("only known remaining mastery is unsourced"))).collect();
+        assert_eq!(unsourced[..4], [("Voidrig", 8_000), ("Bad Baby", 6_000), ("Bhaira Hound", 6_000), ("Sirius & Orion", 6_000)]);
+        assert!(unsourced.windows(2).all(|w| w[0].1 > w[1].1 || (w[0].1 == w[1].1 && w[0].0 < w[1].0)));
+        let braton = row("Braton");
+        assert_eq!((braton.action, braton.stage, braton.access, braton.source.route.clone(), braton.blockers.clone()), (Action::Acquire, Stage::Unsourced, Access::Available, None, vec![]));
+        assert!(overview.opportunities.iter().all(|o| o.stage != Stage::Unsourced || (o.action == Action::Acquire && o.source.route.is_none() && o.craft.is_none() && o.purchase.is_none())));
+        assert_eq!(overview.opportunities.iter().position(|o| o.stage == Stage::Unsourced), Some(overview.opportunities.len() - unsourced.len()), "the stage sorts last");
+    }
+
     #[test]
     fn stages_run_level_claim_acquire_with_known_remaining_first_then_name() {
         let mut items = catalog();
@@ -1533,7 +1681,7 @@ mod tests {
         let overview = with_suggestions(&items, &corrections, Some(&progress), &Unobtainable::ALL.into(),
             &observed_gear(&owned, &levels, &crafting, &recipes, &offers, Some(2)));
 
-        assert_eq!(summary(&overview.opportunities), [
+        assert_eq!(summary(sourced(&overview.opportunities)), [
             ("Voidrig", Action::Claim, Some(8_000), Access::Blocked),
             ("Sirius & Orion", Action::Level, Some(6_000), Access::Available),
             ("Kuva Karak", Action::Claim, Some(4_000), Access::Available),
@@ -1541,7 +1689,7 @@ mod tests {
             ("Catchmoon", Action::Buy, Some(3_000), Access::Unknown),
             ("Sweeper", Action::Buy, Some(3_000), Access::Unknown),
         ]);
-        let stages: Vec<Stage> = overview.opportunities.iter().map(|o| o.stage).collect();
+        let stages: Vec<Stage> = sourced(&overview.opportunities).iter().map(|o| o.stage).collect();
         assert_eq!(stages, [Stage::LevelClaim, Stage::LevelClaim, Stage::LevelClaim, Stage::LevelClaim, Stage::Acquire, Stage::Acquire]);
         let braton = &overview.opportunities[3];
         assert_eq!((braton.owned, braton.owned_level, braton.source.earned_rank, braton.build_completion_ms), (true, Some(12), Some(12), None));
@@ -1568,12 +1716,13 @@ mod tests {
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
         let locked = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
             &observed_gear(&owned, &levels, &[], &recipes, &offers, Some(1)));
-        assert_eq!(summary(&locked.opportunities), [("Sweeper", Action::Buy, Some(3_000), Access::Blocked)]);
-        assert_eq!(locked.opportunities[0].blockers, [Blocker::MasteryRankBelow { required: 2 }, Blocker::StandingNotObserved]);
+        assert_eq!(summary(sourced(&locked.opportunities)), [("Kuva Karak", Action::Acquire, Some(4_000), Access::Blocked), ("Sweeper", Action::Buy, Some(3_000), Access::Blocked)]);
+        assert_eq!(locked.opportunities[1].blockers, [Blocker::MasteryRankBelow { required: 2 }, Blocker::StandingNotObserved]);
+        assert!(locked.opportunities.iter().all(|o| o.blockers.contains(&Blocker::MasteryRankBelow { required: 2 })), "the lock holds whatever the route");
         let unranked = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
             &observed_gear(&owned, &levels, &[], &recipes, &offers, None));
-        assert_eq!(summary(&unranked.opportunities), [("Sweeper", Action::Buy, Some(3_000), Access::Unknown)]);
-        assert_eq!(unranked.opportunities[0].blockers, [Blocker::MasteryRankNotObserved, Blocker::StandingNotObserved]);
+        assert_eq!(summary(sourced(&unranked.opportunities)), [("Kuva Karak", Action::Acquire, Some(4_000), Access::Unknown), ("Sweeper", Action::Buy, Some(3_000), Access::Unknown)]);
+        assert_eq!(unranked.opportunities[1].blockers, [Blocker::MasteryRankNotObserved, Blocker::StandingNotObserved]);
     }
 
     #[test]
@@ -1584,7 +1733,7 @@ mod tests {
         let offers = HashMap::new();
         let unobserved = with_suggestions(&catalog(), &corrections(), None, &HashSet::new(),
             &observed_gear(&owned, &levels, &[], &recipes, &offers, None));
-        assert_eq!(summary(&unobserved.opportunities), [
+        assert_eq!(summary(sourced(&unobserved.opportunities)), [
             ("Braton", Action::Level, None, Access::Available),
             ("Kuva Karak", Action::Level, None, Access::Available),
             ("Sirius & Orion", Action::Level, None, Access::Available),
@@ -1592,7 +1741,7 @@ mod tests {
         let progress = observed(ProvenanceState::Unconfirmed, None, &[(BRATON, 72_000), (KUVA, 612_500)]);
         let unconfirmed = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
             &observed_gear(&owned, &levels, &[], &recipes, &offers, None));
-        assert_eq!(summary(&unconfirmed.opportunities), [
+        assert_eq!(summary(sourced(&unconfirmed.opportunities)), [
             ("Braton", Action::Level, Some(1_800), Access::Available),
             ("Kuva Karak", Action::Level, Some(500), Access::Available),
             ("Sirius & Orion", Action::Level, None, Access::Available),
@@ -1653,7 +1802,7 @@ mod tests {
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(KUVA, 50_000)]);
         let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
             &observed_gear(&owned, &levels, &crafting, &recipes, &offers, Some(30)));
-        assert_eq!(summary(&overview.opportunities), [("Kuva Karak", Action::Level, Some(3_000), Access::Available)]);
+        assert_eq!(summary(sourced(&overview.opportunities)), [("Kuva Karak", Action::Level, Some(3_000), Access::Available)]);
         let kuva = &overview.opportunities[0];
         assert_eq!((kuva.owned_level, kuva.build_completion_ms, kuva.vendors.len()), (Some(10), Some(0), 1));
     }
@@ -1709,12 +1858,12 @@ mod tests {
         let levels: HashMap<String, Vec<u32>> = [(KUVA.to_string(), vec![0])].into();
         let (recipes, offers) = (HashMap::new(), HashMap::new());
         let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_skills(&progress, &recipes, &offers, &owned, &levels));
-        assert_eq!(summary(&overview.opportunities), [
+        assert_eq!(summary(sourced(&overview.opportunities)), [
             ("Railjack", Action::Spend, Some(60_000), Access::Available),
             ("Kuva Karak", Action::Level, Some(4_000), Access::Available),
             ("Drifter", Action::Spend, Some(4_500), Access::Available),
         ], "a spend sorts by what the points buy");
-        assert!(overview.opportunities.iter().all(|o| o.stage == Stage::LevelClaim && o.blockers.is_empty() && o.vendors.is_empty()));
+        assert!(sourced(&overview.opportunities).iter().all(|o| o.stage == Stage::LevelClaim && o.blockers.is_empty() && o.vendors.is_empty()));
         let railjack = overview.opportunities[0].spend.as_ref().expect("spend");
         assert_eq!((railjack.ranks, railjack.points, railjack.mastery), (7, 18, 10_500));
         assert_eq!(railjack.tracks, [track("Gunnery", 0, 3), track("Engineering", 0, 3), track("Command", 2, 3)]);
@@ -1728,7 +1877,7 @@ mod tests {
         let (owned, levels, recipes, offers) = (HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new());
         let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &CAPTURED_SKILLS);
         let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_skills(&progress, &recipes, &offers, &owned, &levels));
-        assert_eq!(summary(&overview.opportunities), [("Railjack", Action::Spend, Some(7_500), Access::Available)], "a mastered Drifter has nothing to buy");
+        assert_eq!(summary(sourced(&overview.opportunities)), [("Railjack", Action::Spend, Some(7_500), Access::Available), ("Kuva Karak", Action::Acquire, Some(4_000), Access::Available)], "a mastered Drifter has nothing to buy");
         let railjack = overview.opportunities[0].spend.as_ref().expect("spend");
         assert_eq!((railjack.ranks, railjack.points, railjack.mastery), (5, 2_048, 7_500));
         assert_eq!(railjack.tracks, [track("Piloting", 9, 10), track("Gunnery", 8, 10), track("Engineering", 8, 10)]);
@@ -1736,11 +1885,11 @@ mod tests {
         // One system has nothing banked and the other sits one point short of its cheapest rank.
         let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &[("LPS_GUNNERY", 4), ("LPP_DRIFTER", 19)]);
         let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_skills(&progress, &recipes, &offers, &owned, &levels));
-        assert!(overview.opportunities.is_empty(), "{:?}", summary(&overview.opportunities));
+        assert!(overview.opportunities.iter().all(|o| o.spend.is_none()), "{:?}", summary(sourced(&overview.opportunities)));
 
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
         let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)));
-        assert!(overview.opportunities.is_empty(), "Unknown Intrinsics suggest nothing");
+        assert!(overview.opportunities.iter().all(|o| o.spend.is_none()), "Unknown Intrinsics suggest nothing");
     }
 
     #[test]
@@ -1771,13 +1920,14 @@ mod tests {
 
         // Craftable targets draw first, so the rows read top to bottom as the
         // ledger ran.
-        assert_eq!(summary(&overview.opportunities), [
+        assert_eq!(summary(sourced(&overview.opportunities)), [
             ("Sirius & Orion", Action::Craft, Some(6_000), Access::Available),
             ("Imperator", Action::Craft, Some(3_000), Access::Available),
             ("Braton", Action::Build, Some(3_000), Access::Blocked),
             ("Sweeper", Action::Buy, Some(3_000), Access::Unknown),
+            ("Kuva Karak", Action::Acquire, Some(4_000), Access::Available),
         ]);
-        assert!(overview.opportunities.iter().all(|o| o.stage == Stage::Craft));
+        assert!(overview.opportunities.iter().take(4).all(|o| o.stage == Stage::Craft));
         let plan = |i: usize| overview.opportunities[i].craft.as_ref().expect("recipe rows carry a plan");
         assert_eq!((plan(0).credits, plan(0).credits_short), (Some(15_000), 0));
         let braton = plan(2);
@@ -1795,11 +1945,12 @@ mod tests {
         let no_offers = HashMap::new();
         let observed_stock = Observed { stock: &stock, ..observed_gear(&owned, &levels, &[], &recipes, &no_offers, Some(30)) };
         let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
-        assert_eq!(summary(&overview.opportunities), [
+        assert_eq!(summary(sourced(&overview.opportunities)), [
             ("Sirius & Orion", Action::Craft, Some(6_000), Access::Unknown),
             ("Imperator", Action::Craft, Some(3_000), Access::Unknown),
             ("Braton", Action::Build, Some(3_000), Access::Unknown),
             ("Sweeper", Action::Farm, Some(3_000), Access::Unknown),
+            ("Kuva Karak", Action::Acquire, Some(4_000), Access::Available),
         ]);
         assert_eq!(overview.opportunities[0].blockers, [Blocker::CreditsNotObserved]);
         assert_eq!(overview.opportunities[3].blockers, [Blocker::DropSourcesUnknown]);
@@ -1928,7 +2079,8 @@ mod tests {
 
         // Prisma Gorgon has no recipe and no vendor, so it becomes a Trade row
         // for the platinum view only, priced as the whole item.
-        let gorgon = overview.opportunities.iter().find(|o| o.source.unique_name == PRISMA_GORGON).expect("trade row");
+        let gorgon_row = |overview: &MasteryOverview| overview.opportunities.iter().find(|o| o.source.unique_name == PRISMA_GORGON).cloned().expect("trade row");
+        let gorgon = gorgon_row(&overview);
         assert_eq!((gorgon.action, gorgon.stage, gorgon.access), (Action::Trade, Stage::Acquire, Access::Available));
         let gorgon = gorgon.purchase.as_ref().expect("whole item purchase");
         assert!(gorgon.parts.is_empty());
@@ -1942,8 +2094,10 @@ mod tests {
         assert_eq!(dera.set.as_ref().map(|s| (s.slug.as_str(), s.price)), Some(("dera_vandal_set", Some(35))));
         assert_eq!(dera.cheapest_finish, Some(Cost { platinum: 35, route: Route::Set }));
 
-        // Sweeper has neither recipe nor vendor nor market, so it gets no row.
-        assert!(!overview.opportunities.iter().any(|o| o.source.unique_name == SWEEPER));
+        // Sweeper has neither recipe nor vendor nor market, so it is unsourced.
+        let sweeper = overview.opportunities.iter().find(|o| o.source.unique_name == SWEEPER).expect("unsourced row");
+        assert_eq!((sweeper.stage, sweeper.source.route.clone(), sweeper.purchase.is_none()), (Stage::Unsourced, None, true));
+        assert_eq!(gorgon_row(&overview).source.route, Some(RouteKind::Trade));
     }
 
     #[test]
@@ -1979,11 +2133,12 @@ mod tests {
         let row = |name: &str| overview.opportunities.iter().find(|o| o.source.name == name).expect("listed");
         let braton = row("Braton");
         assert_eq!((braton.action, braton.access, braton.blockers.clone()), (Action::Farm, Access::Unknown, vec![Blocker::DropSourcesUnknown]));
-        assert!(braton.drop.is_none());
+        assert_eq!((braton.drop.is_none(), braton.source.route.clone()), (true, Some(RouteKind::Craft)));
         // A located drop leaves the row in the Craft stage, since only a relic
         // farm moves to Acquire.
         let sirius = row("Sirius & Orion");
         assert_eq!((sirius.action, sirius.stage, sirius.access, sirius.blockers.clone()), (Action::Farm, Stage::Craft, Access::Available, vec![]));
+        assert_eq!(sirius.source.route, Some(RouteKind::Drop));
         let route = sirius.drop.as_ref().expect("the blueprint has drop locations");
         assert_eq!(route.parts.iter().map(|p| (p.unique_name.as_str(), p.name.as_str(), p.short)).collect::<Vec<_>>(), [(SIRIUS_BP, "Blueprint", 1)]);
         assert_eq!(route.parts[0].locations.iter().map(|d| (d.location.as_str(), d.chance)).collect::<Vec<_>>(), [
@@ -2003,7 +2158,7 @@ mod tests {
         let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
         let sirius = overview.opportunities.iter().find(|o| o.source.name == "Sirius & Orion").expect("listed");
         assert_eq!(sirius.relic.as_ref().map(|r| r.coverage.clone()), Some(Coverage::Partial { missing: vec!["Blueprint".into()], short: vec![] }));
-        assert!(sirius.drop.is_none());
+        assert_eq!((sirius.drop.is_none(), sirius.source.route.clone()), (true, Some(RouteKind::Relic)));
         assert_eq!(sirius.blockers, []);
     }
 
@@ -2033,11 +2188,12 @@ mod tests {
         let relics = Relics::new(&stock, &tables, &names);
         let observed_stock = Observed { stock: &stock, relics: &relics, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
         let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
-        assert_eq!(summary(&overview.opportunities), [
+        assert_eq!(summary(sourced(&overview.opportunities)), [
             ("Braton", Action::Farm, Some(3_000), Access::Unknown),
             ("Sirius & Orion", Action::Farm, Some(6_000), Access::Unknown),
+            ("Kuva Karak", Action::Acquire, Some(4_000), Access::Available),
         ]);
-        assert_eq!(overview.opportunities.iter().map(|o| o.stage).collect::<Vec<_>>(), [Stage::Craft, Stage::Acquire]);
+        assert_eq!(overview.opportunities.iter().take(3).map(|o| o.stage).collect::<Vec<_>>(), [Stage::Craft, Stage::Acquire, Stage::Acquire]);
         let braton = &overview.opportunities[0];
         let sirius = &overview.opportunities[1];
         let ferrite = |o: &Opportunity| o.craft.as_ref().expect("recipe rows carry a plan").requirements.iter().find(|r| r.unique_name == FERRITE).map(|r| (r.from_stock, r.short));
@@ -2274,34 +2430,34 @@ mod tests {
 
     #[test]
     fn an_allowance_spends_a_mastered_owned_piece_and_is_refused_for_an_unmastered_one() {
-        const KUVA_BP: &str = "/Lotus/Types/Recipes/Weapons/KuvaKarakBlueprint";
+        const IMPERATOR_BP: &str = "/Lotus/Types/Recipes/Weapons/ImperatorBlueprint";
         let component = |unique_name: &str, name: &str, count: u32, credits: Option<u32>| RecipeComponent {
             unique_name: unique_name.into(), name: name.into(), count, result_count: 1, components: vec![], credits, reusable: false,
         };
-        let recipes: HashMap<String, Vec<RecipeComponent>> = [(KUVA.to_string(), vec![
-            component(KUVA_BP, "Blueprint", 1, Some(15_000)), component(BRATON, "Braton", 1, None), component(FERRITE, "Ferrite", 50, None),
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [(IMPERATOR.to_string(), vec![
+            component(IMPERATOR_BP, "Blueprint", 1, Some(15_000)), component(BRATON, "Braton", 1, None), component(FERRITE, "Ferrite", 50, None),
         ])].into();
         let owned: HashMap<String, i64> = [(BRATON.to_string(), 1), (SIRIUS.to_string(), 1)].into();
         let levels = HashMap::new();
         let offers = HashMap::new();
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(BRATON, 450_000)]);
-        let stock: HashMap<String, i64> = [(KUVA_BP, 1), (FERRITE, 100), (CREDITS_PATH, 100_000)]
+        let stock: HashMap<String, i64> = [(IMPERATOR_BP, 1), (FERRITE, 100), (CREDITS_PATH, 100_000)]
             .into_iter().map(|(path, n)| (path.to_string(), n)).collect();
         let observed_stock = Observed { stock: &stock, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
         let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
 
-        let evaluation = evaluate(&overview, Some(&observed_stock), &plan(31, &[KUVA]));
-        let kuva = &evaluation.entries[0];
-        assert_eq!(kuva.opportunity.as_ref().map(|o| o.action), Some(Action::Farm));
-        assert_eq!(kuva.allowable, [Allowable { unique_name: BRATON.into(), name: "Braton".into(), owned: 1 }]);
+        let evaluation = evaluate(&overview, Some(&observed_stock), &plan(31, &[IMPERATOR]));
+        let imperator = &evaluation.entries[0];
+        assert_eq!(imperator.opportunity.as_ref().map(|o| o.action), Some(Action::Farm));
+        assert_eq!(imperator.allowable, [Allowable { unique_name: BRATON.into(), name: "Braton".into(), owned: 1 }]);
         assert!(evaluation.rejected_allowances.is_empty());
 
-        let mut allowed = plan(31, &[KUVA]);
+        let mut allowed = plan(31, &[IMPERATOR]);
         allowed.allowances = [(BRATON.to_string(), 1), (SIRIUS.to_string(), 1)].into();
         let evaluation = evaluate(&overview, Some(&observed_stock), &allowed);
-        let kuva = &evaluation.entries[0];
-        assert_eq!(kuva.opportunity.as_ref().map(|o| o.action), Some(Action::Craft));
-        assert!(kuva.allowable.is_empty());
+        let imperator = &evaluation.entries[0];
+        assert_eq!(imperator.opportunity.as_ref().map(|o| o.action), Some(Action::Craft));
+        assert!(imperator.allowable.is_empty());
         assert_eq!(evaluation.rejected_allowances, [SIRIUS]);
     }
 
@@ -2319,7 +2475,7 @@ mod tests {
             .into_iter().map(|(path, n)| (path.to_string(), n)).collect();
         let observed_stock = Observed { stock: &stock, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(1)) };
         let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
-        assert_eq!(summary(&overview.opportunities), [("Braton", Action::Craft, Some(3_000), Access::Blocked)]);
+        assert_eq!(summary(sourced(&overview.opportunities)), [("Braton", Action::Craft, Some(3_000), Access::Blocked), ("Kuva Karak", Action::Acquire, Some(4_000), Access::Blocked)]);
         assert_eq!(overview.opportunities[0].blockers, [Blocker::MasteryRankBelow { required: 2 }, Blocker::CreditCostUnknown]);
     }
 }

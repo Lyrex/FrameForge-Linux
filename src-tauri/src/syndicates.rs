@@ -96,11 +96,119 @@ pub(crate) fn get_syndicate_stores(state: State<AppState>) -> Vec<SyndicateStore
 
 // ─── Research lab stores ─────────────────────────────────────────────────────
 
-/// Returns clan dojo research lab stores, one per lab.
-///
-/// Items are discovered by scanning the WFCD catalog for unique_name paths that
-/// contain the lab's path segment (e.g. ".../BioLab/...").  This is authoritative
-/// and self-updating — no item list hardcoding needed.
+/// Item display names per dojo research room, without the " Blueprint"
+/// suffix. Each is looked up by name in the WFCD catalog, and a name the
+/// catalog lacks is skipped.
+pub(crate) const LABS: &[(&str, &[&str])] = &[
+    ("Bio Lab", &[
+        // Resources
+        "Infested Catalyst", "Mutagen Mass",
+        // Consumables
+        "Squad Health Restore (Medium)", "Squad Health Restore (Large)",
+        // Weapons / Companions
+        "Acrid", "Bubonico", "Caustacyst", "Catabolyst", "Cerata",
+        "Djinn", "Dual Ichor", "Dual Toxocyst", "Embolist", "Hema",
+        "Mios", "Mutalist Quanta", "Paracyst", "Phage", "Pox",
+        "Pupacyst", "Scoliac", "Synapse", "Torid",
+    ]),
+    ("Chem Lab", &[
+        // Resources
+        "Detonite Injector",
+        // Consumables
+        "Squad Ammo Restore (Medium)", "Squad Ammo Restore (Large)",
+        // Weapons
+        "Ack & Brunt", "Argonak", "Buzlok", "Grinlok", "Grattler",
+        "Ignis", "Ignis Wraith", "Javlok", "Jat Kittag", "Jat Kusar",
+        "Kesheg", "Knux", "Kohmak", "Marelok", "Nukor",
+        "Ogris", "Sydon", "Twin Krohkur",
+    ]),
+    ("Energy Lab", &[
+        // Resources
+        "Fieldron", "Antiserum Injector",
+        // Consumables
+        "Squad Shield Restore (Medium)", "Squad Shield Restore (Large)",
+        "Squad Energy Restore (Medium)", "Squad Energy Restore (Large)",
+        // Weapons / Companions
+        "Amprex", "Arca Plasmor", "Arca Scisco", "Battacor", "Convectrix",
+        "Cycron", "Cyanex", "Dera", "Dual Cestra", "Falcor",
+        "Ferrox", "Flux Rifle", "Glaxion", "Helios", "Komorex",
+        "Kreska", "Lanka", "Lenz", "Ocucor", "Opticor",
+        "Prova", "Quanta", "Serro", "Spectra", "Staticor", "Supra",
+    ]),
+    ("Tenno Lab", &[
+        // Misc / consumables
+        "Air Support Charges", "Cipher", "Synthula", "Loc-Pin", "Gravimag",
+        "Calcifin Stim", "Adrenal Stim", "Refract Stim", "Clotra Stim",
+        // Segments
+        "Kavat Incubator Upgrade Segment", "Landing Craft Foundry Segment",
+        "Nutrio Incubator Upgrade Segment",
+        // Weapons
+        "Akstiletto", "Anku", "Attica", "Baza", "Cassowar",
+        "Castanas", "Daikyu", "Dark Split-Sword", "Dual Raza", "Endura",
+        "Fluctus", "Gazal Machete", "Guandao", "Gunsen", "Lacera",
+        "Larkspur", "Masseter", "Nami Skyla", "Nikana", "Okina",
+        "Pyrana", "Scourge", "Shaku", "Silva & Aegis", "Sybaris",
+        "Talons", "Tenora", "Tonbo", "Veldt", "Velocitus",
+        "Venato", "Venka", "Zakti",
+        // Warframes + components
+        "Banshee", "Banshee Chassis", "Banshee Neuroptics", "Banshee Systems",
+        "Nezha",   "Nezha Chassis",   "Nezha Neuroptics",   "Nezha Systems",
+        "Volt",    "Volt Chassis",    "Volt Neuroptics",    "Volt Systems",
+        "Wukong",  "Wukong Chassis",  "Wukong Neuroptics",  "Wukong Systems",
+        "Zephyr",  "Zephyr Chassis",  "Zephyr Neuroptics",  "Zephyr Systems",
+        // Archwings + components
+        "Amesha", "Amesha Harness", "Amesha Systems", "Amesha Wings",
+        "Elytron", "Elytron Harness", "Elytron Systems", "Elytron Wings",
+        "Itzal",   "Itzal Harness",   "Itzal Systems",   "Itzal Wings",
+    ]),
+    ("Orokin Lab", &[
+        "Bleeding Dragon Key", "Decaying Dragon Key",
+        "Extinguished Dragon Key", "Hobbled Dragon Key",
+    ]),
+    ("Ventkids Bash Lab", &[
+        // Yareli components (base blueprint from Waverider quest, not dojo)
+        "Yareli Neuroptics", "Yareli Chassis", "Yareli Systems",
+        // Ghoulsaw + components
+        "Ghoulsaw", "Ghoulsaw Blade", "Ghoulsaw Chassis", "Ghoulsaw Engine", "Ghoulsaw Grip",
+        // Emotes / cosmetics
+        "Greedy Milk", "Hang Tenno", "Puppeteer",
+        "Ostron Explorer", "Ostron Gatherer", "Ostron Relaxed", "Ostron Trader Woman",
+        "Solaris Foreman", "Solaris Hazard Worker", "Solaris Rig Jockey",
+    ]),
+    ("Dry Docks", &[
+        // Railjack weapons (Mk I/II/III — WFCD uses lowercase roman numerals but lookup is case-insensitive)
+        "Apoc Mk I",      "Apoc Mk II",      "Apoc Mk III",
+        "Carcinnox Mk I", "Carcinnox Mk II", "Carcinnox Mk III",
+        "Cryophon Mk I",  "Cryophon Mk II",  "Cryophon Mk III",
+        "Galvarc Mk I",   "Galvarc Mk II",   "Galvarc Mk III",
+        "Glazio Mk I",    "Glazio Mk II",    "Glazio Mk III",
+        "Laith Mk I",     "Laith Mk II",     "Laith Mk III",
+        "Milati Mk I",    "Milati Mk II",    "Milati Mk III",
+        "Photor Mk I",    "Photor Mk II",    "Photor Mk III",
+        "Pulsar Mk I",    "Pulsar Mk II",    "Pulsar Mk III",
+        "Talyn Mk I",     "Talyn Mk II",     "Talyn Mk III",
+        "Tycho Seeker Mk I", "Tycho Seeker Mk II", "Tycho Seeker Mk III",
+        "Vort Mk I",      "Vort Mk II",      "Vort Mk III",
+        // Railjack components
+        "Engines Mk I",     "Engines Mk II",     "Engines Mk III",
+        "Plating Mk I",     "Plating Mk II",     "Plating Mk III",
+        "Reactor Mk I",     "Reactor Mk II",     "Reactor Mk III",
+        "Shield Array Mk I","Shield Array Mk II","Shield Array Mk III",
+    ]),
+    ("Dagath's Hollow", &[
+        // Dagath warframe + components
+        "Dagath", "Dagath Chassis", "Dagath Neuroptics", "Dagath Systems",
+        // Dorrclave weapon + components (components are raw blueprints in WFCD)
+        "Dorrclave", "Dorrclave Blade", "Dorrclave Hilt", "Dorrclave Hook", "Dorrclave String",
+    ]),
+];
+
+pub(crate) fn research_lab(name: &str) -> Option<&'static str> {
+    LABS.iter().find(|(_, names)| names.iter().any(|n| n.eq_ignore_ascii_case(name))).map(|(lab, _)| *lab)
+}
+
+/// Returns clan dojo research lab stores, one per lab. Items come from the
+/// `LABS` name table because WFCD paths carry no lab segment to scan for.
 ///
 /// For each discovered item:
 ///   • If a matching "<Name> Blueprint" exists in the catalog:
@@ -114,112 +222,6 @@ pub(crate) fn get_syndicate_stores(state: State<AppState>) -> Vec<SyndicateStore
 #[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_research_lab_stores(state: State<AppState>) -> Vec<SyndicateStore> {
-    // Hardcoded item display names per lab (base name, no " Blueprint" suffix).
-    // Looked up by name in the WFCD catalog; items not found are silently skipped.
-    const LABS: &[(&str, &[&str])] = &[
-        ("Bio Lab", &[
-            // Resources
-            "Infested Catalyst", "Mutagen Mass",
-            // Consumables
-            "Squad Health Restore (Medium)", "Squad Health Restore (Large)",
-            // Weapons / Companions
-            "Acrid", "Bubonico", "Caustacyst", "Catabolyst", "Cerata",
-            "Djinn", "Dual Ichor", "Dual Toxocyst", "Embolist", "Hema",
-            "Mios", "Mutalist Quanta", "Paracyst", "Phage", "Pox",
-            "Pupacyst", "Scoliac", "Synapse", "Torid",
-        ]),
-        ("Chem Lab", &[
-            // Resources
-            "Detonite Injector",
-            // Consumables
-            "Squad Ammo Restore (Medium)", "Squad Ammo Restore (Large)",
-            // Weapons
-            "Ack & Brunt", "Argonak", "Buzlok", "Grinlok", "Grattler",
-            "Ignis", "Ignis Wraith", "Javlok", "Jat Kittag", "Jat Kusar",
-            "Kesheg", "Knux", "Kohmak", "Marelok", "Nukor",
-            "Ogris", "Sydon", "Twin Krohkur",
-        ]),
-        ("Energy Lab", &[
-            // Resources
-            "Fieldron", "Antiserum Injector",
-            // Consumables
-            "Squad Shield Restore (Medium)", "Squad Shield Restore (Large)",
-            "Squad Energy Restore (Medium)", "Squad Energy Restore (Large)",
-            // Weapons / Companions
-            "Amprex", "Arca Plasmor", "Arca Scisco", "Battacor", "Convectrix",
-            "Cycron", "Cyanex", "Dera", "Dual Cestra", "Falcor",
-            "Ferrox", "Flux Rifle", "Glaxion", "Helios", "Komorex",
-            "Kreska", "Lanka", "Lenz", "Ocucor", "Opticor",
-            "Prova", "Quanta", "Serro", "Spectra", "Staticor", "Supra",
-        ]),
-        ("Tenno Lab", &[
-            // Misc / consumables
-            "Air Support Charges", "Cipher", "Synthula", "Loc-Pin", "Gravimag",
-            "Calcifin Stim", "Adrenal Stim", "Refract Stim", "Clotra Stim",
-            // Segments
-            "Kavat Incubator Upgrade Segment", "Landing Craft Foundry Segment",
-            "Nutrio Incubator Upgrade Segment",
-            // Weapons
-            "Akstiletto", "Anku", "Attica", "Baza", "Cassowar",
-            "Castanas", "Daikyu", "Dark Split-Sword", "Dual Raza", "Endura",
-            "Fluctus", "Gazal Machete", "Guandao", "Gunsen", "Lacera",
-            "Larkspur", "Masseter", "Nami Skyla", "Nikana", "Okina",
-            "Pyrana", "Scourge", "Shaku", "Silva & Aegis", "Sybaris",
-            "Talons", "Tenora", "Tonbo", "Veldt", "Velocitus",
-            "Venato", "Venka", "Zakti",
-            // Warframes + components
-            "Banshee", "Banshee Chassis", "Banshee Neuroptics", "Banshee Systems",
-            "Nezha",   "Nezha Chassis",   "Nezha Neuroptics",   "Nezha Systems",
-            "Volt",    "Volt Chassis",    "Volt Neuroptics",    "Volt Systems",
-            "Wukong",  "Wukong Chassis",  "Wukong Neuroptics",  "Wukong Systems",
-            "Zephyr",  "Zephyr Chassis",  "Zephyr Neuroptics",  "Zephyr Systems",
-            // Archwings + components
-            "Amesha", "Amesha Harness", "Amesha Systems", "Amesha Wings",
-            "Elytron", "Elytron Harness", "Elytron Systems", "Elytron Wings",
-            "Itzal",   "Itzal Harness",   "Itzal Systems",   "Itzal Wings",
-        ]),
-        ("Orokin Lab", &[
-            "Bleeding Dragon Key", "Decaying Dragon Key",
-            "Extinguished Dragon Key", "Hobbled Dragon Key",
-        ]),
-        ("Ventkids Bash Lab", &[
-            // Yareli components (base blueprint from Waverider quest, not dojo)
-            "Yareli Neuroptics", "Yareli Chassis", "Yareli Systems",
-            // Ghoulsaw + components
-            "Ghoulsaw", "Ghoulsaw Blade", "Ghoulsaw Chassis", "Ghoulsaw Engine", "Ghoulsaw Grip",
-            // Emotes / cosmetics
-            "Greedy Milk", "Hang Tenno", "Puppeteer",
-            "Ostron Explorer", "Ostron Gatherer", "Ostron Relaxed", "Ostron Trader Woman",
-            "Solaris Foreman", "Solaris Hazard Worker", "Solaris Rig Jockey",
-        ]),
-        ("Dry Docks", &[
-            // Railjack weapons (Mk I/II/III — WFCD uses lowercase roman numerals but lookup is case-insensitive)
-            "Apoc Mk I",      "Apoc Mk II",      "Apoc Mk III",
-            "Carcinnox Mk I", "Carcinnox Mk II", "Carcinnox Mk III",
-            "Cryophon Mk I",  "Cryophon Mk II",  "Cryophon Mk III",
-            "Galvarc Mk I",   "Galvarc Mk II",   "Galvarc Mk III",
-            "Glazio Mk I",    "Glazio Mk II",    "Glazio Mk III",
-            "Laith Mk I",     "Laith Mk II",     "Laith Mk III",
-            "Milati Mk I",    "Milati Mk II",    "Milati Mk III",
-            "Photor Mk I",    "Photor Mk II",    "Photor Mk III",
-            "Pulsar Mk I",    "Pulsar Mk II",    "Pulsar Mk III",
-            "Talyn Mk I",     "Talyn Mk II",     "Talyn Mk III",
-            "Tycho Seeker Mk I", "Tycho Seeker Mk II", "Tycho Seeker Mk III",
-            "Vort Mk I",      "Vort Mk II",      "Vort Mk III",
-            // Railjack components
-            "Engines Mk I",     "Engines Mk II",     "Engines Mk III",
-            "Plating Mk I",     "Plating Mk II",     "Plating Mk III",
-            "Reactor Mk I",     "Reactor Mk II",     "Reactor Mk III",
-            "Shield Array Mk I","Shield Array Mk II","Shield Array Mk III",
-        ]),
-        ("Dagath's Hollow", &[
-            // Dagath warframe + components
-            "Dagath", "Dagath Chassis", "Dagath Neuroptics", "Dagath Systems",
-            // Dorrclave weapon + components (components are raw blueprints in WFCD)
-            "Dorrclave", "Dorrclave Blade", "Dorrclave Hilt", "Dorrclave Hook", "Dorrclave String",
-        ]),
-    ];
-
     // Build reverse ingredient map before acquiring other locks.
     // ingredient_unique_name → parent_unique_name (from ExportRecipes data)
     let ingredient_to_parent: std::collections::HashMap<String, String> = {

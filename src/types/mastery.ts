@@ -30,7 +30,24 @@ export interface MasterySource {
   excluded: boolean;
   /** Present on star chart rows only, where `cap` is 1 and `earned_rank` is 0 or 1. */
   node?: NodeInfo;
+  /** What the catalogue says about where the source comes from. An opportunity fills in the mechanical kinds once its plan is known. */
+  route: RouteKind | null;
 }
+
+/** Labels live in `constants/routes.ts`. */
+export type RouteKind =
+  | { kind: "craft" }
+  | { kind: "relic" }
+  | { kind: "drop" }
+  | { kind: "vendor" }
+  | { kind: "trade" }
+  | { kind: "adversary" }
+  | { kind: "conservation" }
+  | { kind: "market_credits"; credits: number }
+  | { kind: "baro" }
+  | { kind: "nightwave" }
+  | { kind: "quest" }
+  | { kind: "research"; lab: string };
 
 export interface MasteryCounts {
   /** Excludes the `unobtainable` count. */
@@ -63,9 +80,10 @@ export interface MasteryProvenance {
   junctions: Provenance;
 }
 
-export type Stage = "level_claim" | "craft" | "acquire";
-/** Craft means everything is in stock. Build means intermediates need crafting first. Farm means parts are short and no vendor sells them. Trade is a whole item only players sell, so it belongs to the platinum view alone. */
-export type Action = "level" | "claim" | "spend" | "craft" | "build" | "buy" | "farm" | "trade" | "complete" | "unlock";
+/** Unsourced holds the rows with remaining mastery and no route at all. */
+export type Stage = "level_claim" | "craft" | "acquire" | "unsourced";
+/** Craft means everything is in stock. Build means intermediates need crafting first. Farm means parts are short and no vendor sells them. Trade is a whole item only players sell, so it belongs to the platinum view alone. Acquire is a whole item that comes from its route, or a source with no route. */
+export type Action = "level" | "claim" | "spend" | "craft" | "build" | "buy" | "farm" | "trade" | "acquire" | "complete" | "unlock";
 export type Access = "available" | "blocked" | "unknown";
 
 export type Blocker =

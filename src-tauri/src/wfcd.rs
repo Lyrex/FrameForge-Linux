@@ -29,6 +29,11 @@ pub struct WfcdItem {
     pub tradable: Option<bool>,
     /// Whether levelling this item grants mastery XP (masterable from WFCD).
     pub masterable: Option<bool>,
+    /// What the Market charges in credits for the blueprint (bpCost from
+    /// WFCD). Also set on dojo research items, where it is the replication
+    /// cost rather than a Market price.
+    #[serde(default)]
+    pub bp_cost: Option<u32>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -725,10 +730,12 @@ fn build_recipe_node(
     }
 
     let (result_count, components) = if let Some(recipe) = export_recipes.get(&unique_name) {
+        // Archwing parts arrive already named "… Blueprint", so the fallback
+        // must not append it a second time.
         let blueprint_name = display_names
             .get(&recipe.blueprint_unique)
             .cloned()
-            .unwrap_or_else(|| format!("{} Blueprint", name));
+            .unwrap_or_else(|| if name.ends_with(" Blueprint") { name.clone() } else { format!("{name} Blueprint") });
 
         let mut components = vec![RecipeComponent {
             unique_name: recipe.blueprint_unique.clone(),
@@ -977,6 +984,7 @@ fn fetch_from_wfcd(
             let max_level_cap     = item.get("maxLevelCap").and_then(|v| v.as_u64()).map(|n| n as u32);
             let tradable          = item.get("tradable").and_then(|v| v.as_bool());
             let masterable        = item.get("masterable").and_then(|v| v.as_bool());
+            let bp_cost           = item.get("bpCost").and_then(|v| v.as_u64()).map(|n| n as u32);
 
             // `category` (display category from wfcd_category_to_display) groups similar WFCD
             // categories together (e.g. "Sentinels"+"SentinelWeapons"+"Pets" → "Companions").
@@ -1014,7 +1022,7 @@ fn fetch_from_wfcd(
                     product_category: product_category.clone(),
                     image_name: image_name.clone(),
                     vaulted, ducats, mastery_req, omega_attenuation, fusion_limit, max_level_cap,
-                    tradable, masterable,
+                    tradable, masterable, bp_cost,
                 });
             }
 
@@ -1128,6 +1136,7 @@ fn fetch_from_wfcd(
                             max_level_cap: None,
                             tradable: None,
                             masterable: None,
+                            bp_cost: None,
                         });
 
                         // Note: blueprint entries for these components are provided by
@@ -1223,6 +1232,7 @@ fn fetch_from_wfcd(
                             max_level_cap:    None,
                             tradable:         None,
                             masterable:       None,
+                            bp_cost:          None,
                         });
                     }
                 }
@@ -1255,6 +1265,7 @@ fn fetch_from_wfcd(
                             max_level_cap:    None,
                             tradable:         None,
                             masterable:       None,
+                            bp_cost:          None,
                         });
                     }
                 }
@@ -1288,6 +1299,7 @@ fn fetch_from_wfcd(
                     max_level_cap:    None,
                     tradable:         None,
                     masterable:       None,
+                    bp_cost:          None,
                 });
             }
         }
@@ -1339,6 +1351,7 @@ fn fetch_from_wfcd(
                             max_level_cap:    None,
                             tradable:         None,
                             masterable:       None,
+                            bp_cost:          None,
                         });
                     }
 
@@ -1358,6 +1371,12 @@ fn fetch_from_wfcd(
             item.name = item.name.replace(" Blueprint Blueprint", " Blueprint");
         }
     }
+
+    // Pass 3 renamed the built parts and added their blueprints, so the
+    // recipe trees read names from the items as they stand now.
+    let display_names: HashMap<String, String> = items.iter()
+        .map(|i| (i.unique_name.clone(), i.name.clone()))
+        .collect();
 
     // Build recipe trees
     let prices = blueprint_prices(recipes_json);
@@ -1487,7 +1506,7 @@ pub fn fallback_items() -> Vec<WfcdItem> {
         name: n.to_string(),
         category: c.to_string(),
         item_type: String::new(), product_category: String::new(),
-        image_name: None, vaulted: None, ducats: None, mastery_req: None, omega_attenuation: None, fusion_limit: None, max_level_cap: None, tradable: None, masterable: None,
+        image_name: None, vaulted: None, ducats: None, mastery_req: None, omega_attenuation: None, fusion_limit: None, max_level_cap: None, tradable: None, masterable: None, bp_cost: None,
     })
     .collect()
 }
@@ -1590,6 +1609,47 @@ mod tests {
         assert_eq!(at(BARREL), Some(vec![("Corrupted Vor", Some(50.0)), ("Cephalon Simaris", None)]));
         assert_eq!(at(CELL), Some(vec![("Corrupted Vor", Some(50.0)), ("Saturn/Titan (Survival), Rotation C", Some(12.5))]));
         assert!(!out.drop_locations.contains_key(AXI));
+    }
+
+    /// A Warframe part is renamed to its built name once the export names
+    /// its blueprint; an Archwing part keeps WFCD's "… Blueprint" name, so
+    /// its blueprint node must not gain the suffix again.
+    #[test]
+    fn recipe_blueprint_nodes_carry_the_suffix_once_and_the_market_credit_price_is_kept() {
+        const FROST_CHASSIS: &str = "/Lotus/Types/Recipes/WarframeRecipes/FrostChassisComponent";
+        const FROST_CHASSIS_BP: &str = "/Lotus/Types/Recipes/WarframeRecipes/FrostChassisBlueprint";
+        const ELYTRON_HARNESS: &str = "/Lotus/Types/Recipes/ArchwingRecipes/DemolitionArchwing/DemolitionArchwingChassisComponent";
+        const ELYTRON_HARNESS_BP: &str = "/Lotus/Types/Recipes/ArchwingRecipes/DemolitionArchwing/DemolitionArchwingChassisBlueprint";
+        const FERRITE: &str = "/Lotus/Types/Items/MiscItems/Ferrite";
+        let frost = serde_json::json!({
+            "name": "Frost", "uniqueName": "/Lotus/Powersuits/Frost/Frost", "category": "Warframes",
+            "components": [{ "name": "Chassis", "uniqueName": FROST_CHASSIS, "itemCount": 1 }],
+        });
+        let elytron = serde_json::json!({
+            "name": "Elytron", "uniqueName": "/Lotus/Powersuits/Archwing/DemolitionJetPack/DemolitionJetPack", "category": "Archwing",
+            "components": [{ "name": "Harness", "uniqueName": ELYTRON_HARNESS, "itemCount": 1 }],
+        });
+        let astilla = serde_json::json!({
+            "name": "Astilla", "uniqueName": "/Lotus/Weapons/Tenno/Shotgun/TnSlugShotgun/TnSlugShotgunWeapon", "category": "Primary", "bpCost": 20000,
+        });
+        let export = serde_json::json!({
+            FROST_CHASSIS_BP: { "resultType": FROST_CHASSIS, "buildPrice": 15000, "ingredients": [{ "ItemType": FERRITE, "ItemCount": 1000 }] },
+            ELYTRON_HARNESS_BP: { "resultType": ELYTRON_HARNESS, "buildPrice": 15000, "ingredients": [{ "ItemType": FERRITE, "ItemCount": 1000 }] },
+        });
+        let out = fetch_from_wfcd(&[&frost, &elytron, &astilla], Some(&export), None, None).expect("fixture builds");
+
+        let names = |result: &str| -> Vec<(String, String)> {
+            out.recipes[result].iter().flat_map(|part| std::iter::once((part.unique_name.clone(), part.name.clone()))
+                .chain(part.components.iter().map(|c| (c.unique_name.clone(), c.name.clone())))).collect()
+        };
+        assert_eq!(names("/Lotus/Powersuits/Frost/Frost"), [
+            (FROST_CHASSIS.to_string(), "Frost Chassis".to_string()),
+            (FROST_CHASSIS_BP.to_string(), "Frost Chassis Blueprint".to_string()),
+            (FERRITE.to_string(), "Ferrite".to_string()),
+        ]);
+        assert_eq!(names("/Lotus/Powersuits/Archwing/DemolitionJetPack/DemolitionJetPack")[1], (ELYTRON_HARNESS_BP.to_string(), "Elytron Harness Blueprint".to_string()));
+        let price = |name: &str| out.items.iter().find(|i| i.name == name).expect("listed").bp_cost;
+        assert_eq!((price("Astilla"), price("Frost")), (Some(20_000), None));
     }
 
     #[test]

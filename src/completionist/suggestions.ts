@@ -1,4 +1,5 @@
 import { RELIC_SUGGESTION_THRESHOLD } from "../constants/relics.ts";
+import { isOrigin, routeText, SOURCE_UNKNOWN } from "../constants/routes.ts";
 import { formatAge } from "../lib/formatters.ts";
 import type { Access, Coverage, Listing, MasteryState, Opportunity, Purchase, Stage } from "../types/mastery";
 
@@ -111,12 +112,13 @@ export function parseControls(raw: string | null): MasteryControls {
   };
 }
 
-export const STAGE_ORDER: readonly Stage[] = ["level_claim", "craft", "acquire"];
+export const STAGE_ORDER: readonly Stage[] = ["level_claim", "craft", "acquire", "unsourced"];
 
 export const STAGE_LABELS: Record<Stage, string> = {
   level_claim: "Level, claim or spend",
   craft: "Craft",
   acquire: "Acquire",
+  unsourced: "Unsourced",
 };
 
 export const RELIC_GROUP_ORDER: readonly Coverage["kind"][] = ["complete", "partial", "unknown"];
@@ -206,6 +208,7 @@ export function actionText(o: Opportunity): string {
       return first ? `Buy ${first.blueprint ? "blueprint " : ""}from ${first.syndicate}` : "Buy";
     }
     case "trade": return "Buy from players";
+    case "acquire": return o.route ? routeText(o.route) : SOURCE_UNKNOWN;
     case "complete": return "Complete node";
     case "unlock": return "Unlock junction";
   }
@@ -302,6 +305,8 @@ export function readyText(completionMs: number, nowMs: number): string {
 export function detailText(o: Opportunity, nowMs: number, readyAt?: string): string {
   const parts: string[] = [];
   if (o.node) parts.push(o.node.planet);
+  // The action slot already names the route on an acquire row.
+  if (o.route && isOrigin(o.route) && !o.owned && o.action !== "acquire") parts.push(routeText(o.route));
   if (o.owned) parts.push("Owned copy");
   if (o.build_completion_ms != null) {
     parts.push(`Build ${readyText(o.build_completion_ms, nowMs)}${readyAt ? ` (${readyAt})` : ""}`);

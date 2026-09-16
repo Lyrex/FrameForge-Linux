@@ -35,6 +35,8 @@ export function prefill(candidates: Opportunity[], gap: number): string[] {
   let covered = 0;
   for (const o of candidates) {
     if (covered >= gap) break;
+    // Prefill skips a row with no route because the plan could not say how to get it.
+    if (o.stage === "unsourced") continue;
     selections.push(o.unique_name);
     covered += gainOf(o) ?? 0;
   }
