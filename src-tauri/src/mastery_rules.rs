@@ -162,6 +162,16 @@ pub(crate) fn earned_rank(xp: i64, path: &str, known_cap: Option<u32>) -> u32 {
     xp_to_rank(xp, path).min(rank_cap(None, path, known_cap))
 }
 
+const LEVELS_PER_FORMA: u32 = 2;
+
+pub(crate) fn level_cap(forma: u32, rank_cap: u32) -> u32 {
+    (DEFAULT_RANK_CAP + forma * LEVELS_PER_FORMA).min(rank_cap)
+}
+
+pub(crate) fn forma_to_cap(level_cap: u32, rank_cap: u32) -> u32 {
+    rank_cap.saturating_sub(level_cap).div_ceil(LEVELS_PER_FORMA)
+}
+
 pub(crate) fn masterable(correction: Option<&CorrectionEntry>, wfcd: Option<bool>, path: &str) -> Option<bool> {
     if let Some(masterable) = correction.and_then(|c| c.masterable) { return Some(masterable); }
     if !path.ends_with("Blueprint") {
@@ -212,6 +222,12 @@ mod tests {
             assert!(is_warframe_like(suit), "{suit}");
             assert_eq!(xp_to_rank(640_341, suit), 25, "{suit}");
         }
+    }
+
+    #[test]
+    fn each_forma_lifts_the_level_cap_by_two_up_to_the_rank_cap() {
+        assert_eq!([level_cap(0, 40), level_cap(3, 40), level_cap(5, 40), level_cap(9, 40), level_cap(4, 30)], [30, 36, 40, 40, 30]);
+        assert_eq!([forma_to_cap(30, 40), forma_to_cap(36, 40), forma_to_cap(40, 40), forma_to_cap(30, 30)], [5, 2, 0, 0]);
     }
 
     #[test]

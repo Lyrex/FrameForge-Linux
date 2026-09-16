@@ -15,7 +15,7 @@ const opportunity = (name: string, over: Partial<Opportunity> = {}): Opportunity
   unique_name: `/Lotus/Weapons/Tenno/${name}`, name, category: "Primary", image_name: null, mastery_req: null,
   cap: 30, earned_rank: 12, remaining_mastery: 1800, state: "partial", unobtainable: null, excluded: false,
   stage: "level_claim", action: "level", owned: true, owned_level: 12, build_completion_ms: null,
-  vendors: [], spend: null, craft: null, relic: null, drop: null, purchase: null, access: "available", blockers: [], route: null, ...over,
+  forma: null, vendors: [], spend: null, craft: null, relic: null, drop: null, purchase: null, access: "available", blockers: [], route: null, ...over,
 });
 
 const NOW = 1_700_000_000;
@@ -243,6 +243,12 @@ test("labels spell out the action, the route and unknowns", () => {
   const now = 10_000_000;
   assert.equal(remainingText(1800), "+1,800");
   assert.equal(remainingText(null), "Unknown");
+  assert.equal(remainingText(4000, { level_cap: 30, forma: 5, mastery: 1000 }), "+3,000 to 30 + 1,000 with 5 Forma");
+  assert.equal(remainingText(null, { level_cap: 30, forma: 5, mastery: 1000 }), "Unknown");
+  const gated = opportunity("Kuva Karak", { cap: 40, remaining_mastery: 4000, forma: { level_cap: 30, forma: 5, mastery: 1000 },
+    craft: { requirements: [{ unique_name: "/Lotus/Types/Items/MiscItems/Forma", name: "Forma", needed: 5, from_stock: 2, short: 3 }], builds: [], credits: 0, credits_short: 0 } });
+  assert.equal(detailText(gated, now), "Owned copy · Short Forma ×3", "levelling itself costs no credits");
+  assert.equal(actionText({ ...gated, owned_level: 12 }), "Level R12 → R30", "the action stops at the copy's level cap");
   assert.equal(actionText(opportunity("Braton", { owned_level: 5 })), "Level R5 → R30");
   assert.equal(actionText(opportunity("Braton", { owned_level: null })), "Level to R30");
   assert.equal(actionText(opportunity("Hek", { action: "claim", owned: false, owned_level: null, build_completion_ms: 5_000_000 })), "Claim from Foundry");

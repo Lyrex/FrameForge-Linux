@@ -120,8 +120,18 @@ impl<'a> Ledger<'a> {
     }
 
     pub(crate) fn plan(&mut self, target: &str, components: &'a [RecipeComponent]) -> CraftPlan {
+        self.plan_with(target, components, true)
+    }
+
+    /// Plans a need that no blueprint prices, such as the Forma a level cap
+    /// takes, so the credits are those of the builds alone.
+    pub(crate) fn plan_ingredients(&mut self, target: &str, components: &'a [RecipeComponent]) -> CraftPlan {
+        self.plan_with(target, components, false)
+    }
+
+    fn plan_with(&mut self, target: &str, components: &'a [RecipeComponent], priced_by_blueprint: bool) -> CraftPlan {
         let mut plan = CraftPlan { credits: Some(0), ..Default::default() };
-        self.expand(target, components, 1, &mut plan);
+        self.expand(target, components, 1, &mut plan, priced_by_blueprint);
         if let (Some(cost), Some(&balance)) = (plan.credits, self.stock.get(CREDITS_PATH)) {
             let taken = cost.min(balance.max(0) as u64);
             self.stock.insert(CREDITS_PATH, balance - taken as i64);
@@ -140,8 +150,8 @@ impl<'a> Ledger<'a> {
         }
     }
 
-    fn expand(&mut self, target: &str, components: &'a [RecipeComponent], crafts: u32, plan: &mut CraftPlan) {
-        let mut priced = false;
+    fn expand(&mut self, target: &str, components: &'a [RecipeComponent], crafts: u32, plan: &mut CraftPlan, priced_by_blueprint: bool) {
+        let mut priced = !priced_by_blueprint;
         for (count, component) in merged(components) {
             // A recipe occasionally lists its own result among the ingredients.
             if component.unique_name == target { continue; }
@@ -168,7 +178,7 @@ impl<'a> Ledger<'a> {
                 let surplus = builds * per_craft - missing;
                 if surplus > 0 { *self.stock.entry(path).or_insert(0) += i64::from(surplus); }
                 plan.build(component, builds);
-                self.expand(target, &component.components, builds, plan);
+                self.expand(target, &component.components, builds, plan, true);
             }
         }
         if !priced { plan.credits = None; }
@@ -182,6 +192,17 @@ impl<'a> Ledger<'a> {
         intermediate.components.iter().filter(|c| is_blueprint(c))
             .all(|bp| !bp.reusable || self.stock.get(bp.unique_name.as_str()).is_some_and(|&n| n > 0))
     }
+}
+
+pub(crate) const FORMA: &str = "/Lotus/Types/Items/MiscItems/Forma";
+
+/// The Forma a copy needs to reach its rank cap, as one ingredient line that
+/// expands through Forma's own recipe like any intermediate.
+pub(crate) fn forma_ingredient(count: u32, recipes: &HashMap<String, Vec<RecipeComponent>>) -> Vec<RecipeComponent> {
+    vec![RecipeComponent {
+        unique_name: FORMA.into(), name: "Forma".into(), count, result_count: 1,
+        components: recipes.get(FORMA).cloned().unwrap_or_default(), credits: None, reusable: false,
+    }]
 }
 
 pub(crate) fn plan_all(inventory: &InventoryStateCache, recipes: &HashMap<String, Vec<RecipeComponent>>, targets: &[String]) -> Vec<CraftPlan> {
@@ -295,7 +316,7 @@ mod tests {
     const PAIR_BP: &str = "/Lotus/Types/Recipes/Components/PairBlueprint";
     const TARGET: &str = "/Lotus/Types/Target";
     const TARGET_BP: &str = "/Lotus/Types/Recipes/TargetBlueprint";
-    const FORMA: &str = "/Lotus/Types/Items/MiscItems/Forma";
+    const KUVA: &str = "/Lotus/Weapons/Grineer/KuvaLich/LongGuns/Karak/KuvaKarak";
     const FORMA_BP: &str = "/Lotus/Types/Recipes/Components/FormaBlueprint";
 
     static NO_EQUIPMENT: LazyLock<HashMap<String, i64>> = LazyLock::new(HashMap::new);
@@ -378,6 +399,31 @@ mod tests {
         assert_eq!(parts.iter().map(|p| (p.unique_name.as_str(), p.needed)).collect::<Vec<_>>(),
             [(AKBOLTO_BP, 1), (BOLTO_BP, 2), (CELL, 5)]);
         assert!(purchasable(AKBOLTO, &akbolto(), &|_| false).is_empty());
+    }
+
+    /// Levelling has no blueprint of its own. The plan still prices the
+    /// Forma it builds, where a recipe without a blueprint would price as
+    /// unknown.
+    #[test]
+    fn forma_for_a_level_cap_draws_from_stock_and_builds_the_rest() {
+        let forma = vec![cell(1), leaf(FERRITE, 100), blueprint(FORMA_BP, Some(35_000), false)];
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [(FORMA.to_string(), forma)].into();
+        let five = forma_ingredient(5, &recipes);
+        let stock = stock_of(&[(FORMA, 3), (FORMA_BP, 1), (CELL, 5), (FERRITE, 1_000), (CREDITS_PATH, 100_000)]);
+        let plan = ledger(&stock, &NO_EQUIPMENT).plan_ingredients(KUVA, &five);
+        assert_eq!((line(&plan, FORMA).needed, line(&plan, FORMA).from_stock, line(&plan, FORMA).short), (5, 3, 0));
+        assert_eq!(builds(&plan), [(FORMA, 2)]);
+        assert_eq!(short(&plan), [(FORMA_BP, 1)]);
+        assert_eq!((plan.credits, plan.credits_short), (Some(70_000), 0));
+
+        let stock = stock_of(&[(FORMA, 5)]);
+        let plan = ledger(&stock, &NO_EQUIPMENT).plan_ingredients(KUVA, &five);
+        assert!(plan.craftable_now());
+        assert_eq!(plan.credits, Some(0));
+
+        let five = forma_ingredient(5, &HashMap::new());
+        let plan = ledger(&stock_of(&[]), &NO_EQUIPMENT).plan_ingredients(KUVA, &five);
+        assert_eq!(short(&plan), [(FORMA, 5)]);
     }
 
     #[test]

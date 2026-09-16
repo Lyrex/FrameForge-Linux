@@ -1,7 +1,7 @@
 import { RELIC_SUGGESTION_THRESHOLD } from "../constants/relics.ts";
 import { isOrigin, routeText, SOURCE_UNKNOWN } from "../constants/routes.ts";
-import { formatAge } from "../lib/formatters.ts";
-import type { Access, Coverage, Listing, MasteryState, Opportunity, Purchase, Stage } from "../types/mastery";
+import { formatAge, formatCount as n } from "../lib/formatters.ts";
+import type { Access, Coverage, FormaGate, Listing, MasteryState, Opportunity, Purchase, Stage } from "../types/mastery";
 
 export type MasteryView = "whatnext" | "target" | "collection";
 export type ResultView = "suggestions" | "relics" | "platinum";
@@ -179,14 +179,18 @@ export function visiblePurchases(list: Opportunity[], controls: MasteryControls,
   return rankPurchases(list.filter(o => matches(o, controls, search.trim().toLowerCase())), controls.comparison);
 }
 
-export function remainingText(remaining: number | null): string {
-  return remaining == null ? "Unknown" : `+${remaining.toLocaleString("en-US")}`;
+export function remainingText(remaining: number | null, gate?: FormaGate | null): string {
+  if (remaining == null) return "Unknown";
+  return gate ? `+${n(remaining - gate.mastery)} to ${gate.level_cap} + ${n(gate.mastery)} with ${gate.forma} Forma` : `+${n(remaining)}`;
 }
 
-/** Uses the owned copy's level. A forma'd copy can sit below the mastery credit already earned. */
+/** Uses the owned copy's level and cap. A forma'd copy can sit below the mastery credit already earned. */
 export function actionText(o: Opportunity): string {
   switch (o.action) {
-    case "level": return o.owned_level == null ? `Level to R${o.cap}` : `Level R${o.owned_level} → R${o.cap}`;
+    case "level": {
+      const cap = o.forma?.level_cap ?? o.cap;
+      return o.owned_level == null ? `Level to R${cap}` : `Level R${o.owned_level} → R${cap}`;
+    }
     case "claim": return "Claim from Foundry";
     case "spend": {
       const s = o.spend;
@@ -333,7 +337,8 @@ export function detailText(o: Opportunity, nowMs: number, readyAt?: string): str
     parts.push(`${p.name}${count} from ${p.locations.map(l => l.chance == null ? l.location : `${l.location} (${l.chance}%)`).join(", ")}`);
   }
   if (o.craft) {
-    parts.push(o.craft.credits == null ? "Credits unknown" : `Credits ${o.craft.credits.toLocaleString("en-US")}`);
+    // Levelling itself costs nothing, so a Forma requirement with no builds prices at zero.
+    if (o.craft.credits !== 0) parts.push(o.craft.credits == null ? "Credits unknown" : `Credits ${o.craft.credits.toLocaleString("en-US")}`);
     if (o.craft.builds.length) parts.push(`Build ${o.craft.builds.map(b => b.crafts > 1 ? `${b.name} ×${b.crafts}` : b.name).join(", ")}`);
     const located = new Set([...o.relic?.parts ?? [], ...o.drop?.parts ?? []].map(p => p.unique_name));
     const short = o.craft.requirements.filter(r => r.short > 0 && !located.has(r.unique_name));

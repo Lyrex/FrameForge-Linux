@@ -52,6 +52,10 @@ pub(crate) struct CachedItem {
     /// Level of each owned copy, ascending.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) owned_levels: Vec<u32>,
+    /// Forma applied to each owned copy, in `owned_levels` order. Empty on a
+    /// cache written before it was stored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) owned_forma: Vec<u32>,
     /// Socketed Archon Shards (warframes only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) archon_shards: Vec<memory_scanner::ArchonShard>,
@@ -69,7 +73,8 @@ pub(crate) struct CachedItem {
     /// Present only for mods and arcanes. Sum of values equals `amount`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) mod_ranks: Option<HashMap<String, i64>>,
-    /// Number of Forma applied (placeholder — not yet scanned, reserved for future use).
+    /// Forma on the last copy the scan listed. The Foundry reads this one.
+    // TODO: derive from `owned_forma` so several copies never disagree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) forma_count: Option<u32>,
     /// True when this warframe has been fed to the Helminth (subsumed).
@@ -149,6 +154,11 @@ impl InventoryStateCache {
     pub(crate) fn owned_levels(&self) -> HashMap<String, Vec<u32>> {
         self.items.iter().filter(|(_, item)| !item.owned_levels.is_empty())
             .map(|(path, item)| (path.clone(), item.owned_levels.clone())).collect()
+    }
+
+    pub(crate) fn owned_forma(&self) -> HashMap<String, Vec<u32>> {
+        self.items.iter().filter(|(_, item)| !item.owned_forma.is_empty())
+            .map(|(path, item)| (path.clone(), item.owned_forma.clone())).collect()
     }
 
     pub(crate) fn unique_quantities(&self) -> HashMap<String, i64> {
@@ -281,6 +291,7 @@ pub(crate) fn build_inventory_from_blob(
         let item = upsert!(canonical);
         if keyed_part.is_some() { item.amount += 1; } else { item.amount = 1; }
         item.owned_levels.push(level);
+        item.owned_forma.push(entry.polarized);
         item.archon_shards = entry.archon_shards.clone();
         if entry.polarized > 0 { item.forma_count = Some(entry.polarized); }
         if !entry.modular_parts.is_empty() {
@@ -353,7 +364,9 @@ pub(crate) fn build_inventory_from_blob(
 
     // Catalog-derived fields + carry forward fetched WFM prices.
     for (path, item) in items.iter_mut() {
-        item.owned_levels.sort_unstable();
+        let mut copies: Vec<(u32, u32)> = item.owned_levels.iter().copied().zip(item.owned_forma.iter().copied()).collect();
+        copies.sort_unstable();
+        (item.owned_levels, item.owned_forma) = copies.into_iter().unzip();
         item.max_level_cap = path_to_max_level_cap.get(path).copied();
         item.ducat_price  = path_to_ducat.get(path).copied();
         item.vaulted      = path_to_vaulted.get(path).copied();
@@ -560,6 +573,23 @@ mod inventory_quantity_tests {
             assert_eq!(sold.items[path].amount, 0);
             assert!(sold.items[path].owned_levels.is_empty());
         }
+    }
+
+    /// Levels sort ascending, and each copy's Forma count has to follow its
+    /// level through that sort.
+    #[test]
+    fn each_copy_keeps_its_forma_next_to_its_level() {
+        let mut blob = memory_scanner::BlobInventory::default();
+        let mut fresh = unique(KUVA, "LongGuns", &[]);
+        fresh.polarized = 5;
+        let mut leveled = unique(KUVA, "LongGuns", &[]);
+        leveled.xp = 450_000;
+        leveled.polarized = 2;
+        blob.unique_items.extend([fresh, leveled]);
+        let owned = cache(&blob);
+        assert_eq!(owned.items[KUVA].owned_levels, [0, 30]);
+        assert_eq!(owned.items[KUVA].owned_forma, [5, 2]);
+        assert_eq!(owned.owned_forma(), [(KUVA.to_string(), vec![5, 2])].into());
     }
 
     #[test]

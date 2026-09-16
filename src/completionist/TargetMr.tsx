@@ -41,7 +41,7 @@ function Placeholder({ path, entry, overview }: { path: string; entry: PlanEntry
         {!entry && <div className="mst-opp-detail">Evaluating…</div>}
       </div>
       {entry?.completed && <span className="mst-pill mst-pill-done">Completed</span>}
-      {source && <span className={`mst-rank rank-${source.state}`}>{remainingText(entry ? entry.gain : source.remaining_mastery)}</span>}
+      {source && <span className={`mst-rank rank-${source.state}`}>{remainingText(entry ? entry.gain : source.remaining_mastery, entry?.opportunity?.forma)}</span>}
     </div>
   );
 }
@@ -169,7 +169,7 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
               const o = entry?.opportunity ?? null;
               const controlsFor = (
                 <span className="mst-plan-controls">
-                  {o?.craft && (
+                  {o?.craft && !o.owned && (
                     <button className={`mst-plan-btn mst-plan-star ${tracked.includes(path) ? "tracked" : ""}`} title={tracked.includes(path) ? "Tracked in Foundry" : "Track in Foundry"} onClick={() => onTrackToggle(path)}>
                       {tracked.includes(path) ? "★" : "☆"}
                     </button>

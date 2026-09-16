@@ -236,12 +236,21 @@ export interface Purchase {
   full_purchase: Cost | null;
 }
 
+/** The part of a Level row's remaining mastery above the copy's level cap, and the Forma that lift the cap to the rank cap. */
+export interface FormaGate {
+  level_cap: number;
+  forma: number;
+  mastery: number;
+}
+
 export interface Opportunity extends MasterySource {
   stage: Stage;
   action: Action;
   owned: boolean;
-  /** Null on caches from before levels were stored. */
+  /** Null on caches from before levels were stored. With several copies this is the one with the highest level cap. */
   owned_level: number | null;
+  /** Present on a Level row whose copy cannot reach the rank cap without Forma; `craft` then lists the Forma as a requirement. */
+  forma: FormaGate | null;
   build_completion_ms: number | null;
   vendors: VendorOffer[];
   spend: Spend | null;

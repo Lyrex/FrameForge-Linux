@@ -7,7 +7,7 @@ use crate::catalogue::fix_category;
 use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache, CREDITS_PATH};
 use crate::mastery_nodes;
 use crate::mastery_progress::{MasteryPlan, PlayerProgress, Provenance, ProvenanceState};
-use crate::mastery_recipe::{blueprint_results, is_blueprint, purchasable, CraftPlan, Ledger};
+use crate::mastery_recipe::{blueprint_results, forma_ingredient, is_blueprint, purchasable, CraftPlan, Ledger};
 use crate::mastery_relics::{Relics, RelicRoute};
 use crate::mastery_rules::{self, Unobtainable};
 use crate::monitor::CraftingJob;
@@ -283,6 +283,15 @@ pub(crate) struct DropRoute {
 
 const DROP_LOCATIONS_SHOWN: usize = 5;
 
+/// The part of a Level row's remaining mastery that sits above the copy's
+/// level cap, and the Forma that lift the cap to the rank cap.
+#[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct FormaGate {
+    pub(crate) level_cap: u32,
+    pub(crate) forma: u32,
+    pub(crate) mastery: u32,
+}
+
 #[derive(serde::Serialize, Clone, Debug)]
 pub(crate) struct Opportunity {
     #[serde(flatten)]
@@ -290,8 +299,12 @@ pub(crate) struct Opportunity {
     pub(crate) stage: Stage,
     pub(crate) action: Action,
     pub(crate) owned: bool,
-    /// None on caches from before levels were stored.
+    /// None on caches from before levels were stored. With several copies
+    /// this is the one with the highest level cap.
     pub(crate) owned_level: Option<u32>,
+    /// Present on a Level row whose copy cannot reach the rank cap without
+    /// Forma; `craft` then lists the Forma as a requirement.
+    pub(crate) forma: Option<FormaGate>,
     pub(crate) build_completion_ms: Option<i64>,
     pub(crate) vendors: Vec<VendorOffer>,
     pub(crate) spend: Option<Spend>,
@@ -324,6 +337,10 @@ pub(crate) struct Observed<'a> {
     pub(crate) owned: &'a HashMap<String, i64>,
     pub(crate) stock: &'a HashMap<String, i64>,
     pub(crate) owned_levels: &'a HashMap<String, Vec<u32>>,
+    /// Forma per copy, in `owned_levels` order. A cache from before it was
+    /// stored has no entry, and its copies count as unpolarized until the
+    /// next scan.
+    pub(crate) owned_forma: &'a HashMap<String, Vec<u32>>,
     pub(crate) mastery_rank: Option<u32>,
     pub(crate) crafting: &'a [CraftingJob],
     pub(crate) recipes: &'a HashMap<String, Vec<RecipeComponent>>,
@@ -414,6 +431,7 @@ fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Ob
         owned: &inventory.owned_copies(),
         stock: &stock,
         owned_levels: &inventory.owned_levels(),
+        owned_forma: &inventory.owned_forma(),
         mastery_rank: inventory.mastery_rank,
         crafting: &crafting,
         recipes: &recipes,
@@ -507,7 +525,7 @@ fn node_opportunity(source: &MasterySource, node: &NodeInfo, sources: &HashMap<&
     Some(Opportunity {
         source: source.clone(), stage: Stage::Acquire,
         action: if node.junction { Action::Unlock } else { Action::Complete },
-        owned: false, owned_level: None, build_completion_ms: None, vendors: vec![], spend: None, access, blockers, craft: None, relic: None, drop: None, purchase: None,
+        owned: false, owned_level: None, forma: None, build_completion_ms: None, vendors: vec![], spend: None, access, blockers, craft: None, relic: None, drop: None, purchase: None,
     })
 }
 
@@ -520,12 +538,26 @@ fn mastered_sources(overview: &MasteryOverview) -> HashSet<&str> {
         .filter(|s| s.state == MasteryState::Mastered).map(|s| s.unique_name.as_str()).collect()
 }
 
+/// Picks the copy with the highest level cap, since it needs the fewest
+/// Forma, and among equal caps the highest level, since it has the least
+/// left to earn. Returns the level and the cap.
+fn levelled_copy(levels: &[u32], forma: &[u32], rank_cap: u32) -> Option<(u32, u32)> {
+    levels.iter().enumerate()
+        .map(|(i, &level)| (level, mastery_rules::level_cap(forma.get(i).copied().unwrap_or(0), rank_cap)))
+        .max_by_key(|&(level, cap)| (cap, level))
+}
+
 /// Builds the row for one source. A recipe row comes out with `Action::Farm`
 /// as a placeholder and no plan until `settle` runs it against a ledger.
 struct Rows<'a> {
     by_name: &'a HashMap<&'a str, &'a MasterySource>,
     building: HashMap<&'a str, i64>,
     vendors: HashMap<&'a str, Vec<VendorOffer>>,
+    /// The level and level cap of the copy to level, per owned source.
+    copies: HashMap<&'a str, (u32, u32)>,
+    /// The Forma requirement of each copy below its rank cap, kept here so
+    /// the ledger can borrow it for as long as it lives.
+    forma: HashMap<&'a str, Vec<RecipeComponent>>,
 }
 
 impl<'a> Rows<'a> {
@@ -536,7 +568,20 @@ impl<'a> Rows<'a> {
             let result = blueprint_results.get(job.unique_name.as_str()).copied().unwrap_or(&job.unique_name);
             building.entry(result).and_modify(|done| *done = (*done).min(job.completion_ms)).or_insert(job.completion_ms);
         }
-        Self { by_name, building, vendors: vendor_index(observed.offers) }
+        let copies: HashMap<&'a str, (u32, u32)> = observed.owned_levels.iter()
+            .filter_map(|(path, levels)| {
+                let source = by_name.get(path.as_str())?;
+                let copy = levelled_copy(levels, observed.owned_forma.get(path).map_or(&[], Vec::as_slice), source.cap)?;
+                Some((path.as_str(), copy))
+            })
+            .collect();
+        let forma = copies.iter()
+            .filter_map(|(&path, &(_, level_cap))| {
+                let needed = mastery_rules::forma_to_cap(level_cap, by_name[path].cap);
+                (needed > 0).then(|| (path, forma_ingredient(needed, observed.recipes)))
+            })
+            .collect();
+        Self { by_name, building, vendors: vendor_index(observed.offers), copies, forma }
     }
 
     fn row(&self, source: &MasterySource, observed: &Observed) -> Option<Opportunity> {
@@ -545,11 +590,17 @@ impl<'a> Rows<'a> {
             let spend = plan_spend(system, observed.skills?)?;
             return Some(Opportunity {
                 source: source.clone(), stage: Stage::LevelClaim, action: Action::Spend,
-                owned: false, owned_level: None, build_completion_ms: None, vendors: vec![], spend: Some(spend),
+                owned: false, owned_level: None, forma: None, build_completion_ms: None, vendors: vec![], spend: Some(spend),
                 access: Access::Available, blockers: vec![], craft: None, relic: None, drop: None, purchase: None,
             });
         }
-        let owned_level = observed.owned_levels.get(&source.unique_name).and_then(|levels| levels.iter().max().copied());
+        let copy = self.copies.get(source.unique_name.as_str()).copied();
+        let owned_level = copy.map(|(level, _)| level);
+        let forma = copy.and_then(|(_, level_cap)| {
+            let forma = mastery_rules::forma_to_cap(level_cap, source.cap);
+            let gated = source.cap.saturating_sub(level_cap.max(source.earned_rank?)) * mastery_rules::mastery_per_rank(&source.unique_name);
+            (forma > 0).then_some(FormaGate { level_cap, forma, mastery: gated })
+        });
         let owned = owned_level.is_some() || observed.owned.get(&source.unique_name).is_some_and(|&copies| copies > 0);
         let build_completion_ms = self.building.get(source.unique_name.as_str()).copied();
         let vendors = self.vendors.get(source.unique_name.as_str()).cloned().unwrap_or_default();
@@ -563,13 +614,18 @@ impl<'a> Rows<'a> {
             else if source.route.is_some() || source.remaining_mastery.is_some_and(|left| left > 0) { Action::Acquire }
             else { return None };
         Some(Opportunity {
-            source: source.clone(), stage: Stage::Acquire, action, owned, owned_level, build_completion_ms, vendors, spend: None,
+            source: source.clone(), stage: Stage::Acquire, action, owned, owned_level, forma, build_completion_ms, vendors, spend: None,
             access: Access::Available, blockers: vec![], craft: None, relic: None, drop: None, purchase: None,
         })
     }
 }
 
-fn settle<'a>(o: &mut Opportunity, ledger: &mut Ledger<'a>, observed: &Observed<'a>) {
+fn settle<'a>(o: &mut Opportunity, rows: &'a Rows<'a>, ledger: &mut Ledger<'a>, observed: &Observed<'a>) {
+    if o.action == Action::Level && o.craft.is_none() {
+        if let Some(forma) = rows.forma.get(o.source.unique_name.as_str()) {
+            o.craft = Some(ledger.plan_ingredients(&o.source.unique_name, forma));
+        }
+    }
     if o.action == Action::Farm && o.craft.is_none() {
         let plan = ledger.plan(&o.source.unique_name, &observed.recipes[&o.source.unique_name]);
         o.action = if plan.craftable_now() { Action::Craft }
@@ -629,11 +685,16 @@ pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Op
     }).collect();
     let rank = |o: &Opportunity| standalone.get(&o.source.unique_name).copied().unwrap_or(0);
     crafting.sort_by(|&a, &b| rank(&opportunities[a]).cmp(&rank(&opportunities[b])).then_with(|| by_mastery_then_name(&opportunities[a], &opportunities[b])));
+    // Level rows are listed first, so the Forma they need comes out of
+    // stock before any craft draws on it.
+    for o in opportunities.iter_mut().filter(|o| o.action == Action::Level) {
+        settle(o, &rows, &mut ledger, observed);
+    }
     for i in crafting {
-        settle(&mut opportunities[i], &mut ledger, observed);
+        settle(&mut opportunities[i], &rows, &mut ledger, observed);
     }
     for o in opportunities.iter_mut().filter(|o| o.craft.is_none()) {
-        settle(o, &mut ledger, observed);
+        settle(o, &rows, &mut ledger, observed);
     }
     // Ledger order only shows in the Craft stage. Relic farms drew last, and
     // in Acquire they sort by mastery like every other row.
@@ -803,7 +864,7 @@ pub(crate) fn evaluate(overview: &MasteryOverview, observed: Option<&Observed>, 
                 if missing_points > 0 { entry.notes.push(format!("Needs {missing_points} more Intrinsic points")); }
                 entry.opportunity = Some(Opportunity {
                     source: source.clone(), stage: Stage::LevelClaim, action: Action::Spend,
-                    owned: false, owned_level: None, build_completion_ms: None, vendors: vec![],
+                    owned: false, owned_level: None, forma: None, build_completion_ms: None, vendors: vec![],
                     spend: Some(Spend { ranks, points, mastery, tracks }),
                     access: if missing_points > 0 { Access::Blocked } else { Access::Available },
                     blockers: vec![], craft: None, relic: None, drop: None, purchase: None,
@@ -817,7 +878,7 @@ pub(crate) fn evaluate(overview: &MasteryOverview, observed: Option<&Observed>, 
                 Some(mut o) => {
                     if plan.view == "platinum" {
                         let mut preview = ledger.clone();
-                        settle(&mut o, &mut preview, observed);
+                        settle(&mut o, rows, &mut preview, observed);
                         let purchase = o.purchase.clone();
                         let cost = purchase.as_ref().and_then(|p| if plan.purchase_comparison == "full" { p.full_purchase } else { p.cheapest_finish });
                         if let (Some(purchase), Some(cost), Some(recipe)) = (purchase, cost, observed.recipes.get(path)) {
@@ -825,14 +886,14 @@ pub(crate) fn evaluate(overview: &MasteryOverview, observed: Option<&Observed>, 
                                 if cost.route == Route::Set || plan.purchase_comparison == "full" { p.needed } else { p.short })).collect();
                             ledger.supply(recipe, &mut quantities);
                             o = rows.row(source, observed).expect("the same source still has a route");
-                            settle(&mut o, ledger, observed);
+                            settle(&mut o, rows, ledger, observed);
                             entry.notes.push(format!("Plan buys {} for {} platinum", if cost.route == Route::Set { "a complete set" } else { "parts" }, cost.platinum));
                             o.purchase = Some(purchase);
                         } else {
                             *ledger = preview;
                         }
                     } else {
-                        settle(&mut o, ledger, observed);
+                        settle(&mut o, rows, ledger, observed);
                     }
                     entry.gain = gain(&o);
                     entry.allowable = allowable(&o, observed, &mastered);
@@ -945,13 +1006,19 @@ fn gain(o: &Opportunity) -> Option<u32> {
     o.spend.as_ref().map(|s| s.mastery).or(o.source.remaining_mastery)
 }
 
+/// The Forma-free part ranks first, so a rank-40 copy short of Forma
+/// sorts after a rank-30 row of the same total. A gated row that ties on
+/// the free part with a free row goes after it.
 fn by_mastery_then_name(a: &Opportunity, b: &Opportunity) -> std::cmp::Ordering {
-    match (gain(a), gain(b)) {
+    let gated = |o: &Opportunity| o.forma.map_or(0, |f| f.mastery);
+    let free = |o: &Opportunity| gain(o).map(|total| total.saturating_sub(gated(o)));
+    match (free(a), free(b)) {
         (Some(x), Some(y)) => y.cmp(&x),
         (Some(_), None) => std::cmp::Ordering::Less,
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => std::cmp::Ordering::Equal,
     }
+    .then_with(|| gated(a).cmp(&gated(b)))
     .then_with(|| a.source.name.cmp(&b.source.name))
     .then_with(|| a.source.unique_name.cmp(&b.source.unique_name))
 }
@@ -1192,6 +1259,7 @@ mod tests {
     use std::sync::LazyLock;
     use crate::mastery_progress::{PlayerProgress, Provenance, ProvenanceState};
     use crate::memory_scanner::BlobMission;
+    use crate::mastery_recipe::{Requirement, FORMA};
     use crate::wfcd::{RecipeComponent, SyndicateOffer};
 
     const ORION: &str = "/Lotus/Powersuits/SiriusOrion/OrionSuit";
@@ -1534,13 +1602,14 @@ mod tests {
     }
 
     static NO_STOCK: LazyLock<HashMap<String, i64>> = LazyLock::new(HashMap::new);
+    static NO_FORMA: LazyLock<HashMap<String, Vec<u32>>> = LazyLock::new(HashMap::new);
     static NO_RELICS: LazyLock<Relics> = LazyLock::new(Relics::default);
     static NO_MARKET: LazyLock<HashSet<String>> = LazyLock::new(HashSet::new);
     static NO_QUOTES: LazyLock<HashMap<String, PriceQuote>> = LazyLock::new(HashMap::new);
     static NO_DROPS: LazyLock<HashMap<String, Vec<DropLocation>>> = LazyLock::new(HashMap::new);
 
     fn observed_gear<'a>(owned: &'a HashMap<String, i64>, owned_levels: &'a HashMap<String, Vec<u32>>, crafting: &'a [CraftingJob], recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, mastery_rank: Option<u32>) -> Observed<'a> {
-        Observed { owned, stock: &NO_STOCK, owned_levels, mastery_rank, crafting, recipes, offers, skills: None, relics: &NO_RELICS, drops: &NO_DROPS, tradeable: &NO_MARKET, quotes: &NO_QUOTES, now_ms: 1_000_000 }
+        Observed { owned, stock: &NO_STOCK, owned_levels, owned_forma: &NO_FORMA, mastery_rank, crafting, recipes, offers, skills: None, relics: &NO_RELICS, drops: &NO_DROPS, tradeable: &NO_MARKET, quotes: &NO_QUOTES, now_ms: 1_000_000 }
     }
 
     fn observed_skills<'a>(progress: &'a PlayerProgress, recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, owned: &'a HashMap<String, i64>, levels: &'a HashMap<String, Vec<u32>>) -> Observed<'a> {
@@ -1807,6 +1876,61 @@ mod tests {
         assert_eq!((kuva.owned_level, kuva.build_completion_ms, kuva.vendors.len()), (Some(10), Some(0), 1));
     }
 
+    /// Braton at rank 18 and the Kuva Karak's three-Forma copy both have
+    /// 1,200 to earn before any Forma, so the Kuva Karak's 400 behind two
+    /// more Forma puts it second where the old total of 1,600 put it first.
+    #[test]
+    fn forma_gates_the_ranks_past_a_copys_level_cap_and_sorts_after_forma_free_gain() {
+        let owned = HashMap::new();
+        let levels: HashMap<String, Vec<u32>> = [(KUVA.to_string(), vec![12, 24]), (BRATON.to_string(), vec![18])].into();
+        let forma: HashMap<String, Vec<u32>> = [(KUVA.to_string(), vec![3, 0])].into();
+        let (recipes, offers) = (HashMap::new(), HashMap::new());
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(KUVA, 288_000), (BRATON, 162_000)]);
+        let bare = Observed { owned_forma: &forma, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
+        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &bare);
+        assert_eq!(summary(sourced(&overview.opportunities)), [
+            ("Braton", Action::Level, Some(1_200), Access::Available),
+            ("Kuva Karak", Action::Level, Some(1_600), Access::Available),
+        ]);
+        let braton = &overview.opportunities[0];
+        assert!(braton.forma.is_none() && braton.craft.is_none(), "a rank-30 row is unchanged");
+        let kuva = &overview.opportunities[1];
+        assert_eq!(kuva.owned_level, Some(12), "the copy with the highest level cap is levelled");
+        assert_eq!(kuva.forma, Some(FormaGate { level_cap: 36, forma: 2, mastery: 400 }));
+        let plan = kuva.craft.as_ref().expect("Forma is a requirement of levelling");
+        assert_eq!(plan.requirements, [Requirement { unique_name: FORMA.into(), name: "Forma".into(), needed: 2, from_stock: 0, short: 2 }]);
+        assert_eq!((plan.credits, kuva.stage), (Some(0), Stage::LevelClaim));
+
+        let stock: HashMap<String, i64> = [(FORMA.to_string(), 2)].into();
+        let stocked = Observed { owned_forma: &forma, stock: &stock, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
+        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &stocked);
+        let plan = overview.opportunities[1].craft.as_ref().expect("Forma is a requirement of levelling");
+        assert_eq!((plan.requirements[0].from_stock, plan.requirements[0].short), (2, 0));
+        assert!(plan.craftable_now());
+    }
+
+    /// Voidrig and the Kuva Karak both need five Forma from a stock of five,
+    /// so whichever the plan lists first takes them.
+    #[test]
+    fn a_plan_spends_forma_in_its_own_order() {
+        let owned = HashMap::new();
+        let levels: HashMap<String, Vec<u32>> = [(KUVA.to_string(), vec![30]), (MECH.to_string(), vec![30])].into();
+        let (recipes, offers) = (HashMap::new(), HashMap::new());
+        let stock: HashMap<String, i64> = [(FORMA.to_string(), 5)].into();
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(KUVA, 450_000), (MECH, 900_000)]);
+        let observed = Observed { stock: &stock, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
+        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        for (first, second) in [(MECH, KUVA), (KUVA, MECH)] {
+            let evaluation = evaluate(&overview, Some(&observed), &plan(31, &[first, second]));
+            let forma_line = |i: usize| {
+                let plan = evaluation.entries[i].opportunity.as_ref().and_then(|o| o.craft.as_ref()).expect("Forma requirement");
+                (plan.requirements[0].from_stock, plan.requirements[0].short)
+            };
+            assert_eq!((forma_line(0), forma_line(1)), ((5, 0), (0, 5)), "{first} before {second}");
+            assert_eq!(evaluation.gains, 3_000, "both gains count in full");
+        }
+    }
+
     #[test]
     fn each_intrinsic_system_is_one_row_of_summed_track_ranks() {
         let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &CAPTURED_SKILLS);
@@ -1860,14 +1984,14 @@ mod tests {
         let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_skills(&progress, &recipes, &offers, &owned, &levels));
         assert_eq!(summary(sourced(&overview.opportunities)), [
             ("Railjack", Action::Spend, Some(60_000), Access::Available),
-            ("Kuva Karak", Action::Level, Some(4_000), Access::Available),
             ("Drifter", Action::Spend, Some(4_500), Access::Available),
-        ], "a spend sorts by what the points buy");
+            ("Kuva Karak", Action::Level, Some(4_000), Access::Available),
+        ], "a spend sorts by what the points buy, and ties with the Kuva Karak's 3,000 before Forma");
         assert!(sourced(&overview.opportunities).iter().all(|o| o.stage == Stage::LevelClaim && o.blockers.is_empty() && o.vendors.is_empty()));
         let railjack = overview.opportunities[0].spend.as_ref().expect("spend");
         assert_eq!((railjack.ranks, railjack.points, railjack.mastery), (7, 18, 10_500));
         assert_eq!(railjack.tracks, [track("Gunnery", 0, 3), track("Engineering", 0, 3), track("Command", 2, 3)]);
-        let drifter = overview.opportunities[2].spend.as_ref().expect("spend");
+        let drifter = overview.opportunities[1].spend.as_ref().expect("spend");
         assert_eq!((drifter.ranks, drifter.points, drifter.mastery), (2, 460, 3_000));
         assert_eq!(drifter.tracks, [track("Combat", 9, 10), track("Endurance", 8, 9)]);
     }

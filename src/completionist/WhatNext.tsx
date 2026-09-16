@@ -30,10 +30,10 @@ function Title({ opportunity: { category, mastery_req, name } }: { opportunity: 
   );
 }
 
-function Remaining({ opportunity: { remaining_mastery, state, spend } }: { opportunity: Opportunity }) {
+function Remaining({ opportunity: { remaining_mastery, state, spend, forma } }: { opportunity: Opportunity }) {
   return (
     <span className={`mst-rank rank-${state}`} title={remaining_mastery == null ? "Remaining mastery unknown: no account observation yet" : "Remaining mastery"}>
-      {remainingText(spend?.mastery ?? remaining_mastery)}
+      {remainingText(spend?.mastery ?? remaining_mastery, forma)}
     </span>
   );
 }
