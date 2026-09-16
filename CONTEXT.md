@@ -44,14 +44,15 @@ _Avoid_: inventory (when progression is included)
 One thing that awards mastery credit to an account: an equipment type, an
 Intrinsic track, a junction, or a chart node in one mode. A node's normal and
 Steel Path completions are two sources, since each is unlocked and blocked
-separately.
+separately, and each awards the node's amount once. A node whose amount is
+zero (every Void, Lua, Kuva Fortress, Deimos, Zariman, Duviri and Railjack
+node, and two nodes on most planets) is not a mastery source.
 _Avoid_: Intrinsic rank (a rank is progress within a track, not a source)
 
 **Intrinsic system**:
 Railjack or Drifter: one pool of banked Intrinsic points and the tracks it
-buys ranks in. The Collection shows a system as one row of summed track ranks
-whose `unique_name` is the game's `PlayerSkills` field for the pool
-(`LPP_SPACE`, `LPP_DRIFTER`); the tracks stay internal.
+buys ranks in. Each track is its own mastery source; the system groups them
+and is what points are spent from, so a spend is planned per system.
 _Avoid_: Intrinsic track (when the pool and all its tracks are meant)
 
 **Affinity**:
@@ -76,7 +77,8 @@ _Avoid_: max level, level cap (when the mastery ceiling is meant)
 **Level cap**:
 The ceiling an owned copy can currently reach: 30, raised by 2 per Forma on
 rank-40 equipment, up to the rank cap. A property of the copy, not of the
-mastery source.
+mastery source. The Forma still needed to lift the cap to the rank cap are
+an ingredient of levelling that copy, taken from stock like any other.
 _Avoid_: rank cap
 
 **Mastery credit**:
@@ -128,11 +130,22 @@ _Avoid_: stale, legacy
 
 **Unknown**:
 Progress for a mastery source kind that no verified observation covers.
-Never displayed as zero.
+Never displayed as zero. An observation resolves it; the user-facing word is
+"unknown", never "not observed".
 
 **Acquisition route**:
 A way to obtain the equipment, components, or progression needed to earn
-remaining mastery, such as crafting, relic rewards, purchases, or unlocks.
+remaining mastery. The kinds: craft, relic, drop, vendor (standing), trade
+(platinum), adversary (a Kuva, Tenet or Coda weapon from its Lich, Sister or
+Technocyte Coda), conservation (a Deimos companion revived by Son), market
+credits, Baro, Nightwave, quest, and research (a dojo lab).
+
+**Unsourced**:
+A mastery source with remaining mastery for which FrameForge has no
+acquisition route at all. No observation changes it; only data does. Shown
+as "source unknown", listed after every sourced opportunity, and never
+chosen for a mastery plan.
+_Avoid_: unknown (that word is for missing observations)
 
 **Opportunity**:
 A mastery source with remaining mastery and at least one acquisition route.
