@@ -82,6 +82,7 @@ pub struct AppState {
     pub changes_log_path: PathBuf,
     pub conn: Mutex<rusqlite::Connection>,
     pub wfcd_items: Mutex<Vec<WfcdItem>>,
+    pub recipe_consumers: Mutex<Arc<HashMap<String, Vec<String>>>>,
     /// parent unique_name → recipe component tree
     pub recipes: Mutex<Arc<HashMap<String, Vec<RecipeComponent>>>>,
     /// component unique_name → relic unique_names that drop it

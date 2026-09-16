@@ -67,6 +67,7 @@ pub(crate) struct MasterySource {
     /// `suggest` fills in the mechanical kinds (craft, relic, drop, vendor,
     /// trade) once a row's plan is known.
     pub(crate) route: Option<RouteKind>,
+    pub(crate) needed_for: Vec<String>,
 }
 
 /// `unobtainable` counts excluded sources and is not part of `total`.
@@ -417,6 +418,8 @@ fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Ob
     };
     let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
     if inventory.items.is_empty() || !owner.trusts_inventory(inventory.stamped, inventory.player.as_deref()) { return f(overview, None); }
+    annotate_needed_for(&mut overview, &inventory.owned_copies(),
+        &state.recipe_consumers.lock().unwrap_or_else(|e| e.into_inner()));
     overview.mastery_rank = inventory.mastery_rank;
     let stock = inventory.stackable_quantities();
     let relics = {
@@ -515,6 +518,7 @@ fn system_source(system: &mastery_rules::IntrinsicSystem, by_name: &HashMap<&str
         excluded: false,
         node: None,
         route: None,
+        needed_for: vec![],
     }
 }
 
@@ -559,6 +563,20 @@ fn node_opportunity(source: &MasterySource, node: &NodeInfo, sources: &HashMap<&
         action: if node.junction { Action::Unlock } else { Action::Complete },
         owned: false, owned_level: None, forma: None, build_completion_ms: None, vendors: vec![], spend: None, access, blockers, craft: None, relic: None, drop: None, purchase: None,
     })
+}
+
+fn annotate_needed_for(overview: &mut MasteryOverview, owned: &HashMap<String, i64>, consumers: &HashMap<String, Vec<String>>) {
+    let unmastered: HashMap<String, String> = overview.categories.iter().flat_map(|c| &c.sources)
+        .filter(|s| !s.excluded && matches!(s.state, MasteryState::Missing | MasteryState::Partial))
+        .map(|s| (s.unique_name.clone(), s.name.clone())).collect();
+    for source in overview.categories.iter_mut().flat_map(|c| &mut c.sources) {
+        source.needed_for = if unmastered.contains_key(&source.unique_name) && owned.get(&source.unique_name).is_some_and(|&n| n > 0) {
+            consumers.get(&source.unique_name).into_iter().flatten()
+                .filter_map(|path| unmastered.get(path).cloned()).collect()
+        } else { vec![] };
+        source.needed_for.sort();
+        source.needed_for.dedup();
+    }
 }
 
 fn sources_by_name(overview: &MasteryOverview) -> HashMap<&str, &MasterySource> {
@@ -654,7 +672,16 @@ fn settle<'a>(o: &mut Opportunity, rows: &'a Rows<'a>, ledger: &mut Ledger<'a>, 
         }
     }
     if o.action == Action::Farm && o.craft.is_none() {
-        let plan = ledger.plan(&o.source.unique_name, &observed.recipes[&o.source.unique_name]);
+        let mut plan = ledger.plan(&o.source.unique_name, &observed.recipes[&o.source.unique_name]);
+        // A built replacement still leaves the owned copy's mastery at risk.
+        // Levelling never grants the ledger permission to consume that copy.
+        plan.level_first = plan.requirements.iter().filter(|r| r.needed > r.from_stock)
+            .filter_map(|r| {
+                let source = rows.by_name.get(r.unique_name.as_str())?;
+                let gain = source.remaining_mastery.filter(|&gain| gain > 0)?;
+                if source.excluded || !observed.owned.get(&r.unique_name).is_some_and(|&n| n > 0) { return None; }
+                Some(crate::mastery_recipe::LevelFirst { unique_name: r.unique_name.clone(), name: source.name.clone(), gain })
+            }).collect();
         o.action = if plan.craftable_now() { Action::Craft }
             else if plan.buildable() { Action::Build }
             else if !o.vendors.is_empty() { Action::Buy }
@@ -1179,6 +1206,7 @@ pub(crate) fn build_mastery_overview(
             excluded: correction.and_then(|c| c.unobtainable).is_some_and(|class| excluded.contains(&class)),
             node: None,
             route,
+            needed_for: vec![],
         });
     }
 
@@ -1219,6 +1247,7 @@ pub(crate) fn build_mastery_overview(
                 excluded: false,
                 node: None,
                 route: None,
+                needed_for: vec![],
             };
             place(source, ranks.as_ref().map(|ranks| ranks[i]));
         }
@@ -1253,6 +1282,7 @@ pub(crate) fn build_mastery_overview(
                 excluded: false,
                 node: Some(NodeInfo { key: node.key, planet: node.planet.name, mode, junction: node.junction }),
                 route: None,
+                needed_for: vec![],
             };
             chart.counts.add(&source);
             counts.add(&source);
@@ -1633,6 +1663,7 @@ mod tests {
 
     fn with_suggestions(items: &[WfcdItem], corrections: &HashMap<String, CorrectionEntry>, progress: Option<&PlayerProgress>, excluded: &HashSet<Unobtainable>, observed: &Observed) -> MasteryOverview {
         let mut overview = build_mastery_overview(items, corrections, progress, excluded);
+        annotate_needed_for(&mut overview, observed.owned, &crate::mastery_recipe::recipe_consumers(observed.recipes));
         overview.opportunities = suggest(&overview, observed);
         overview
     }
@@ -2597,6 +2628,77 @@ mod tests {
                     if shared { vec!["Shares Lith A1 Intact with Braton".into()] } else { vec![] }),
             ], "shared canonical relic: {shared}");
         }
+    }
+
+    #[test]
+    fn owned_unmastered_ingredients_name_their_unmastered_consumers() {
+        let recipes = [(IMPERATOR.to_string(), vec![RecipeComponent {
+            unique_name: BRATON.into(), name: "Braton".into(), count: 2, result_count: 1,
+            components: vec![], credits: None, reusable: false,
+        }])].into();
+        let owned = [(BRATON.to_string(), 1)].into();
+        let levels = HashMap::new();
+        let offers = HashMap::new();
+        let gear = observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30));
+        for (affinity, expected) in [(0, vec!["Imperator"]), (450_000, vec![])] {
+            let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(IMPERATOR, affinity), (BRATON, 72_000)]);
+            let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &gear);
+            assert_eq!(source(&overview, BRATON).needed_for, expected);
+            let level = overview.opportunities.iter().find(|o| o.source.unique_name == BRATON).expect("owned Braton has mastery left");
+            assert_eq!(level.source.needed_for, expected);
+        }
+    }
+
+    #[test]
+    fn a_craft_levels_an_owned_ingredient_first_without_spending_it() {
+        let bolto = "/Lotus/Weapons/Tenno/Pistol/Bolto";
+        let akbolto = "/Lotus/Weapons/Tenno/Akimbo/Akbolto";
+        let items = [item("Bolto", bolto, "Pistol", "Pistols", "Secondary", Some(true)),
+            item("Akbolto", akbolto, "Pistol", "Pistols", "Secondary", Some(true))];
+        let recipes = [(akbolto.to_string(), vec![RecipeComponent {
+            unique_name: bolto.into(), name: "Bolto".into(), count: 2, result_count: 1,
+            components: vec![], credits: None, reusable: false,
+        }])].into();
+        let owned = [(bolto.to_string(), 2)].into();
+        let levels = [(bolto.to_string(), vec![12, 0])].into();
+        let offers = HashMap::new();
+        let gear = observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30));
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(bolto, 72_000)]);
+        let overview = with_suggestions(&items, &HashMap::new(), Some(&progress), &HashSet::new(), &gear);
+        let craft = overview.opportunities.iter().find(|o| o.source.unique_name == akbolto)
+            .expect("Akbolto has a recipe").craft.as_ref().expect("recipe has a plan");
+        assert_eq!(craft.level_first, [crate::mastery_recipe::LevelFirst { unique_name: bolto.into(), name: "Bolto".into(), gain: 1_800 }]);
+        assert_eq!((craft.requirements[0].from_stock, craft.requirements[0].short), (0, 2));
+        assert_eq!(source(&overview, bolto).needed_for, ["Akbolto"]);
+        let evaluation = evaluate(&overview, Some(&gear), &plan(31, &[bolto, akbolto]));
+        assert_eq!(evaluation.gains, 4_800);
+        assert_eq!(evaluation.entries[0].opportunity.as_ref().map(|o| o.action), Some(Action::Level));
+
+        let mut expanded_recipes = recipes.clone();
+        expanded_recipes.get_mut(akbolto).expect("Akbolto recipe")[0].components = vec![RecipeComponent {
+            unique_name: "/Lotus/Types/Recipes/Weapons/BoltoBlueprint".into(), name: "Bolto Blueprint".into(),
+            count: 1, result_count: 1, components: vec![], credits: Some(25_000), reusable: false,
+        }];
+        let expanded_gear = Observed { recipes: &expanded_recipes, ..gear };
+        let evaluation = evaluate(&overview, Some(&expanded_gear), &plan(31, &[akbolto]));
+        let expanded = evaluation.entries[0].opportunity.as_ref().expect("Akbolto row").craft.as_ref().expect("Akbolto recipe");
+        assert_eq!(expanded.builds[0].crafts, 2);
+        assert_eq!(expanded.level_first, craft.level_first, "crafting replacements still warns about owned mastery");
+
+        let unknown = build_mastery_overview(&items, &HashMap::new(), None, &HashSet::new());
+        let evaluation = evaluate(&unknown, Some(&gear), &plan(31, &[akbolto]));
+        assert!(evaluation.entries[0].opportunity.as_ref().expect("Akbolto row").craft.as_ref().expect("Akbolto recipe").level_first.is_empty(),
+            "unknown mastery cannot promise a gain");
+
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(bolto, 450_000)]);
+        let overview = with_suggestions(&items, &HashMap::new(), Some(&progress), &HashSet::new(), &gear);
+        let mut allowed = plan(31, &[akbolto]);
+        allowed.allowances.insert(bolto.into(), 2);
+        let evaluation = evaluate(&overview, Some(&gear), &allowed);
+        let craft = evaluation.entries[0].opportunity.as_ref().expect("Akbolto row").craft.as_ref().expect("Akbolto recipe");
+        assert!(craft.level_first.is_empty());
+        assert_eq!((craft.requirements[0].from_stock, craft.requirements[0].short), (2, 0));
+        assert!(source(&overview, bolto).needed_for.is_empty());
     }
 
     #[test]

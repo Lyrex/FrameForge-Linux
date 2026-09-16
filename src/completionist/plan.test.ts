@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { addable, candidates, moved, planView, prefill, rangeText, snapshotIntrinsicTargets, summaryText } from "./plan.ts";
+import { addable, addToPlan, candidates, moved, planView, prefill, rangeText, snapshotIntrinsicTargets, summaryText } from "./plan.ts";
 import { DEFAULT_CONTROLS } from "./suggestions.ts";
 import type { MasteryPlan, MasteryTotal, Opportunity, PlanEvaluation } from "../types/mastery.ts";
 
@@ -14,6 +14,21 @@ const opportunity = (name: string, remaining_mastery: number | null, over: Parti
 });
 
 const paths = (list: Opportunity[]) => list.map(o => o.unique_name);
+
+test("adding and prefilling a craft puts its owned ingredient first and counts its mastery once", () => {
+  const bolto = opportunity("Bolto", 1800, { owned: true, action: "level", stage: "level_claim" });
+  const akbolto = opportunity("Akbolto", 3000, { craft: {
+    requirements: [], builds: [], credits: 25000, credits_short: 0,
+    level_first: [{ unique_name: bolto.unique_name, name: "Bolto", gain: 1800 }],
+  } });
+  assert.deepEqual(addToPlan([], akbolto), paths([bolto, akbolto]));
+  assert.deepEqual(addToPlan(paths([bolto]), akbolto), paths([bolto, akbolto]));
+  assert.deepEqual(addToPlan(paths([bolto, akbolto]), akbolto), paths([bolto, akbolto]));
+  const hek = opportunity("Hek", 3000);
+  assert.deepEqual(prefill([akbolto, hek], 4800), paths([bolto, akbolto]), "ingredient may be outside filtered candidates");
+  assert.deepEqual(prefill([akbolto, bolto, hek], 4801), paths([bolto, akbolto, hek]));
+  assert.deepEqual(prefill([bolto, akbolto, hek], 4801), paths([bolto, akbolto, hek]));
+});
 
 test("prefill takes candidates in view order until the known gains cover the gap or run out", () => {
   const list = [opportunity("Hek", 3000), opportunity("Braton", 1800), opportunity("Skana", null), opportunity("Lato", 3000)];

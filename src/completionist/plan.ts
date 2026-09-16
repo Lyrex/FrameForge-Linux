@@ -29,15 +29,23 @@ export function snapshotIntrinsicTargets(plan: MasteryPlan, opportunities: Oppor
   return targets;
 }
 
+export function addToPlan(selections: string[], opportunity: Opportunity): string[] {
+  return [...new Set([...selections, ...opportunity.craft?.level_first?.map(step => step.unique_name) ?? [], opportunity.unique_name])];
+}
+
 // ponytail: takes candidates greedily in view order. The smallest covering set would need a search.
 export function prefill(candidates: Opportunity[], gap: number): string[] {
-  const selections: string[] = [];
+  let selections: string[] = [];
   let covered = 0;
   for (const o of candidates) {
     if (covered >= gap) break;
     // Prefill skips a row with no route because the plan could not say how to get it.
     if (o.stage === "unsourced") continue;
-    selections.push(o.unique_name);
+    if (selections.includes(o.unique_name)) continue;
+    for (const step of o.craft?.level_first ?? []) {
+      if (!selections.includes(step.unique_name)) covered += step.gain;
+    }
+    selections = addToPlan(selections, o);
     covered += gainOf(o) ?? 0;
   }
   return selections;

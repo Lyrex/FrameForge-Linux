@@ -5,7 +5,7 @@ import Filters from "./Filters";
 import { OpportunityRow } from "./WhatNext";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import type { ClockFormat } from "../lib/clockFormat";
-import { addable, candidates, moved, planView, prefill, rangeText, snapshotIntrinsicTargets, summaryText, TARGET_RANK_MAX } from "./plan";
+import { addable, addToPlan, candidates, moved, planView, prefill, rangeText, snapshotIntrinsicTargets, summaryText, TARGET_RANK_MAX } from "./plan";
 import { RESULT_OPTIONS, remainingText, type MasteryControls, type ResultView } from "./suggestions";
 import type { MasteryOverview, MasteryPlan, PlanEntry, PlanEvaluation } from "../types/mastery";
 
@@ -185,7 +185,8 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
                 <div key={`${path}#${i}`} className="mst-plan-row">
                   <span className="mst-plan-index">{i + 1}</span>
                   {o ? (
-                    <OpportunityRow opportunity={o} notes={entry?.notes} nowMs={nowMs} clockFormat={clockFormat}>
+                    <OpportunityRow opportunity={o} notes={entry?.notes} nowMs={nowMs} clockFormat={clockFormat}
+                      levelFirst={o.action === "level" && entries?.slice(i + 1).some(e => e.opportunity?.craft?.level_first?.some(step => step.unique_name === path))}>
                       {controlsFor}
                     </OpportunityRow>
                   ) : (
@@ -218,7 +219,7 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
             {toAdd.slice(0, ADD_LIST_LIMIT).map(o => (
               <OpportunityRow key={o.unique_name} opportunity={o} nowMs={nowMs} clockFormat={clockFormat}>
                 <span className="mst-plan-controls">
-                  <button className="mst-plan-btn" aria-label={`Add ${o.name}`} onClick={() => save({ ...plan, selections: [...plan.selections, o.unique_name] })}>+</button>
+                  <button className="mst-plan-btn" aria-label={`Add ${o.name}`} onClick={() => save({ ...plan, selections: addToPlan(plan.selections, o) })}>+</button>
                 </span>
               </OpportunityRow>
             ))}

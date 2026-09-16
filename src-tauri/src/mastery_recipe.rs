@@ -42,6 +42,8 @@ pub(crate) struct CraftPlan {
     /// order. A component listed twice merges into one line.
     pub(crate) requirements: Vec<Requirement>,
     pub(crate) builds: Vec<Build>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) level_first: Vec<LevelFirst>,
     /// The build price of the target plus every build. It turns None as soon
     /// as any of those recipes carries no price, so a partial sum never reads
     /// as the full cost.
@@ -49,6 +51,13 @@ pub(crate) struct CraftPlan {
     /// Credits still missing once earlier targets took theirs. It stays 0
     /// while the cost or the balance is unknown.
     pub(crate) credits_short: u64,
+}
+
+#[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct LevelFirst {
+    pub(crate) unique_name: String,
+    pub(crate) name: String,
+    pub(crate) gain: u32,
 }
 
 impl CraftPlan {
@@ -192,6 +201,20 @@ impl<'a> Ledger<'a> {
         intermediate.components.iter().filter(|c| is_blueprint(c))
             .all(|bp| !bp.reusable || self.stock.get(bp.unique_name.as_str()).is_some_and(|&n| n > 0))
     }
+}
+
+pub(crate) fn recipe_consumers(recipes: &HashMap<String, Vec<RecipeComponent>>) -> HashMap<String, Vec<String>> {
+    fn record(result: &str, components: &[RecipeComponent], index: &mut HashMap<String, Vec<String>>) {
+        for component in components {
+            if component.unique_name == result { continue; }
+            index.entry(component.unique_name.clone()).or_default().push(result.into());
+            record(result, &component.components, index);
+        }
+    }
+    let mut index = HashMap::new();
+    for (result, components) in recipes { record(result, components, &mut index); }
+    for consumers in index.values_mut() { consumers.sort(); consumers.dedup(); }
+    index
 }
 
 pub(crate) const FORMA: &str = "/Lotus/Types/Items/MiscItems/Forma";

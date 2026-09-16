@@ -337,6 +337,7 @@ export function detailText(o: Opportunity, nowMs: number, readyAt?: string): str
     parts.push(`${p.name}${count} from ${p.locations.map(l => l.chance == null ? l.location : `${l.location} (${l.chance}%)`).join(", ")}`);
   }
   if (o.craft) {
+    for (const step of o.craft.level_first ?? []) parts.push(`Level ${step.name} first (+${n(step.gain)} mastery)`);
     // Levelling itself costs nothing, so a Forma requirement with no builds prices at zero.
     if (o.craft.credits !== 0) parts.push(o.craft.credits == null ? "Credits unknown" : `Credits ${o.craft.credits.toLocaleString("en-US")}`);
     if (o.craft.builds.length) parts.push(`Build ${o.craft.builds.map(b => b.crafts > 1 ? `${b.name} ×${b.crafts}` : b.name).join(", ")}`);

@@ -29,6 +29,7 @@ function SourceRow({ source }: { source: MasterySource }) {
     <div className={`mst-item mst-${source.state}`} tabIndex={0}>
       <ItemImg imageName={source.image_name ?? undefined} fallback={<div className="img-fallback">{source.name[0]?.toUpperCase() ?? "?"}</div>} />
       <span className="mst-name">{source.name}</span>
+      {!!source.needed_for?.length && <span className="mst-mr">Needed for {source.needed_for.join(", ")}</span>}
       {steelPath && <span className="mst-mr">Steel Path</span>}
       {classNoun && <span className="mst-mr" title={source.excluded ? "Not counted toward progress; see Settings › Mastery" : undefined}>{classNoun}</span>}
       {source.mastery_req != null && source.mastery_req > 0 && (

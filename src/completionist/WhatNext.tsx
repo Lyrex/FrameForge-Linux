@@ -18,10 +18,11 @@ import type { WfmSession } from "../types/tauri";
 
 const ACCESS_LABELS = { available: "Available", blocked: "Blocked", unknown: "Unknown access" } as const;
 
-function Title({ opportunity: { category, mastery_req, name } }: { opportunity: Opportunity }) {
+function Title({ opportunity: { category, mastery_req, name, action, needed_for } }: { opportunity: Opportunity }) {
   return (
     <div className="mst-opp-title">
       <span className="mst-name">{name}</span>
+      {action === "level" && !!needed_for?.length && <span className="mst-mr">Needed for {needed_for.join(", ")}</span>}
       <span className="mst-mr">{category}</span>
       {mastery_req != null && mastery_req > 0 && (
         <span className="mst-mr" title={`Mastery Rank ${mastery_req} required`}>MR{mastery_req}</span>
@@ -43,10 +44,11 @@ interface RowProps {
   nowMs: number;
   clockFormat: ClockFormat;
   notes?: string[];
+  levelFirst?: boolean;
   children?: ReactNode;
 }
 
-export function OpportunityRow({ opportunity, nowMs, clockFormat, notes = [], children }: RowProps) {
+export function OpportunityRow({ opportunity, nowMs, clockFormat, notes = [], levelFirst = false, children }: RowProps) {
   const { access, build_completion_ms, image_name, name, relic } = opportunity;
   const readyAt = build_completion_ms == null ? undefined : fmtClock(Math.floor(build_completion_ms / 1000), clockFormat);
   const blockers = [...opportunity.blockers.map(blockerText), ...notes];
@@ -58,7 +60,7 @@ export function OpportunityRow({ opportunity, nowMs, clockFormat, notes = [], ch
         <div className="mst-opp-detail">{detailText(opportunity, nowMs, readyAt)}</div>
         {blockers.length > 0 && <div className="mst-opp-blockers">{blockers.join(" · ")}</div>}
       </div>
-      <span className="mst-opp-action">{actionText(opportunity)}</span>
+      <span className="mst-opp-action">{levelFirst ? `Level ${name} first` : actionText(opportunity)}</span>
       {relic && (
         <span className={`mst-pill mst-pill-relic-${relic.coverage.kind}`} title="Chance of every missing relic part dropping from the relics you own, run solo at their current refinement">
           <span className="mst-pill-kind">Relics</span> {chanceText(relic.coverage)}

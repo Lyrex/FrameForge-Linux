@@ -244,6 +244,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             changes_log_path,
             conn: Mutex::new(conn),
             wfcd_items: Mutex::new(initial_items),
+            recipe_consumers: Mutex::new(Arc::new(mastery_recipe::recipe_consumers(&initial_recipes))),
             recipes: Mutex::new(Arc::new(initial_recipes)),
             relic_drops: Mutex::new(initial_relic_drops),
             drop_locations: Mutex::new(Arc::new(initial_drop_locations)),

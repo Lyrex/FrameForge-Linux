@@ -259,6 +259,11 @@ test("labels spell out the action, the route and unknowns", () => {
   assert.equal(actionText(bought), "Buy blueprint from Cephalon Simaris");
   assert.equal(detailText(bought, now), "Cephalon Simaris (blueprint) · Steel Meridian, General");
   assert.equal(detailText(opportunity("Braton"), now), "Owned copy");
+  const akbolto = opportunity("Akbolto", { owned: false, action: "farm", craft: {
+    requirements: [], builds: [], credits: 25000, credits_short: 0,
+    level_first: [{ unique_name: "/Lotus/Weapons/Tenno/Pistol/Bolto", name: "Bolto", gain: 1800 }],
+  } });
+  assert.equal(detailText(akbolto, now), "Level Bolto first (+1,800 mastery) · Credits 25,000");
   const node = { key: "SolNode27", planet: "Earth", mode: "normal" as const, junction: false };
   const ePrime = opportunity("E Prime", { unique_name: "SolNode27", category: "Star Chart", cap: 1, earned_rank: 0, state: "missing",
     stage: "acquire", action: "complete", remaining_mastery: null, owned: false, owned_level: null, access: "unknown", blockers: [{ kind: "node_unlock_not_observed" }], node });

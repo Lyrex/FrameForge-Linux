@@ -32,6 +32,7 @@ export interface MasterySource {
   node?: NodeInfo;
   /** What the catalogue says about where the source comes from. An opportunity fills in the mechanical kinds once its plan is known. */
   route: RouteKind | null;
+  needed_for?: string[];
 }
 
 /** Labels live in `constants/routes.ts`. */
@@ -137,6 +138,7 @@ export interface Build {
 export interface CraftPlan {
   requirements: Requirement[];
   builds: Build[];
+  level_first?: { unique_name: string; name: string; gain: number }[];
   /** Null as soon as any recipe in the plan carries no price. */
   credits: number | null;
   credits_short: number;

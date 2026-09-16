@@ -688,6 +688,7 @@ fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> usize {
     }
 
     *state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()) = deduped;
+    *state.recipe_consumers.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(mastery_recipe::recipe_consumers(&result.recipes));
     *state.recipes.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(result.recipes);
     *state.relic_drops.lock().unwrap_or_else(|e| e.into_inner()) = result.relic_drops;
     *state.drop_locations.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(result.drop_locations);
