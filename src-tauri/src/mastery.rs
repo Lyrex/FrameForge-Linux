@@ -42,6 +42,7 @@ pub(crate) struct NodeInfo {
     pub(crate) planet: &'static str,
     pub(crate) mode: Mode,
     pub(crate) junction: bool,
+    pub(crate) amount: u32,
 }
 
 /// A star chart row has `cap` 1 and an `earned_rank` of 0 or 1.
@@ -806,6 +807,7 @@ pub(crate) struct PlanEvaluation {
     pub(crate) entries: Vec<PlanEntry>,
     /// Absent until the Mastery Rank is observed, as are `gap` and `projected`.
     pub(crate) total: Option<MasteryTotal>,
+    pub(crate) total_reason: Option<String>,
     pub(crate) target_xp: u64,
     /// Mastery still to earn for the target, from the exact total or the
     /// lower bound.
@@ -819,15 +821,10 @@ pub(crate) struct PlanEvaluation {
 }
 
 impl MasterySource {
-    /// The credit the account holds from this source. A cleared node's is
-    /// unknown, since the table carries no per-node amount.
-    // TODO: carry per-node amounts in the node table. Until then an account
-    // with a cleared node never gets an exact total.
     fn earned_mastery(&self) -> Option<u64> {
         let rank = u64::from(self.earned_rank?);
         match &self.node {
-            Some(node) if !node.junction => (rank == 0).then_some(0),
-            Some(_) => Some(rank * u64::from(mastery_nodes::JUNCTION_MASTERY)),
+            Some(node) => Some(rank * u64::from(node.amount)),
             None => Some(rank * u64::from(mastery_rules::mastery_per_rank(&self.unique_name))),
         }
     }
@@ -835,28 +832,37 @@ impl MasterySource {
 
 /// Excluded sources count as well, since a Founders item's credit stays on
 /// the account whatever the settings hide.
-fn earned_sum(overview: &MasteryOverview) -> Option<u64> {
+fn earned_sum(overview: &MasteryOverview) -> Result<u64, String> {
     let p = &overview.provenance;
-    if [p.equipment, p.intrinsics, p.nodes, p.junctions].iter().any(|kind| kind.state != ProvenanceState::Confirmed) { return None; }
-    overview.categories.iter().flat_map(|c| &c.sources).map(MasterySource::earned_mastery).sum()
+    let unconfirmed: Vec<String> = [("Equipment", p.equipment), ("Intrinsics", p.intrinsics), ("Nodes", p.nodes), ("Junctions", p.junctions)]
+        .into_iter().filter_map(|(name, kind)| match kind.state {
+            ProvenanceState::Confirmed => None,
+            ProvenanceState::Unconfirmed => Some(format!("{name} unconfirmed")),
+            ProvenanceState::Unknown => Some(format!("{name} unknown")),
+        }).collect();
+    if !unconfirmed.is_empty() { return Err(unconfirmed.join(", ")); }
+    overview.categories.iter().flat_map(|c| &c.sources).map(MasterySource::earned_mastery).sum::<Option<u64>>()
+        .ok_or_else(|| "Some source mastery is unknown".into())
 }
 
-fn current_total(overview: &MasteryOverview, mastery_rank: Option<u32>) -> Option<MasteryTotal> {
-    let rank = mastery_rank?;
-    let exact = earned_sum(overview).filter(|&sum| {
+fn current_total(overview: &MasteryOverview, mastery_rank: Option<u32>) -> (Option<MasteryTotal>, Option<String>) {
+    let Some(rank) = mastery_rank else { return (None, None) };
+    let summed = earned_sum(overview).and_then(|sum| {
         let derived = mastery_rules::mastery_rank_from_xp(sum);
         if derived != rank {
             tracing::warn!(sum, derived, observed = rank, "summed earned mastery does not land on the observed Mastery Rank; keeping the range");
+            return Err(format!("Derived MR {derived} does not match observed MR {rank}"));
         }
-        derived == rank
+        Ok(sum)
     });
-    Some(MasteryTotal {
+    let (exact, reason) = match summed { Ok(sum) => (Some(sum), None), Err(reason) => (None, Some(reason)) };
+    (Some(MasteryTotal {
         lower: mastery_rules::mastery_rank_xp(rank),
         upper: mastery_rules::mastery_rank_xp(rank + 1) - 1,
         exact,
         rank,
         rank_upper: rank,
-    })
+    }), reason)
 }
 
 fn allowable(o: &Opportunity, observed: &Observed, mastered: &HashSet<&str>) -> Vec<Allowable> {
@@ -979,7 +985,7 @@ pub(crate) fn evaluate(overview: &MasteryOverview, observed: Option<&Observed>, 
         entries[i].notes.extend(shared);
     }
 
-    let total = current_total(overview, observed.and_then(|o| o.mastery_rank));
+    let (total, total_reason) = current_total(overview, observed.and_then(|o| o.mastery_rank));
     let target_xp = mastery_rules::mastery_rank_xp(plan.target);
     let base = total.map(|t| t.exact.unwrap_or(t.lower));
     let pending = entries.iter().filter(|e| !e.completed);
@@ -993,7 +999,7 @@ pub(crate) fn evaluate(overview: &MasteryOverview, observed: Option<&Observed>, 
         rank_upper: mastery_rules::mastery_rank_from_xp(t.upper + gains),
     });
     PlanEvaluation {
-        entries, total, target_xp,
+        entries, total, total_reason, target_xp,
         gap: base.map(|base| target_xp.saturating_sub(base)),
         gains, unknown_gains, projected, rejected_allowances,
     }
@@ -1260,7 +1266,7 @@ pub(crate) fn build_mastery_overview(
 
     let nodes = progress.map(|p| p.nodes).unwrap_or_default();
     let chart = categories.iter_mut().find(|c| c.category == STAR_CHART).expect("category comes from COLLECTION_CATEGORIES");
-    for node in mastery_nodes::all() {
+    for node in mastery_nodes::all().filter(|node| node.amount > 0) {
         let mission = progress.and_then(|p| p.missions.get(node.key));
         for mode in [Mode::Normal, Mode::SteelPath] {
             let observed = mission.map(|m| match mode {
@@ -1276,11 +1282,11 @@ pub(crate) fn build_mastery_overview(
                 mastery_req: None,
                 cap: 1,
                 earned_rank: cleared.map(u32::from),
-                remaining_mastery: cleared.filter(|_| node.junction).map(|done| if done { 0 } else { mastery_nodes::JUNCTION_MASTERY }),
+                remaining_mastery: cleared.map(|done| if done { 0 } else { node.amount }),
                 state: match cleared { Some(true) => MasteryState::Mastered, Some(false) => MasteryState::Missing, None => MasteryState::Unknown },
                 unobtainable: None,
                 excluded: false,
-                node: Some(NodeInfo { key: node.key, planet: node.planet.name, mode, junction: node.junction }),
+                node: Some(NodeInfo { key: node.key, planet: node.planet.name, mode, junction: node.junction, amount: node.amount }),
                 route: None,
                 needed_for: vec![],
             };
@@ -1424,8 +1430,7 @@ mod tests {
         progress
     }
 
-    /// Every node and junction counts once per mode.
-    const CHART_ROWS: u32 = 2 * 265;
+    const CHART_ROWS: u32 = 2 * 182;
     const INTRINSIC_ROWS: u32 = 5 + 4;
 
     fn star_chart(overview: &MasteryOverview) -> &MasteryCategory {
@@ -1530,10 +1535,10 @@ mod tests {
         let mariana = source(&overview, "SolNode89");
         assert_eq!((mariana.earned_rank, mariana.state), (Some(0), MasteryState::Missing));
         assert_eq!(source(&overview, "SolNode89/steel_path").state, MasteryState::Missing, "absent from a confirmed field");
-        assert!(overview.categories.iter().flat_map(|c| &c.sources).all(|s| s.unique_name != "SolNode239"), "a key outside the table is not a source");
+        assert_eq!((source(&overview, "SolNode239").name.as_str(), source(&overview, "SolNode239/steel_path").earned_mastery()), ("Follie's Hunt", Some(50)));
 
         let chart = star_chart(&overview);
-        assert_eq!(chart.counts, MasteryCounts { total: CHART_ROWS, mastered: 7, partial: 0, missing: CHART_ROWS - 7, unknown: 0, unobtainable: 0 });
+        assert_eq!(chart.counts, MasteryCounts { total: CHART_ROWS, mastered: 9, partial: 0, missing: CHART_ROWS - 9, unknown: 0, unobtainable: 0 });
         assert_eq!(overview.counts.total, 16 + INTRINSIC_ROWS + CHART_ROWS);
         let venus: Vec<(&str, Mode)> = chart.sources.iter()
             .filter(|s| s.node.as_ref().is_some_and(|n| n.planet == "Venus"))
@@ -1554,6 +1559,25 @@ mod tests {
         let chart = star_chart(&overview);
         assert!(chart.sources.iter().all(|s| s.state == MasteryState::Unknown && s.earned_rank.is_none()));
         assert_eq!(chart.counts.unknown, CHART_ROWS);
+    }
+
+    #[test]
+    fn chart_omits_zero_credit_nodes_and_awards_each_modes_full_amount() {
+        let progress = with_missions(observed(ProvenanceState::Confirmed, Some(1_000), &[]), &[]);
+        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        let chart = star_chart(&overview);
+        for mode in [Mode::Normal, Mode::SteelPath] {
+            let rows: Vec<_> = chart.sources.iter().filter(|s| s.node.as_ref().expect("chart row").mode == mode).collect();
+            assert_eq!(rows.len(), 182);
+            assert_eq!(rows.iter().map(|s| s.remaining_mastery.expect("confirmed missing source")).sum::<u32>(), 27_569);
+            assert!(rows.iter().all(|s| s.remaining_mastery.is_some_and(|amount| amount > 0)));
+        }
+        for node in mastery_nodes::all().filter(|n| n.amount == 0) {
+            assert!(chart.sources.iter().all(|s| s.node.as_ref().expect("chart row").key != node.key), "{}", node.key);
+        }
+        assert_eq!(source(&overview, "SolNode239").remaining_mastery, Some(50));
+        assert_eq!(source(&overview, "SolNode27/steel_path").remaining_mastery, Some(24));
+        assert_eq!(source(&overview, "EarthToVenusJunction/steel_path").remaining_mastery, Some(1_000));
     }
 
     #[test]
@@ -1908,17 +1932,17 @@ mod tests {
         let mars = find("Mars Junction");
         assert_eq!((mars.action, mars.access), (Action::Unlock, Access::Unknown));
         let aphrodite = find("Aphrodite");
-        assert_eq!((aphrodite.action, aphrodite.source.remaining_mastery, aphrodite.access), (Action::Complete, None, Access::Unknown));
+        assert_eq!((aphrodite.action, aphrodite.source.remaining_mastery, aphrodite.access), (Action::Complete, Some(18), Access::Unknown));
         assert_eq!(aphrodite.blockers, [Blocker::NodeUnlockNotObserved]);
-        let apollodorus = find("Apollodorus");
-        assert_eq!((apollodorus.action, apollodorus.access), (Action::Complete, Access::Blocked));
-        assert_eq!(apollodorus.blockers, [Blocker::MissingGate { path: "VenusToMercuryJunction".into(), name: "Mercury Junction".into() }]);
+        let boethius = find("Boethius");
+        assert_eq!((boethius.action, boethius.access), (Action::Complete, Access::Blocked));
+        assert_eq!(boethius.blockers, [Blocker::MissingGate { path: "VenusToMercuryJunction".into(), name: "Mercury Junction".into() }]);
         let ceres = find("Ceres Junction");
         assert_eq!((ceres.access, ceres.blockers.clone()), (Access::Blocked, vec![Blocker::MissingGate { path: "EarthToMarsJunction".into(), name: "Mars Junction".into() }]));
         let steel_e_prime = nodes.iter().find(|o| o.source.unique_name == "SolNode27/steel_path").expect("Steel Path row is not cleared");
         assert_eq!((steel_e_prime.access, steel_e_prime.blockers.clone()), (Access::Unknown, vec![Blocker::NodeUnlockNotObserved]), "Earth has no gate");
-        let steel_apollodorus = nodes.iter().find(|o| o.source.unique_name == "SolNode94/steel_path").expect("Steel Path row is not cleared");
-        assert_eq!(steel_apollodorus.blockers, [Blocker::MissingGate { path: "VenusToMercuryJunction/steel_path".into(), name: "Mercury Junction".into() }],
+        let steel_boethius = nodes.iter().find(|o| o.source.unique_name == "SolNode223/steel_path").expect("Steel Path row is not cleared");
+        assert_eq!(steel_boethius.blockers, [Blocker::MissingGate { path: "VenusToMercuryJunction/steel_path".into(), name: "Mercury Junction".into() }],
             "a Steel Path node waits on the Steel Path junction");
         assert!(nodes.iter().all(|o| o.source.node.as_ref().is_some_and(|n| n.mode == Mode::SteelPath) || (o.source.name != "E Prime" && o.source.name != "Venus Junction")),
             "cleared rows are not suggested; their Steel Path rows still are");
@@ -2552,7 +2576,8 @@ mod tests {
     /// Worked by hand: 3,000 for the Braton, 3,500 for the rank-35 Kuva
     /// Karak, 6,000 each for Sirius and the excluded Excalibur Prime, 1,200
     /// for the rank-12 Balla, 67,500 for 45 Railjack ranks and 60,000 for
-    /// 40 Drifter ranks make 147,200, which is MR 7.
+    /// 40 Drifter ranks make 147,200. Both modes of E Prime, Follie's Hunt
+    /// and Venus Junction add 2,148, for 149,348 (MR 7).
     #[test]
     fn total_is_a_range_from_the_rank_and_exact_only_when_every_kind_is_confirmed_and_the_sum_lands_on_it() {
         let mut items = catalog();
@@ -2561,7 +2586,7 @@ mod tests {
         corrections.insert(EXCALIBUR_PRIME.into(), CorrectionEntry { path: EXCALIBUR_PRIME.into(), unobtainable: Some(Unobtainable::Founders), ..Default::default() });
         let progress = with_skills(with_missions(observed(ProvenanceState::Confirmed, Some(1_000), &[
             (ORION, 900_000), (BRATON, 450_000), (KUVA, 612_500), (STRIKE, 72_000), (EXCALIBUR_PRIME, 900_000),
-        ]), &[]), ProvenanceState::Confirmed, &CAPTURED_SKILLS);
+        ]), &[("SolNode27", 1, Some(1)), ("SolNode239", 1, Some(1)), ("EarthToVenusJunction", 1, Some(1))]), ProvenanceState::Confirmed, &CAPTURED_SKILLS);
         let full = build_mastery_overview(&items, &corrections, Some(&progress), &Unobtainable::ALL.into());
         for kind in [full.provenance.equipment, full.provenance.intrinsics, full.provenance.nodes, full.provenance.junctions] {
             assert_eq!(kind.state, ProvenanceState::Confirmed);
@@ -2571,17 +2596,32 @@ mod tests {
 
         let known = full;
         let evaluation = evaluate(&known, Some(&at(7)), &plan(8, &[]));
-        assert_eq!(evaluation.total, Some(MasteryTotal { lower: 122_500, upper: 159_999, exact: Some(147_200), rank: 7, rank_upper: 7 }));
-        assert_eq!((evaluation.gap, evaluation.projected.map(|p| p.exact)), (Some(12_800), Some(Some(147_200))));
+        assert_eq!(evaluation.total, Some(MasteryTotal { lower: 122_500, upper: 159_999, exact: Some(149_348), rank: 7, rank_upper: 7 }));
+        assert_eq!((evaluation.gap, evaluation.projected.map(|p| p.exact)), (Some(10_652), Some(Some(149_348))));
+        assert_eq!(evaluation.total_reason, None);
 
         // The same sum under an observed MR 8 lands short, so the range stands.
         let evaluation = evaluate(&known, Some(&at(8)), &plan(9, &[]));
         assert_eq!(evaluation.total, Some(MasteryTotal { lower: 160_000, upper: 202_499, exact: None, rank: 8, rank_upper: 8 }));
         assert_eq!(evaluation.gap, Some(42_500));
+        assert_eq!(evaluation.total_reason.as_deref(), Some("Derived MR 7 does not match observed MR 8"));
 
-        let mut unconfirmed = known.clone();
-        unconfirmed.provenance.intrinsics.state = ProvenanceState::Unconfirmed;
-        assert_eq!(evaluate(&unconfirmed, Some(&at(7)), &plan(8, &[])).total.and_then(|t| t.exact), None);
+        for kind in ["Equipment", "Intrinsics", "Nodes", "Junctions"] {
+            for (state, label) in [(ProvenanceState::Unconfirmed, "unconfirmed"), (ProvenanceState::Unknown, "unknown")] {
+                let mut unconfirmed = known.clone();
+                let provenance = match kind {
+                    "Equipment" => &mut unconfirmed.provenance.equipment,
+                    "Intrinsics" => &mut unconfirmed.provenance.intrinsics,
+                    "Nodes" => &mut unconfirmed.provenance.nodes,
+                    _ => &mut unconfirmed.provenance.junctions,
+                };
+                provenance.state = state;
+                let evaluation = evaluate(&unconfirmed, Some(&at(7)), &plan(8, &[]));
+                assert_eq!(evaluation.total.and_then(|t| t.exact), None);
+                assert_eq!(evaluation.gap, Some(37_500));
+                assert_eq!(evaluation.total_reason, Some(format!("{kind} {label}")));
+            }
+        }
     }
 
     #[test]

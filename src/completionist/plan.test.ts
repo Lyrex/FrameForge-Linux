@@ -93,19 +93,19 @@ test("Intrinsic targets stay fixed until a selection is removed or regenerated",
   assert.deepEqual(snapshotIntrinsicTargets({ ...saved, intrinsic_targets: {} }, [later]), { [railjack.unique_name]: { Piloting: 4 } });
 });
 
-test("the summary shows lower bounds as at least and the details show the range", () => {
+test("the summary distinguishes lower bounds from exact totals and the details show the range", () => {
   const total: MasteryTotal = { lower: 122_500, upper: 159_999, exact: null, rank: 7, rank_upper: 7 };
   const evaluation = (over: Partial<PlanEvaluation>): PlanEvaluation => ({
-    entries: [], total, target_xp: 160_000, gap: 37_500, gains: 9_000, unknown_gains: 0,
+    entries: [], total, total_reason: "Intrinsics unconfirmed", target_xp: 160_000, gap: 37_500, gains: 9_000, unknown_gains: 0,
     projected: { lower: 131_500, upper: 168_999, exact: null, rank: 7, rank_upper: 8 }, rejected_allowances: [], ...over,
   });
-  assert.equal(summaryText(evaluation({}), 8), "Total at least 122,500 · MR 8 needs 37,500 more · plan adds 9,000 · projected at least MR 7");
+  assert.equal(summaryText(evaluation({}), 8), "Total 122,500 (lower bound) · MR 8 needs 37,500 more · plan adds 9,000 · projected at least MR 7");
   assert.equal(rangeText(evaluation({})), "Total between 122,500 and 159,999 · projected between 131,500 and 168,999, MR 7 to 8 · target MR needs 160,000");
-  assert.equal(summaryText(evaluation({ unknown_gains: 2 }), 8), "Total at least 122,500 · MR 8 needs 37,500 more · plan adds 9,000 and 2 unknown · projected at least MR 7");
-  const exact = evaluation({ total: { ...total, exact: 147_200 }, gap: 12_800, projected: { lower: 131_500, upper: 168_999, exact: 156_200, rank: 7, rank_upper: 8 } });
+  assert.equal(summaryText(evaluation({ unknown_gains: 2 }), 8), "Total 122,500 (lower bound) · MR 8 needs 37,500 more · plan adds 9,000 and 2 unknown · projected at least MR 7");
+  const exact = evaluation({ total: { ...total, exact: 147_200 }, total_reason: null, gap: 12_800, projected: { lower: 131_500, upper: 168_999, exact: 156_200, rank: 7, rank_upper: 8 } });
   assert.equal(summaryText(exact, 8), "Total 147,200 · MR 8 needs 12,800 more · plan adds 9,000 · projected MR 7");
   assert.equal(rangeText(exact), "Total 147,200 exactly · projected 156,200, MR 7 · target MR needs 160,000");
   const reached = evaluation({ gap: 0, gains: 40_000, projected: { lower: 162_500, upper: 199_999, exact: null, rank: 8, rank_upper: 8 } });
-  assert.equal(summaryText(reached, 8), "Total at least 122,500 · MR 8 is reached · plan adds 40,000 · projected at least MR 8");
+  assert.equal(summaryText(reached, 8), "Total 122,500 (lower bound) · MR 8 is reached · plan adds 40,000 · projected at least MR 8");
   assert.equal(summaryText(evaluation({ total: null, gap: null, projected: null }), 8), "Mastery Rank not observed yet, so the gap and projection are unknown.");
 });

@@ -146,6 +146,7 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
             {evaluation.total && (
               <button className="mst-filter-btn" aria-expanded={showRange} onClick={() => setShowRange(s => !s)}>{showRange ? "Hide range" : "Range"}</button>
             )}
+            {evaluation.total_reason && <span className="mst-plan-range">Lower bound: {evaluation.total_reason}</span>}
             {showRange && <span className="mst-plan-range">{rangeText(evaluation)}</span>}
             {evaluation.rejected_allowances.length > 0 && (
               <span className="mst-opp-blockers">Allowance refused for unmastered or unowned equipment</span>

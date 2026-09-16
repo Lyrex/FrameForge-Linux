@@ -11,6 +11,7 @@ export interface NodeInfo {
   planet: string;
   mode: Mode;
   junction: boolean;
+  amount: number;
 }
 
 export interface MasterySource {
@@ -324,6 +325,7 @@ export interface PlanEvaluation {
   entries: PlanEntry[];
   /** Null until the Mastery Rank is observed, as are `gap` and `projected`. */
   total: MasteryTotal | null;
+  total_reason: string | null;
   target_xp: number;
   /** Mastery still to earn for the target, from the exact total or the lower bound. */
   gap: number | null;

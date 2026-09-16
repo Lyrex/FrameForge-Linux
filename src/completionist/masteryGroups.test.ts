@@ -36,7 +36,7 @@ test("Intrinsic tracks group by system, Railjack first, with the summed rank ove
 
 test("star chart rows group by planet in the order they arrive, junctions and mode pairs intact", () => {
   const node = (name: string, key: string, planet: string, mode: "normal" | "steel_path", junction = false): MasterySource => ({
-    ...source(name, mode === "normal" ? key : `${key}/steel_path`), category: "Star Chart", cap: 1, node: { key, planet, mode, junction },
+    ...source(name, mode === "normal" ? key : `${key}/steel_path`), category: "Star Chart", cap: 1, node: { key, planet, mode, junction, amount: 18 },
   });
   const rows = [
     node("Mercury Junction", "VenusToMercuryJunction", "Venus", "normal", true),

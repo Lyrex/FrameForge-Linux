@@ -292,9 +292,9 @@
 .mst-item:focus-visible { background: var(--hover); border-color: var(--border); }
 
 .mst-plan-target { width: 4em; }
-.mst-plan-summary { align-items: center; }
+.mst-plan-summary { align-items: center; flex-wrap: wrap; }
 .mst-plan-summary-text { font-size: 12px; }
-.mst-plan-range { font-size: 11px; color: var(--text-dim); }
+.mst-plan-range { flex-basis: 100%; font-size: 11px; color: var(--text-dim); }
 .mst-plan-row { display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap; }
 .mst-plan-row > .mst-opp { flex: 1; min-width: 0; }
 .mst-plan-index { font-size: 11px; color: var(--text-dim); width: 1.5em; text-align: right; padding-top: 8px; flex-shrink: 0; }

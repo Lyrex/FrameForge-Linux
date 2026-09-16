@@ -264,7 +264,7 @@ test("labels spell out the action, the route and unknowns", () => {
     level_first: [{ unique_name: "/Lotus/Weapons/Tenno/Pistol/Bolto", name: "Bolto", gain: 1800 }],
   } });
   assert.equal(detailText(akbolto, now), "Level Bolto first (+1,800 mastery) · Credits 25,000");
-  const node = { key: "SolNode27", planet: "Earth", mode: "normal" as const, junction: false };
+  const node = { key: "SolNode27", planet: "Earth", mode: "normal" as const, junction: false, amount: 24 };
   const ePrime = opportunity("E Prime", { unique_name: "SolNode27", category: "Star Chart", cap: 1, earned_rank: 0, state: "missing",
     stage: "acquire", action: "complete", remaining_mastery: null, owned: false, owned_level: null, access: "unknown", blockers: [{ kind: "node_unlock_not_observed" }], node });
   assert.equal(actionText(ePrime), "Complete node");

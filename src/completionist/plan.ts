@@ -66,7 +66,7 @@ export function moved(selections: string[], index: number, by: -1 | 1): string[]
 }
 
 export function totalText(total: MasteryTotal): string {
-  return total.exact == null ? `at least ${n(total.lower)}` : n(total.exact);
+  return total.exact == null ? `${n(total.lower)} (lower bound)` : n(total.exact);
 }
 
 export function rankText(total: MasteryTotal): string {
