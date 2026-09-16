@@ -4,54 +4,30 @@ import { listen } from "@tauri-apps/api/event";
 import "./Mastery.css";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import { PREFERENCE_KEYS } from "../constants/preferences";
-import { formatAge } from "../lib/formatters";
-import { fmtClock, type ClockFormat } from "../lib/clockFormat";
+import type { ClockFormat } from "../lib/clockFormat";
 import { parseControls, purchaseSlugs, VIEW_OPTIONS, type MasteryControls, type ResultView } from "./suggestions";
+import { pillSummary, progressText } from "./topBar";
 import Collection from "./Collection";
 import WhatNext from "./WhatNext";
 import TargetMr from "./TargetMr";
 import type { InventoryItem } from "../types/items";
-import type { MasteryCounts, MasteryOverview, MasteryProvenance, Provenance } from "../types/mastery";
-
-const SOURCE_KINDS: { key: keyof MasteryProvenance; label: string }[] = [
-  { key: "equipment",  label: "Equipment" },
-  { key: "intrinsics", label: "Intrinsics" },
-  { key: "nodes",      label: "Nodes" },
-  { key: "junctions",  label: "Junctions" },
-];
-
-function pillText(label: string, { state, observed_at }: Provenance, now: number, clockFormat: ClockFormat): { detail: string; title: string } {
-  if (state === "confirmed" && observed_at != null) {
-    const day = new Date(observed_at * 1000).toLocaleDateString(navigator.language, { month: "short", day: "numeric" });
-    return { detail: formatAge(observed_at, now), title: `${label}: observed ${day}, ${fmtClock(observed_at, clockFormat)}` };
-  }
-  if (state === "unconfirmed") return { detail: "Unconfirmed", title: `${label}: carried over from a cache with no observation time` };
-  return { detail: "Unknown", title: `${label}: no observation yet` };
-}
-
-function ProvenancePill({ label, provenance, now, clockFormat }: { label: string; provenance: Provenance; now: number; clockFormat: ClockFormat }) {
-  const { state } = provenance;
-  const { detail, title } = pillText(label, provenance, now, clockFormat);
-  return (
-    <span className={`mst-pill mst-pill-${state}`} title={title}>
-      <span className="mst-pill-kind">{label}</span> {detail}
-    </span>
-  );
-}
+import type { MasteryCounts, MasteryOverview, MasteryProvenance } from "../types/mastery";
 
 export function Progress({ counts, label }: { counts: MasteryCounts; label: string }) {
+  const { text, title } = progressText(counts, label);
   return (
-    <div className="mst-progress-wrap" title={`${label}: ${counts.mastered} mastered, ${counts.partial} partial, ${counts.missing} missing, ${counts.unknown} unknown`}>
+    <div className="mst-progress-wrap" title={title}>
       <div className="mst-progress-bar">
         <div className="mst-progress-fill" style={{ width: counts.total > 0 ? `${(counts.mastered / counts.total) * 100}%` : "0%" }} />
       </div>
-      <span className="mst-progress-label">
-        {label} {counts.mastered} / {counts.total} mastered
-        {counts.unknown > 0 && <> · {counts.unknown} unknown</>}
-        {counts.unobtainable > 0 && <> · {counts.unobtainable} unobtainable</>}
-      </span>
+      <span className="mst-progress-label">{text}</span>
     </div>
   );
+}
+
+function ProvenancePill({ provenance, now, clockFormat }: { provenance: MasteryProvenance; now: number; clockFormat: ClockFormat }) {
+  const { state, text, title } = pillSummary(provenance, now, clockFormat);
+  return <span className={`mst-pill mst-pill-${state}`} title={title}>{text}</span>;
 }
 
 interface Props {
@@ -156,9 +132,7 @@ export default function Mastery({ inventory, refreshKey, clockFormat, playerName
           ))}
         </div>
         {overview && <Progress counts={overview.counts} label="All" />}
-        {overview && SOURCE_KINDS.map(kind => (
-          <ProvenancePill key={kind.key} label={kind.label} provenance={overview.provenance[kind.key]} now={now} clockFormat={clockFormat} />
-        ))}
+        {overview && <ProvenancePill provenance={overview.provenance} now={now} clockFormat={clockFormat} />}
         <label className="mst-select" title="Only what is not blocked, without the filters">
           <input type="checkbox" checked={controls.easy} onChange={e => update({ easy: e.target.checked })} />
           Easy mode

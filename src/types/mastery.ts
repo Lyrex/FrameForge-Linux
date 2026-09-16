@@ -78,8 +78,8 @@ export interface Provenance {
 export interface MasteryProvenance {
   equipment: Provenance;
   intrinsics: Provenance;
+  /** Junctions read from the same `Missions` field, so they share the nodes kind. */
   nodes: Provenance;
-  junctions: Provenance;
 }
 
 /** Unsourced holds the rows with remaining mastery and no route at all. */

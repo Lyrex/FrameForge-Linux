@@ -105,13 +105,12 @@ pub(crate) struct MasteryCategory {
     pub(crate) sources: Vec<MasterySource>,
 }
 
-/// Nodes and junctions share the `Missions` observation.
 #[derive(serde::Serialize, Clone, Copy, Default, Debug)]
 pub(crate) struct MasteryProvenance {
     pub(crate) equipment: Provenance,
     pub(crate) intrinsics: Provenance,
+    /// Junctions read from the same `Missions` field, so they share this kind.
     pub(crate) nodes: Provenance,
-    pub(crate) junctions: Provenance,
 }
 
 /// Unsourced holds the rows with remaining mastery and no route at all.
@@ -834,7 +833,7 @@ impl MasterySource {
 /// the account whatever the settings hide.
 fn earned_sum(overview: &MasteryOverview) -> Result<u64, String> {
     let p = &overview.provenance;
-    let unconfirmed: Vec<String> = [("Equipment", p.equipment), ("Intrinsics", p.intrinsics), ("Nodes", p.nodes), ("Junctions", p.junctions)]
+    let unconfirmed: Vec<String> = [("Equipment", p.equipment), ("Intrinsics", p.intrinsics), ("Nodes", p.nodes)]
         .into_iter().filter_map(|(name, kind)| match kind.state {
             ProvenanceState::Confirmed => None,
             ProvenanceState::Unconfirmed => Some(format!("{name} unconfirmed")),
@@ -1296,7 +1295,7 @@ pub(crate) fn build_mastery_overview(
         }
     }
     categories.retain(|c| !c.sources.is_empty());
-    let provenance = MasteryProvenance { equipment, intrinsics, nodes, junctions: nodes };
+    let provenance = MasteryProvenance { equipment, intrinsics, nodes };
     MasteryOverview { counts, categories, provenance, mastery_rank: None, opportunities: vec![] }
 }
 
@@ -1514,7 +1513,6 @@ mod tests {
         ]);
         let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
         assert_eq!(overview.provenance.nodes, Provenance { state: ProvenanceState::Confirmed, observed_at: Some(1_000) });
-        assert_eq!(overview.provenance.junctions, overview.provenance.nodes);
 
         let e_prime = source(&overview, "SolNode27");
         assert_eq!((e_prime.name.as_str(), e_prime.category.as_str(), e_prime.earned_rank, e_prime.state), ("E Prime", "Star Chart", Some(1), MasteryState::Mastered));
@@ -1586,7 +1584,7 @@ mod tests {
         assert!(overview.categories.iter().flat_map(|c| &c.sources)
             .all(|s| s.state == MasteryState::Unknown && s.earned_rank.is_none() && s.remaining_mastery.is_none()));
         assert_eq!(overview.counts, MasteryCounts { total: 16 + INTRINSIC_ROWS + CHART_ROWS, mastered: 0, partial: 0, missing: 0, unknown: 16 + INTRINSIC_ROWS + CHART_ROWS, unobtainable: 0 });
-        for kind in [overview.provenance.equipment, overview.provenance.intrinsics, overview.provenance.nodes, overview.provenance.junctions] {
+        for kind in [overview.provenance.equipment, overview.provenance.intrinsics, overview.provenance.nodes] {
             assert_eq!(kind, Provenance::default());
         }
     }
@@ -2588,7 +2586,7 @@ mod tests {
             (ORION, 900_000), (BRATON, 450_000), (KUVA, 612_500), (STRIKE, 72_000), (EXCALIBUR_PRIME, 900_000),
         ]), &[("SolNode27", 1, Some(1)), ("SolNode239", 1, Some(1)), ("EarthToVenusJunction", 1, Some(1))]), ProvenanceState::Confirmed, &CAPTURED_SKILLS);
         let full = build_mastery_overview(&items, &corrections, Some(&progress), &Unobtainable::ALL.into());
-        for kind in [full.provenance.equipment, full.provenance.intrinsics, full.provenance.nodes, full.provenance.junctions] {
+        for kind in [full.provenance.equipment, full.provenance.intrinsics, full.provenance.nodes] {
             assert_eq!(kind.state, ProvenanceState::Confirmed);
         }
         let (owned, levels, recipes, offers) = (HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new());
@@ -2606,14 +2604,13 @@ mod tests {
         assert_eq!(evaluation.gap, Some(42_500));
         assert_eq!(evaluation.total_reason.as_deref(), Some("Derived MR 7 does not match observed MR 8"));
 
-        for kind in ["Equipment", "Intrinsics", "Nodes", "Junctions"] {
+        for kind in ["Equipment", "Intrinsics", "Nodes"] {
             for (state, label) in [(ProvenanceState::Unconfirmed, "unconfirmed"), (ProvenanceState::Unknown, "unknown")] {
                 let mut unconfirmed = known.clone();
                 let provenance = match kind {
                     "Equipment" => &mut unconfirmed.provenance.equipment,
                     "Intrinsics" => &mut unconfirmed.provenance.intrinsics,
-                    "Nodes" => &mut unconfirmed.provenance.nodes,
-                    _ => &mut unconfirmed.provenance.junctions,
+                    _ => &mut unconfirmed.provenance.nodes,
                 };
                 provenance.state = state;
                 let evaluation = evaluate(&unconfirmed, Some(&at(7)), &plan(8, &[]));
