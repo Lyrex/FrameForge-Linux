@@ -91,15 +91,15 @@ export type Access = "available" | "blocked" | "unknown";
 export type Blocker =
   | { kind: "still_building" }
   | { kind: "mastery_rank_below"; required: number }
-  | { kind: "mastery_rank_not_observed" }
+  | { kind: "mastery_rank_unknown" }
   | { kind: "credits_short"; short: number }
   | { kind: "credit_cost_unknown" }
-  | { kind: "credits_not_observed" }
-  | { kind: "standing_not_observed" }
+  | { kind: "credits_unknown" }
+  | { kind: "standing_unknown" }
   | { kind: "drop_sources_unknown" }
   | { kind: "missing_gate"; path: string; name: string }
-  | { kind: "junction_tasks_not_observed" }
-  | { kind: "node_unlock_not_observed" };
+  | { kind: "junction_tasks_unknown" }
+  | { kind: "node_unlock_unknown" };
 
 export interface VendorOffer {
   syndicate: string;

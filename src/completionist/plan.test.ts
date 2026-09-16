@@ -107,5 +107,5 @@ test("the summary distinguishes lower bounds from exact totals and the details s
   assert.equal(rangeText(exact), "Total 147,200 exactly · projected 156,200, MR 7 · target MR needs 160,000");
   const reached = evaluation({ gap: 0, gains: 40_000, projected: { lower: 162_500, upper: 199_999, exact: null, rank: 8, rank_upper: 8 } });
   assert.equal(summaryText(reached, 8), "Total 122,500 (lower bound) · MR 8 is reached · plan adds 40,000 · projected at least MR 8");
-  assert.equal(summaryText(evaluation({ total: null, gap: null, projected: null }), 8), "Mastery Rank not observed yet, so the gap and projection are unknown.");
+  assert.equal(summaryText(evaluation({ total: null, gap: null, projected: null }), 8), "Mastery Rank unknown, so the gap and projection are too.");
 });

@@ -162,7 +162,7 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
           <div className="mst-group-header">Plan <span className="mst-count">{plan.selections.length}</span></div>
           {plan.selections.length === 0 && (
             <div className="mst-empty">
-              {evaluation?.gap == null ? "Mastery Rank not observed yet. Add actions below, or regenerate once a scan has seen the account."
+              {evaluation?.gap == null ? "Mastery Rank unknown. Add actions below, or regenerate once a scan has seen the account."
                 : "Nothing planned. Regenerate to fill from the chosen view, or add actions below."}
             </div>
           )}

@@ -266,7 +266,7 @@ test("labels spell out the action, the route and unknowns", () => {
   assert.equal(detailText(akbolto, now), "Level Bolto first (+1,800 mastery) · Credits 25,000");
   const node = { key: "SolNode27", planet: "Earth", mode: "normal" as const, junction: false, amount: 24 };
   const ePrime = opportunity("E Prime", { unique_name: "SolNode27", category: "Star Chart", cap: 1, earned_rank: 0, state: "missing",
-    stage: "acquire", action: "complete", remaining_mastery: null, owned: false, owned_level: null, access: "unknown", blockers: [{ kind: "node_unlock_not_observed" }], node });
+    stage: "acquire", action: "complete", remaining_mastery: null, owned: false, owned_level: null, access: "unknown", blockers: [{ kind: "node_unlock_unknown" }], node });
   assert.equal(actionText(ePrime), "Complete node");
   assert.equal(detailText(ePrime, now), "Earth");
   assert.equal(actionText({ ...ePrime, action: "unlock", node: { ...node, junction: true } }), "Unlock junction");
@@ -333,5 +333,8 @@ test("blocker labels come from the kind, with the numbers formatted", () => {
   assert.equal(blockerText({ kind: "mastery_rank_below", required: 4 }), "Requires MR 4");
   assert.equal(blockerText({ kind: "credits_short", short: 15_000 }), "Needs 15,000 more credits");
   assert.equal(blockerText({ kind: "missing_gate", path: "EarthToMarsJunction", name: "Mars Junction" }), "Mars Junction not cleared");
-  assert.equal(blockerText({ kind: "standing_not_observed" }), "Standing not observed");
+  for (const kind of ["mastery_rank_unknown", "credits_unknown", "standing_unknown", "junction_tasks_unknown", "node_unlock_unknown"] as const) {
+    assert.match(blockerText({ kind }), /unknown$/);
+    assert.doesNotMatch(blockerText({ kind }), /observed/);
+  }
 });

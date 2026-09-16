@@ -74,7 +74,7 @@ export function rankText(total: MasteryTotal): string {
 }
 
 export function summaryText(e: PlanEvaluation, target: number): string {
-  if (e.total == null || e.projected == null || e.gap == null) return "Mastery Rank not observed yet, so the gap and projection are unknown.";
+  if (e.total == null || e.projected == null || e.gap == null) return "Mastery Rank unknown, so the gap and projection are too.";
   const unknown = e.unknown_gains > 0 ? ` and ${e.unknown_gains} unknown` : "";
   const gap = e.gap === 0 ? `MR ${target} is reached` : `MR ${target} needs ${n(e.gap)} more`;
   return `Total ${totalText(e.total)} · ${gap} · plan adds ${n(e.gains)}${unknown} · projected ${rankText(e.projected)}`;

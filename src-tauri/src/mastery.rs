@@ -183,15 +183,15 @@ pub(crate) enum Access { Available, Unknown, Blocked }
 pub(crate) enum Blocker {
     StillBuilding,
     MasteryRankBelow { required: u32 },
-    MasteryRankNotObserved,
+    MasteryRankUnknown,
     CreditsShort { short: u64 },
     CreditCostUnknown,
-    CreditsNotObserved,
-    StandingNotObserved,
+    CreditsUnknown,
+    StandingUnknown,
     DropSourcesUnknown,
     MissingGate { path: String, name: String },
-    JunctionTasksNotObserved,
-    NodeUnlockNotObserved,
+    JunctionTasksUnknown,
+    NodeUnlockUnknown,
 }
 
 #[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
@@ -555,8 +555,8 @@ fn node_opportunity(source: &MasterySource, node: &NodeInfo, sources: &HashMap<&
         .map(|gate| match node.mode { Mode::Normal => gate.to_string(), Mode::SteelPath => format!("{gate}/steel_path") });
     let (access, blockers) = match gate.and_then(|gate| sources.get(gate.as_str())).filter(|g| g.state == MasteryState::Missing) {
         Some(gate) => (Access::Blocked, vec![Blocker::MissingGate { path: gate.unique_name.clone(), name: gate.name.clone() }]),
-        None if node.junction => (Access::Unknown, vec![Blocker::JunctionTasksNotObserved]),
-        None => (Access::Unknown, vec![Blocker::NodeUnlockNotObserved]),
+        None if node.junction => (Access::Unknown, vec![Blocker::JunctionTasksUnknown]),
+        None => (Access::Unknown, vec![Blocker::NodeUnlockUnknown]),
     };
     Some(Opportunity {
         source: source.clone(), stage: Stage::Acquire,
@@ -1112,7 +1112,7 @@ fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<Blocker>) {
         Action::Craft | Action::Build | Action::Buy | Action::Farm | Action::Trade | Action::Acquire => {
             match (o.source.mastery_req, observed.mastery_rank) {
                 (Some(required), Some(rank)) if required > rank => note(Access::Blocked, Blocker::MasteryRankBelow { required }),
-                (Some(required), None) if required > 0 => note(Access::Unknown, Blocker::MasteryRankNotObserved),
+                (Some(required), None) if required > 0 => note(Access::Unknown, Blocker::MasteryRankUnknown),
                 _ => {}
             }
             match o.action {
@@ -1120,10 +1120,10 @@ fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<Blocker>) {
                     let plan = o.craft.as_ref().expect("a craft row carries its plan");
                     if plan.credits_short > 0 { note(Access::Blocked, Blocker::CreditsShort { short: plan.credits_short }); }
                     else if plan.credits.is_none() { note(Access::Unknown, Blocker::CreditCostUnknown); }
-                    else if !observed.stock.contains_key(CREDITS_PATH) { note(Access::Unknown, Blocker::CreditsNotObserved); }
+                    else if !observed.stock.contains_key(CREDITS_PATH) { note(Access::Unknown, Blocker::CreditsUnknown); }
                 }
                 // TODO: read standing from the scan. Until then every Buy stays Unknown.
-                Action::Buy => note(Access::Unknown, Blocker::StandingNotObserved),
+                Action::Buy => note(Access::Unknown, Blocker::StandingUnknown),
                 Action::Trade | Action::Acquire => {}
                 _ => {
                     let plan = o.craft.as_ref().expect("a farm row carries its plan");
@@ -1861,7 +1861,7 @@ mod tests {
             VendorOffer { syndicate: "Cephalon Simaris".into(), tier: "Neutral".into(), blueprint: true },
             VendorOffer { syndicate: "Steel Meridian".into(), tier: "General".into(), blueprint: false },
         ]);
-        assert_eq!(sweeper.blockers, [Blocker::StandingNotObserved]);
+        assert_eq!(sweeper.blockers, [Blocker::StandingUnknown]);
         assert_eq!(overview.opportunities[4].vendors, [VendorOffer { syndicate: "Solaris United".into(), tier: "(Rude Zuud), Neutral".into(), blueprint: true }]);
     }
 
@@ -1875,12 +1875,12 @@ mod tests {
         let locked = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
             &observed_gear(&owned, &levels, &[], &recipes, &offers, Some(1)));
         assert_eq!(summary(sourced(&locked.opportunities)), [("Kuva Karak", Action::Acquire, Some(4_000), Access::Blocked), ("Sweeper", Action::Buy, Some(3_000), Access::Blocked)]);
-        assert_eq!(locked.opportunities[1].blockers, [Blocker::MasteryRankBelow { required: 2 }, Blocker::StandingNotObserved]);
+        assert_eq!(locked.opportunities[1].blockers, [Blocker::MasteryRankBelow { required: 2 }, Blocker::StandingUnknown]);
         assert!(locked.opportunities.iter().all(|o| o.blockers.contains(&Blocker::MasteryRankBelow { required: 2 })), "the lock holds whatever the route");
         let unranked = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
             &observed_gear(&owned, &levels, &[], &recipes, &offers, None));
         assert_eq!(summary(sourced(&unranked.opportunities)), [("Kuva Karak", Action::Acquire, Some(4_000), Access::Unknown), ("Sweeper", Action::Buy, Some(3_000), Access::Unknown)]);
-        assert_eq!(unranked.opportunities[1].blockers, [Blocker::MasteryRankNotObserved, Blocker::StandingNotObserved]);
+        assert_eq!(unranked.opportunities[1].blockers, [Blocker::MasteryRankUnknown, Blocker::StandingUnknown]);
     }
 
     #[test]
@@ -1926,19 +1926,19 @@ mod tests {
             "junctions carry known mastery and lead the stage");
         let mercury = find("Mercury Junction");
         assert_eq!((mercury.action, mercury.source.remaining_mastery, mercury.access), (Action::Unlock, Some(1_000), Access::Unknown));
-        assert_eq!(mercury.blockers, [Blocker::JunctionTasksNotObserved]);
+        assert_eq!(mercury.blockers, [Blocker::JunctionTasksUnknown]);
         let mars = find("Mars Junction");
         assert_eq!((mars.action, mars.access), (Action::Unlock, Access::Unknown));
         let aphrodite = find("Aphrodite");
         assert_eq!((aphrodite.action, aphrodite.source.remaining_mastery, aphrodite.access), (Action::Complete, Some(18), Access::Unknown));
-        assert_eq!(aphrodite.blockers, [Blocker::NodeUnlockNotObserved]);
+        assert_eq!(aphrodite.blockers, [Blocker::NodeUnlockUnknown]);
         let boethius = find("Boethius");
         assert_eq!((boethius.action, boethius.access), (Action::Complete, Access::Blocked));
         assert_eq!(boethius.blockers, [Blocker::MissingGate { path: "VenusToMercuryJunction".into(), name: "Mercury Junction".into() }]);
         let ceres = find("Ceres Junction");
         assert_eq!((ceres.access, ceres.blockers.clone()), (Access::Blocked, vec![Blocker::MissingGate { path: "EarthToMarsJunction".into(), name: "Mars Junction".into() }]));
         let steel_e_prime = nodes.iter().find(|o| o.source.unique_name == "SolNode27/steel_path").expect("Steel Path row is not cleared");
-        assert_eq!((steel_e_prime.access, steel_e_prime.blockers.clone()), (Access::Unknown, vec![Blocker::NodeUnlockNotObserved]), "Earth has no gate");
+        assert_eq!((steel_e_prime.access, steel_e_prime.blockers.clone()), (Access::Unknown, vec![Blocker::NodeUnlockUnknown]), "Earth has no gate");
         let steel_boethius = nodes.iter().find(|o| o.source.unique_name == "SolNode223/steel_path").expect("Steel Path row is not cleared");
         assert_eq!(steel_boethius.blockers, [Blocker::MissingGate { path: "VenusToMercuryJunction/steel_path".into(), name: "Mercury Junction".into() }],
             "a Steel Path node waits on the Steel Path junction");
@@ -2160,7 +2160,7 @@ mod tests {
         assert_eq!(overview.opportunities[2].blockers, [Blocker::CreditsShort { short: 15_000 }]);
         let sweeper = plan(3);
         assert_eq!(sweeper.shortages().map(|r| (r.name.as_str(), r.short)).collect::<Vec<_>>(), [("Blueprint", 1), ("Chassis Blueprint", 1), ("Ferrite", 150)]);
-        assert_eq!(overview.opportunities[3].blockers, [Blocker::StandingNotObserved]);
+        assert_eq!(overview.opportunities[3].blockers, [Blocker::StandingUnknown]);
 
         // Without the vendor the same shortage becomes a farm. A craft with no
         // credit balance observed cannot promise it is affordable.
@@ -2176,7 +2176,7 @@ mod tests {
             ("Sweeper", Action::Farm, Some(3_000), Access::Unknown),
             ("Kuva Karak", Action::Acquire, Some(4_000), Access::Available),
         ]);
-        assert_eq!(overview.opportunities[0].blockers, [Blocker::CreditsNotObserved]);
+        assert_eq!(overview.opportunities[0].blockers, [Blocker::CreditsUnknown]);
         assert_eq!(overview.opportunities[3].blockers, [Blocker::DropSourcesUnknown]);
     }
 
