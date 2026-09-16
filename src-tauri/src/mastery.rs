@@ -19,10 +19,11 @@ use crate::wfm::{to_wfm_slug, PriceQuote};
 
 const COLLECTION_CATEGORIES: &[&str] = &[
     "Warframes", "Primary", "Secondary", "Melee", "Operator Weapons",
-    "Archwing", "Companions", "Companion Weapons", "Vehicles", "Intrinsics", STAR_CHART,
+    "Archwing", "Companions", "Companion Weapons", "Vehicles", INTRINSICS, STAR_CHART,
 ];
 
 const STAR_CHART: &str = "Star Chart";
+const INTRINSICS: &str = "Intrinsics";
 
 #[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -481,9 +482,40 @@ fn plan_spend(system: &mastery_rules::IntrinsicSystem, skills: &HashMap<String, 
     Some(Spend {
         ranks: gained,
         points: banked - left,
-        mastery: gained * mastery_rules::mastery_per_rank(system.points),
+        mastery: gained * mastery_rules::INTRINSIC_MASTERY_PER_RANK,
         tracks,
     })
+}
+
+fn spend_opportunity(source: MasterySource, spend: Spend, access: Access) -> Opportunity {
+    Opportunity {
+        source, stage: Stage::LevelClaim, action: Action::Spend,
+        owned: false, owned_level: None, forma: None, build_completion_ms: None, vendors: vec![], spend: Some(spend),
+        access, blockers: vec![], craft: None, relic: None, drop: None, purchase: None,
+    }
+}
+
+/// The Spend row's subject. The Collection lists only the tracks, so a plan
+/// that selects a system's points field builds its source here.
+fn system_source(system: &mastery_rules::IntrinsicSystem, by_name: &HashMap<&str, &MasterySource>) -> MasterySource {
+    let tracks: Vec<&MasterySource> = system.tracks.iter().map(|(_, field)| *by_name.get(field).expect("every track is a Collection row")).collect();
+    let cap = system.rank_cap();
+    let earned_rank: Option<u32> = tracks.iter().map(|t| t.earned_rank).sum();
+    MasterySource {
+        unique_name: system.points.into(),
+        name: system.name.into(),
+        category: INTRINSICS.into(),
+        image_name: None,
+        mastery_req: None,
+        cap,
+        earned_rank,
+        remaining_mastery: tracks.iter().map(|t| t.remaining_mastery).sum(),
+        state: rank_state(earned_rank, cap),
+        unobtainable: None,
+        excluded: false,
+        node: None,
+        route: None,
+    }
 }
 
 /// Hok and Rude Zuud offers have an empty result_unique, so they match on
@@ -586,14 +618,9 @@ impl<'a> Rows<'a> {
 
     fn row(&self, source: &MasterySource, observed: &Observed) -> Option<Opportunity> {
         if let Some(node) = &source.node { return node_opportunity(source, node, self.by_name); }
-        if let Some(system) = mastery_rules::intrinsic_system(&source.unique_name) {
-            let spend = plan_spend(system, observed.skills?)?;
-            return Some(Opportunity {
-                source: source.clone(), stage: Stage::LevelClaim, action: Action::Spend,
-                owned: false, owned_level: None, forma: None, build_completion_ms: None, vendors: vec![], spend: Some(spend),
-                access: Access::Available, blockers: vec![], craft: None, relic: None, drop: None, purchase: None,
-            });
-        }
+        // Points are spent per system, so `suggest` builds one Spend row over
+        // all of a system's tracks.
+        if source.category == INTRINSICS { return None; }
         let copy = self.copies.get(source.unique_name.as_str()).copied();
         let owned_level = copy.map(|(level, _)| level);
         let forma = copy.and_then(|(_, level_cap)| {
@@ -666,6 +693,10 @@ pub(crate) fn suggest(overview: &MasteryOverview, observed: &Observed) -> Vec<Op
         .filter(|s| !s.excluded && s.state != MasteryState::Mastered)
         .filter_map(|source| rows.row(source, observed))
         .collect();
+    for system in &mastery_rules::INTRINSIC_SYSTEMS {
+        let Some(spend) = observed.skills.and_then(|skills| plan_spend(system, skills)) else { continue };
+        opportunities.push(spend_opportunity(system_source(system, &by_name), spend, Access::Available));
+    }
 
     // Recipes draw on one ledger in display order, which is why every recipe
     // row sits in the Craft stage whatever its final action, except a relic
@@ -824,9 +855,10 @@ pub(crate) fn evaluate(overview: &MasteryOverview, observed: Option<&Observed>, 
     };
     let mut seen: HashSet<&str> = HashSet::new();
     let mut entries: Vec<PlanEntry> = plan.selections.iter().map(|path| {
-        let source = by_name.get(path.as_str()).copied();
+        let source = by_name.get(path.as_str()).map(|s| (*s).clone())
+            .or_else(|| mastery_rules::intrinsic_system(path).map(|system| system_source(system, &by_name)));
         let mut entry = PlanEntry {
-            unique_name: path.clone(), source: source.cloned(), opportunity: None, completed: false, gain: None, notes: vec![], allowable: vec![],
+            unique_name: path.clone(), source: source.clone(), opportunity: None, completed: false, gain: None, notes: vec![], allowable: vec![],
         };
         if !seen.insert(path.as_str()) {
             entry.notes.push("Already in the plan".into());
@@ -856,25 +888,20 @@ pub(crate) fn evaluate(overview: &MasteryOverview, observed: Option<&Observed>, 
             }).collect();
             let ranks: u32 = tracks.iter().map(|t| t.to - t.from).sum();
             let points: u32 = tracks.iter().map(|t| system.rank_costs[t.from as usize..t.to as usize].iter().sum::<u32>()).sum();
-            let mastery = ranks * mastery_rules::mastery_per_rank(system.points);
+            let mastery = ranks * mastery_rules::INTRINSIC_MASTERY_PER_RANK;
             entry.gain = Some(mastery);
             entry.completed = tracks.is_empty();
             if !entry.completed {
                 let missing_points = points.saturating_sub(system.banked(skills));
                 if missing_points > 0 { entry.notes.push(format!("Needs {missing_points} more Intrinsic points")); }
-                entry.opportunity = Some(Opportunity {
-                    source: source.clone(), stage: Stage::LevelClaim, action: Action::Spend,
-                    owned: false, owned_level: None, forma: None, build_completion_ms: None, vendors: vec![],
-                    spend: Some(Spend { ranks, points, mastery, tracks }),
-                    access: if missing_points > 0 { Access::Blocked } else { Access::Available },
-                    blockers: vec![], craft: None, relic: None, drop: None, purchase: None,
-                });
+                entry.opportunity = Some(spend_opportunity(source, Spend { ranks, points, mastery, tracks },
+                    if missing_points > 0 { Access::Blocked } else { Access::Available }));
             }
             return entry;
         }
         entry.gain = source.remaining_mastery;
         match (&rows, observed, ledger.as_mut()) {
-            (Some(rows), Some(observed), Some(ledger)) => match rows.row(source, observed) {
+            (Some(rows), Some(observed), Some(ledger)) => match rows.row(&source, observed) {
                 Some(mut o) => {
                     if plan.view == "platinum" {
                         let mut preview = ledger.clone();
@@ -885,7 +912,7 @@ pub(crate) fn evaluate(overview: &MasteryOverview, observed: Option<&Observed>, 
                             let mut quantities = purchase.parts.iter().map(|p| (p.unique_name.as_str(),
                                 if cost.route == Route::Set || plan.purchase_comparison == "full" { p.needed } else { p.short })).collect();
                             ledger.supply(recipe, &mut quantities);
-                            o = rows.row(source, observed).expect("the same source still has a route");
+                            o = rows.row(&source, observed).expect("the same source still has a route");
                             settle(&mut o, rows, ledger, observed);
                             entry.notes.push(format!("Plan buys {} for {} platinum", if cost.route == Route::Set { "a complete set" } else { "parts" }, cost.platinum));
                             o.purchase = Some(purchase);
@@ -1163,9 +1190,7 @@ pub(crate) fn build_mastery_overview(
         if let Some(rank) = rank {
             source.earned_rank = Some(rank);
             source.remaining_mastery = Some(source.cap.saturating_sub(rank) * mastery_rules::mastery_per_rank(&source.unique_name));
-            source.state = if rank >= source.cap { MasteryState::Mastered }
-                else if rank > 0 { MasteryState::Partial }
-                else { MasteryState::Missing };
+            source.state = rank_state(Some(rank), source.cap);
         }
         let category = categories.iter_mut().find(|c| c.category == source.category).expect("category comes from COLLECTION_CATEGORIES");
         category.counts.add(&source);
@@ -1178,24 +1203,25 @@ pub(crate) fn build_mastery_overview(
         place(source, equipment.resolve(rank, 0));
     }
     for system in &mastery_rules::INTRINSIC_SYSTEMS {
-        let source = MasterySource {
-            unique_name: system.points.into(),
-            name: system.name.into(),
-            category: "Intrinsics".into(),
-            image_name: None,
-            mastery_req: None,
-            cap: system.rank_cap(),
-            earned_rank: None,
-            remaining_mastery: None,
-            state: MasteryState::Unknown,
-            unobtainable: None,
-            excluded: false,
-            node: None,
-            route: None,
-        };
-        let rank = progress.filter(|p| p.intrinsics.state != ProvenanceState::Unknown)
-            .map(|p| system.track_ranks(&p.skills).iter().sum());
-        place(source, rank);
+        let ranks = progress.filter(|p| p.intrinsics.state != ProvenanceState::Unknown).map(|p| system.track_ranks(&p.skills));
+        for (i, (track, field)) in system.tracks.iter().enumerate() {
+            let source = MasterySource {
+                unique_name: (*field).into(),
+                name: (*track).into(),
+                category: INTRINSICS.into(),
+                image_name: None,
+                mastery_req: None,
+                cap: mastery_rules::INTRINSIC_RANK_CAP,
+                earned_rank: None,
+                remaining_mastery: None,
+                state: MasteryState::Unknown,
+                unobtainable: None,
+                excluded: false,
+                node: None,
+                route: None,
+            };
+            place(source, ranks.as_ref().map(|ranks| ranks[i]));
+        }
     }
     // Equipment sorts by name. The star chart rows keep the table's chart
     // order, which is why they are pushed after this sort.
@@ -1236,6 +1262,15 @@ pub(crate) fn build_mastery_overview(
     categories.retain(|c| !c.sources.is_empty());
     let provenance = MasteryProvenance { equipment, intrinsics, nodes, junctions: nodes };
     MasteryOverview { counts, categories, provenance, mastery_rank: None, opportunities: vec![] }
+}
+
+fn rank_state(rank: Option<u32>, cap: u32) -> MasteryState {
+    match rank {
+        None => MasteryState::Unknown,
+        Some(rank) if rank >= cap => MasteryState::Mastered,
+        Some(0) => MasteryState::Missing,
+        Some(_) => MasteryState::Partial,
+    }
 }
 
 /// Inventory display categories file modular chambers, decks and mechs under
@@ -1361,6 +1396,7 @@ mod tests {
 
     /// Every node and junction counts once per mode.
     const CHART_ROWS: u32 = 2 * 265;
+    const INTRINSIC_ROWS: u32 = 5 + 4;
 
     fn star_chart(overview: &MasteryOverview) -> &MasteryCategory {
         overview.categories.iter().find(|c| c.category == "Star Chart").expect("star chart listed")
@@ -1406,8 +1442,8 @@ mod tests {
         assert_eq!(names(&overview, "Companions"), ["Bhaira Hound", "Venari"]);
         assert_eq!(names(&overview, "Companion Weapons"), ["Sweeper"]);
         assert_eq!(names(&overview, "Vehicles"), ["Bad Baby", "Voidrig"]);
-        assert_eq!(names(&overview, "Intrinsics"), ["Drifter", "Railjack"]);
-        assert_eq!(overview.counts.total, 18 + CHART_ROWS);
+        assert_eq!(names(&overview, "Intrinsics").len(), INTRINSIC_ROWS as usize);
+        assert_eq!(overview.counts.total, 16 + INTRINSIC_ROWS + CHART_ROWS);
         let all: Vec<&str> = overview.categories.iter().flat_map(|c| &c.sources).map(|s| s.unique_name.as_str()).collect();
         assert_eq!(all.len(), all.iter().collect::<std::collections::HashSet<_>>().len());
         for absent in [ORION, GRIMOIRE_ALIAS, ZAW_WEAPON, VINQUIBUS_MELEE] {
@@ -1432,7 +1468,7 @@ mod tests {
         assert_eq!(source(&overview, MECH).remaining_mastery, Some(8_000));
         let primary = overview.categories.iter().find(|c| c.category == "Primary").expect("primary");
         assert_eq!(primary.counts, MasteryCounts { total: 2, mastered: 1, partial: 1, missing: 0, unknown: 0, unobtainable: 0 });
-        assert_eq!(overview.counts, MasteryCounts { total: 18 + CHART_ROWS, mastered: 2, partial: 2, missing: 12, unknown: 2 + CHART_ROWS, unobtainable: 0 });
+        assert_eq!(overview.counts, MasteryCounts { total: 16 + INTRINSIC_ROWS + CHART_ROWS, mastered: 2, partial: 2, missing: 12, unknown: INTRINSIC_ROWS + CHART_ROWS, unobtainable: 0 });
     }
 
     #[test]
@@ -1468,7 +1504,7 @@ mod tests {
 
         let chart = star_chart(&overview);
         assert_eq!(chart.counts, MasteryCounts { total: CHART_ROWS, mastered: 7, partial: 0, missing: CHART_ROWS - 7, unknown: 0, unobtainable: 0 });
-        assert_eq!(overview.counts.total, 18 + CHART_ROWS);
+        assert_eq!(overview.counts.total, 16 + INTRINSIC_ROWS + CHART_ROWS);
         let venus: Vec<(&str, Mode)> = chart.sources.iter()
             .filter(|s| s.node.as_ref().is_some_and(|n| n.planet == "Venus"))
             .map(|s| (s.name.as_str(), s.node.as_ref().expect("node").mode)).take(5).collect();
@@ -1495,7 +1531,7 @@ mod tests {
         let overview = build_mastery_overview(&catalog(), &corrections(), None, &HashSet::new());
         assert!(overview.categories.iter().flat_map(|c| &c.sources)
             .all(|s| s.state == MasteryState::Unknown && s.earned_rank.is_none() && s.remaining_mastery.is_none()));
-        assert_eq!(overview.counts, MasteryCounts { total: 18 + CHART_ROWS, mastered: 0, partial: 0, missing: 0, unknown: 18 + CHART_ROWS, unobtainable: 0 });
+        assert_eq!(overview.counts, MasteryCounts { total: 16 + INTRINSIC_ROWS + CHART_ROWS, mastered: 0, partial: 0, missing: 0, unknown: 16 + INTRINSIC_ROWS + CHART_ROWS, unobtainable: 0 });
         for kind in [overview.provenance.equipment, overview.provenance.intrinsics, overview.provenance.nodes, overview.provenance.junctions] {
             assert_eq!(kind, Provenance::default());
         }
@@ -1509,7 +1545,7 @@ mod tests {
         assert_eq!((source(&overview, BRATON).earned_rank, source(&overview, BRATON).state), (Some(30), MasteryState::Mastered));
         assert_eq!((source(&overview, KUVA).earned_rank, source(&overview, KUVA).state), (Some(35), MasteryState::Partial));
         assert_eq!((source(&overview, CHAMBER).earned_rank, source(&overview, CHAMBER).state), (None, MasteryState::Unknown));
-        assert_eq!(overview.counts, MasteryCounts { total: 18 + CHART_ROWS, mastered: 1, partial: 1, missing: 0, unknown: 16 + CHART_ROWS, unobtainable: 0 });
+        assert_eq!(overview.counts, MasteryCounts { total: 16 + INTRINSIC_ROWS + CHART_ROWS, mastered: 1, partial: 1, missing: 0, unknown: 14 + INTRINSIC_ROWS + CHART_ROWS, unobtainable: 0 });
     }
 
     #[test]
@@ -1551,7 +1587,7 @@ mod tests {
         let plexus = source(&overview, PLEXUS);
         assert_eq!((plexus.cap, plexus.earned_rank, plexus.state), (30, Some(25), MasteryState::Partial));
         assert_eq!((plexus.image_name.as_deref(), plexus.mastery_req), (None, None));
-        assert_eq!(overview.counts.total, 19 + CHART_ROWS);
+        assert_eq!(overview.counts.total, 17 + INTRINSIC_ROWS + CHART_ROWS);
 
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
         let overview = build_mastery_overview(&catalog(), &corrections, Some(&progress), &HashSet::new());
@@ -1576,7 +1612,7 @@ mod tests {
         let all: HashSet<Unobtainable> = Unobtainable::ALL.into();
 
         let overview = build_mastery_overview(&items, &corrections, Some(&progress), &all);
-        assert_eq!(overview.counts, MasteryCounts { total: 17 + CHART_ROWS, mastered: 0, partial: 0, missing: 15, unknown: 2 + CHART_ROWS, unobtainable: 3 });
+        assert_eq!(overview.counts, MasteryCounts { total: 15 + INTRINSIC_ROWS + CHART_ROWS, mastered: 0, partial: 0, missing: 15, unknown: INTRINSIC_ROWS + CHART_ROWS, unobtainable: 3 });
         let excalibur = source(&overview, EXCALIBUR_PRIME);
         assert_eq!((excalibur.excluded, excalibur.unobtainable), (true, Some(Unobtainable::Founders)));
         assert_eq!((excalibur.state, excalibur.earned_rank), (MasteryState::Mastered, Some(30)));
@@ -1588,11 +1624,11 @@ mod tests {
             excluded.remove(&class);
             let overview = build_mastery_overview(&items, &corrections, Some(&progress), &excluded);
             assert_eq!((source(&overview, path).excluded, source(&overview, path).unobtainable), (false, Some(class)));
-            assert_eq!((overview.counts.total, overview.counts.unobtainable), (18 + CHART_ROWS, 2), "{class:?}");
+            assert_eq!((overview.counts.total, overview.counts.unobtainable), (16 + INTRINSIC_ROWS + CHART_ROWS, 2), "{class:?}");
         }
 
         let overview = build_mastery_overview(&items, &corrections, Some(&progress), &HashSet::new());
-        assert_eq!(overview.counts, MasteryCounts { total: 20 + CHART_ROWS, mastered: 1, partial: 0, missing: 17, unknown: 2 + CHART_ROWS, unobtainable: 0 });
+        assert_eq!(overview.counts, MasteryCounts { total: 18 + INTRINSIC_ROWS + CHART_ROWS, mastered: 1, partial: 0, missing: 17, unknown: INTRINSIC_ROWS + CHART_ROWS, unobtainable: 0 });
     }
 
     fn with_suggestions(items: &[WfcdItem], corrections: &HashMap<String, CorrectionEntry>, progress: Option<&PlayerProgress>, excluded: &HashSet<Unobtainable>, observed: &Observed) -> MasteryOverview {
@@ -1932,28 +1968,37 @@ mod tests {
     }
 
     #[test]
-    fn each_intrinsic_system_is_one_row_of_summed_track_ranks() {
+    fn each_intrinsic_track_is_one_row_and_the_spend_row_sums_its_system() {
         let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &CAPTURED_SKILLS);
         let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
         assert_eq!(overview.provenance.intrinsics, Provenance { state: ProvenanceState::Confirmed, observed_at: Some(2_000) });
-        assert_eq!(names(&overview, "Intrinsics"), ["Drifter", "Railjack"]);
-        let railjack = source(&overview, RAILJACK);
-        assert_eq!((railjack.cap, railjack.earned_rank, railjack.remaining_mastery, railjack.state), (50, Some(45), Some(7_500), MasteryState::Partial));
-        assert_eq!((railjack.image_name.as_deref(), railjack.mastery_req, railjack.unobtainable), (None, None, None));
-        let drifter = source(&overview, DRIFTER);
-        assert_eq!((drifter.cap, drifter.earned_rank, drifter.remaining_mastery, drifter.state), (40, Some(40), Some(0), MasteryState::Mastered));
+        assert_eq!(names(&overview, "Intrinsics"), ["Combat", "Command", "Endurance", "Engineering", "Gunnery", "Opportunity", "Piloting", "Riding", "Tactical"]);
+        let piloting = source(&overview, "LPS_PILOTING");
+        assert_eq!((piloting.cap, piloting.earned_rank, piloting.remaining_mastery, piloting.state), (10, Some(9), Some(1_500), MasteryState::Partial));
+        assert_eq!((piloting.image_name.as_deref(), piloting.mastery_req, piloting.unobtainable), (None, None, None));
+        let riding = source(&overview, "LPS_DRIFT_RIDING");
+        assert_eq!((riding.cap, riding.earned_rank, riding.remaining_mastery, riding.state), (10, Some(10), Some(0), MasteryState::Mastered));
         let intrinsics = overview.categories.iter().find(|c| c.category == "Intrinsics").expect("intrinsics");
-        assert_eq!(intrinsics.counts, MasteryCounts { total: 2, mastered: 1, partial: 1, missing: 0, unknown: 0, unobtainable: 0 });
+        assert_eq!(intrinsics.counts, MasteryCounts { total: 9, mastered: 6, partial: 3, missing: 0, unknown: 0, unobtainable: 0 });
+        assert!(overview.categories.iter().flat_map(|c| &c.sources).all(|s| s.unique_name != RAILJACK && s.unique_name != DRIFTER), "no system row");
+
+        let by_name = sources_by_name(&overview);
+        let railjack = system_source(mastery_rules::intrinsic_system(RAILJACK).expect("railjack"), &by_name);
+        assert_eq!((railjack.name.as_str(), railjack.cap, railjack.earned_rank, railjack.remaining_mastery, railjack.state), ("Railjack", 50, Some(45), Some(7_500), MasteryState::Partial));
+        let drifter = system_source(mastery_rules::intrinsic_system(DRIFTER).expect("drifter"), &by_name);
+        assert_eq!((drifter.cap, drifter.earned_rank, drifter.remaining_mastery, drifter.state), (40, Some(40), Some(0), MasteryState::Mastered));
 
         // A confirmed object with no track fields is an account that never earned a rank.
         let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &[]);
         let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
-        assert_eq!((source(&overview, RAILJACK).earned_rank, source(&overview, RAILJACK).state), (Some(0), MasteryState::Missing));
+        assert_eq!((source(&overview, "LPS_PILOTING").earned_rank, source(&overview, "LPS_PILOTING").state), (Some(0), MasteryState::Missing));
+        let railjack = system_source(mastery_rules::intrinsic_system(RAILJACK).expect("railjack"), &sources_by_name(&overview));
+        assert_eq!((railjack.earned_rank, railjack.state), (Some(0), MasteryState::Missing));
 
         // A rank past 10 or below 0 is not one the game hands out.
         let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &[("LPS_DRIFT_RIDING", 12), ("LPS_DRIFT_COMBAT", -3)]);
         let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
-        assert_eq!(source(&overview, DRIFTER).earned_rank, Some(10));
+        assert_eq!((source(&overview, "LPS_DRIFT_RIDING").earned_rank, source(&overview, "LPS_DRIFT_COMBAT").earned_rank), (Some(10), Some(0)));
     }
 
     #[test]
@@ -1962,10 +2007,12 @@ mod tests {
         let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
         assert_eq!(overview.provenance.intrinsics, Provenance::default());
         assert_eq!(source(&overview, BRATON).state, MasteryState::Mastered);
-        for system in [RAILJACK, DRIFTER] {
-            assert_eq!((source(&overview, system).earned_rank, source(&overview, system).state), (None, MasteryState::Unknown), "{system}");
+        for track in ["LPS_PILOTING", "LPS_DRIFT_RIDING"] {
+            assert_eq!((source(&overview, track).earned_rank, source(&overview, track).state), (None, MasteryState::Unknown), "{track}");
         }
-        assert_eq!(overview.counts.unknown, 2 + CHART_ROWS);
+        let railjack = system_source(mastery_rules::intrinsic_system(RAILJACK).expect("railjack"), &sources_by_name(&overview));
+        assert_eq!((railjack.earned_rank, railjack.state), (None, MasteryState::Unknown));
+        assert_eq!(overview.counts.unknown, INTRINSIC_ROWS + CHART_ROWS);
     }
 
     /// Worked by hand from the wiki's cost tables. 18 of the 20 Railjack

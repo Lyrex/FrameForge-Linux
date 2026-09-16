@@ -27,7 +27,9 @@ interface Props {
 }
 
 function Placeholder({ path, entry, overview }: { path: string; entry: PlanEntry | null; overview: MasteryOverview }) {
-  const source = entry?.source ?? overview.categories.flatMap(c => c.sources).find(s => s.unique_name === path) ?? null;
+  // A system has no Collection row, so its Spend opportunity stands in for one until the evaluation lands.
+  const source = entry?.source ?? overview.categories.flatMap(c => c.sources).find(s => s.unique_name === path)
+    ?? overview.opportunities.find(o => o.unique_name === path) ?? null;
   const name = source?.name ?? path.split("/").pop() ?? path;
   return (
     <div className={`mst-opp ${entry?.completed ? "mst-plan-done" : ""}`}>

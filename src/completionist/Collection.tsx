@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import ItemImg from "../ItemImg";
 import SearchBar from "../shared/SearchBar";
 import { MASTERY_EXCLUDE_OPTIONS } from "../constants/settings";
-import { groupSources } from "./masteryGroups";
+import { groupSources, systemRank } from "./masteryGroups";
 import { Progress } from "./Mastery";
 import type { MasteryOverview, MasterySource, MasteryState } from "../types/mastery";
 
@@ -63,10 +63,14 @@ export default function Collection({ overview }: { overview: MasteryOverview }) 
   }, [category, search, bucket]);
 
   const isFiltered = search !== "" || bucket != null;
-  // A header over the only group repeats the tab name. The whole category
-  // decides this, so a search that narrows a category to one visible group
-  // keeps its header instead of flickering it away while typing.
-  const singleGroup = useMemo(() => category != null && groupSources(category.sources).length === 1, [category]);
+  // Both header facts come from the whole category. A search that narrows
+  // the view to one group would otherwise flicker the header away, and a
+  // bucket filter would change a system's sum.
+  const allGroups = useMemo(() => category ? groupSources(category.sources) : [], [category]);
+  const singleGroup = allGroups.length === 1;
+  const headerText = (group: string) => category?.category === "Intrinsics"
+    ? `${group} ${systemRank(allGroups.find(g => g.group === group)?.sources ?? [])}`
+    : group;
 
   return (
     <>
@@ -116,7 +120,7 @@ export default function Collection({ overview }: { overview: MasteryOverview }) 
         )}
         {groups.map(({ group, sources }) => (
           <div key={group} className="mst-group">
-            {!singleGroup && <div className="mst-group-header">{group}</div>}
+            {!singleGroup && <div className="mst-group-header">{headerText(group)}</div>}
             <div className="mst-group-grid">
               {sources.map(s => <SourceRow key={s.unique_name} source={s} />)}
             </div>

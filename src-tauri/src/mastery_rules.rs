@@ -35,7 +35,7 @@ pub(crate) fn mastery_rank_from_xp(xp: u64) -> u32 {
 }
 
 pub(crate) const INTRINSIC_RANK_CAP: u32 = 10;
-const INTRINSIC_MASTERY_PER_RANK: u32 = 1_500;
+pub(crate) const INTRINSIC_MASTERY_PER_RANK: u32 = 1_500;
 
 /// An Intrinsic system's banked-point pool and the tracks it feeds, named
 /// by the game's own `PlayerSkills` fields. The rank costs come from the
@@ -91,7 +91,8 @@ impl IntrinsicSystem {
     }
 }
 
-/// Finds the system whose point pool field is a Collection row's `unique_name`.
+/// Finds the system whose point pool field is a Spend row's or plan
+/// selection's `unique_name`.
 pub(crate) fn intrinsic_system(unique_name: &str) -> Option<&'static IntrinsicSystem> {
     INTRINSIC_SYSTEMS.iter().find(|s| s.points == unique_name)
 }
@@ -134,7 +135,7 @@ fn affinity_base(path: &str) -> i64 {
 }
 
 pub(crate) fn mastery_per_rank(unique_name: &str) -> u32 {
-    if intrinsic_system(unique_name).is_some() { INTRINSIC_MASTERY_PER_RANK }
+    if INTRINSIC_SYSTEMS.iter().any(|s| s.tracks.iter().any(|(_, field)| *field == unique_name)) { INTRINSIC_MASTERY_PER_RANK }
     else if is_warframe_like(unique_name) { 200 }
     else { 100 }
 }

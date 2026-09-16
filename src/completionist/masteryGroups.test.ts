@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { groupSources, masteryGroup } from "./masteryGroups.ts";
+import { groupSources, masteryGroup, systemRank } from "./masteryGroups.ts";
 import type { MasterySource } from "../types/mastery.ts";
 
 const source = (name: string, unique_name = `/Lotus/Weapons/Tenno/${name}`): MasterySource => ({
@@ -23,7 +23,15 @@ test("variant prefixes and modular paths decide the group", () => {
   assert.equal(masteryGroup(source("Balla", "/Lotus/Weapons/Ostron/Melee/ModularMelee01/Tip/TipOne")), "Zaw");
   assert.equal(masteryGroup(source("Catchmoon", "/Lotus/Weapons/SolarisUnited/Secondary/SUModularSecondarySet1/Barrel/A")), "Kitgun");
   assert.equal(masteryGroup(source("Raplak Prism", "/Lotus/Weapons/Sentients/OperatorAmplifiers/Set1/Barrel/A")), "Amp");
-  assert.equal(masteryGroup({ ...source("Railjack", "LPP_SPACE"), category: "Intrinsics" }), "Intrinsics");
+});
+
+test("Intrinsic tracks group by system, Railjack first, with the summed rank over the cap", () => {
+  const track = (name: string, field: string, rank: number | null): MasterySource =>
+    ({ ...source(name, field), category: "Intrinsics", cap: 10, earned_rank: rank });
+  const groups = groupSources([track("Combat", "LPS_DRIFT_COMBAT", 10), track("Piloting", "LPS_PILOTING", 9), track("Tactical", "LPS_TACTICAL", 10)]);
+  assert.deepEqual(groups.map(g => g.group), ["Railjack", "Drifter"]);
+  assert.equal(systemRank(groups[0].sources), "19/20");
+  assert.equal(systemRank([track("Piloting", "LPS_PILOTING", null)]), "?/10");
 });
 
 test("star chart rows group by planet in the order they arrive, junctions and mode pairs intact", () => {

@@ -1,9 +1,10 @@
 import type { MasterySource } from "../types/mastery";
 
-const GROUP_ORDER = ["Standard", "Zaw", "Kitgun", "Amp", "Prime", "Kuva", "Tenet", "Coda", "Wraith", "Vandal", "Prisma", "MK1"];
+const GROUP_ORDER = ["Railjack", "Drifter", "Standard", "Zaw", "Kitgun", "Amp", "Prime", "Kuva", "Tenet", "Coda", "Wraith", "Vandal", "Prisma", "MK1"];
 
 export function masteryGroup(source: MasterySource): string {
-  if (source.category === "Intrinsics") return "Intrinsics";
+  // The game's own field naming is the only system marker a track row carries.
+  if (source.category === "Intrinsics") return source.unique_name.startsWith("LPS_DRIFT_") ? "Drifter" : "Railjack";
   if (source.node) return source.node.planet;
   const path = source.unique_name;
   if (path.includes("/Ostron/Melee/")) return "Zaw";
@@ -44,4 +45,9 @@ export function groupSources(sources: MasterySource[]): SourceGroup[] {
   return [...byGroup.entries()]
     .sort(([a], [b]) => rank(a) - rank(b))
     .map(([group, list]) => ({ group, sources: list[0]?.node ? list : list.sort((a, b) => a.name.localeCompare(b.name)) }));
+}
+
+export function systemRank(tracks: MasterySource[]): string {
+  const rank = tracks.some(t => t.earned_rank == null) ? "?" : tracks.reduce((sum, t) => sum + (t.earned_rank ?? 0), 0);
+  return `${rank}/${tracks.reduce((sum, t) => sum + t.cap, 0)}`;
 }
