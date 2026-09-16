@@ -144,12 +144,22 @@ pub struct BlobUniqueEntry {
     pub modular_parts: Vec<String>,
 }
 /// One `Missions` entry. `Completes` counts every clear of the node across
-/// modes. `Tier` is null on most entries and 1, 2 or 8 on the rest, and its
-/// meaning is not established, so nothing derives Steel Path state from it yet.
+/// modes, so a node first cleared on the Steel Path counts as cleared on the
+/// normal chart too. `Tier` is null on most entries and 1, 2 or 8 on the
+/// rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlobMission {
     pub completes: u32,
     pub tier:      Option<u32>,
+}
+
+impl BlobMission {
+    /// On a verified account every node and junction cleared on the Steel
+    /// Path carried tier 1 and every other one carried null.
+    // TODO: bits 2 and 8 are not understood.
+    pub fn steel_path_cleared(&self) -> bool {
+        self.tier.is_some_and(|tier| tier & 1 != 0)
+    }
 }
 
 /// A stackable item: resource, blueprint, relic, Ayatan sculpture, etc.

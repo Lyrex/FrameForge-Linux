@@ -65,8 +65,6 @@ pub(crate) struct PlayerProgress {
     pub(crate) skills: HashMap<String, i64>,
     #[serde(default)]
     pub(crate) intrinsics: Provenance,
-    /// `Missions` entries per node key, tier included, so Steel Path state
-    /// can derive later without a rescan.
     #[serde(default)]
     pub(crate) missions: HashMap<String, BlobMission>,
     /// Nodes and junctions both come from `Missions`, so one observation

@@ -24,7 +24,6 @@ function inBucket(source: MasterySource, bucket: Bucket | null): boolean {
 function SourceRow({ source }: { source: MasterySource }) {
   const steelPath = source.node?.mode === "steel_path";
   const rank = source.earned_rank == null ? "?" : source.node ? "—" : `R${source.earned_rank}/${source.cap}`;
-  const unknownTitle = steelPath ? "Steel Path clears are not read from the account yet" : "No account observation yet";
   const classNoun = MASTERY_EXCLUDE_OPTIONS.find(o => o.key === source.unobtainable)?.noun;
   return (
     <div className={`mst-item mst-${source.state}`} tabIndex={0}>
@@ -38,7 +37,7 @@ function SourceRow({ source }: { source: MasterySource }) {
       {source.remaining_mastery != null && source.remaining_mastery > 0 && (
         <span className="mst-mr" title="Remaining mastery">+{source.remaining_mastery.toLocaleString("en-US")}</span>
       )}
-      <span className={`mst-rank rank-${source.state}`} title={source.state === "unknown" ? unknownTitle : undefined}>
+      <span className={`mst-rank rank-${source.state}`} title={source.state === "unknown" ? "No account observation yet" : undefined}>
         {source.state === "mastered" ? "✓" : rank}
       </span>
     </div>

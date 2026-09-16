@@ -443,11 +443,12 @@ fn vendor_index(offers: &HashMap<String, Vec<SyndicateOffer>>) -> HashMap<&str, 
 /// Past that gate nothing observed says whether a node is unlocked, so its
 /// access is Unknown.
 fn node_opportunity(source: &MasterySource, node: &NodeInfo, sources: &HashMap<&str, &MasterySource>) -> Option<Opportunity> {
-    // An Unknown row (every Steel Path row, or no Missions field) has no
-    // evidence of anything left to do.
+    // An Unknown row (no Missions field) has no evidence of anything left
+    // to do.
     if source.state != MasteryState::Missing { return None; }
-    let gate = mastery_nodes::PLANETS.iter().find(|p| p.name == node.planet).and_then(|p| p.gate);
-    let (access, blockers) = match gate.and_then(|gate| sources.get(gate)).filter(|g| g.state == MasteryState::Missing) {
+    let gate = mastery_nodes::PLANETS.iter().find(|p| p.name == node.planet).and_then(|p| p.gate)
+        .map(|gate| match node.mode { Mode::Normal => gate.to_string(), Mode::SteelPath => format!("{gate}/steel_path") });
+    let (access, blockers) = match gate.and_then(|gate| sources.get(gate.as_str())).filter(|g| g.state == MasteryState::Missing) {
         Some(gate) => (Access::Blocked, vec![Blocker::MissingGate { path: gate.unique_name.clone(), name: gate.name.clone() }]),
         None if node.junction => (Access::Unknown, vec![Blocker::JunctionTasksNotObserved]),
         None => (Access::Unknown, vec![Blocker::NodeUnlockNotObserved]),
@@ -1065,12 +1066,13 @@ pub(crate) fn build_mastery_overview(
     let nodes = progress.map(|p| p.nodes).unwrap_or_default();
     let chart = categories.iter_mut().find(|c| c.category == STAR_CHART).expect("category comes from COLLECTION_CATEGORIES");
     for node in mastery_nodes::all() {
-        let completes = progress.and_then(|p| p.missions.get(node.key)).map(|m| m.completes > 0);
-        // TODO: the Steel Path row waits on the meaning of `Tier`. Until then
-        // a node first cleared on the Steel Path also reads as cleared here.
-        let cleared = nodes.resolve(completes, false);
+        let mission = progress.and_then(|p| p.missions.get(node.key));
         for mode in [Mode::Normal, Mode::SteelPath] {
-            let cleared = if mode == Mode::Normal { cleared } else { None };
+            let observed = mission.map(|m| match mode {
+                Mode::Normal => m.completes > 0,
+                Mode::SteelPath => m.steel_path_cleared(),
+            });
+            let cleared = nodes.resolve(observed, false);
             let source = MasterySource {
                 unique_name: match mode { Mode::Normal => node.key.into(), Mode::SteelPath => format!("{}/steel_path", node.key) },
                 name: node.name.into(),
@@ -1291,13 +1293,11 @@ mod tests {
         assert_eq!(overview.counts, MasteryCounts { total: 18 + CHART_ROWS, mastered: 2, partial: 2, missing: 12, unknown: 2 + CHART_ROWS, unobtainable: 0 });
     }
 
-    /// Completion is the only fact a `Missions` entry establishes: a node
-    /// absent from a confirmed array is Missing, and the tier says nothing
-    /// about the Steel Path row until its meaning is verified.
     #[test]
     fn star_chart_rows_follow_the_confirmed_missions_field() {
         let progress = with_missions(observed(ProvenanceState::Confirmed, Some(1_000), &[]), &[
             ("SolNode27", 14, Some(1)), ("EarthToVenusJunction", 2, None), ("SolNode239", 1, Some(1)),
+            ("SolNode1", 1, Some(2)), ("SolNode2", 3, Some(8)), ("VenusToMercuryJunction", 1, Some(1)),
         ]);
         let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
         assert_eq!(overview.provenance.nodes, Provenance { state: ProvenanceState::Confirmed, observed_at: Some(1_000) });
@@ -1308,15 +1308,24 @@ mod tests {
         let node = e_prime.node.as_ref().expect("node info");
         assert_eq!((node.key, node.planet, node.mode, node.junction), ("SolNode27", "Earth", Mode::Normal, false));
         let steel = source(&overview, "SolNode27/steel_path");
-        assert_eq!((steel.earned_rank, steel.state, steel.node.as_ref().map(|n| n.mode)), (None, MasteryState::Unknown, Some(Mode::SteelPath)));
+        assert_eq!((steel.earned_rank, steel.state, steel.node.as_ref().map(|n| n.mode)), (Some(1), MasteryState::Mastered, Some(Mode::SteelPath)));
+        for (key, tier) in [("SolNode1", 2), ("SolNode2", 8)] {
+            let normal = source(&overview, key);
+            let steel = source(&overview, &format!("{key}/steel_path"));
+            assert_eq!((normal.state, steel.earned_rank, steel.state), (MasteryState::Mastered, Some(0), MasteryState::Missing), "tier {tier} is not a Steel Path clear");
+        }
         let junction = source(&overview, "EarthToVenusJunction");
         assert_eq!((junction.name.as_str(), junction.state, junction.node.as_ref().map(|n| n.junction)), ("Venus Junction", MasteryState::Mastered, Some(true)));
+        assert_eq!(source(&overview, "EarthToVenusJunction/steel_path").state, MasteryState::Missing, "null tier");
+        let steel_junction = source(&overview, "VenusToMercuryJunction/steel_path");
+        assert_eq!((steel_junction.state, steel_junction.remaining_mastery), (MasteryState::Mastered, Some(0)));
         let mariana = source(&overview, "SolNode89");
         assert_eq!((mariana.earned_rank, mariana.state), (Some(0), MasteryState::Missing));
+        assert_eq!(source(&overview, "SolNode89/steel_path").state, MasteryState::Missing, "absent from a confirmed field");
         assert!(overview.categories.iter().flat_map(|c| &c.sources).all(|s| s.unique_name != "SolNode239"), "a key outside the table is not a source");
 
         let chart = star_chart(&overview);
-        assert_eq!(chart.counts, MasteryCounts { total: CHART_ROWS, mastered: 2, partial: 0, missing: 263, unknown: 265, unobtainable: 0 });
+        assert_eq!(chart.counts, MasteryCounts { total: CHART_ROWS, mastered: 7, partial: 0, missing: CHART_ROWS - 7, unknown: 0, unobtainable: 0 });
         assert_eq!(overview.counts.total, 18 + CHART_ROWS);
         let venus: Vec<(&str, Mode)> = chart.sources.iter()
             .filter(|s| s.node.as_ref().is_some_and(|n| n.planet == "Venus"))
@@ -1602,10 +1611,11 @@ mod tests {
         let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
             &observed_gear(&owned, &levels, &[], &recipes, &offers, Some(2)));
         let nodes: Vec<&Opportunity> = overview.opportunities.iter().filter(|o| o.source.node.is_some()).collect();
-        assert_eq!(nodes.len(), 265 - 2, "every missing normal row; Steel Path rows are Unknown and absent");
+        assert_eq!(nodes.len(), CHART_ROWS as usize - 2, "every missing row in both modes");
         assert!(nodes.iter().all(|o| o.stage == Stage::Acquire && !o.owned && o.vendors.is_empty()));
         let find = |name: &str| nodes.iter().find(|o| o.source.name == name).unwrap_or_else(|| panic!("{name} suggested"));
-        assert_eq!(nodes.iter().take(2).map(|o| o.source.name.as_str()).collect::<Vec<_>>(), ["Ceres Junction", "Eris Junction"],
+        assert_eq!(nodes.iter().take(3).map(|o| (o.source.name.as_str(), o.source.node.as_ref().expect("filtered on node").mode)).collect::<Vec<_>>(),
+            [("Ceres Junction", Mode::Normal), ("Ceres Junction", Mode::SteelPath), ("Eris Junction", Mode::Normal)],
             "junctions carry known mastery and lead the stage");
         let mercury = find("Mercury Junction");
         assert_eq!((mercury.action, mercury.source.remaining_mastery, mercury.access), (Action::Unlock, Some(1_000), Access::Unknown));
@@ -1620,7 +1630,13 @@ mod tests {
         assert_eq!(apollodorus.blockers, [Blocker::MissingGate { path: "VenusToMercuryJunction".into(), name: "Mercury Junction".into() }]);
         let ceres = find("Ceres Junction");
         assert_eq!((ceres.access, ceres.blockers.clone()), (Access::Blocked, vec![Blocker::MissingGate { path: "EarthToMarsJunction".into(), name: "Mars Junction".into() }]));
-        assert!(nodes.iter().all(|o| o.source.name != "E Prime" && o.source.name != "Venus Junction"), "cleared rows are not suggested");
+        let steel_e_prime = nodes.iter().find(|o| o.source.unique_name == "SolNode27/steel_path").expect("Steel Path row is not cleared");
+        assert_eq!((steel_e_prime.access, steel_e_prime.blockers.clone()), (Access::Unknown, vec![Blocker::NodeUnlockNotObserved]), "Earth has no gate");
+        let steel_apollodorus = nodes.iter().find(|o| o.source.unique_name == "SolNode94/steel_path").expect("Steel Path row is not cleared");
+        assert_eq!(steel_apollodorus.blockers, [Blocker::MissingGate { path: "VenusToMercuryJunction/steel_path".into(), name: "Mercury Junction".into() }],
+            "a Steel Path node waits on the Steel Path junction");
+        assert!(nodes.iter().all(|o| o.source.node.as_ref().is_some_and(|n| n.mode == Mode::SteelPath) || (o.source.name != "E Prime" && o.source.name != "Venus Junction")),
+            "cleared rows are not suggested; their Steel Path rows still are");
 
         let unknown = with_suggestions(&catalog(), &corrections(), Some(&observed(ProvenanceState::Confirmed, Some(1_000), &[])), &HashSet::new(),
             &observed_gear(&owned, &levels, &[], &recipes, &offers, Some(2)));
@@ -2195,13 +2211,7 @@ mod tests {
         let (owned, levels, recipes, offers) = (HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new());
         let at = |rank| observed_gear(&owned, &levels, &[], &recipes, &offers, Some(rank));
 
-        // Every Steel Path row is Unknown today, so the real overview never
-        // sums, however much is confirmed.
-        let evaluation = evaluate(&full, Some(&at(7)), &plan(8, &[]));
-        assert_eq!(evaluation.total, Some(MasteryTotal { lower: 122_500, upper: 159_999, exact: None, rank: 7, rank_upper: 7 }));
-
-        let mut known = full.clone();
-        known.categories.retain(|c| c.category != "Star Chart");
+        let known = full;
         let evaluation = evaluate(&known, Some(&at(7)), &plan(8, &[]));
         assert_eq!(evaluation.total, Some(MasteryTotal { lower: 122_500, upper: 159_999, exact: Some(147_200), rank: 7, rank_upper: 7 }));
         assert_eq!((evaluation.gap, evaluation.projected.map(|p| p.exact)), (Some(12_800), Some(Some(147_200))));
