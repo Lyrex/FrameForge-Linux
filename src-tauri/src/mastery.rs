@@ -4,7 +4,7 @@ use std::path::Path;
 use tauri::Manager;
 use crate::app_state::{AppState, CorrectionEntry};
 use crate::catalogue::fix_category;
-use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache, CREDITS_PATH};
+use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache, InventoryStateCache, CREDITS_PATH};
 use crate::mastery_nodes;
 use crate::mastery_progress::{MasteryPlan, PlayerProgress, Provenance, ProvenanceState};
 use crate::memory_scanner::BlobAffiliation;
@@ -114,6 +114,17 @@ pub(crate) struct MasteryProvenance {
     /// Junctions read from the same `Missions` field, so they share this kind.
     pub(crate) nodes: Provenance,
     pub(crate) standing: Provenance,
+}
+
+impl From<&PlayerProgress> for MasteryProvenance {
+    fn from(progress: &PlayerProgress) -> Self {
+        Self {
+            equipment: progress.equipment,
+            intrinsics: progress.intrinsics,
+            nodes: progress.nodes,
+            standing: progress.standing,
+        }
+    }
 }
 
 /// Unsourced holds the rows with remaining mastery and no route at all.
@@ -455,9 +466,11 @@ fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Ob
             .collect();
         (build_mastery_overview(&items, &state.corrections, record, &excluded), skills, affiliations, relic_names, market_items(&items), catalogue_index(&items))
     };
-    let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
-    if inventory.items.is_empty() { return f(overview, None); }
-    annotate_needed_for(&mut overview, &inventory.owned_copies(),
+    let Some(inventory) = planning_inventory(load_inventory_state_cache(&state.inventory_state_cache_path)) else {
+        return f(overview, None);
+    };
+    let owned = inventory.owned_copies();
+    annotate_needed_for(&mut overview, &owned,
         &state.recipe_consumers.lock().unwrap_or_else(|e| e.into_inner()));
     overview.mastery_rank = inventory.mastery_rank;
     let stock = inventory.stackable_quantities();
@@ -473,7 +486,7 @@ fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Ob
     let baro = state.worldstate_cache.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
         .and_then(|(_, raw, _)| crate::worldstate::void_trader(raw));
     f(overview, Some(&Observed {
-        owned: &inventory.owned_copies(),
+        owned: &owned,
         stock: &stock,
         owned_levels: &inventory.owned_levels(),
         owned_forma: &inventory.owned_forma(),
@@ -491,6 +504,10 @@ fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Ob
         trader: baro.as_ref(),
         now_ms: chrono::Utc::now().timestamp_millis(),
     }))
+}
+
+fn planning_inventory(inventory: InventoryStateCache) -> Option<InventoryStateCache> {
+    inventory.has_account_observation().then_some(inventory)
 }
 
 /// Prime parts carry a ducat value; the catalogue's `tradable` flag covers
@@ -920,7 +937,7 @@ impl MasterySource {
 /// the account whatever the settings hide.
 fn earned_sum(overview: &MasteryOverview) -> Result<u64, String> {
     let p = &overview.provenance;
-    let unconfirmed: Vec<String> = [("Equipment", p.equipment), ("Intrinsics", p.intrinsics), ("Nodes", p.nodes)]
+    let unconfirmed: Vec<String> = [("Equipment", p.equipment), ("Intrinsics", p.intrinsics), ("Nodes", p.nodes), ("Standing", p.standing)]
         .into_iter().filter_map(|(name, kind)| match kind.state {
             ProvenanceState::Confirmed => None,
             ProvenanceState::Unconfirmed => Some(format!("{name} unconfirmed")),
@@ -1309,8 +1326,6 @@ pub(crate) fn build_mastery_overview(
 ) -> MasteryOverview {
     let aliases = inventory_path_aliases();
     let equipment = progress.equipment;
-    let intrinsics = progress.intrinsics;
-    let standing = progress.standing;
     // XPInfo credits some aliases directly; the overview lists canonical entries only.
     let mut affinity: HashMap<&str, i64> = HashMap::new();
     for (path, &earned) in &progress.affinity {
@@ -1440,7 +1455,7 @@ pub(crate) fn build_mastery_overview(
         }
     }
     categories.retain(|c| !c.sources.is_empty());
-    let provenance = MasteryProvenance { equipment, intrinsics, nodes, standing };
+    let provenance = MasteryProvenance::from(progress);
     MasteryOverview { counts, categories, provenance, mastery_rank: None, opportunities: vec![] }
 }
 
@@ -1556,6 +1571,33 @@ mod tests {
             correction(PRISM, Some("Raplak Prism"), "Operator Weapons"),
             correction(VINQUIBUS_MELEE, Some("Vinquibus"), "Melee"),
         ].into()
+    }
+
+    #[test]
+    fn catalogue_placeholders_do_not_enable_planning() {
+        let mut inventory = crate::inventory_state::InventoryStateCache::default();
+        inventory.items.insert(BRATON.into(), Default::default());
+        assert!(planning_inventory(inventory).is_none());
+
+        let mut observed = crate::inventory_state::InventoryStateCache::default();
+        observed.items.insert(CREDITS_PATH.into(), Default::default());
+        assert!(planning_inventory(observed).is_some());
+    }
+
+    #[test]
+    fn provenance_snapshot_keeps_each_source_timestamp() {
+        let progress = PlayerProgress {
+            equipment: Provenance { state: ProvenanceState::Confirmed, observed_at: Some(4_000) },
+            intrinsics: Provenance { state: ProvenanceState::Confirmed, observed_at: Some(3_000) },
+            nodes: Provenance { state: ProvenanceState::Confirmed, observed_at: Some(2_000) },
+            standing: Provenance { state: ProvenanceState::Confirmed, observed_at: Some(1_000) },
+            ..Default::default()
+        };
+        let provenance = MasteryProvenance::from(&progress);
+        assert_eq!(
+            [provenance.equipment.observed_at, provenance.intrinsics.observed_at, provenance.nodes.observed_at, provenance.standing.observed_at],
+            [Some(4_000), Some(3_000), Some(2_000), Some(1_000)],
+        );
     }
 
     fn observed(state: ProvenanceState, observed_at: Option<i64>, affinity: &[(&str, i64)]) -> PlayerProgress {
@@ -2885,7 +2927,8 @@ mod tests {
         let (owned, levels, recipes, offers) = (HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new());
         let at = |rank| observed_gear(&owned, &levels, &[], &recipes, &offers, Some(rank));
 
-        let known = full;
+        let mut known = full;
+        known.provenance.standing = Provenance { state: ProvenanceState::Confirmed, observed_at: Some(1_000) };
         let evaluation = evaluate(&known, Some(&at(7)), &plan(8, &[]));
         assert_eq!(evaluation.total, Some(MasteryTotal { lower: 122_500, upper: 159_999, exact: Some(149_348), rank: 7, rank_upper: 7 }));
         assert_eq!((evaluation.gap, evaluation.projected.map(|p| p.exact)), (Some(10_652), Some(Some(149_348))));
@@ -2897,13 +2940,14 @@ mod tests {
         assert_eq!(evaluation.gap, Some(42_500));
         assert_eq!(evaluation.total_reason.as_deref(), Some("Derived MR 7 does not match observed MR 8"));
 
-        for kind in ["Equipment", "Intrinsics", "Nodes"] {
+        for kind in ["Equipment", "Intrinsics", "Nodes", "Standing"] {
             for (state, label) in [(ProvenanceState::Unconfirmed, "unconfirmed"), (ProvenanceState::Unknown, "unknown")] {
                 let mut unconfirmed = known.clone();
                 let provenance = match kind {
                     "Equipment" => &mut unconfirmed.provenance.equipment,
                     "Intrinsics" => &mut unconfirmed.provenance.intrinsics,
-                    _ => &mut unconfirmed.provenance.nodes,
+                    "Nodes" => &mut unconfirmed.provenance.nodes,
+                    _ => &mut unconfirmed.provenance.standing,
                 };
                 provenance.state = state;
                 let evaluation = evaluate(&unconfirmed, Some(&at(7)), &plan(8, &[]));

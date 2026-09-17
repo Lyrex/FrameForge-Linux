@@ -8,6 +8,7 @@ use crate::catalogue::{fix_category, sanitize_chat_item_name, DebugUnmatched};
 use crate::db::QuantityChange;
 use crate::diagnostics::write_bmp;
 use crate::inventory_state::{load_inventory_state_cache, build_inventory_from_blob, inventory_path_aliases, persist_complete_inventory, compare_inventory_quantities, BlobBuildParams};
+use crate::mastery::MasteryProvenance;
 use crate::mastery_rules;
 use crate::relic_pick::park_overlay_offscreen;
 use crate::worldstate::store_to_unique;
@@ -705,10 +706,14 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     }
                     // A full overview refetch would rerun the planning pass
                     // to move one pill, so the stamp goes out on its own.
-                    if outcome == Some(memory_scanner::ScanOutcome::Unchanged)
-                        && mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).reobserve(now)
-                    {
-                        let _ = app.emit("mastery-observed", now);
+                    if outcome == Some(memory_scanner::ScanOutcome::Unchanged) {
+                        let provenance = {
+                            let mut progress = mastery_progress.lock().unwrap_or_else(|e| e.into_inner());
+                            progress.reobserve(now).then(|| MasteryProvenance::from(progress.record()))
+                        };
+                        if let Some(provenance) = provenance {
+                            let _ = app.emit("mastery-observed", provenance);
+                        }
                     }
                     if sync_marker {
                         blob_sync_pending.store(true, Ordering::SeqCst);
