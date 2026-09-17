@@ -87,6 +87,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::env::set_var("GTK_THEME", "Adwaita:dark");
     }
 
+    // WebKitGTK 2.42+ renders through DMA-BUF by default, and on the NVIDIA
+    // proprietary driver that leaves the window blank while the app runs.
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     // Everything below used to sit in a single directory; carry the files that
     // cannot be refetched over to the split layout before anything opens them.
     let roots = paths::init()?;
