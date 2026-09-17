@@ -33,6 +33,9 @@ pub(crate) enum IngredientState {
     Buildable,
     /// The blueprint is in hand but an ingredient is short somewhere below.
     Blocked,
+    /// The part's own blueprint is short, either a consumable one nobody has
+    /// or a reusable one never acquired, so the part never unfolds.
+    BlueprintMissing,
     /// The player owns an unmastered copy, which the ledger will not spend.
     MasterFirst,
     Building,
@@ -56,6 +59,10 @@ pub(crate) struct Requirement {
     pub(crate) state: IngredientState,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub(crate) reusable: bool,
+    /// Marks a built part's own blueprint. The part's line already carries
+    /// its state, so the icon row hides it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) part_blueprint: bool,
 }
 
 #[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
@@ -140,9 +147,12 @@ impl CraftPlan {
     /// `MasterFirst` although the ledger builds another, since the copy to
     /// level is what the player needs to see.
     fn settle_build(&mut self, component: &RecipeComponent, ready: bool) {
+        let blueprint = component.components.iter().find(|c| is_blueprint(c))
+            .and_then(|bp| self.requirements.iter_mut().find(|r| r.unique_name == bp.unique_name));
+        let blueprint_short = blueprint.is_some_and(|bp| { bp.part_blueprint = true; bp.short > 0 });
         let line = self.requirements.iter_mut().find(|r| r.unique_name == component.unique_name).expect("the built line was required first");
         if line.from_stock == 0 && !matches!(line.state, IngredientState::Blocked | IngredientState::MasterFirst) {
-            line.state = if ready { IngredientState::Buildable } else { IngredientState::Blocked };
+            line.state = if blueprint_short { IngredientState::BlueprintMissing } else if ready { IngredientState::Buildable } else { IngredientState::Blocked };
         }
     }
 
@@ -250,12 +260,15 @@ impl<'a> Ledger<'a> {
             let from_stock = needed.min(have);
             if !keep { *self.stock.entry(path).or_insert(0) -= i64::from(from_stock); }
             let missing = needed - from_stock;
-            let expands = missing > 0 && !component.components.is_empty() && self.can_expand(component);
-            let unmet = if self.unmastered.contains(path) { IngredientState::MasterFirst } else { IngredientState::Missing };
+            let has_recipe = !component.components.is_empty();
+            let expands = missing > 0 && has_recipe && self.can_expand(component);
+            let unmet = if self.unmastered.contains(path) { IngredientState::MasterFirst }
+                else if missing > 0 && has_recipe && !expands { IngredientState::BlueprintMissing }
+                else { IngredientState::Missing };
             let state = stock_state(from_stock, needed, unmet);
             plan.require(Requirement {
                 unique_name: component.unique_name.clone(), name: component.name.clone(), image_name: None, category: None,
-                needed, owned: have, from_stock, short: if expands { 0 } else { missing }, state, reusable: keep,
+                needed, owned: have, from_stock, short: if expands { 0 } else { missing }, state, reusable: keep, part_blueprint: false,
             });
             if expands {
                 let per_craft = component.result_count.max(1);
@@ -622,7 +635,7 @@ mod tests {
         assert!(shared.plan(BALLA, &first).craftable_now());
         let plan = shared.plan(BALLA, &second);
         assert!(plan.craftable_now());
-        assert_eq!(plan.requirements[0], Requirement { unique_name: BALLA_BP.into(), name: "TipOneBlueprint".into(), image_name: None, category: None, needed: 1, owned: 1, from_stock: 1, short: 0, state: IngredientState::Owned, reusable: true });
+        assert_eq!(plan.requirements[0], Requirement { unique_name: BALLA_BP.into(), name: "TipOneBlueprint".into(), image_name: None, category: None, needed: 1, owned: 1, from_stock: 1, short: 0, state: IngredientState::Owned, reusable: true, part_blueprint: false });
 
         let stock = stock_of(&[(IRADITE, 40)]);
         let plan = ledger(&stock, &NO_EQUIPMENT).plan(BALLA, &first);
@@ -732,7 +745,14 @@ mod tests {
         let recipe = frost();
         let stock = stock_of(&[(FROST_BP, 1), (CHASSIS_BP, 1), (FERRITE, 400)]);
         let plan = ledger(&stock, &NO_EQUIPMENT).plan(FROST, &recipe);
-        assert_eq!(states(&plan), [(FROST_BP, Owned), (CHASSIS, Blocked), (CHASSIS_BP, Owned), (FERRITE, Partial), (CELL, Missing)]);
+        assert_eq!(states(&plan), [(FROST_BP, Owned), (CHASSIS, Blocked), (CHASSIS_BP, Owned), (FERRITE, Partial), (CELL, BlueprintMissing)]);
+        assert!(!line(&plan, FROST_BP).part_blueprint && line(&plan, CHASSIS_BP).part_blueprint);
+
+        // A consumable part blueprint nobody has is the part's first shortage, whatever else is missing below it.
+        let stock = stock_of(&[(FROST_BP, 1), (FERRITE, 400)]);
+        let plan = ledger(&stock, &NO_EQUIPMENT).plan(FROST, &recipe);
+        assert_eq!(states(&plan), [(FROST_BP, Owned), (CHASSIS, BlueprintMissing), (CHASSIS_BP, Missing), (FERRITE, Partial), (CELL, BlueprintMissing)]);
+        assert_eq!(short(&plan), [(CHASSIS_BP, 1), (FERRITE, 600), (CELL, 1)]);
 
         let stock = stock_of(&[(FROST_BP, 1), (CHASSIS_BP, 1), (FERRITE, 1_000), (CELL_BP, 1), (ALLOY, 50_000)]);
         let plan = ledger(&stock, &NO_EQUIPMENT).plan(FROST, &recipe);
@@ -785,7 +805,7 @@ mod tests {
         let catalogue = [(CHASSIS.to_string(), WfcdItem { image_name: Some("chassis.png".into()), category: "Warframes".into(), ..Default::default() })].into();
         plan.decorate(&catalogue, |path| path == CELL);
         let facts = |path| { let l = line(&plan, path); (l.image_name.as_deref(), l.category.as_deref(), l.state) };
-        assert_eq!(facts(CHASSIS), (Some("chassis.png"), Some("Warframes"), IngredientState::Blocked));
+        assert_eq!(facts(CHASSIS), (Some("chassis.png"), Some("Warframes"), IngredientState::BlueprintMissing));
         assert_eq!(facts(CELL), (None, None, IngredientState::Building));
         // Stock already covers the blueprint, so a job for it changes nothing.
         plan.decorate(&HashMap::new(), |path| path == FROST_BP);

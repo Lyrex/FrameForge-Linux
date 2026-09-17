@@ -1,7 +1,7 @@
-import { RELIC_SUGGESTION_THRESHOLD } from "../constants/relics.ts";
+import { RELIC_REFINEMENT_SUFFIX, RELIC_SUGGESTION_THRESHOLD } from "../constants/relics.ts";
 import { isOrigin, routeText, SOURCE_UNKNOWN } from "../constants/routes.ts";
 import { formatAge, formatCount as n } from "../lib/formatters.ts";
-import type { Access, Baro, Coverage, FormaGate, Listing, MasteryState, Opportunity, Purchase, Stage } from "../types/mastery";
+import type { Access, Baro, Coverage, FormaGate, Listing, MasteryState, Opportunity, Purchase, Stage, VendorOffer } from "../types/mastery";
 
 export type MasteryView = "whatnext" | "target" | "collection";
 export type ResultView = "suggestions" | "relics" | "platinum";
@@ -111,6 +111,8 @@ export function parseControls(raw: string | null): MasteryControls {
     easy: stored.easy === true,
   };
 }
+
+export const ACCESS_LABELS: Record<Access, string> = { available: "Available", blocked: "Blocked", unknown: "Unknown access" };
 
 export const STAGE_ORDER: readonly Stage[] = ["level_claim", "craft", "acquire", "unsourced"];
 
@@ -314,7 +316,10 @@ export function readyText(completionMs: number, nowMs: number): string {
   return `ready in ${minutes}m`;
 }
 
-export function detailText(o: Opportunity, nowMs: number, readyAt?: string): string {
+const vendorText = (v: VendorOffer) => `${v.syndicate}${v.tier ? `, ${v.tier}` : v.rank != null ? `, Rank ${v.rank}` : ""}`;
+
+/** Describes the source as a whole. Each part's relics, drops and quotes sit under that part in the tree. */
+export function sourceLines(o: Opportunity, nowMs: number, readyAt?: string): string[] {
   const parts: string[] = [];
   if (o.node) parts.push(o.node.planet);
   // The action slot already names the route on an acquire row.
@@ -323,28 +328,41 @@ export function detailText(o: Opportunity, nowMs: number, readyAt?: string): str
   if (o.build_completion_ms != null) {
     parts.push(`Build ${readyText(o.build_completion_ms, nowMs)}${readyAt ? ` (${readyAt})` : ""}`);
   }
-  for (const v of o.vendors) parts.push(`${v.syndicate}${v.tier ? `, ${v.tier}` : v.rank != null ? `, Rank ${v.rank}` : ""}${v.blueprint ? " (blueprint)" : ""}`);
+  for (const v of o.vendors) parts.push(`${vendorText(v)}${v.blueprint ? " (blueprint)" : ""}`);
   if (o.spend) {
     parts.push(`+${o.spend.mastery.toLocaleString("en-US")} mastery`);
     for (const t of o.spend.tracks) parts.push(`${t.track} R${t.from} → R${t.to}`);
   }
-  if (o.relic) {
-    const { coverage } = o.relic;
-    if (coverage.kind === "partial") {
-      if (coverage.missing.length) parts.push(`No relic for ${coverage.missing.join(", ")}`);
-      if (coverage.short.length) parts.push(`Too few relics for ${coverage.short.join(", ")}`);
-    }
-    for (const p of o.relic.parts) {
-      if (p.relics.length === 0) continue;
-      const count = p.short > 1 ? ` ×${p.short}` : "";
-      parts.push(`${p.name}${count} from ${p.relics.map(r => `${r.name} ×${r.count}`).join(", ")}`);
-    }
-  }
-  for (const p of o.drop?.parts ?? []) {
-    const count = p.short > 1 ? ` ×${p.short}` : "";
-    parts.push(`${p.name}${count} from ${p.locations.map(l => l.chance == null ? l.location : `${l.location} (${l.chance}%)`).join(", ")}`);
+  if (o.relic?.coverage.kind === "partial") {
+    const { missing, short } = o.relic.coverage;
+    if (missing.length) parts.push(`No relic for ${missing.join(", ")}`);
+    if (short.length) parts.push(`Too few relics for ${short.join(", ")}`);
   }
   // The ingredient icons carry the credits, builds and shortages.
   for (const step of o.craft?.level_first ?? []) parts.push(`Level ${step.name} first (+${n(step.gain)} mastery)`);
-  return parts.join(" · ");
+  return parts;
+}
+
+/**
+ * Lists where one part of the recipe comes from. `now` is in seconds for the quote's age. The
+ * vendor offers on the wire sell the recipe's own blueprint, so they belong to that line alone.
+ */
+export function acquisitionLines(o: Opportunity, uniqueName: string, now: number, blueprint = false): string[] {
+  const lines: string[] = [];
+  const part = o.relic?.parts.find(p => p.unique_name === uniqueName);
+  if (part) {
+    const base = (name: string) => name.replace(RELIC_REFINEMENT_SUFFIX, "");
+    const relics = [...new Set([...part.dropped_by, ...part.relics.map(r => base(r.name))])].map(relic => {
+      const owned = part.relics.filter(r => base(r.name) === relic)
+        .map(r => `${r.name.slice(relic.length).trim()} ×${r.count}`.trim());
+      return owned.length ? `${relic} (${owned.join(", ")})` : relic;
+    });
+    if (relics.length) lines.push(`Relics: ${relics.join(", ")}`);
+  }
+  const drops = o.drop?.parts.find(p => p.unique_name === uniqueName)?.locations ?? [];
+  if (drops.length) lines.push(`Drops: ${drops.map(l => l.chance == null ? l.location : `${l.location} (${l.chance}%)`).join(", ")}`);
+  if (blueprint) for (const v of o.vendors) if (v.blueprint) lines.push(`Vendor: ${vendorText(v)}`);
+  const quote = o.purchase?.parts.find(p => p.unique_name === uniqueName);
+  if (quote) lines.push(`Market: ${quoteText(quote, now)}`);
+  return lines;
 }

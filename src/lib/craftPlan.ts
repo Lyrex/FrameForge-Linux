@@ -20,7 +20,12 @@ export const buildable = (plan: CraftPlan) => plan.builds.length > 0 && covered(
 const line = (plan: CraftPlan, uniqueName: string) => plan.requirements.find(r => r.unique_name === uniqueName);
 
 /** A recipe's own blueprint is the one component without ingredients, the same rule the backend uses. */
-const isBlueprint = (c: RecipeComponent) => c.components.length === 0 && c.unique_name.endsWith("Blueprint");
+export const isBlueprint = (c: RecipeComponent) => c.components.length === 0 && c.unique_name.endsWith("Blueprint");
+
+/** Akbolto lists Bolto twice. The plan already sums duplicates onto one line, so only the names need deduplicating here. */
+export function distinct(comps: RecipeComponent[]): RecipeComponent[] {
+  return comps.filter((c, i) => comps.findIndex(o => o.unique_name === c.unique_name) === i);
+}
 
 /** A line that stock covers whole reads as "part", and one the plan builds from a blueprint in hand reads as "blueprint". */
 export function componentStatus(comp: RecipeComponent, plan: CraftPlan): RecipeComponentStatus {

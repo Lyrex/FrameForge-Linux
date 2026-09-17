@@ -2302,7 +2302,7 @@ mod tests {
         assert_eq!(kuva.owned_level, Some(12), "the copy with the highest level cap is levelled");
         assert_eq!(kuva.forma, Some(FormaGate { level_cap: 36, forma: 2, mastery: 400 }));
         let plan = kuva.craft.as_ref().expect("Forma is a requirement of levelling");
-        assert_eq!(plan.requirements, [Requirement { unique_name: FORMA.into(), name: "Forma".into(), image_name: None, category: None, needed: 2, owned: 0, from_stock: 0, short: 2, state: IngredientState::Missing, reusable: false }]);
+        assert_eq!(plan.requirements, [Requirement { unique_name: FORMA.into(), name: "Forma".into(), image_name: None, category: None, needed: 2, owned: 0, from_stock: 0, short: 2, state: IngredientState::Missing, reusable: false, part_blueprint: false }]);
         assert_eq!((plan.credits, kuva.stage), (Some(0), Stage::LevelClaim));
 
         let stock: HashMap<String, i64> = [(FORMA.to_string(), 2)].into();

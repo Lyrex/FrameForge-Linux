@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { iconLines, ingredients, ingredientTitle } from "./ingredients.ts";
+import { availableText, iconLines, ingredients, ingredientTitle, stateLabel } from "./ingredients.ts";
 import type { CraftPlan, IngredientState, Requirement } from "../types/mastery.ts";
 
 const line = (over: Partial<Requirement>): Requirement => ({
@@ -28,10 +28,11 @@ test("credits lead and the rest keep recipe order", () => {
   ]);
 });
 
-test("only parts get an icon: resources drop out, Forma and an unlisted ingredient stay", () => {
+test("only parts get an icon: resources and part blueprints drop out, Forma and an unlisted ingredient stay", () => {
   const forma = line({ unique_name: "/Lotus/Types/Items/MiscItems/Forma", name: "Forma", needed: 2, owned: 0, from_stock: 0, state: "missing" });
   const unlisted = line({ unique_name: "/mystery", name: "Mystery", category: null });
-  assert.deepEqual(iconLines(plan({ requirements: [...plan().requirements, forma, unlisted] })).map(i => i.name),
+  const chassisBp = line({ unique_name: "/chassisbp", name: "Frost Chassis Blueprint", category: "Blueprints", needed: 1, owned: 0, from_stock: 0, short: 1, state: "missing", part_blueprint: true });
+  assert.deepEqual(iconLines(plan({ requirements: [...plan().requirements, chassisBp, forma, unlisted] })).map(i => i.name),
     ["Frost Blueprint", "Frost Chassis", "Forma", "Mystery"]);
 });
 
@@ -58,6 +59,15 @@ test("the title is the name, the whole stock over the need, and a third line onl
   assert.equal(ingredientTitle(ingredients(plan())[0]), "Credits\nAvailable: 25,000 / 40,000");
   // Before a scan the balance is unknown and nothing is short, so the count falls back to what the plan drew.
   assert.equal(ingredientTitle(ingredients(plan({ credits_short: 0, credit_balance: null }))[0]), "Credits\nAvailable: 40,000 / 40,000");
+});
+
+test("a tree line names every state, while the tooltip names only the build states", () => {
+  const icon = (state: IngredientState): Requirement => line({ unique_name: "/bolto", name: "Bolto", image_name: null, needed: 2, owned: 1, from_stock: 1, short: 1, state });
+  assert.equal(stateLabel(icon("partial")), "Partial");
+  assert.equal(stateLabel(icon("blocked")), "Blocked by a missing ingredient");
+  assert.equal(ingredientTitle(icon("blueprint_missing")), "Bolto\nAvailable: 1 / 2\nBlueprint missing");
+  assert.equal(availableText(icon("partial")), "Available: 1 / 2");
+  assert.equal(availableText(ingredients(plan({ credits: null, credits_short: 0, credit_balance: null }))[0]), null);
 });
 
 test("a reusable blueprint is infinite once owned", () => {

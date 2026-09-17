@@ -8,16 +8,19 @@ export const FORMA_PATH = "/Lotus/Types/Items/MiscItems/Forma";
 /** The catalogue's shared art for a blueprint that has none of its own. */
 export const BLUEPRINT_ART = "blueprint.png";
 
-/** The tooltip's third line. The stock states are left out because the count already says it. */
-export const INGREDIENT_STATE_LABELS: Record<IngredientState, string | null> = {
-  owned: null,
-  partial: null,
-  missing: null,
+export const INGREDIENT_STATE_LABELS: Record<IngredientState, string> = {
+  owned: "Owned",
+  partial: "Partial",
+  missing: "Missing",
   buildable: "Buildable",
   blocked: "Blocked by a missing ingredient",
+  blueprint_missing: "Blueprint missing",
   master_first: "Master first",
   building: "Building in the Foundry",
 };
+
+/** The tooltip leaves these out, because the count already says it. */
+export const STOCK_STATES: ReadonlySet<IngredientState> = new Set(["owned", "partial", "missing"]);
 
 export const INGREDIENT_STATE_MARKS: Partial<Record<IngredientState, string>> = {
   master_first: "★",

@@ -141,10 +141,10 @@ export interface Spend {
 
 /**
  * Partial outranks the build states. Buildable and blocked both mean the blueprint is in hand, with
- * the ingredients ready or one short. Master first is an owned unmastered copy the ledger will not
- * spend.
+ * the ingredients ready or one short. Blueprint missing means the part's own blueprint is short.
+ * Master first is an owned unmastered copy the ledger will not spend.
  */
-export type IngredientState = "owned" | "partial" | "missing" | "buildable" | "blocked" | "master_first" | "building";
+export type IngredientState = "owned" | "partial" | "missing" | "buildable" | "blocked" | "blueprint_missing" | "master_first" | "building";
 
 export interface Requirement {
   unique_name: string;
@@ -158,6 +158,8 @@ export interface Requirement {
   short: number;
   state: IngredientState;
   reusable?: boolean;
+  /** Marks a built part's own blueprint. The part's line already carries its state, so the icon row hides it. */
+  part_blueprint?: boolean;
 }
 
 export interface Build {
@@ -193,6 +195,8 @@ export interface RelicPart {
   short: number;
   /** Sorted with the best chance first. */
   relics: RelicStock[];
+  /** Names every relic whose table lists the part, whether the player owns it or not, with the refinement stripped and sorted. */
+  dropped_by: string[];
 }
 
 /**

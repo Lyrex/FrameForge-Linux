@@ -9,7 +9,7 @@ import { WARFRAME_WIKI_BASE } from "./constants/urls";
 import { TAURI_COMMANDS } from "./constants/tauri";
 import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeMap, RelicDropMap } from "./types/items";
 import type { CraftPlan } from "./types/mastery";
-import { componentStatus, craftableNow, craftRows, type CraftRow } from "./lib/craftPlan";
+import { componentStatus, craftableNow, craftRows, distinct, type CraftRow } from "./lib/craftPlan";
 import { usePlanCrafts } from "./shared/usePlanCrafts";
 import { CraftCounts } from "./shared/CraftCounts";
 import type { FoundryFilters } from "./types/filters";
@@ -30,11 +30,6 @@ interface Props {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-/** Akbolto lists Bolto twice. The plan already sums duplicates onto one line, so only the names need deduplicating here. */
-function distinct(comps: RecipeComponent[]): RecipeComponent[] {
-  return comps.filter((c, i) => comps.findIndex(o => o.unique_name === c.unique_name) === i);
-}
 
 const isReady = (plan: CraftPlan | undefined) => !!plan && craftableNow(plan);
 

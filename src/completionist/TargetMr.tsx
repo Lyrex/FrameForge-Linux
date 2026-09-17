@@ -3,11 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import ItemImg from "../ItemImg";
 import Filters from "./Filters";
 import { OpportunityRow } from "./WhatNext";
+import { OpportunityModal } from "./OpportunityModal";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import type { ClockFormat } from "../lib/clockFormat";
 import { addable, addToPlan, candidates, moved, planView, prefill, rangeText, ringTitle, snapshotIntrinsicTargets, summaryText, TARGET_RANK_MAX } from "./plan";
 import { RESULT_OPTIONS, remainingText, type MasteryControls, type ResultView } from "./suggestions";
-import type { MasteryOverview, MasteryPlan, PlanEntry, PlanEvaluation, Rings as RingFractions } from "../types/mastery";
+import type { MasteryOverview, MasteryPlan, Opportunity, PlanEntry, PlanEvaluation, Rings as RingFractions } from "../types/mastery";
 
 // Sixty rows are enough to browse, and the search narrows the rest.
 const ADD_LIST_LIMIT = 60;
@@ -83,6 +84,7 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
   const [evaluation, setEvaluation] = useState<PlanEvaluation | null>(null);
   const [search, setSearch] = useState("");
   const [showRange, setShowRange] = useState(false);
+  const [opened, setOpened] = useState<{ opportunity: Opportunity; notes?: string[] } | null>(null);
 
   useEffect(() => {
     let stale = false;
@@ -215,7 +217,7 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
                 <div key={`${path}#${i}`} className="mst-plan-row">
                   <span className="mst-plan-index">{i + 1}</span>
                   {o ? (
-                    <OpportunityRow opportunity={o} notes={entry?.notes} nowMs={nowMs} clockFormat={clockFormat}
+                    <OpportunityRow opportunity={o} notes={entry?.notes} clockFormat={clockFormat} onOpen={() => setOpened({ opportunity: o, notes: entry?.notes })}
                       levelFirst={o.action === "level" && entries?.slice(i + 1).some(e => e.opportunity?.craft?.level_first?.some(step => step.unique_name === path))}>
                       {controlsFor}
                     </OpportunityRow>
@@ -247,7 +249,7 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
           {toAdd.length === 0 && <div className="mst-empty">Nothing left to add from this view.</div>}
           <div className="mst-opp-list">
             {toAdd.slice(0, ADD_LIST_LIMIT).map(o => (
-              <OpportunityRow key={o.unique_name} opportunity={o} nowMs={nowMs} clockFormat={clockFormat}>
+              <OpportunityRow key={o.unique_name} opportunity={o} clockFormat={clockFormat} onOpen={() => setOpened({ opportunity: o })}>
                 <span className="mst-plan-controls">
                   <button className="mst-plan-btn" aria-label={`Add ${o.name}`} onClick={() => save({ ...plan, selections: addToPlan(plan.selections, o) })}>+</button>
                 </span>
@@ -257,6 +259,8 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
           {toAdd.length > ADD_LIST_LIMIT && <div className="mst-empty">{toAdd.length - ADD_LIST_LIMIT} more; narrow the search.</div>}
         </section>
       </div>
+
+      {opened && <OpportunityModal {...opened} nowMs={nowMs} clockFormat={clockFormat} onClose={() => setOpened(null)} />}
     </>
   );
 }

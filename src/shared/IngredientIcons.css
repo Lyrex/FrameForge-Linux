@@ -50,5 +50,6 @@
 .ingredient-missing      { --ring: #f85149; }
 .ingredient-buildable    { --ring: #a371f7; }
 .ingredient-blocked      { --ring: #388bfd; }
+.ingredient-blueprint_missing { --ring: #f85149; }
 .ingredient-master_first { --ring: #3fb950; }
 .ingredient-building     { --ring: #a371f7; }

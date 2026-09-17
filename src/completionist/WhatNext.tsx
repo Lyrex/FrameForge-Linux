@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ItemImg from "../ItemImg";
 import ItemMarketPopup from "../market/ItemMarketPopup";
@@ -6,17 +6,22 @@ import { IngredientIcons } from "../shared/IngredientIcons";
 import Filters from "./Filters";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import { wfmSlugLookup } from "../utils";
-import { fmtClock, type ClockFormat } from "../lib/clockFormat";
+import { dayAndClock, type ClockFormat } from "../lib/clockFormat";
 import {
   actionText, chanceText, costText, quoteText, remainingText, shownControls, visibleOpportunities, visiblePurchases,
-  COMPARISON_OPTIONS, RELIC_GROUP_LABELS, RELIC_GROUP_ORDER, RESULT_OPTIONS, STAGE_LABELS, STAGE_ORDER,
+  ACCESS_LABELS, COMPARISON_OPTIONS, RELIC_GROUP_LABELS, RELIC_GROUP_ORDER, RESULT_OPTIONS, STAGE_LABELS, STAGE_ORDER,
   type Comparison, type MasteryControls, type Priced,
 } from "./suggestions";
+import { OpportunityModal } from "./OpportunityModal";
 import type { Listing, MasteryOverview, Opportunity } from "../types/mastery";
 import type { WfmItem } from "../types/market";
 import type { WfmSession } from "../types/tauri";
 
-const ACCESS_LABELS = { available: "Available", blocked: "Blocked", unknown: "Unknown access" } as const;
+/** A click on a button inside the row belongs to the button. Enter opens only from the row itself, because a focused button's Enter bubbles up too. */
+const rowOpeners = (open: () => void) => ({
+  onClick: (e: MouseEvent) => { if (!(e.target as HTMLElement).closest("button")) open(); },
+  onKeyDown: (e: KeyboardEvent) => { if (e.key === "Enter" && e.target === e.currentTarget) open(); },
+});
 
 function Title({ opportunity: { category, mastery_req, name, action, needed_for } }: { opportunity: Opportunity }) {
   return (
@@ -41,25 +46,24 @@ function Remaining({ opportunity: { remaining_mastery, state, spend, forma } }: 
 
 interface RowProps {
   opportunity: Opportunity;
-  nowMs: number;
   clockFormat: ClockFormat;
   notes?: string[];
   levelFirst?: boolean;
+  onOpen: () => void;
   children?: ReactNode;
 }
 
-export function OpportunityRow({ opportunity, clockFormat, notes = [], levelFirst = false, children }: RowProps) {
+export function OpportunityRow({ opportunity, clockFormat, notes = [], levelFirst = false, onOpen, children }: RowProps) {
   const { access, craft, image_name, name, relic } = opportunity;
-  const dayAndClock = (ms: number) => `${new Date(ms).toLocaleDateString(navigator.language, { month: "short", day: "numeric" })} ${fmtClock(Math.floor(ms / 1000), clockFormat)}`;
   return (
-    <div className={`mst-opp mst-opp-${access}`} tabIndex={0}>
+    <div className={`mst-opp mst-opp-${access}`} tabIndex={0} {...rowOpeners(onOpen)}>
       <ItemImg imageName={image_name ?? undefined} fallback={<div className="img-fallback">{name[0]?.toUpperCase() ?? "?"}</div>} />
       <div className="mst-opp-main">
         <Title opportunity={opportunity} />
         {craft && <IngredientIcons plan={craft} />}
         {notes.length > 0 && <div className="mst-opp-blockers">{notes.join(" · ")}</div>}
       </div>
-      <span className="mst-opp-action">{levelFirst ? `Level ${name} first` : actionText(opportunity, dayAndClock)}</span>
+      <span className="mst-opp-action">{levelFirst ? `Level ${name} first` : actionText(opportunity, ms => dayAndClock(ms, clockFormat))}</span>
       {relic && (
         <span className={`mst-pill mst-pill-relic-${relic.coverage.kind}`} title="Chance of every missing relic part dropping from the relics you own, run solo at their current refinement">
           <span className="mst-pill-kind">Relics</span> {chanceText(relic.coverage)}
@@ -76,28 +80,29 @@ interface PurchaseRowProps {
   opportunity: Priced;
   comparison: Comparison;
   now: number;
-  onOpen: (listing: Listing) => void;
+  onQuote: (listing: Listing) => void;
+  onOpen: () => void;
 }
 
-function PurchaseRow({ opportunity, comparison, now, onOpen }: PurchaseRowProps) {
+function PurchaseRow({ opportunity, comparison, now, onQuote, onOpen }: PurchaseRowProps) {
   const { access, image_name, name, purchase } = opportunity;
   const set = purchase.set;
   const cost = comparison === "full" ? purchase.full_purchase : purchase.cheapest_finish;
   const count = (part: { needed: number; short: number }) => comparison === "full" ? part.needed : part.short;
   const parts = purchase.parts.filter(p => count(p) > 0);
   return (
-    <div className={`mst-opp mst-opp-${access}`} tabIndex={0}>
+    <div className={`mst-opp mst-opp-${access}`} tabIndex={0} {...rowOpeners(onOpen)}>
       <ItemImg imageName={image_name ?? undefined} fallback={<div className="img-fallback">{name[0]?.toUpperCase() ?? "?"}</div>} />
       <div className="mst-opp-main">
         <Title opportunity={opportunity} />
         <div className="mst-opp-listings">
           {set && (
-            <button className={`mst-quote ${cost?.route === "set" ? "mst-quote-chosen" : ""}`} title="Market details" onClick={() => onOpen(set)}>
+            <button className={`mst-quote ${cost?.route === "set" ? "mst-quote-chosen" : ""}`} title="Market details" onClick={() => onQuote(set)}>
               {set.name}: {quoteText(set, now)}
             </button>
           )}
           {parts.map(p => (
-            <button key={p.unique_name} className={`mst-quote ${cost?.route === "parts" ? "mst-quote-chosen" : ""}`} title="Market details" onClick={() => onOpen(p)}>
+            <button key={p.unique_name} className={`mst-quote ${cost?.route === "parts" ? "mst-quote-chosen" : ""}`} title="Market details" onClick={() => onQuote(p)}>
               {p.name}{count(p) > 1 ? ` ×${count(p)}` : ""}: {quoteText(p, now)}
             </button>
           ))}
@@ -121,6 +126,7 @@ interface Props {
 export default function WhatNext({ overview, controls, onChange, nowMs, clockFormat }: Props) {
   const [search, setSearch] = useState("");
   const [popup, setPopup] = useState<Listing | null>(null);
+  const [opened, setOpened] = useState<Opportunity | null>(null);
   const [wfmUsername, setWfmUsername] = useState<string | null>(null);
   const [wfmLookup, setWfmLookup] = useState<Map<string, string>>(new Map());
   const category = overview.categories.some(c => c.category === controls.category) ? controls.category : null;
@@ -187,7 +193,7 @@ export default function WhatNext({ overview, controls, onChange, nowMs, clockFor
           <section key={key} className="mst-group" aria-label={label}>
             <div className="mst-group-header">{label} <span className="mst-count">{items.length}</span></div>
             <div className="mst-opp-list">
-              {items.map(o => <OpportunityRow key={o.unique_name} opportunity={o} nowMs={nowMs} clockFormat={clockFormat} />)}
+              {items.map(o => <OpportunityRow key={o.unique_name} opportunity={o} clockFormat={clockFormat} onOpen={() => setOpened(o)} />)}
             </div>
           </section>
         ))}
@@ -203,13 +209,14 @@ export default function WhatNext({ overview, controls, onChange, nowMs, clockFor
             </div>
             <div className="mst-opp-list">
               {purchases.map(o => (
-                <PurchaseRow key={o.unique_name} opportunity={o} comparison={controls.comparison} now={Math.floor(nowMs / 1000)} onOpen={setPopup} />
+                <PurchaseRow key={o.unique_name} opportunity={o} comparison={controls.comparison} now={Math.floor(nowMs / 1000)} onQuote={setPopup} onOpen={() => setOpened(o)} />
               ))}
             </div>
           </section>
         )}
       </div>
 
+      {opened && <OpportunityModal opportunity={opened} nowMs={nowMs} clockFormat={clockFormat} onClose={() => setOpened(null)} />}
       {popup && (
         <ItemMarketPopup
           urlName={wfmLookup.get(popup.slug) ?? popup.slug}

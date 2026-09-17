@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  actionText, activePreset, alsoNeedsText, chanceText, costText, DEFAULT_CONTROLS, detailText, inSuggestions, parseControls, quoteText, PRESETS, rankPurchases, readyText, remainingText, shownControls, visibleOpportunities, visiblePurchases,
+  acquisitionLines, actionText, activePreset, alsoNeedsText, chanceText, costText, DEFAULT_CONTROLS, inSuggestions, parseControls, quoteText, PRESETS, rankPurchases, readyText, remainingText, shownControls, sourceLines, visibleOpportunities, visiblePurchases,
 } from "./suggestions.ts";
 import { RELIC_SUGGESTION_THRESHOLD } from "../constants/relics.ts";
 import { blockerText } from "../constants/blockers.ts";
@@ -232,14 +232,14 @@ test("route labels come from the kind, and an acquire row without one reads sour
   const acquire = (route: RouteKind | null) => opportunity("Fluctus", { stage: "acquire", action: "acquire", owned: false, owned_level: null, route });
   assert.equal(actionText(acquire({ kind: "adversary" })), "Lich, Sister or Technocyte Coda reward");
   assert.equal(actionText(acquire(null)), SOURCE_UNKNOWN);
-  assert.equal(detailText(acquire({ kind: "research", lab: "Tenno Lab" }), 0), "", "the action slot already names the route");
+  assert.deepEqual(sourceLines(acquire({ kind: "research", lab: "Tenno Lab" }), 0), [], "the action slot already names the route");
   // A farm row tells its recipe, relic and drop through the plan, so only an origin kind is repeated in the detail.
   const farm = (route: RouteKind) => opportunity("Fluctus", { stage: "craft", action: "farm", owned: false, owned_level: null, route,
     craft: { requirements: [], builds: [], credits: 15_000, credits_short: 0 } });
-  assert.equal(detailText(farm({ kind: "research", lab: "Tenno Lab" }), 0), "Research at Tenno Lab");
-  assert.equal(detailText(farm({ kind: "market_credits", credits: 20_000, blueprint: true }), 0), "Market, 20,000 credits blueprint");
-  assert.equal(detailText(farm({ kind: "relic" }), 0), "", "the ingredient icons carry the credits");
-  assert.equal(detailText(opportunity("Kuva Karak", { route: { kind: "adversary" } }), 0), "Owned copy", "an owned copy is past its route");
+  assert.deepEqual(sourceLines(farm({ kind: "research", lab: "Tenno Lab" }), 0), ["Research at Tenno Lab"]);
+  assert.deepEqual(sourceLines(farm({ kind: "market_credits", credits: 20_000, blueprint: true }), 0), ["Market, 20,000 credits blueprint"]);
+  assert.deepEqual(sourceLines(farm({ kind: "relic" }), 0), [], "the ingredient icons carry the credits");
+  assert.deepEqual(sourceLines(opportunity("Kuva Karak", { route: { kind: "adversary" } }), 0), ["Owned copy"], "an owned copy is past its route");
 });
 
 test("a Baro row reads his stock while he is here and his return while he is away", () => {
@@ -258,8 +258,19 @@ test("a Baro row reads his stock while he is here and his return while he is awa
 
 test("a curated vendor offer names its rank where the catalogue would name a title", () => {
   const buy = (vendors: Opportunity["vendors"]) => opportunity("Vesper 77", { stage: "craft", action: "buy", owned: false, owned_level: null, route: { kind: "vendor", syndicate: "The Hex", rank: 3 }, vendors });
-  assert.equal(detailText(buy([{ syndicate: "The Hex", tier: "", rank: 3, blueprint: true }]), 0), "The Hex, Rank 3 (blueprint)");
-  assert.equal(detailText(buy([{ syndicate: "Steel Meridian", tier: "General", rank: null, blueprint: false }]), 0), "Steel Meridian, General");
+  assert.deepEqual(sourceLines(buy([{ syndicate: "The Hex", tier: "", rank: 3, blueprint: true }]), 0), ["The Hex, Rank 3 (blueprint)"]);
+  assert.deepEqual(sourceLines(buy([{ syndicate: "Steel Meridian", tier: "General", rank: null, blueprint: false }]), 0), ["Steel Meridian, General"]);
+  // A blueprint offer sits under the blueprint's line. A built-item offer has no part to sit under, so it stays in the source block.
+  const offers = buy([{ syndicate: "The Hex", tier: "", rank: 3, blueprint: true }, { syndicate: "Steel Meridian", tier: "General", rank: null, blueprint: false }]);
+  assert.deepEqual(acquisitionLines(offers, "/bp", 0, true), ["Vendor: The Hex, Rank 3"]);
+  assert.deepEqual(acquisitionLines(offers, "/bp", 0), []);
+});
+
+test("a part line quotes the market and leaves out what it has nothing for", () => {
+  const braton = buyer("Braton Prime", bratonPrime());
+  const blueprint = braton.purchase!.parts[0];
+  assert.deepEqual(acquisitionLines(braton, blueprint.unique_name, NOW), ["Market: 25p · 2m ago"]);
+  assert.deepEqual(acquisitionLines(braton, "/Lotus/Types/Recipes/Nothing", NOW), []);
 });
 
 test("labels spell out the action, the route and unknowns", () => {
@@ -270,7 +281,7 @@ test("labels spell out the action, the route and unknowns", () => {
   assert.equal(remainingText(null, { level_cap: 30, forma: 5, mastery: 1000 }), "Unknown");
   const gated = opportunity("Kuva Karak", { cap: 40, remaining_mastery: 4000, forma: { level_cap: 30, forma: 5, mastery: 1000 },
     craft: { requirements: [{ unique_name: "/Lotus/Types/Items/MiscItems/Forma", name: "Forma", needed: 5, from_stock: 2, short: 3 }], builds: [], credits: 0, credits_short: 0 } });
-  assert.equal(detailText(gated, now), "Owned copy", "the Forma shortage is an ingredient icon");
+  assert.deepEqual(sourceLines(gated, now), ["Owned copy"], "the Forma shortage is an ingredient icon");
   assert.equal(actionText({ ...gated, owned_level: 12 }), "Level R12 → R30", "the action stops at the copy's level cap");
   assert.equal(actionText(opportunity("Braton", { owned_level: 5 })), "Level R5 → R30");
   assert.equal(actionText(opportunity("Braton", { owned_level: null })), "Level to R30");
@@ -280,21 +291,21 @@ test("labels spell out the action, the route and unknowns", () => {
     { syndicate: "Steel Meridian", tier: "General", rank: null, blueprint: false },
   ] });
   assert.equal(actionText(bought), "Buy blueprint from Cephalon Simaris");
-  assert.equal(detailText(bought, now), "Cephalon Simaris (blueprint) · Steel Meridian, General");
-  assert.equal(detailText(opportunity("Braton"), now), "Owned copy");
+  assert.deepEqual(sourceLines(bought, now), ["Cephalon Simaris (blueprint)", "Steel Meridian, General"]);
+  assert.deepEqual(sourceLines(opportunity("Braton"), now), ["Owned copy"]);
   const akbolto = opportunity("Akbolto", { owned: false, action: "farm", craft: {
     requirements: [], builds: [], credits: 25000, credits_short: 0,
     level_first: [{ unique_name: "/Lotus/Weapons/Tenno/Pistol/Bolto", name: "Bolto", gain: 1800 }],
   } });
-  assert.equal(detailText(akbolto, now), "Level Bolto first (+1,800 mastery)");
+  assert.deepEqual(sourceLines(akbolto, now), ["Level Bolto first (+1,800 mastery)"]);
   const node = { key: "SolNode27", planet: "Earth", mode: "normal" as const, junction: false, amount: 24 };
   const ePrime = opportunity("E Prime", { unique_name: "SolNode27", category: "Star Chart", cap: 1, earned_rank: 0, state: "missing",
     stage: "acquire", action: "complete", remaining_mastery: null, owned: false, owned_level: null, access: "unknown", blockers: [{ kind: "node_unlock_unknown" }], node });
   assert.equal(actionText(ePrime), "Complete node");
-  assert.equal(detailText(ePrime, now), "Earth");
+  assert.deepEqual(sourceLines(ePrime, now), ["Earth"]);
   assert.equal(actionText({ ...ePrime, action: "unlock", node: { ...node, junction: true } }), "Unlock junction");
-  assert.equal(detailText(opportunity("Braton", { build_completion_ms: 5_000_000 }), now), "Owned copy · Build ready");
-  assert.equal(detailText(opportunity("Braton", { build_completion_ms: now + 60_000 }), now, "14:32"), "Owned copy · Build ready in 1m (14:32)");
+  assert.deepEqual(sourceLines(opportunity("Braton", { build_completion_ms: 5_000_000 }), now), ["Owned copy", "Build ready"]);
+  assert.deepEqual(sourceLines(opportunity("Braton", { build_completion_ms: now + 60_000 }), now, "14:32"), ["Owned copy", "Build ready in 1m (14:32)"]);
   const spend = opportunity("Railjack", {
     unique_name: "LPP_SPACE", category: "Intrinsics", cap: 50, earned_rank: 45, remaining_mastery: 7500, owned: false, owned_level: null,
     action: "spend", spend: { ranks: 5, points: 2048, mastery: 7500, tracks: [
@@ -302,7 +313,7 @@ test("labels spell out the action, the route and unknowns", () => {
     ] },
   });
   assert.equal(actionText(spend), "Spend 2,048 points for 5 ranks");
-  assert.equal(detailText(spend, now), "+7,500 mastery · Piloting R9 → R10 · Gunnery R8 → R10 · Engineering R8 → R10");
+  assert.deepEqual(sourceLines(spend, now), ["+7,500 mastery", "Piloting R9 → R10", "Gunnery R8 → R10", "Engineering R8 → R10"]);
   assert.equal(actionText(opportunity("Drifter", { action: "spend", spend: { ranks: 1, points: 205, mastery: 1500, tracks: [{ track: "Endurance", from: 8, to: 9 }] } })), "Spend 205 points for 1 rank");
   const chassis = { unique_name: "/Lotus/Types/Recipes/Parts/Chassis", name: "Chassis", needed: 1, from_stock: 0, short: 0 };
   const ferrite = { unique_name: "/Lotus/Types/Items/MiscItems/Ferrite", name: "Ferrite", needed: 150, from_stock: 50, short: 100 };
@@ -310,20 +321,20 @@ test("labels spell out the action, the route and unknowns", () => {
     craft: { requirements: [chassis], builds: [], credits: 15_000, credits_short: 0 } });
   assert.equal(actionText(crafted), "Craft now");
   assert.equal(actionText({ ...crafted, access: "blocked", blockers: [{ kind: "credits_short", short: 5_000 }] }), "Craft");
-  assert.equal(detailText(crafted, now), "");
+  assert.deepEqual(sourceLines(crafted, now), []);
   const built = opportunity("Hek", { stage: "craft", action: "build", owned: false, owned_level: null,
     craft: { requirements: [chassis], builds: [{ unique_name: chassis.unique_name, name: "Chassis", crafts: 2 }], credits: null, credits_short: 0 } });
   assert.equal(actionText(built), "Build 1 part, then craft");
-  assert.equal(detailText(built, now), "");
+  assert.deepEqual(sourceLines(built, now), []);
   const farmed = opportunity("Hek", { stage: "craft", action: "farm", owned: false, owned_level: null,
     craft: { requirements: [chassis, ferrite], builds: [], credits: 20_000, credits_short: 5_000 } });
   assert.equal(actionText(farmed), "Farm 1 item");
-  assert.equal(detailText(farmed, now), "");
+  assert.deepEqual(sourceLines(farmed, now), []);
   const barrel = { unique_name: "/Lotus/Types/Recipes/Weapons/WeaponParts/BratonPrimeBarrel", name: "Barrel", needed: 1, from_stock: 0, short: 1 };
   const relicParts: RelicPart[] = [{ unique_name: barrel.unique_name, name: "Barrel", short: 2, relics: [
     { unique_name: "/Lotus/Types/Game/Projections/T1VoidProjectionBPlatinum", name: "Lith B4 Radiant", count: 3, chance: 0.1667 },
     { unique_name: "/Lotus/Types/Game/Projections/T1VoidProjectionBBronze", name: "Lith B4 Intact", count: 1, chance: 0.2533 },
-  ] }];
+  ], dropped_by: ["Lith B4", "Meso F2"] }];
   const relicFarmed = relicFarm("Braton Prime", complete(0.4231), relicParts,
     { craft: { requirements: [barrel, ferrite], builds: [], credits: 15_000, credits_short: 0 } });
   assert.equal(actionText(relicFarmed), "Farm relics + 1 item");
@@ -333,20 +344,25 @@ test("labels spell out the action, the route and unknowns", () => {
   assert.equal(chanceText(complete(0)), "0%");
   assert.equal(chanceText({ kind: "partial", missing: [], short: ["Barrel"] }), "Partial");
   assert.equal(chanceText({ kind: "unknown" }), "Unknown");
-  assert.equal(detailText(relicFarmed, now), "Barrel ×2 from Lith B4 Radiant ×3, Lith B4 Intact ×1");
+  // The per-part relic and drop lines sit under the part in the modal's tree, so the source block keeps only the coverage summary.
+  assert.deepEqual(sourceLines(relicFarmed, now), []);
+  assert.deepEqual(acquisitionLines(relicFarmed, barrel.unique_name, NOW), ["Relics: Lith B4 (Radiant ×3, Intact ×1), Meso F2"]);
+  assert.deepEqual(acquisitionLines(relicFarmed, ferrite.unique_name, NOW), []);
   const partial = relicFarm("Braton Prime", { kind: "partial", missing: ["Blueprint"], short: ["Barrel"] },
-    [{ unique_name: "/bp", name: "Blueprint", short: 1, relics: [] }, ...relicParts]);
-  assert.equal(detailText(partial, now), "No relic for Blueprint · Too few relics for Barrel · Barrel ×2 from Lith B4 Radiant ×3, Lith B4 Intact ×1");
+    [{ unique_name: "/bp", name: "Blueprint", short: 1, relics: [], dropped_by: ["Axi B1"] }, ...relicParts]);
+  assert.deepEqual(sourceLines(partial, now), ["No relic for Blueprint", "Too few relics for Barrel"]);
+  // A part no owned relic drops still names the relics that do.
+  assert.deepEqual(acquisitionLines(partial, "/bp", NOW), ["Relics: Axi B1"]);
   const cell = { unique_name: "/Lotus/Types/Items/MiscItems/OrokinCell", name: "Orokin Cell", needed: 10, from_stock: 7, short: 3 };
   const dropParts: DropPart[] = [{ unique_name: cell.unique_name, name: "Orokin Cell", short: 3, locations: [
     { location: "Corrupted Vor", chance: 50 }, { location: "Saturn/Titan (Survival), Rotation C", chance: 12.5 }, { location: "Cephalon Simaris", chance: null },
   ] }];
   const dropFarmed = { ...relicFarmed, craft: { ...relicFarmed.craft!, requirements: [barrel, cell, ferrite] }, drop: { parts: dropParts } };
   assert.equal(actionText(dropFarmed), "Farm relics + 2 items");
-  assert.equal(detailText(dropFarmed, now), "Barrel ×2 from Lith B4 Radiant ×3, Lith B4 Intact ×1 · Orokin Cell ×3 from Corrupted Vor (50%), Saturn/Titan (Survival), Rotation C (12.5%), Cephalon Simaris");
+  assert.deepEqual(acquisitionLines(dropFarmed, cell.unique_name, NOW), ["Drops: Corrupted Vor (50%), Saturn/Titan (Survival), Rotation C (12.5%), Cephalon Simaris"]);
   const onlyDrops = { ...dropFarmed, relic: null, craft: { ...dropFarmed.craft, requirements: [cell] }, drop: { parts: [{ ...dropParts[0], short: 1 }] } };
   assert.equal(actionText(onlyDrops), "Farm 1 item");
-  assert.equal(detailText(onlyDrops, now), "Orokin Cell from Corrupted Vor (50%), Saturn/Titan (Survival), Rotation C (12.5%), Cephalon Simaris");
+  assert.deepEqual(sourceLines(onlyDrops, now), []);
   assert.equal(readyText(5_000_000, now), "ready");
   assert.equal(readyText(now + 3_720_000, now), "ready in 1h 2m");
   assert.equal(readyText(now + 45_000, now), "ready in 1m");

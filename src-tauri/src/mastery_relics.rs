@@ -7,7 +7,7 @@
 //! so two parts that share a relic compete for the same roll. Relics the
 //! player could still acquire or refine are not part of the estimate.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use crate::mastery_recipe::CraftPlan;
 use crate::wfcd::RelicReward;
 
@@ -29,6 +29,10 @@ pub(crate) struct RelicPart {
     pub(crate) short: u32,
     /// Sorted with the best chance first.
     pub(crate) relics: Vec<RelicStock>,
+    /// Names every relic whose table lists the part, whether the player owns
+    /// it or not, with the refinement stripped and sorted. A part that no
+    /// owned relic drops still says where to look.
+    pub(crate) dropped_by: Vec<String>,
 }
 
 #[derive(serde::Serialize, Clone, PartialEq, Debug)]
@@ -67,7 +71,14 @@ pub(crate) struct Relics {
     /// Every item any relic in the catalogue drops, whether the player owns
     /// that relic or not.
     parts: HashSet<String>,
+    dropped_by: HashMap<String, BTreeSet<String>>,
     owned: Vec<OwnedRelic>,
+}
+
+const REFINEMENTS: [&str; 4] = [" Intact", " Exceptional", " Flawless", " Radiant"];
+
+fn base_name(relic: &str) -> &str {
+    REFINEMENTS.iter().find_map(|suffix| relic.strip_suffix(suffix)).unwrap_or(relic)
 }
 
 // Bounds the walk, which costs states × relic copies × drops per route. A
@@ -84,6 +95,15 @@ impl Relics {
             .filter(|r| !r.unique_name.is_empty())
             .map(|r| r.unique_name.clone())
             .collect();
+        let mut dropped_by: HashMap<String, BTreeSet<String>> = HashMap::new();
+        for (key, table) in tables {
+            // A key without a display name would show as a raw path, so it is
+            // left out.
+            let Some(name) = names.get(key).map(String::as_str).or_else(|| (!key.starts_with('/')).then_some(key.as_str())) else { continue };
+            for reward in table.iter().filter(|r| !r.unique_name.is_empty()) {
+                dropped_by.entry(reward.unique_name.clone()).or_default().insert(base_name(name).to_string());
+            }
+        }
         let mut owned: Vec<OwnedRelic> = stock.iter()
             .filter(|(_, &count)| count > 0)
             .filter_map(|(unique_name, &count)| {
@@ -101,7 +121,7 @@ impl Relics {
             })
             .collect();
         owned.sort_by(|a, b| a.name.cmp(&b.name));
-        Self { parts, owned }
+        Self { parts, dropped_by, owned }
     }
 
     pub(crate) fn is_part(&self, unique_name: &str) -> bool {
@@ -116,7 +136,8 @@ impl Relics {
                     .filter_map(|o| o.rewards.get(&r.unique_name).map(|&chance| RelicStock { unique_name: o.unique_name.clone(), name: o.name.clone(), count: o.count, chance }))
                     .collect();
                 relics.sort_by(|a, b| b.chance.partial_cmp(&a.chance).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.name.cmp(&b.name)));
-                RelicPart { unique_name: r.unique_name.clone(), name: r.name.clone(), short: r.short, relics }
+                let dropped_by = self.dropped_by.get(&r.unique_name).map(|set| set.iter().cloned().collect()).unwrap_or_default();
+                RelicPart { unique_name: r.unique_name.clone(), name: r.name.clone(), short: r.short, relics, dropped_by }
             })
             .collect();
         if parts.is_empty() { return None; }
@@ -218,7 +239,7 @@ mod tests {
     fn plan(short: &[(&str, u32)]) -> CraftPlan {
         CraftPlan {
             requirements: short.iter().map(|&(path, short)| Requirement {
-                unique_name: path.into(), name: short_name(path).into(), image_name: None, category: None, needed: short, owned: 0, from_stock: 0, short, state: IngredientState::Missing, reusable: false,
+                unique_name: path.into(), name: short_name(path).into(), image_name: None, category: None, needed: short, owned: 0, from_stock: 0, short, state: IngredientState::Missing, reusable: false, part_blueprint: false,
             }).collect(),
             ..Default::default()
         }
@@ -314,6 +335,10 @@ mod tests {
             [("AkstilettoPrimeBarrel", 2, 1), ("AkstilettoPrimeReceiver", 1, 0)]);
         let [lith] = route.parts[0].relics.as_slice() else { panic!("one relic drops the barrel") };
         assert_eq!((lith.name.as_str(), lith.count), ("Lith A1 Intact", 1));
+        // The Neo has no display name in the test catalogue, so it stays out. The Lith reads once for both refinements.
+        assert_eq!(route.parts.iter().map(|p| p.dropped_by.clone()).collect::<Vec<_>>(), [vec!["Lith A1".to_string()], vec![]]);
+        let both = Relics::new(&stock(&[]), &self::tables(&[(LITH_INTACT, &[(BARREL, 25.33)]), (LITH_RADIANT, &[(BARREL, 10.0)]), ("Meso H2 Radiant", &[(BARREL, 2.0)])]), &names());
+        assert_eq!(both.route(&plan(&[(BARREL, 1)])).expect("relic parts short").parts[0].dropped_by, ["Lith A1", "Meso H2"]);
         assert!((lith.chance.expect("table carries chances") - 0.2533).abs() < 1e-12);
         assert!(one.route(&plan(&[(FERRITE, 500)])).is_none());
         assert!(one.route(&plan(&[])).is_none());
