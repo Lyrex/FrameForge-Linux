@@ -6,24 +6,12 @@ import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import { PREFERENCE_KEYS } from "../constants/preferences";
 import type { ClockFormat } from "../lib/clockFormat";
 import { parseControls, purchaseSlugs, VIEW_OPTIONS, type MasteryControls, type ResultView } from "./suggestions";
-import { pillSummary, progressText } from "./topBar";
-import Collection from "./Collection";
+import { pillSummary } from "./topBar";
+import Collection, { Progress } from "./Collection";
 import WhatNext from "./WhatNext";
 import TargetMr from "./TargetMr";
 import type { InventoryItem } from "../types/items";
-import type { MasteryCounts, MasteryOverview, MasteryProvenance } from "../types/mastery";
-
-export function Progress({ counts, label }: { counts: MasteryCounts; label: string }) {
-  const { text, title } = progressText(counts, label);
-  return (
-    <div className="mst-progress-wrap" title={title}>
-      <div className="mst-progress-bar">
-        <div className="mst-progress-fill" style={{ width: counts.total > 0 ? `${(counts.mastered / counts.total) * 100}%` : "0%" }} />
-      </div>
-      <span className="mst-progress-label">{text}</span>
-    </div>
-  );
-}
+import type { MasteryOverview, MasteryProvenance } from "../types/mastery";
 
 function ProvenancePill({ provenance, now, clockFormat }: { provenance: MasteryProvenance; now: number; clockFormat: ClockFormat }) {
   const { state, text, title } = pillSummary(provenance, now, clockFormat);
@@ -139,10 +127,10 @@ export default function Mastery({ inventory, refreshKey, clockFormat, tracked, o
       {!error && !overview && <div className="mst-body"><div className="mst-empty">Loading mastery…</div></div>}
       {overview && controls.view === "collection" && <Collection overview={overview} />}
       {overview && controls.view === "whatnext" && (
-        <WhatNext overview={overview} controls={controls} onChange={update} nowMs={now * 1000} clockFormat={clockFormat} />
+        <WhatNext overview={overview} controls={controls} onChange={update} now={now} clockFormat={clockFormat} />
       )}
       {overview && controls.view === "target" && (
-        <TargetMr overview={overview} controls={controls} onChange={update} nowMs={now * 1000} clockFormat={clockFormat}
+        <TargetMr overview={overview} controls={controls} onChange={update} now={now} clockFormat={clockFormat}
           tracked={tracked} onTrackToggle={onTrackToggle} onView={setPlanView} />
       )}
     </div>

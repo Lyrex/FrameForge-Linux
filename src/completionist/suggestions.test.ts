@@ -304,8 +304,8 @@ test("labels spell out the action, the route and unknowns", () => {
   assert.equal(actionText(ePrime), "Complete node");
   assert.deepEqual(sourceLines(ePrime, now), ["Earth"]);
   assert.equal(actionText({ ...ePrime, action: "unlock", node: { ...node, junction: true } }), "Unlock junction");
-  assert.deepEqual(sourceLines(opportunity("Braton", { build_completion_ms: 5_000_000 }), now), ["Owned copy", "Build ready"]);
-  assert.deepEqual(sourceLines(opportunity("Braton", { build_completion_ms: now + 60_000 }), now, "14:32"), ["Owned copy", "Build ready in 1m (14:32)"]);
+  assert.deepEqual(sourceLines(opportunity("Braton", { build_completion_ms: now * 1000 - 1 }), now), ["Owned copy", "Build ready"]);
+  assert.deepEqual(sourceLines(opportunity("Braton", { build_completion_ms: now * 1000 + 60_000 }), now, "14:32"), ["Owned copy", "Build ready in 1m (14:32)"]);
   const spend = opportunity("Railjack", {
     unique_name: "LPP_SPACE", category: "Intrinsics", cap: 50, earned_rank: 45, remaining_mastery: 7500, owned: false, owned_level: null,
     action: "spend", spend: { ranks: 5, points: 2048, mastery: 7500, tracks: [

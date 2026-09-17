@@ -59,12 +59,13 @@ const leaf = (r: Requirement): RecipeNode => ({ unique_name: r.unique_name, name
 interface Props {
   opportunity: Opportunity;
   notes?: string[];
-  nowMs: number;
+  /** Unix seconds. */
+  now: number;
   clockFormat: ClockFormat;
   onClose: () => void;
 }
 
-export function OpportunityModal({ opportunity: o, notes = [], nowMs, clockFormat, onClose }: Props) {
+export function OpportunityModal({ opportunity: o, notes = [], now, clockFormat, onClose }: Props) {
   const modal = useModal(onClose);
   const [recipe, setRecipe] = useState<RecipeComponent[] | null>(null);
   // An owned copy's plan is the Forma it still needs, which no recipe tree frames, so it renders flat.
@@ -78,9 +79,8 @@ export function OpportunityModal({ opportunity: o, notes = [], nowMs, clockForma
     return () => { stale = true; };
   }, [tree, o.unique_name]);
 
-  const now = Math.floor(nowMs / 1000);
   const readyAt = o.build_completion_ms == null ? undefined : fmtClock(Math.floor(o.build_completion_ms / 1000), clockFormat);
-  const source = sourceLines(o, nowMs, readyAt);
+  const source = sourceLines(o, now, readyAt);
   const blockers = [...o.blockers.map(blockerText), ...notes];
   const rows = useMemo(() => o.craft ? ingredients(o.craft) : [], [o.craft]);
   const credits = rows.find(r => r.unique_name === CREDITS_PATH);

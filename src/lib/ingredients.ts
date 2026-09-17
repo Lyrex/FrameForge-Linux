@@ -1,4 +1,5 @@
 import type { CraftPlan, Requirement } from "../types/mastery";
+import { formatCount } from "../lib/formatters.ts";
 import { CREDITS_PATH, FORMA_PATH, INGREDIENT_STATE_LABELS, STOCK_STATES } from "../constants/ingredients.ts";
 
 /**
@@ -29,8 +30,8 @@ export function iconLines(plan: CraftPlan): Requirement[] {
 /** Returns null for an unknown credit cost, since a partial sum would pass for the price. */
 export function availableText(line: Requirement): string | null {
   if (line.unique_name === CREDITS_PATH && line.needed === 0) return null;
-  const owned = line.reusable && line.owned > 0 ? "∞" : line.owned.toLocaleString("en-US");
-  return `Available: ${owned} / ${line.needed.toLocaleString("en-US")}`;
+  const owned = line.reusable && line.owned > 0 ? "∞" : formatCount(line.owned);
+  return `Available: ${owned} / ${formatCount(line.needed)}`;
 }
 
 export const stateLabel = (line: Requirement) => INGREDIENT_STATE_LABELS[line.state];

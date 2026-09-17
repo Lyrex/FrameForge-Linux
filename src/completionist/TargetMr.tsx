@@ -6,9 +6,9 @@ import { OpportunityRow } from "./WhatNext";
 import { OpportunityModal } from "./OpportunityModal";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import type { ClockFormat } from "../lib/clockFormat";
-import { addable, addToPlan, candidates, moved, planView, prefill, rangeText, ringTitle, snapshotIntrinsicTargets, summaryText, TARGET_RANK_MAX } from "./plan";
+import { addable, addToPlan, candidates, moved, planView, prefill, rangeText, ringFractions, ringTitle, snapshotIntrinsicTargets, summaryText, TARGET_RANK_MAX, type RingFractions } from "./plan";
 import { RESULT_OPTIONS, remainingText, type MasteryControls, type ResultView } from "./suggestions";
-import type { MasteryOverview, MasteryPlan, Opportunity, PlanEntry, PlanEvaluation, Rings as RingFractions } from "../types/mastery";
+import type { MasteryOverview, MasteryPlan, Opportunity, PlanEntry, PlanEvaluation } from "../types/mastery";
 
 // Sixty rows are enough to browse, and the search narrows the rest.
 const ADD_LIST_LIMIT = 60;
@@ -45,7 +45,8 @@ interface Props {
   overview: MasteryOverview;
   controls: MasteryControls;
   onChange: (patch: Partial<MasteryControls>) => void;
-  nowMs: number;
+  /** Unix seconds. */
+  now: number;
   clockFormat: ClockFormat;
   tracked: string[];
   onTrackToggle: (uniqueName: string) => void;
@@ -75,7 +76,7 @@ function Placeholder({ path, entry, overview }: { path: string; entry: PlanEntry
   );
 }
 
-export default function TargetMr({ overview, controls, onChange, nowMs, clockFormat, tracked, onTrackToggle, onView }: Props) {
+export default function TargetMr({ overview, controls, onChange, now, clockFormat, tracked, onTrackToggle, onView }: Props) {
   const [plan, setPlan] = useState<MasteryPlan | null>(null);
   // A plan that was never saved prefills itself once the gap is known. A cleared plan stays empty.
   const [fresh, setFresh] = useState(false);
@@ -130,7 +131,7 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
 
   const entries = evaluation && evaluation.entries.length === plan.selections.length ? evaluation.entries : null;
   const entryAt = (i: number): PlanEntry | null => entries && entries[i].unique_name === plan.selections[i] ? entries[i] : null;
-  const toAdd = addable(pool, plan, search);
+  const toAdd = addable(pool, plan);
   const setTarget = (raw: string) => {
     const target = Math.min(TARGET_RANK_MAX, Math.max(1, Number.parseInt(raw, 10) || 1));
     if (target !== plan.target) save({ ...plan, target });
@@ -168,7 +169,7 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
       </div>
 
       <div className="mst-toolbar mst-plan-summary">
-        <Rings rings={evaluation?.rings ?? null} target={plan.target} title={evaluation ? ringTitle(evaluation, plan.target) : "Evaluating plan…"} />
+        <Rings rings={evaluation ? ringFractions(evaluation) : null} target={plan.target} title={evaluation ? ringTitle(evaluation, plan.target) : "Evaluating plan…"} />
         {evaluation ? (
           <>
             <span className="mst-plan-summary-text" title='Projection means "if these actions finish"'>{summaryText(evaluation, plan.target)}</span>
@@ -258,7 +259,7 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
         </section>
       </div>
 
-      {opened && <OpportunityModal {...opened} nowMs={nowMs} clockFormat={clockFormat} onClose={() => setOpened(null)} />}
+      {opened && <OpportunityModal {...opened} now={now} clockFormat={clockFormat} onClose={() => setOpened(null)} />}
     </>
   );
 }

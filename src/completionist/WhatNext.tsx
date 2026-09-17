@@ -8,7 +8,7 @@ import { TAURI_COMMANDS } from "../constants/tauri";
 import { wfmSlugLookup } from "../utils";
 import { dayAndClock, type ClockFormat } from "../lib/clockFormat";
 import {
-  actionText, chanceText, costText, quoteText, remainingText, shownControls, visibleOpportunities, visiblePurchases,
+  actionText, activeFilters, chanceText, costText, quoteText, remainingText, shownControls, visibleOpportunities, visiblePurchases,
   ACCESS_LABELS, COMPARISON_OPTIONS, RELIC_GROUP_LABELS, RELIC_GROUP_ORDER, RESULT_OPTIONS, STAGE_LABELS, STAGE_ORDER,
   type Comparison, type MasteryControls, type Priced,
 } from "./suggestions";
@@ -27,7 +27,7 @@ function Title({ opportunity: { category, mastery_req, name, action, needed_for 
   return (
     <div className="mst-opp-title">
       <span className="mst-name">{name}</span>
-      {action === "level" && !!needed_for?.length && <span className="mst-mr">Needed for {needed_for.join(", ")}</span>}
+      {action === "level" && needed_for.length > 0 && <span className="mst-mr">Needed for {needed_for.join(", ")}</span>}
       <span className="mst-mr">{category}</span>
       {mastery_req != null && mastery_req > 0 && (
         <span className="mst-mr" title={`Mastery Rank ${mastery_req} required`}>MR{mastery_req}</span>
@@ -119,30 +119,30 @@ interface Props {
   overview: MasteryOverview;
   controls: MasteryControls;
   onChange: (patch: Partial<MasteryControls>) => void;
-  nowMs: number;
+  /** Unix seconds. */
+  now: number;
   clockFormat: ClockFormat;
 }
 
-export default function WhatNext({ overview, controls, onChange, nowMs, clockFormat }: Props) {
+export default function WhatNext({ overview, controls, onChange, now, clockFormat }: Props) {
   const [search, setSearch] = useState("");
   const [popup, setPopup] = useState<Listing | null>(null);
   const [opened, setOpened] = useState<Opportunity | null>(null);
   const [wfmUsername, setWfmUsername] = useState<string | null>(null);
   const [wfmLookup, setWfmLookup] = useState<Map<string, string>>(new Map());
-  const category = overview.categories.some(c => c.category === controls.category) ? controls.category : null;
+  const { category, isFiltered } = activeFilters(overview, controls, search);
   const shown = useMemo(() => shownControls({ ...controls, category }), [controls, category]);
+  const platinum = controls.result === "platinum";
   const visible = useMemo(
-    () => visibleOpportunities(overview.opportunities, shown, search),
-    [overview.opportunities, shown, search]);
+    () => platinum ? [] : visibleOpportunities(overview.opportunities, shown, search),
+    [platinum, overview.opportunities, shown, search]);
   const purchases = useMemo(
-    () => visiblePurchases(overview.opportunities, shown, search),
-    [overview.opportunities, shown, search]);
+    () => platinum ? visiblePurchases(overview.opportunities, shown, search) : [],
+    [platinum, overview.opportunities, shown, search]);
   const groups = controls.result === "relics"
     ? RELIC_GROUP_ORDER.map(group => ({ key: group, label: RELIC_GROUP_LABELS[group], items: visible.filter(o => o.relic?.coverage.kind === group) }))
     : STAGE_ORDER.map(stage => ({ key: stage, label: STAGE_LABELS[stage], items: visible.filter(o => o.stage === stage) }));
-  const listed = controls.result === "suggestions" || controls.result === "relics";
-  const isFiltered = search !== "" || (!controls.easy && (category != null || controls.progress !== "all" || controls.availability !== "all"));
-  const platinum = controls.result === "platinum";
+  const listed = !platinum;
   const suggestions = controls.result === "suggestions";
 
   // A quote can sit under a catalogue slug the market does not list (a prime
@@ -209,14 +209,14 @@ export default function WhatNext({ overview, controls, onChange, nowMs, clockFor
             </div>
             <div className="mst-opp-list">
               {purchases.map(o => (
-                <PurchaseRow key={o.unique_name} opportunity={o} comparison={controls.comparison} now={Math.floor(nowMs / 1000)} onQuote={setPopup} onOpen={() => setOpened(o)} />
+                <PurchaseRow key={o.unique_name} opportunity={o} comparison={controls.comparison} now={now} onQuote={setPopup} onOpen={() => setOpened(o)} />
               ))}
             </div>
           </section>
         )}
       </div>
 
-      {opened && <OpportunityModal opportunity={opened} nowMs={nowMs} clockFormat={clockFormat} onClose={() => setOpened(null)} />}
+      {opened && <OpportunityModal opportunity={opened} now={now} clockFormat={clockFormat} onClose={() => setOpened(null)} />}
       {popup && (
         <ItemMarketPopup
           urlName={wfmLookup.get(popup.slug) ?? popup.slug}

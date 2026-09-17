@@ -1,7 +1,7 @@
 import { RELIC_REFINEMENT_SUFFIX, RELIC_SUGGESTION_THRESHOLD } from "../constants/relics.ts";
 import { isOrigin, routeText, SOURCE_UNKNOWN } from "../constants/routes.ts";
 import { formatAge, formatCount as n } from "../lib/formatters.ts";
-import type { Access, Baro, Coverage, FormaGate, Listing, MasteryState, Opportunity, Purchase, Stage, VendorOffer } from "../types/mastery";
+import type { Access, Baro, Coverage, FormaGate, Listing, MasteryOverview, MasteryState, Opportunity, Purchase, Stage, VendorOffer } from "../types/mastery";
 
 export type MasteryView = "whatnext" | "target" | "collection";
 export type ResultView = "suggestions" | "relics" | "platinum";
@@ -90,7 +90,7 @@ export const COMPARISON_OPTIONS: { key: Comparison; label: string }[] = [
   { key: "full",         label: "Full purchase" },
 ];
 
-function pick<T>(options: { key: T }[], value: unknown, fallback: T): T {
+export function pick<T>(options: { key: T }[], value: unknown, fallback: T): T {
   return options.some(o => o.key === value) ? (value as T) : fallback;
 }
 
@@ -204,7 +204,7 @@ export function actionText(o: Opportunity, until: (ms: number) => string = ms =>
     case "claim": return "Claim from Foundry";
     case "spend": {
       const s = o.spend;
-      return s ? `Spend ${s.points.toLocaleString("en-US")} points for ${s.ranks} rank${s.ranks === 1 ? "" : "s"}` : "Spend";
+      return s ? `Spend ${n(s.points)} points for ${s.ranks} rank${s.ranks === 1 ? "" : "s"}` : "Spend";
     }
     case "craft": return o.access === "available" ? "Craft now" : "Craft";
     case "build": {
@@ -273,12 +273,12 @@ export function costText(o: Opportunity, comparison: Comparison): string {
     : `${p.parts.filter(pt => (comparison === "full" ? pt.needed : pt.short) > 0).length} parts`;
   const value = comparisonValue(o, comparison);
   const per = comparison === "per_platinum" && value != null ? ` · ${value.toFixed(value >= 10 ? 0 : 1)} mastery/p` : "";
-  return `${cost.platinum.toLocaleString("en-US")}p · ${route}${per}`;
+  return `${n(cost.platinum)}p · ${route}${per}`;
 }
 
 export function quoteText(listing: Listing, now: number): string {
   if (listing.price == null) return listing.fetched_at == null ? "no quote yet" : "not listed";
-  return `${listing.price.toLocaleString("en-US")}p · ${listing.fetched_at == null ? "age unknown" : formatAge(listing.fetched_at, now)}`;
+  return `${n(listing.price)}p · ${listing.fetched_at == null ? "age unknown" : formatAge(listing.fetched_at, now)}`;
 }
 
 /** Whether a slot is free is not observed, so the slot line is only a reminder. */
@@ -295,10 +295,10 @@ function slotText(category: string): string {
 export function alsoNeedsText(o: Opportunity): string {
   const parts: string[] = [];
   if (o.craft) {
-    parts.push(o.craft.credits == null ? "Credits unknown" : `Credits ${o.craft.credits.toLocaleString("en-US")}`);
+    parts.push(o.craft.credits == null ? "Credits unknown" : `Credits ${n(o.craft.credits)}`);
     const bought = new Set(o.purchase?.parts.map(p => p.unique_name));
     for (const r of o.craft.requirements) {
-      if (r.short > 0 && !bought.has(r.unique_name)) parts.push(`${r.name} ×${r.short.toLocaleString("en-US")}`);
+      if (r.short > 0 && !bought.has(r.unique_name)) parts.push(`${r.name} ×${n(r.short)}`);
     }
   }
   parts.push(slotText(o.category));
@@ -318,19 +318,19 @@ export function readyText(completionMs: number, nowMs: number): string {
 
 const vendorText = (v: VendorOffer) => `${v.syndicate}${v.tier ? `, ${v.tier}` : v.rank != null ? `, Rank ${v.rank}` : ""}`;
 
-/** Describes the source as a whole. Each part's relics, drops and quotes sit under that part in the tree. */
-export function sourceLines(o: Opportunity, nowMs: number, readyAt?: string): string[] {
+/** Describes the source as a whole. `now` is in seconds. Each part's relics, drops and quotes sit under that part in the tree. */
+export function sourceLines(o: Opportunity, now: number, readyAt?: string): string[] {
   const parts: string[] = [];
   if (o.node) parts.push(o.node.planet);
   // The action slot already names the route on an acquire row.
   if (o.route && isOrigin(o.route) && !o.owned && o.action !== "acquire") parts.push(routeText(o.route));
   if (o.owned) parts.push("Owned copy");
   if (o.build_completion_ms != null) {
-    parts.push(`Build ${readyText(o.build_completion_ms, nowMs)}${readyAt ? ` (${readyAt})` : ""}`);
+    parts.push(`Build ${readyText(o.build_completion_ms, now * 1000)}${readyAt ? ` (${readyAt})` : ""}`);
   }
   for (const v of o.vendors) parts.push(`${vendorText(v)}${v.blueprint ? " (blueprint)" : ""}`);
   if (o.spend) {
-    parts.push(`+${o.spend.mastery.toLocaleString("en-US")} mastery`);
+    parts.push(`+${n(o.spend.mastery)} mastery`);
     for (const t of o.spend.tracks) parts.push(`${t.track} R${t.from} → R${t.to}`);
   }
   if (o.relic?.coverage.kind === "partial") {
@@ -365,4 +365,11 @@ export function acquisitionLines(o: Opportunity, uniqueName: string, now: number
   const quote = o.purchase?.parts.find(p => p.unique_name === uniqueName);
   if (quote) lines.push(`Market: ${quoteText(quote, now)}`);
   return lines;
+}
+
+/** A category the overview no longer lists counts as none, so a stale saved control does not filter everything out. */
+export function activeFilters(overview: MasteryOverview, controls: MasteryControls, search: string): { category: string | null; isFiltered: boolean } {
+  const category = overview.categories.some(c => c.category === controls.category) ? controls.category : null;
+  const isFiltered = search !== "" || (!controls.easy && (category != null || controls.progress !== "all" || controls.availability !== "all"));
+  return { category, isFiltered };
 }

@@ -114,11 +114,11 @@ impl CraftPlan {
 
     /// Foundry jobs and the catalogue live outside the ledger, so they land
     /// after the plan is drawn.
-    pub(crate) fn decorate(&mut self, catalogue: &HashMap<String, WfcdItem>, building: impl Fn(&str) -> bool) {
+    pub(crate) fn decorate(&mut self, catalogue: &HashMap<String, Art>, building: impl Fn(&str) -> bool) {
         for line in &mut self.requirements {
-            if let Some(item) = catalogue.get(&line.unique_name) {
-                line.image_name = item.image_name.clone();
-                line.category = Some(item.category.clone());
+            if let Some(art) = catalogue.get(&line.unique_name) {
+                line.image_name = art.image_name.clone();
+                line.category = Some(art.category.clone());
             }
             if line.from_stock == 0 && building(&line.unique_name) { line.state = IngredientState::Building; }
         }
@@ -322,19 +322,16 @@ pub(crate) fn forma_ingredient(count: u32, recipes: &HashMap<String, Vec<RecipeC
     }]
 }
 
-pub(crate) fn plan_all(inventory: &InventoryStateCache, recipes: &HashMap<String, Vec<RecipeComponent>>, targets: &[String]) -> Vec<CraftPlan> {
+/// `standalone` plans each target against the whole stock, as if it were the
+/// only one. The Foundry grid reads that so a card agrees with its modal,
+/// which plans the item alone.
+pub(crate) fn plan_targets(inventory: &InventoryStateCache, recipes: &HashMap<String, Vec<RecipeComponent>>, targets: &[String], standalone: bool) -> Vec<CraftPlan> {
     let (stock, owned, ranks) = (inventory.stackable_quantities(), inventory.owned_copies(), inventory.mastery_data());
     let (mut ledger, _) = Ledger::new(&stock, &owned, &mastered_by_rank(&ranks), &HashMap::new());
-    targets.iter().map(|target| ledger.plan(target, recipes.get(target).map_or(&[], Vec::as_slice))).collect()
-}
-
-/// Plans each target against the whole stock, as if it were the only one.
-/// The Foundry grid reads this so a card agrees with its modal, which plans
-/// the item alone.
-pub(crate) fn plan_each(inventory: &InventoryStateCache, recipes: &HashMap<String, Vec<RecipeComponent>>, targets: &[String]) -> Vec<CraftPlan> {
-    let (stock, owned, ranks) = (inventory.stackable_quantities(), inventory.owned_copies(), inventory.mastery_data());
-    let (ledger, _) = Ledger::new(&stock, &owned, &mastered_by_rank(&ranks), &HashMap::new());
-    targets.iter().map(|target| ledger.clone().plan(target, recipes.get(target).map_or(&[], Vec::as_slice))).collect()
+    targets.iter().map(|target| {
+        let recipe: &[RecipeComponent] = recipes.get(target).map_or(&[], Vec::as_slice);
+        if standalone { ledger.clone().plan(target, recipe) } else { ledger.plan(target, recipe) }
+    }).collect()
 }
 
 /// The inventory cache carries ranks but no rank caps, so a rank-40 weapon
@@ -350,7 +347,7 @@ pub(crate) async fn plan_crafts(app: tauri::AppHandle, unique_names: Vec<String>
         let state = app.state::<AppState>();
         let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
         let recipes = Arc::clone(&state.recipes.lock().unwrap_or_else(|e| e.into_inner()));
-        let mut plans = if standalone.unwrap_or(false) { plan_each(&inventory, &recipes, &unique_names) } else { plan_all(&inventory, &recipes, &unique_names) };
+        let mut plans = plan_targets(&inventory, &recipes, &unique_names, standalone.unwrap_or(false));
         let catalogue = catalogue_index(&state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()));
         let jobs = state.current_crafting.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let building = building_results(&jobs, &recipes);
@@ -361,8 +358,15 @@ pub(crate) async fn plan_crafts(app: tauri::AppHandle, unique_names: Vec<String>
     }).await.map_err(|e| e.to_string())
 }
 
-pub(crate) fn catalogue_index(items: &[WfcdItem]) -> HashMap<String, WfcdItem> {
-    items.iter().map(|i| (i.unique_name.clone(), i.clone())).collect()
+/// What a requirement line shows of its catalogue entry.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub(crate) struct Art {
+    pub(crate) image_name: Option<String>,
+    pub(crate) category: String,
+}
+
+pub(crate) fn catalogue_index(items: &[WfcdItem]) -> HashMap<String, Art> {
+    items.iter().map(|i| (i.unique_name.clone(), Art { image_name: i.image_name.clone(), category: i.category.clone() })).collect()
 }
 
 /// A Foundry job carries its blueprint path, while the plan lists the result.
@@ -685,18 +689,18 @@ mod tests {
             inventory.items.insert(path.into(), CachedItem { unique_name: path.into(), amount, category: category.into(), ..Default::default() });
         }
 
-        let [frost, akbolto] = <[CraftPlan; 2]>::try_from(plan_all(&inventory, &recipes, &[FROST.into(), AKBOLTO.into()])).expect("one plan per target");
+        let [frost, akbolto] = <[CraftPlan; 2]>::try_from(plan_targets(&inventory, &recipes, &[FROST.into(), AKBOLTO.into()], false)).expect("one plan per target");
         assert!(frost.craftable_now());
         assert!(!frost.requirements.iter().any(|r| r.unique_name == FERRITE));
         // The owned Bolto and Lato are equipment, so neither is an ingredient.
         assert_eq!(builds(&akbolto), [(BOLTO, 2)]);
         assert_eq!(short(&akbolto), [(BOLTO_BP, 1), (LATO, 2), (CELL, 5)]);
 
-        let [akbolto, frost] = <[CraftPlan; 2]>::try_from(plan_all(&inventory, &recipes, &[AKBOLTO.into(), FROST.into()])).expect("one plan per target");
+        let [akbolto, frost] = <[CraftPlan; 2]>::try_from(plan_targets(&inventory, &recipes, &[AKBOLTO.into(), FROST.into()], false)).expect("one plan per target");
         assert_eq!(short(&akbolto), [(BOLTO_BP, 1), (LATO, 2), (CELL, 4)]);
         assert_eq!(short(&frost), [(CELL, 1)]);
 
-        assert!(plan_all(&inventory, &recipes, &["/Lotus/Types/Unknown".into()])[0].requirements.is_empty());
+        assert!(plan_targets(&inventory, &recipes, &["/Lotus/Types/Unknown".into()], false)[0].requirements.is_empty());
     }
 
     #[test]
@@ -707,9 +711,9 @@ mod tests {
             inventory.items.insert(path.into(), CachedItem { unique_name: path.into(), amount, category: category.into(), ..Default::default() });
         }
         let targets = [FROST.to_string(), TARGET.to_string()];
-        let shared = plan_all(&inventory, &recipes, &targets);
+        let shared = plan_targets(&inventory, &recipes, &targets, false);
         assert_eq!(short(&shared[1]), [(CELL, 1)]);
-        let alone = plan_each(&inventory, &recipes, &targets);
+        let alone = plan_targets(&inventory, &recipes, &targets, true);
         assert!(alone.iter().all(CraftPlan::craftable_now));
     }
 
@@ -802,7 +806,7 @@ mod tests {
         let recipe = frost();
         let stock = stock_of(&[(FROST_BP, 1)]);
         let mut plan = ledger(&stock, &NO_EQUIPMENT).plan(FROST, &recipe);
-        let catalogue = [(CHASSIS.to_string(), WfcdItem { image_name: Some("chassis.png".into()), category: "Warframes".into(), ..Default::default() })].into();
+        let catalogue = [(CHASSIS.to_string(), Art { image_name: Some("chassis.png".into()), category: "Warframes".into() })].into();
         plan.decorate(&catalogue, |path| path == CELL);
         let facts = |path| { let l = line(&plan, path); (l.image_name.as_deref(), l.category.as_deref(), l.state) };
         assert_eq!(facts(CHASSIS), (Some("chassis.png"), Some("Warframes"), IngredientState::BlueprintMissing));

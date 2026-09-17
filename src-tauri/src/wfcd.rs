@@ -1408,7 +1408,7 @@ fn fetch_from_wfcd(
     // to read under the blueprint path too.
     fn alias_part_drops(components: &[RecipeComponent], drop_locations: &mut HashMap<String, Vec<DropLocation>>) {
         for part in components {
-            let Some(blueprint) = part.components.iter().find(|c| c.components.is_empty() && c.unique_name.ends_with("Blueprint")) else { continue };
+            let Some(blueprint) = part.components.iter().find(|c| crate::mastery_recipe::is_blueprint(c)) else { continue };
             if let Some(locations) = drop_locations.get(&part.unique_name).cloned() {
                 drop_locations.entry(blueprint.unique_name.clone()).or_insert(locations);
             }

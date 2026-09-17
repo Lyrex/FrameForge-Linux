@@ -33,7 +33,8 @@ export interface MasterySource {
   node?: NodeInfo;
   /** What the catalogue says about where the source comes from. An opportunity fills in the mechanical kinds once its plan is known. */
   route: RouteKind | null;
-  needed_for?: string[];
+  /** Unmastered sources this owned copy is an ingredient of. */
+  needed_for: string[];
 }
 
 /** Labels live in `constants/routes.ts`. */
@@ -359,19 +360,9 @@ export interface MasteryTotal {
   rank_upper: number;
 }
 
-/** Fractions for the Target MR rings, taken from the lower bound when the total is not exact. */
-export interface Rings {
-  /** Earned mastery over the target threshold, unclamped, so a target at or below the current rank reads above 1. */
-  earned: number;
-  /** Planned gains over the gap, clamped to 1, and 1 when there is no gap. */
-  planned: number;
-  /** Progress inside the current rank band, 0 when the total is only a lower bound. */
-  band: number;
-}
-
 export interface PlanEvaluation {
   entries: PlanEntry[];
-  /** Null until the Mastery Rank is observed, as are `gap`, `projected` and `rings`. */
+  /** Null until the Mastery Rank is observed, as are `gap` and `projected`. */
   total: MasteryTotal | null;
   total_reason: string | null;
   target_xp: number;
@@ -382,6 +373,5 @@ export interface PlanEvaluation {
   /** Pending entries whose gain is unknown and so outside `gains`. */
   unknown_gains: number;
   projected: MasteryTotal | null;
-  rings: Rings | null;
   rejected_allowances: string[];
 }

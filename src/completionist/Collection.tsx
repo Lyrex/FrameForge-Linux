@@ -1,10 +1,23 @@
 import { useState, useEffect, useMemo } from "react";
 import ItemImg from "../ItemImg";
+import { formatCount } from "../lib/formatters.ts";
 import SearchBar from "../shared/SearchBar";
 import { MASTERY_EXCLUDE_OPTIONS } from "../constants/settings";
 import { groupSources, systemRank } from "./masteryGroups";
-import { Progress } from "./Mastery";
-import type { MasteryOverview, MasterySource, MasteryState } from "../types/mastery";
+import { progressText } from "./topBar";
+import type { MasteryCounts, MasteryOverview, MasterySource, MasteryState } from "../types/mastery";
+
+export function Progress({ counts, label }: { counts: MasteryCounts; label: string }) {
+  const { text, title } = progressText(counts, label);
+  return (
+    <div className="mst-progress-wrap" title={title}>
+      <div className="mst-progress-bar">
+        <div className="mst-progress-fill" style={{ width: counts.total > 0 ? `${(counts.mastered / counts.total) * 100}%` : "0%" }} />
+      </div>
+      <span className="mst-progress-label">{text}</span>
+    </div>
+  );
+}
 
 type Bucket = MasteryState | "unobtainable";
 
@@ -29,14 +42,14 @@ function SourceRow({ source }: { source: MasterySource }) {
     <div className={`mst-item mst-${source.state}`} tabIndex={0}>
       <ItemImg imageName={source.image_name ?? undefined} fallback={<div className="img-fallback">{source.name[0]?.toUpperCase() ?? "?"}</div>} />
       <span className="mst-name">{source.name}</span>
-      {!!source.needed_for?.length && <span className="mst-mr">Needed for {source.needed_for.join(", ")}</span>}
+      {source.needed_for.length > 0 && <span className="mst-mr">Needed for {source.needed_for.join(", ")}</span>}
       {steelPath && <span className="mst-mr">Steel Path</span>}
       {classNoun && <span className="mst-mr" title={source.excluded ? "Not counted toward progress; see Settings › Mastery" : undefined}>{classNoun}</span>}
       {source.mastery_req != null && source.mastery_req > 0 && (
         <span className="mst-mr" title={`Mastery Rank ${source.mastery_req} required`}>MR{source.mastery_req}</span>
       )}
       {source.remaining_mastery != null && source.remaining_mastery > 0 && (
-        <span className="mst-mr" title="Remaining mastery">+{source.remaining_mastery.toLocaleString("en-US")}</span>
+        <span className="mst-mr" title="Remaining mastery">+{formatCount(source.remaining_mastery)}</span>
       )}
       <span className={`mst-rank rank-${source.state}`} title={source.state === "unknown" ? "No account observation yet" : undefined}>
         {source.state === "mastered" ? "✓" : rank}

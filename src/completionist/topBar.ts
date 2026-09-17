@@ -1,5 +1,5 @@
 import { formatAge } from "../lib/formatters.ts";
-import { fmtClock, type ClockFormat } from "../lib/clockFormat.ts";
+import { dayAndClock, type ClockFormat } from "../lib/clockFormat.ts";
 import type { MasteryCounts, MasteryProvenance, Provenance, ProvenanceState } from "../types/mastery";
 
 export const SOURCE_KINDS: { key: keyof MasteryProvenance; label: string }[] = [
@@ -13,8 +13,7 @@ const WORST: ProvenanceState[] = ["unknown", "unconfirmed", "confirmed"];
 
 function kindLine(label: string, { state, observed_at }: Provenance, clockFormat: ClockFormat): string {
   if (state === "confirmed" && observed_at != null) {
-    const day = new Date(observed_at * 1000).toLocaleDateString(navigator.language, { month: "short", day: "numeric" });
-    return `${label}: observed ${day}, ${fmtClock(observed_at, clockFormat)}`;
+    return `${label}: observed ${dayAndClock(observed_at * 1000, clockFormat)}`;
   }
   if (state === "unconfirmed") return `${label}: unconfirmed, carried over from a cache with no observation time`;
   return `${label}: no observation yet`;

@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { addable, addToPlan, candidates, moved, planView, prefill, rangeText, ringTitle, snapshotIntrinsicTargets, summaryText } from "./plan.ts";
+import { addable, addToPlan, candidates, moved, planView, prefill, rangeText, ringFractions, ringTitle, snapshotIntrinsicTargets, summaryText } from "./plan.ts";
 import { DEFAULT_CONTROLS } from "./suggestions.ts";
 import type { MasteryPlan, MasteryTotal, Opportunity, PlanEvaluation } from "../types/mastery.ts";
 
@@ -63,8 +63,7 @@ test("candidates follow the chosen view with the shared filters, and the addable
     assert.deepEqual(prefill(candidates(list, DEFAULT_CONTROLS, view, "no match"), 10_000), []);
   }
   const plan: MasteryPlan = { target: 5, view: "suggestions", selections: [priced.unique_name], allowances: {} };
-  assert.deepEqual(paths(addable(list, plan, "")), paths([list[0], relic, trade]));
-  assert.deepEqual(paths(addable(list, plan, "gorg")), [trade.unique_name]);
+  assert.deepEqual(paths(addable(list, plan)), paths([list[0], relic, trade]));
   assert.equal(planView("platinum"), "platinum");
   assert.equal(planView("bogus"), "suggestions");
 });
@@ -97,7 +96,7 @@ test("the summary distinguishes lower bounds from exact totals and the details s
   const total: MasteryTotal = { lower: 122_500, upper: 159_999, exact: null, rank: 7, rank_upper: 7 };
   const evaluation = (over: Partial<PlanEvaluation>): PlanEvaluation => ({
     entries: [], total, total_reason: "Intrinsics unconfirmed", target_xp: 160_000, gap: 37_500, gains: 9_000, unknown_gains: 0,
-    projected: { lower: 131_500, upper: 168_999, exact: null, rank: 7, rank_upper: 8 }, rings: { earned: 0.765625, planned: 0.24, band: 0 }, rejected_allowances: [], ...over,
+    projected: { lower: 131_500, upper: 168_999, exact: null, rank: 7, rank_upper: 8 }, rejected_allowances: [], ...over,
   });
   assert.equal(summaryText(evaluation({}), 8), "Total 122,500 (lower bound) · MR 8 needs 37,500 more · plan adds 9,000 · projected at least MR 7");
   assert.equal(rangeText(evaluation({})), "Total between 122,500 and 159,999 · projected between 131,500 and 168,999, MR 7 to 8 · target MR needs 160,000");
@@ -110,14 +109,30 @@ test("the summary distinguishes lower bounds from exact totals and the details s
   assert.equal(summaryText(evaluation({ total: null, gap: null, projected: null }), 8), "Mastery Rank unknown, so the gap and projection are too.");
 });
 
+test("the rings take the lower bound and clamp the plan at the gap", () => {
+  const total: MasteryTotal = { lower: 10_000, upper: 22_499, exact: null, rank: 2, rank_upper: 2 };
+  const evaluation = (over: Partial<PlanEvaluation>): PlanEvaluation => ({
+    entries: [], total, total_reason: null, target_xp: 40_000, gap: 30_000, gains: 15_000, unknown_gains: 0,
+    projected: null, rejected_allowances: [], ...over,
+  });
+  assert.deepEqual(ringFractions(evaluation({})), { earned: 0.25, planned: 0.5, band: 0 });
+  assert.deepEqual(ringFractions(evaluation({ gains: 30_000 })), { earned: 0.25, planned: 1, band: 0 });
+  assert.deepEqual(ringFractions(evaluation({ gains: 45_000 })), { earned: 0.25, planned: 1, band: 0 });
+  const exact = { ...total, exact: 20_000 };
+  assert.deepEqual(ringFractions(evaluation({ total: exact, gap: 20_000, gains: 5_000 })), { earned: 0.5, planned: 0.25, band: 0.8 });
+  // A target at or below the current rank is reached with nothing planned.
+  assert.deepEqual(ringFractions(evaluation({ total: exact, target_xp: 10_000, gap: 0, gains: 0 })), { earned: 2, planned: 1, band: 0.8 });
+  assert.equal(ringFractions(evaluation({ total: null, gap: null })), null);
+});
+
 test("the ring tooltip carries the four numbers and says when the band is unknown", () => {
   const total: MasteryTotal = { lower: 122_500, upper: 159_999, exact: null, rank: 7, rank_upper: 7 };
   const evaluation = (over: Partial<PlanEvaluation>): PlanEvaluation => ({
     entries: [], total, total_reason: "Intrinsics unconfirmed", target_xp: 160_000, gap: 37_500, gains: 9_000, unknown_gains: 0,
-    projected: { lower: 131_500, upper: 168_999, exact: null, rank: 7, rank_upper: 8 }, rings: { earned: 0.765625, planned: 0.24, band: 0 }, rejected_allowances: [], ...over,
+    projected: { lower: 131_500, upper: 168_999, exact: null, rank: 7, rank_upper: 8 }, rejected_allowances: [], ...over,
   });
   assert.equal(ringTitle(evaluation({}), 8), "Earned at least 122,500\nProjected at least 131,500\nMR 8 needs 160,000\nProgress into MR 7 unknown");
   const exact = evaluation({ total: { ...total, exact: 147_200 }, projected: { lower: 131_500, upper: 168_999, exact: 156_200, rank: 7, rank_upper: 8 } });
   assert.equal(ringTitle(exact, 8), "Earned 147,200\nProjected 156,200\nMR 8 needs 160,000\n24,700 of 37,500 into MR 7");
-  assert.equal(ringTitle(evaluation({ total: null, projected: null, rings: null }), 8), "Mastery Rank not observed yet");
+  assert.equal(ringTitle(evaluation({ total: null, projected: null }), 8), "Mastery Rank not observed yet");
 });

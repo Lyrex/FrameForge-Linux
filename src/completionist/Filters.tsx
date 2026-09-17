@@ -1,6 +1,6 @@
 import SearchBar from "../shared/SearchBar";
 import {
-  activePreset, AVAILABILITY_OPTIONS, COMPARISON_OPTIONS, DEFAULT_CONTROLS, PRESETS, PROGRESS_OPTIONS, SORT_OPTIONS,
+  activeFilters, activePreset, AVAILABILITY_OPTIONS, COMPARISON_OPTIONS, DEFAULT_CONTROLS, PRESETS, PROGRESS_OPTIONS, SORT_OPTIONS,
   type AvailabilityFilter, type Comparison, type MasteryControls, type ProgressFilter, type ResultView, type Sort,
 } from "./suggestions";
 import type { MasteryOverview } from "../types/mastery";
@@ -16,8 +16,7 @@ interface Props {
 }
 
 export default function Filters({ overview, controls, onChange, result, search, onSearch }: Props) {
-  const category = overview.categories.some(c => c.category === controls.category) ? controls.category : null;
-  const isFiltered = search !== "" || (!controls.easy && (category != null || controls.progress !== "all" || controls.availability !== "all"));
+  const { category, isFiltered } = activeFilters(overview, controls, search);
   const preset = activePreset(controls);
   return (
     <div className="mst-toolbar mst-filters">
