@@ -1403,6 +1403,20 @@ fn fetch_from_wfcd(
         }
     }
 
+    // WFCD records a part's drop table under the built part's path. A plan runs
+    // short of the part's blueprint, which is what drops, so the same table has
+    // to read under the blueprint path too.
+    fn alias_part_drops(components: &[RecipeComponent], drop_locations: &mut HashMap<String, Vec<DropLocation>>) {
+        for part in components {
+            let Some(blueprint) = part.components.iter().find(|c| c.components.is_empty() && c.unique_name.ends_with("Blueprint")) else { continue };
+            if let Some(locations) = drop_locations.get(&part.unique_name).cloned() {
+                drop_locations.entry(blueprint.unique_name.clone()).or_insert(locations);
+            }
+            alias_part_drops(&part.components, drop_locations);
+        }
+    }
+    for components in recipes.values() { alias_part_drops(components, &mut drop_locations); }
+
     // Name-based image lookup passed to fetch_relics_rewards for icon enrichment.
     let image_by_name: HashMap<String, String> = items.iter()
         .filter_map(|i| i.image_name.as_ref().map(|img| (i.name.to_lowercase(), img.clone())))
@@ -1626,7 +1640,7 @@ mod tests {
         const FERRITE: &str = "/Lotus/Types/Items/MiscItems/Ferrite";
         let frost = serde_json::json!({
             "name": "Frost", "uniqueName": "/Lotus/Powersuits/Frost/Frost", "category": "Warframes",
-            "components": [{ "name": "Chassis", "uniqueName": FROST_CHASSIS, "itemCount": 1 }],
+            "components": [{ "name": "Chassis", "uniqueName": FROST_CHASSIS, "itemCount": 1, "drops": [{ "location": "Lieutenant Lech Kril", "chance": 38.72 }] }],
         });
         let elytron = serde_json::json!({
             "name": "Elytron", "uniqueName": "/Lotus/Powersuits/Archwing/DemolitionJetPack/DemolitionJetPack", "category": "Archwing",
@@ -1653,6 +1667,8 @@ mod tests {
         assert_eq!(names("/Lotus/Powersuits/Archwing/DemolitionJetPack/DemolitionJetPack")[1], (ELYTRON_HARNESS_BP.to_string(), "Elytron Harness Blueprint".to_string()));
         let price = |name: &str| out.items.iter().find(|i| i.name == name).expect("listed").bp_cost;
         assert_eq!((price("Astilla"), price("Frost")), (Some(20_000), None));
+        let at = |unique: &str| out.drop_locations.get(unique).map(|v| v.iter().map(|d| d.location.as_str()).collect::<Vec<_>>());
+        assert_eq!((at(FROST_CHASSIS), at(FROST_CHASSIS_BP)), (Some(vec!["Lieutenant Lech Kril"]), Some(vec!["Lieutenant Lech Kril"])));
     }
 
     #[test]
