@@ -17,28 +17,56 @@ function BlueprintIcon() {
   );
 }
 
-export default function ItemImg({ imageName, category, size = 32 }: { imageName?: string; category: string; size?: number }) {
+interface Props {
+  imageName?: string;
+  category?: string;
+  size?: number;
+  className?: string;
+  fallbackClassName?: string;
+  fallbackText?: string;
+}
+
+export default function ItemImg({ imageName, category = "?", size = 32, className = "img", fallbackClassName = "img-fallback", fallbackText }: Props) {
   const baseUrl = useContext(ImgCacheDirContext);
   const [localFailed, setLocalFailed] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
   const ref = useRef<HTMLImageElement>(null);
-  const style = { width: size, height: size, flexShrink: 0 as const };
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const imageStyle = { width: size, height: size, flexShrink: 0 as const };
 
   useEffect(() => {
     if (ref.current?.complete) ref.current.classList.add("img-loaded");
   }, []);
 
+  useEffect(() => {
+    setLocalFailed(false);
+    setFailed(false);
+    setRetryCount(0);
+    return () => {
+      if (retryTimer.current) clearTimeout(retryTimer.current);
+    };
+  }, [imageName]);
+
   if (!imageName || failed) {
     if (category === "Blueprints") return <BlueprintIcon />;
-    return <span className="img-fallback" style={{ ...style, fontSize: size * 0.35 }}>{category[0].toUpperCase()}</span>;
+    return <span className={fallbackClassName} style={{ ...imageStyle, fontSize: size * 0.35 }}>{fallbackText ?? category[0].toUpperCase()}</span>;
   }
   if (imageName.startsWith("http") || imageName.startsWith("/")) {
-    return <img ref={ref} className="img" style={style} src={imageName} alt="" loading="lazy" onError={() => setFailed(true)} onLoad={() => ref.current?.classList.add("img-loaded")} />;
+    return <img ref={ref} className={className} style={imageStyle} src={imageName} alt="" loading="lazy" onError={() => setFailed(true)} onLoad={() => ref.current?.classList.add("img-loaded")} />;
   }
   const useLocal = Boolean(baseUrl) && !localFailed;
   const src = useLocal ? `${baseUrl}/${imageName}` : warframeStatImageUrl(imageName);
   return (
-    <img ref={ref} className="img" style={style} src={src} alt="" loading="lazy"
-      onError={() => useLocal ? setLocalFailed(true) : setFailed(true)} onLoad={() => ref.current?.classList.add("img-loaded")} />
+    <img key={`${imageName}:${useLocal ? "local" : "cdn"}:${retryCount}`} ref={ref} className={className} style={imageStyle} src={src} alt="" loading="lazy"
+      onError={() => {
+        if (useLocal) {
+          setLocalFailed(true);
+        } else if (retryCount < 2) {
+          retryTimer.current = setTimeout(() => setRetryCount(count => count + 1), 500 * (retryCount + 1));
+        } else {
+          setFailed(true);
+        }
+      }} onLoad={() => ref.current?.classList.add("img-loaded")} />
   );
 }

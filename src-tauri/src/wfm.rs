@@ -1008,7 +1008,7 @@ impl Wfm {
             .filter_map(|v| {
                 Some(WfmItem {
                     id: v["id"].as_str().unwrap_or("").to_string(),
-                    item_name: v["i18n"]["en"]["name"].as_str()?.to_string(),
+                    item_name: sanitize_display_name(v["i18n"]["en"]["name"].as_str()?),
                     url_name: v["slug"].as_str()?.to_string(),
                 })
             })
@@ -1117,11 +1117,11 @@ impl Wfm {
         items
             .iter()
             .filter_map(|item| {
-                let name = item["i18n"]["en"]["name"].as_str()?;
+                let name = sanitize_display_name(item["i18n"]["en"]["name"].as_str()?);
                 let url = item["slug"].as_str()?;
                 let lower = name.to_lowercase();
                 if lower.contains("prime") && lower.ends_with(" set") {
-                    Some((name.to_string(), url.to_string()))
+                    Some((name, url.to_string()))
                 } else {
                     None
                 }
@@ -1178,16 +1178,22 @@ impl Wfm {
     pub fn cached_top_items(&self, max_age: Duration) -> Option<Vec<WfmTopItem>> {
         let guard = self.top_cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((ts, ref items)) = *guard {
-            if ts.elapsed() < max_age {
+            if !items.is_empty() && ts.elapsed() < max_age {
                 return Some(items.clone());
             }
         }
         None
     }
 
+    pub fn top_items(&self) -> Option<Vec<WfmTopItem>> {
+        self.top_cache.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            .and_then(|(_, items)| (!items.is_empty()).then(|| items.clone()))
+    }
+
     pub fn set_top_items(&self, items: Vec<WfmTopItem>) {
         *self.top_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), items));
     }
+
 }
 
 // ==============================================================================
@@ -1202,6 +1208,16 @@ pub fn to_wfm_slug(name: &str) -> String {
         .map(|c| if c == ' ' { '_' } else { c })
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
         .collect()
+}
+
+/// Warframe uses Private Use Area glyphs for rank pips in some item names.
+/// Standard UI fonts render those glyphs as boxes, so omit them at the boundary.
+pub fn sanitize_display_name(name: &str) -> String {
+    name.chars()
+        .filter(|&c| !('\u{E000}'..='\u{F8FF}').contains(&c) && !c.is_control())
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// Extract the `<meta name="csrf-token" content="...">` value from page HTML.

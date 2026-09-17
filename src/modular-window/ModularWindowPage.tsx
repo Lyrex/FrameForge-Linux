@@ -150,6 +150,14 @@ export default function ModularWindowPage() {
     setSectionOrder(next);
     saveModularSettings({ modularSectionOrder: next });
   };
+  const handleTimerFavoritesChange = (next: string[]) => {
+    setTimerFavorites(next);
+    saveModularSettings({ timerFavorites: next });
+  };
+  const handleTimerUnfavorite = (id: string) => {
+    const next = timerFavorites.filter(favorite => favorite !== id);
+    handleTimerFavoritesChange(next);
+  };
 
   return (
     <div style={{ display: "flex", height: "100vh", background: "var(--surface)", overflow: "hidden" }}>
@@ -161,8 +169,8 @@ export default function ModularWindowPage() {
         onFavoritesChange={handleFavoritesChange}
         onUnfavorite={handleUnfavorite}
         timerFavorites={timerFavorites}
-        onTimerFavoritesChange={setTimerFavorites}
-        onTimerUnfavorite={id => setTimerFavorites(prev => prev.filter(x => x !== id))}
+        onTimerFavoritesChange={handleTimerFavoritesChange}
+        onTimerUnfavorite={handleTimerUnfavorite}
         fissureWatches={fissureWatches}
         inventory={inventory}
         catalog={catalog}

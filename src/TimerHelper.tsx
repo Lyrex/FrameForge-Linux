@@ -100,6 +100,7 @@ const MISSION_TYPES_BY_VARIANT: Record<FissureWatch["variant"], string[]> = {
 };
 
 interface Props {
+  active: boolean;
   favorites: string[];
   onFavoriteToggle: (id: string) => void;
   fissureWatches: FissureWatch[];
@@ -112,7 +113,7 @@ interface Props {
 
 type FissureTab = "normal" | "hard" | "storm";
 
-export default function TimerHelper({ favorites, onFavoriteToggle, fissureWatches, onAddWatch, onRemoveWatch, fissureNotifications, onFissureNotificationsChange, inventory }: Props) {
+export default function TimerHelper({ active, favorites, onFavoriteToggle, fissureWatches, onAddWatch, onRemoveWatch, fissureNotifications, onFissureNotificationsChange, inventory }: Props) {
   const { worldState: ws, error, refresh: fetchWS } = useWorldState();
   const [now, setNow] = useState(Date.now());
   const loading = !ws && !error;
@@ -135,7 +136,12 @@ export default function TimerHelper({ favorites, onFavoriteToggle, fissureWatche
     setWMission(m => MISSION_TYPES_BY_VARIANT[v].includes(m) ? m : "Any");
   }, []);
 
-  useEffect(() => { const iv = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(iv); }, []);
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [active]);
 
   // Watches loaded from settings never went through the add-watch button, so
   // without this nothing would ever ask the OS and every alert would silently

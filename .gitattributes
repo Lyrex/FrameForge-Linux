@@ -1,0 +1,4 @@
+# Enforce LF line endings everywhere (checkout + repo).
+# Prevents phantom "modified" files when a tool writes LF
+# while core.autocrlf expects CRLF in the worktree.
+* text=auto eol=lf

@@ -274,6 +274,24 @@ impl DiskStore {
         let _ = std::fs::create_dir_all(&dir);
         dir
     }
+
+    fn etags_path() -> std::path::PathBuf {
+        Self::dir().join("etags.json")
+    }
+
+    fn read_etags() -> Option<String> {
+        std::fs::read_to_string(Self::etags_path()).ok()
+    }
+
+    fn write_etags(etags: &str) {
+        if let Err(e) = cache::atomic_write(&Self::etags_path(), etags.as_bytes()) {
+            warn!("cannot store catalogue ETags: {e}");
+        }
+    }
+}
+
+pub fn clear_cached_etags() {
+    let _ = std::fs::remove_file(DiskStore::etags_path());
 }
 
 impl BodyStore for DiskStore {
@@ -430,14 +448,17 @@ fn probe_all(specs: &[SourceSpec], etags: &BTreeMap<String, String>, force: bool
 /// bodies regardless of it, and still uses it to tell an outage apart from a
 /// source that was never there.
 pub fn fetch_items(prev_etags: Option<&str>, force: bool) -> Result<Fetched<FetchResult>, String> {
-    // Only one build runs at a time. A second caller (e.g. the frontend calling
-    // fetch_item_list while the background refresh is already running) waits here
-    // and then finds the catalogue already fresh, so it returns NotModified quickly
-    // rather than spawning a redundant set of HTTP requests and racing on the same
-    // on-disk temp files.
+    // Keep ETag reads and writes inside the lock so a queued non-forced caller
+    // conditionally validates the catalogue produced by the preceding caller.
     static FETCH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = FETCH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    fetch_items_with(prev_etags, force, &|url, etag| cache::get_conditional(url, etag), &DiskStore)
+    let persisted_etags = DiskStore::read_etags();
+    let etags = prev_etags.or(persisted_etags.as_deref());
+    let fetched = fetch_items_with(etags, force, &|url, etag| cache::get_conditional(url, etag), &DiskStore)?;
+    if let Fetched::New(_, Some(etags)) = &fetched {
+        DiskStore::write_etags(etags);
+    }
+    Ok(fetched)
 }
 
 #[tracing::instrument(level = "info", skip_all, fields(force))]

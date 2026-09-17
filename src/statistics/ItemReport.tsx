@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useCatalog } from "../hooks/useCatalog";
 import type { CatalogItem } from "../types/items";
 import type { SnapshotPoint, TrackedItem } from "../types/inventory";
 import { PREFERENCE_KEYS } from "../constants/preferences";
-import { TAURI_COMMANDS } from "../constants/tauri";
 import "./ItemReport.css";
 
 type Timeframe = "7" | "30" | "90" | "all";
@@ -158,6 +158,7 @@ function TrackedItemCard({ item, allSnapshots, timeframe, onTimeframeChange, onR
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export default function ItemReport() {
+  const { catalog } = useCatalog();
   const [tracked, setTracked] = useState<TrackedItem[]>([]);
   const [snapshots, setSnapshots] = useState<Record<string, SnapshotPoint[]>>({});
   const [timeframes, setTimeframes] = useState<Record<string, Timeframe>>({});
@@ -228,9 +229,7 @@ export default function ItemReport() {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
-  const [catalog, setCatalog] = useState<CatalogItem[] | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [loadingCatalog, setLoadingCatalog] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -267,15 +266,7 @@ export default function ItemReport() {
 
   const openSearch = useCallback(async () => {
     setSearchOpen(true);
-    if (catalog !== null || loadingCatalog) return;
-    setLoadingCatalog(true);
-    try {
-      const items = await invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS);
-      setCatalog(items);
-    } finally {
-      setLoadingCatalog(false);
-    }
-  }, [catalog, loadingCatalog]);
+  }, []);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -356,12 +347,9 @@ export default function ItemReport() {
             onFocus={openSearch}
             onChange={e => { setSearchQuery(e.target.value); setSearchOpen(true); }}
           />
-          {searchOpen && (searchQuery.trim() !== "" || loadingCatalog) && (
+          {searchOpen && searchQuery.trim() !== "" && (
             <div className="ir-dropdown">
-              {loadingCatalog && (
-                <div className="ir-dropdown-empty">Loading catalog…</div>
-              )}
-              {!loadingCatalog && filteredCatalog.length === 0 && debouncedQuery.trim() && (
+              {filteredCatalog.length === 0 && debouncedQuery.trim() && (
                 <div className="ir-dropdown-empty">No results</div>
               )}
               {filteredCatalog.map(item => (

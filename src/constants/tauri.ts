@@ -14,6 +14,12 @@ export const TAURI_EVENTS = {
   TRADE_COMPLETED: "trade-completed",
 } as const;
 
+// Feature 3 — api.warframe.com/api/inventory.php
+// DE confirmed third-party tools are used "at your own risk" but could not clarify
+// whether accessing this undocumented endpoint specifically is permitted.
+// Set to false to re-enable once clearer guidance is received.
+export const COMPANION_API_SUSPENDED = true;
+
 export const TAURI_COMMANDS = {
   SAVE_SETTINGS: "save_settings",
   GET_CURRENT_QUANTITIES: "get_current_quantities",

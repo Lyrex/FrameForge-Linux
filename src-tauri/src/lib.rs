@@ -104,7 +104,7 @@ pub struct BlobBuildParams<'a> {
 use db::{QuantityChange, SnapshotPoint, TrackedItem, Trade};
 use resolver::ItemResolver;
 use wfcd::{RecipeComponent, SyndicateOffer, WfcdItem};
-use wfm::{to_wfm_slug, Wfm, WfmItem, WfmPrice, WfmRivenAttribute, WfmTopItem};
+use wfm::{sanitize_display_name, to_wfm_slug, Wfm, WfmItem, WfmPrice, WfmRivenAttribute, WfmTopItem};
 
 /// Bundled corrections file embedded at compile time. Never absent at runtime.
 const BUNDLED_CORRECTIONS: &str = include_str!("../resources/corrections.json");
@@ -848,13 +848,15 @@ fn get_item_list_status(state: State<AppState>) -> serde_json::Value {
 #[tauri::command]
 async fn fetch_item_list(state: State<'_, AppState>, force: Option<bool>) -> Result<usize, String> {
     let force = force.unwrap_or(false);
-    let result = tauri::async_runtime::spawn_blocking(move || wfcd::fetch_items(None, force))
+    let fetched = tauri::async_runtime::spawn_blocking(move || wfcd::fetch_items(None, force))
         .await
-        .map_err(|e| e.to_string())?
-        .and_then(|fetched| match fetched {
-            cache::Fetched::New(r, _) => Ok(r),
-            cache::Fetched::NotModified => Err("catalogue unchanged".to_string()),
-        })?;
+        .map_err(|e| e.to_string())??;
+    let result = match fetched {
+        cache::Fetched::New(result, _) => result,
+        cache::Fetched::NotModified => {
+            return Ok(state.wfcd_items.lock().map_err(|e| e.to_string())?.len());
+        }
+    };
 
     let count = result.items.len();
 
@@ -1824,11 +1826,106 @@ struct WfmTopDiskCache {
     items: Vec<WfmTopItem>,
 }
 
+#[derive(serde::Serialize, Clone)]
+struct WfmTopProgress {
+    completed: usize,
+    total: usize,
+    refreshing: bool,
+}
+
+fn start_wfm_top_scan(app: tauri::AppHandle) {
+    if WFM_SCAN_RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let previous = state.wfm.top_items();
+        let refreshing = previous.is_some();
+        let disk_cache_path = state.wfm_top_cache_path.clone();
+        let arcane_candidates: Vec<(String, String, Option<String>)> = match state.wfcd_items.lock() {
+            Ok(items) => items.iter()
+                .filter(|i| i.category == "Arcanes")
+                .map(|i| (sanitize_display_name(&i.name), to_wfm_slug(&i.name), i.image_name.clone()))
+                .collect(),
+            Err(e) => {
+                WFM_SCAN_RUNNING.store(false, Ordering::SeqCst);
+                warn!("WFM top-items scan could not read the catalog: {e}");
+                return;
+            }
+        };
+        let wfm = state.wfm.clone();
+        let progress_app = app.clone();
+        let scan_result = tokio::task::spawn_blocking(move || {
+            let prime_sets = wfm.prime_sets();
+            let total = prime_sets.len() + arcane_candidates.len();
+            let mut completed = 0;
+            let mut out: Vec<WfmTopItem> = Vec::new();
+            let report_progress = |completed| {
+                let _ = progress_app.emit("wfm-top-progress", WfmTopProgress { completed, total, refreshing });
+            };
+            report_progress(completed);
+
+            for (name, url_name) in &prime_sets {
+                if let Some((price, daily_vol)) = wfm.stats_7day(url_name) {
+                    out.push(WfmTopItem {
+                        name: name.clone(), url_name: url_name.clone(), image_name: None,
+                        unit_price: price, daily_volume: daily_vol,
+                        total_value_7d: (price as f64 * daily_vol * 7.0) as u64,
+                    });
+                }
+                completed += 1;
+                report_progress(completed);
+            }
+
+            for (name, slug, image_name) in &arcane_candidates {
+                if let Some((price, daily_vol)) = wfm.stats_7day(slug) {
+                    out.push(WfmTopItem {
+                        name: name.clone(), url_name: slug.clone(), image_name: image_name.clone(),
+                        unit_price: price, daily_volume: daily_vol,
+                        total_value_7d: (price as f64 * daily_vol * 7.0) as u64,
+                    });
+                }
+                completed += 1;
+                report_progress(completed);
+            }
+            out.sort_by_key(|b| std::cmp::Reverse(b.total_value_7d));
+            out.truncate(10);
+            out
+        }).await;
+
+        WFM_SCAN_RUNNING.store(false, Ordering::SeqCst);
+        let results = match scan_result {
+            Ok(results) => results,
+            Err(error) => {
+                warn!("WFM top-items scan failed to join: {error}");
+                return;
+            }
+        };
+        if results.is_empty() {
+            warn!("WFM top-items scan returned no market data");
+            return;
+        }
+
+        let changed = previous.as_ref().map_or(true, |old| {
+            old.iter().map(|i| &i.url_name).ne(results.iter().map(|i| &i.url_name))
+        });
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        if let Ok(json) = serde_json::to_string(&WfmTopDiskCache { saved_at: now_secs, items: results.clone() }) {
+            let _ = std::fs::write(&disk_cache_path, json);
+        }
+        state.wfm.set_top_items(results.clone());
+        info!(changed, "WFM top-items ranking refreshed");
+        let _ = app.emit("wfm-top-updated", results);
+    });
+}
+
 /// Return the top 10 most-traded items on warframe.market by 7-day total value.
 /// Queries Prime Sets and Arcanes from the local WFCD catalog (already loaded).
 /// Results are cached for 3 hours so repeated tab opens are instant.
 #[tauri::command]
-async fn get_wfm_top_items(state: State<'_, AppState>) -> Result<Vec<WfmTopItem>, String> {
+async fn get_wfm_top_items(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Vec<WfmTopItem>, String> {
     const TOP_TTL: std::time::Duration = std::time::Duration::from_secs(3 * 3600);
 
     // In-memory cache, fresh within the TTL — the client owns it.
@@ -1836,94 +1933,31 @@ async fn get_wfm_top_items(state: State<'_, AppState>) -> Result<Vec<WfmTopItem>
         return Ok(items);
     }
 
-    // Disk cache — survives app restarts.
+    // Load a disk result even when stale so it remains visible during refresh.
     let disk_cache_path = state.wfm_top_cache_path.clone();
     if let Ok(s) = std::fs::read_to_string(&disk_cache_path) {
         if let Ok(dc) = serde_json::from_str::<WfmTopDiskCache>(&s) {
-            let now_secs = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-            if now_secs.saturating_sub(dc.saved_at) < TOP_TTL.as_secs() && !dc.items.is_empty() {
+            if !dc.items.is_empty() {
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                let fresh = now_secs.saturating_sub(dc.saved_at) < TOP_TTL.as_secs();
                 state.wfm.set_top_items(dc.items.clone());
-                return Ok(dc.items);
+                if fresh { return Ok(dc.items); }
             }
         }
     }
 
-    // Only one scan at a time. If another is already running, wait for it to populate
-    // the cache rather than starting a second 90-second scan that would compete for the
-    // rate-limiter budget and double the total time.
-    if WFM_SCAN_RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        for _ in 0..120u32 {  // poll every 5 s, max 10 minutes
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            if let Some(items) = state.wfm.cached_top_items(TOP_TTL) {
-                return Ok(items);
-            }
-        }
-        return Err("WFM top items scan timed out".to_string());
+    if let Some(items) = state.wfm.top_items() {
+        start_wfm_top_scan(app);
+        return Ok(items);
     }
 
-    // Collect arcane candidates from WFCD without holding the lock across await points.
-    // Prime Sets come from WFM's own item list (fetched inside spawn_blocking below) so
-    // that we get canonical slugs — WFCD doesn't have set-level entries.
-    let arcane_candidates: Vec<(String, String, Option<String>)> = {
-        let items = state.wfcd_items.lock().map_err(|e| e.to_string())?;
-        items.iter()
-            .filter(|i| i.category == "Arcanes")
-            .map(|i| (i.name.clone(), to_wfm_slug(&i.name), i.image_name.clone()))
-            .collect()
-    };
-
-    // Run blocking ureq calls on the thread pool — keeps the async runtime free
-    let wfm = state.wfm.clone();
-    let scan_result = tokio::task::spawn_blocking(move || {
-        let prime_sets = wfm.prime_sets();
-        let mut out: Vec<WfmTopItem> = Vec::new();
-
-        for (name, url_name) in &prime_sets {
-            if let Some((price, daily_vol)) = wfm.stats_7day(url_name) {
-                out.push(WfmTopItem {
-                    name:           name.clone(),
-                    url_name:       url_name.clone(),
-                    image_name:     None,
-                    unit_price:     price,
-                    daily_volume:   daily_vol,
-                    total_value_7d: (price as f64 * daily_vol * 7.0) as u64,
-                });
-            }
-        }
-
-        for (name, slug, image_name) in &arcane_candidates {
-            if let Some((price, daily_vol)) = wfm.stats_7day(slug) {
-                out.push(WfmTopItem {
-                    name:           name.clone(),
-                    url_name:       slug.clone(),
-                    image_name:     image_name.clone(),
-                    unit_price:     price,
-                    daily_volume:   daily_vol,
-                    total_value_7d: (price as f64 * daily_vol * 7.0) as u64,
-                });
-            }
-        }
-
-        out.sort_by_key(|b| std::cmp::Reverse(b.total_value_7d));
-        out.truncate(10);
-        out
-    }).await;
-
-    // Release the scan slot before propagating any error
-    WFM_SCAN_RUNNING.store(false, Ordering::SeqCst);
-
-    let results = scan_result.map_err(|e| e.to_string())?;
-
-    // Write to disk so the results survive an app restart
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-    if let Ok(json) = serde_json::to_string(&WfmTopDiskCache { saved_at: now_secs, items: results.clone() }) {
-        let _ = std::fs::write(&disk_cache_path, json);
+    start_wfm_top_scan(app);
+    for _ in 0..150u32 {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if let Some(items) = state.wfm.cached_top_items(TOP_TTL) { return Ok(items); }
     }
-
-    state.wfm.set_top_items(results.clone());
-    Ok(results)
+    Err("WFM top items scan timed out".to_string())
 }
 
 /// Save the WFM access token to Windows Credential Manager (encrypted by the OS).
@@ -8451,12 +8485,14 @@ fn get_system_locale() -> String {
 /// name prepended. These overrides replace the bad names with the correct ones.
 fn sanitize_chat_item_name(s: &str) -> String {
     // Warframe's chat item links embed rank pips and other glyphs as Private Use Area
-    // codepoints (U+E000–U+F8FF). These render as boxes in any standard font.
-    s.chars()
+    // codepoints (U+E000–U+F8FF). Preserve their count as the item's visible rank.
+    let rank = s.chars().filter(|&c| ('\u{E000}'..='\u{F8FF}').contains(&c)).count();
+    let clean = s.chars()
         .filter(|&c| !('\u{E000}'..='\u{F8FF}').contains(&c) && !c.is_control())
         .collect::<String>()
         .trim()
-        .to_string()
+        .to_string();
+    if rank > 0 { format!("{clean} (R{rank})") } else { clean }
 }
 
 fn patch_item_name(unique_name: &str, name: &str) -> String {
@@ -9104,11 +9140,12 @@ pub fn refresh_riven_db_task(_app: &tauri::AppHandle, _force: bool) -> Result<()
     Ok(())
 }
 
-pub fn refresh_wfm_top(app: &tauri::AppHandle, _force: bool) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    // Clear in-memory top cache so next UI request triggers a fresh scan.
-    state.wfm.set_top_items(Vec::new());
-    let _ = std::fs::remove_file(&state.wfm_top_cache_path);
+pub fn refresh_wfm_top(app: &tauri::AppHandle, force: bool) -> Result<(), String> {
+    const TOP_TTL: std::time::Duration = std::time::Duration::from_secs(3 * 3600);
+    if !force && app.state::<AppState>().wfm.cached_top_items(TOP_TTL).is_some() {
+        return Ok(());
+    }
+    start_wfm_top_scan(app.clone());
     Ok(())
 }
 
@@ -9737,6 +9774,7 @@ pub fn run() {
             ] {
                 let _ = std::fs::remove_file(path);
             }
+            wfcd::clear_cached_etags();
             let _ = merge_settings(&settings_path, |map| {
                 map.insert("lastVersion".to_string(), serde_json::Value::String(CURRENT_VERSION.to_string()));
             });
@@ -10447,4 +10485,3 @@ MR 11
         );
     }
 }
-

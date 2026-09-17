@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { checkRivenNow } from "../App";
+import { checkRivenNow } from "../lib/rivenWindow";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import type { RivenAnalysis, RivenStat, SavedRiven } from "../types/rivens";
 import type { AnalyzeRivenArgs, SaveRivenRollArgs } from "../types/tauri";

@@ -29,10 +29,11 @@ function fetchOnce(): Promise<void> {
   return inFlight;
 }
 
-export function useWorldState(): Snapshot & { refresh: () => void } {
+export function useWorldState(enabled = true): Snapshot & { refresh: () => void } {
   const [snapshot, setSnapshot] = useState(current);
 
   useEffect(() => {
+    if (!enabled) return;
     subscribers.add(setSnapshot);
     if (subscribers.size === 1) {
       fetchOnce();
@@ -47,7 +48,7 @@ export function useWorldState(): Snapshot & { refresh: () => void } {
         timer = null;
       }
     };
-  }, []);
+  }, [enabled]);
 
   return { ...snapshot, refresh: fetchOnce };
 }

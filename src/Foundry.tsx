@@ -1,12 +1,13 @@
-import { useState, useEffect, useMemo, useCallback, memo, startTransition, useRef, useContext, type Dispatch, type SetStateAction } from "react";
+import { useState, useEffect, useMemo, useCallback, memo, startTransition, useRef, type Dispatch, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ImgCacheDirContext } from "./ImgCacheDir";
+import ItemImg from "./ItemImg";
 import { HelpTip } from "./shared/HelpTip";
 import FilterPresets from "./shared/FilterPresets";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import { matchesSearchTerms, splitSearchTerms } from "./lib/search";
-import { WARFRAME_WIKI_BASE, warframeStatImageUrl } from "./constants/urls";
+import { WARFRAME_WIKI_BASE } from "./constants/urls";
 import { TAURI_COMMANDS } from "./constants/tauri";
+import { useCatalog } from "./hooks/useCatalog";
 import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeComponentStatus, RecipeMap, RelicDropMap } from "./types/items";
 import type { FoundryFilters } from "./types/filters";
 import type { FilterPresetModule, FilterPresetSettings } from "./types/filterPresets";
@@ -182,33 +183,6 @@ const RELIC_SUFFIXES = ["Bronze", "Silver", "Gold", "Platinum"];
 function ownsRelicVariant(relicUnique: string, inventory: Record<string, InventoryItem>): boolean {
   const base = relicUnique.replace(/(Bronze|Silver|Gold|Platinum)$/, "");
   return RELIC_SUFFIXES.some(s => (inventory[`${base}${s}`]?.quantity ?? 0) > 0);
-}
-
-// ─── Item image ───────────────────────────────────────────────────────────────
-
-function ItemImg({ imageName, category, size = 40 }: { imageName?: string; category: string; size?: number }) {
-  const baseUrl = useContext(ImgCacheDirContext);
-  const [localFailed, setLocalFailed] = useState(false);
-  const [cdnFailed,   setCdnFailed]   = useState(false);
-  const ref = useRef<HTMLImageElement>(null);
-  const style = { width: size, height: size, flexShrink: 0 };
-
-  useEffect(() => {
-    if (ref.current?.complete) ref.current.classList.add("img-loaded");
-  }, []);
-
-  if (!imageName || cdnFailed)
-    return <span className="img-fallback" style={{ ...style, fontSize: size * 0.35 }}>{category[0].toUpperCase()}</span>;
-  const useLocal = Boolean(baseUrl) && !localFailed;
-  const src = useLocal
-    ? `${baseUrl}/${imageName}`
-    : warframeStatImageUrl(imageName);
-  return (
-    <img ref={ref} className="img" style={style} src={src}
-      alt="" loading="lazy"
-      onError={() => useLocal ? setLocalFailed(true) : setCdnFailed(true)}
-      onLoad={() => ref.current?.classList.add("img-loaded")} />
-  );
 }
 
 // ─── Comp row (used inside modal tree) ───────────────────────────────────────
@@ -564,10 +538,9 @@ const CRAFT_CATEGORIES = [
 ];
 
 export default function Foundry({ inventory, refreshKey, crafting, subsummedWarframes = new Set(), tracked, onTrackToggle, pageSize = 30, filters, onFiltersChange, filterPresets, onFilterPresetsChange, onOpenSettings }: Props) {
+  const { catalog, relicDropMap } = useCatalog();
   const [craftable, setCraftable] = useState<CatalogItem[]>([]);
   const [recipes, setRecipes]     = useState<Map<string, RecipeComponent[]>>(new Map());
-  const [relicDrops, setRelicDrops] = useState<RelicDropMap>({});
-  const [relicNames, setRelicNames] = useState<Record<string, string>>({});
   const [modalItem, setModalItem] = useState<CatalogItem | null>(null);
   const [inputSearch, setInputSearch] = useState(filters.search);
   const [page, setPage] = useState(0);
@@ -600,15 +573,19 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
   const set = <K extends keyof FoundryFilters>(k: K, v: FoundryFilters[K]) => onFiltersChange({ ...filters, [k]: v });
 
   useEffect(() => {
-    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_CRAFTABLE_ITEMS).then(setCraftable).catch(() => setCraftable([]));
-    invoke<RelicDropMap>("get_relic_drops").then(setRelicDrops).catch(() => {});
-    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS)
-      .then(items => {
-        const map: Record<string, string> = {};
-        for (const i of items) if (i.category === "Relics") map[i.unique_name] = i.name;
-        setRelicNames(map);
-      }).catch(() => {});
+    let cancelled = false;
+    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_CRAFTABLE_ITEMS)
+      .then(items => { if (!cancelled) setCraftable(items); })
+      .catch(() => { if (!cancelled) setCraftable([]); });
+    return () => { cancelled = true; };
   }, [refreshKey]);
+
+  const relicDrops = useMemo(() => relicDropMap, [relicDropMap]);
+  const relicNames = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const i of catalog) if (i.category === "Relics") map[i.unique_name] = i.name;
+    return map;
+  }, [catalog]);
 
   const visible = useMemo(() => {
     const searchTerms = splitSearchTerms(search);
@@ -660,9 +637,10 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
   const pageCount = Math.ceil(visible.length / PAGE_SIZE);
   const pagedItems = useMemo(() => visible.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE), [visible, page, PAGE_SIZE]);
 
-  // Load recipes for visible items — one bulk IPC call instead of N concurrent calls
+  // Only fetch recipes for cards on the current page; the previous full-catalog
+  // request retained every recipe while this page was hidden.
   useEffect(() => {
-    const toLoad = visible.filter(i => !recipes.has(i.unique_name));
+    const toLoad = pagedItems.filter(i => !recipes.has(i.unique_name));
     if (toLoad.length === 0) return;
     let cancelled = false;
     invoke<RecipeMap>(TAURI_COMMANDS.GET_RECIPES_BULK, {
@@ -680,7 +658,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
       });
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [visible]);
+  }, [pagedItems, recipes]);
 
   // Load recipe for modal item
   useEffect(() => {
