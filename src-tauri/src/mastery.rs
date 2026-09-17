@@ -7,13 +7,14 @@ use crate::catalogue::fix_category;
 use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache, CREDITS_PATH};
 use crate::mastery_nodes;
 use crate::mastery_progress::{MasteryPlan, PlayerProgress, Provenance, ProvenanceState};
+use crate::memory_scanner::BlobAffiliation;
 use crate::mastery_recipe::{blueprint_results, forma_ingredient, is_blueprint, purchasable, CraftPlan, Ledger};
 use crate::mastery_relics::{Relics, RelicRoute};
 use crate::mastery_rules::{self, Unobtainable};
 use crate::monitor::CraftingJob;
 use crate::resolver::slug_variants;
 use crate::settings::read_settings_map;
-use crate::syndicates::research_lab;
+use crate::syndicates::{self, research_lab};
 use crate::wfcd::{DropLocation, RecipeComponent, SyndicateOffer, WfcdItem};
 use crate::wfm::{to_wfm_slug, PriceQuote};
 
@@ -111,6 +112,7 @@ pub(crate) struct MasteryProvenance {
     pub(crate) intrinsics: Provenance,
     /// Junctions read from the same `Missions` field, so they share this kind.
     pub(crate) nodes: Provenance,
+    pub(crate) standing: Provenance,
 }
 
 /// Unsourced holds the rows with remaining mastery and no route at all.
@@ -188,6 +190,8 @@ pub(crate) enum Blocker {
     CreditCostUnknown,
     CreditsUnknown,
     StandingUnknown,
+    StandingRankBelow { required: u32, syndicate: String },
+    StandingShort { short: u32 },
     DropSourcesUnknown,
     MissingGate { path: String, name: String },
     JunctionTasksUnknown,
@@ -199,6 +203,8 @@ pub(crate) struct VendorOffer {
     pub(crate) syndicate: String,
     pub(crate) tier: String,
     pub(crate) blueprint: bool,
+    pub(crate) rank: Option<u32>,
+    pub(crate) standing: Option<u32>,
 }
 
 #[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
@@ -349,6 +355,8 @@ pub(crate) struct Observed<'a> {
     pub(crate) offers: &'a HashMap<String, Vec<SyndicateOffer>>,
     /// The record's `PlayerSkills`, or `None` while Intrinsics are Unknown.
     pub(crate) skills: Option<&'a HashMap<String, i64>>,
+    /// Holds the record's `Affiliations` and is `None` while Standing is Unknown.
+    pub(crate) affiliations: Option<&'a HashMap<String, BlobAffiliation>>,
     pub(crate) relics: &'a Relics,
     /// Holds every non-relic drop location by item or component `unique_name`.
     pub(crate) drops: &'a HashMap<String, Vec<DropLocation>>,
@@ -404,17 +412,18 @@ pub(crate) fn save_mastery_plan(state: tauri::State<'_, AppState>, plan: Mastery
 fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Observed>) -> R) -> R {
     let player = state.local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let excluded = excluded_classes(&state.settings_path);
-    let (mut overview, skills, relic_names, tradeable, owner) = {
+    let (mut overview, skills, affiliations, relic_names, tradeable, owner) = {
         let progress = state.mastery_progress.lock().unwrap_or_else(|e| e.into_inner());
         let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
         let owner = progress.owner(player.as_deref());
         let record = progress.current(player.as_deref());
         let skills = record.filter(|r| r.intrinsics.state != ProvenanceState::Unknown).map(|r| r.skills.clone());
+        let affiliations = record.filter(|r| r.standing.state != ProvenanceState::Unknown).map(|r| r.affiliations.clone());
         let relic_names: HashMap<String, String> = items.iter()
             .filter(|i| i.category == "Relics")
             .map(|i| (i.unique_name.clone(), i.name.clone()))
             .collect();
-        (build_mastery_overview(&items, &state.corrections, record, &excluded), skills, relic_names, market_items(&items), owner)
+        (build_mastery_overview(&items, &state.corrections, record, &excluded), skills, affiliations, relic_names, market_items(&items), owner)
     };
     let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
     if inventory.items.is_empty() || !owner.trusts_inventory(inventory.stamped, inventory.player.as_deref()) { return f(overview, None); }
@@ -441,6 +450,7 @@ fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Ob
         recipes: &recipes,
         offers: &offers,
         skills: skills.as_ref(),
+        affiliations: affiliations.as_ref(),
         relics: &relics,
         drops: &drops,
         tradeable: &tradeable,
@@ -535,7 +545,8 @@ fn vendor_index(offers: &HashMap<String, Vec<SyndicateOffer>>) -> HashMap<&str, 
                     None => (o.unique_name.as_str(), false),
                 },
             };
-            index.entry(source).or_default().push(VendorOffer { syndicate: syndicate.clone(), tier: o.tier.clone(), blueprint });
+            let rank = syndicates::syndicate(syndicate).and_then(|s| s.rank_of(&o.tier));
+            index.entry(source).or_default().push(VendorOffer { syndicate: syndicate.clone(), tier: o.tier.clone(), blueprint, rank, standing: o.standing });
         }
     }
     for vendors in index.values_mut() {
@@ -1148,8 +1159,17 @@ fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<Blocker>) {
                     else if plan.credits.is_none() { note(Access::Unknown, Blocker::CreditCostUnknown); }
                     else if !observed.stock.contains_key(CREDITS_PATH) { note(Access::Unknown, Blocker::CreditsUnknown); }
                 }
-                // TODO: read standing from the scan. Until then every Buy stays Unknown.
-                Action::Buy => note(Access::Unknown, Blocker::StandingUnknown),
+                Action::Buy => match observed.affiliations {
+                    None => note(Access::Unknown, Blocker::StandingUnknown),
+                    Some(affiliations) => {
+                        // One open vendor makes the row available. When none
+                        // is, every vendor's own reason is listed.
+                        let blocked: Vec<Option<(Access, Blocker)>> = o.vendors.iter().map(|v| vendor_blocker(v, affiliations)).collect();
+                        if blocked.iter().all(Option::is_some) {
+                            for (access, blocker) in blocked.into_iter().flatten() { note(access, blocker); }
+                        }
+                    }
+                },
                 Action::Trade | Action::Acquire => {}
                 _ => {
                     let plan = o.craft.as_ref().expect("a farm row carries its plan");
@@ -1169,6 +1189,21 @@ fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<Blocker>) {
         }
     }
     (access, blockers)
+}
+
+/// What keeps the player from buying at this vendor, or `None` when nothing
+/// does. A syndicate absent from a Confirmed record was never joined, so it
+/// reads as zero standing at rank 0. A syndicate the table does not list has
+/// no tag to look up, so its standing is unknown; a tier the table cannot
+/// place is only checked for cost.
+fn vendor_blocker(vendor: &VendorOffer, affiliations: &HashMap<String, BlobAffiliation>) -> Option<(Access, Blocker)> {
+    let Some(syndicate) = syndicates::syndicate(&vendor.syndicate) else { return Some((Access::Unknown, Blocker::StandingUnknown)) };
+    let held = affiliations.get(syndicate.tag).copied().unwrap_or(BlobAffiliation { standing: 0, title: 0 });
+    if let Some(required) = vendor.rank.filter(|&rank| i64::from(held.title) < i64::from(rank)) {
+        return Some((Access::Blocked, Blocker::StandingRankBelow { required, syndicate: vendor.syndicate.clone() }));
+    }
+    let short = i64::from(vendor.standing?) - held.standing;
+    (short > 0).then_some((Access::Blocked, Blocker::StandingShort { short: short as u32 }))
 }
 
 /// The `masteryExclude` map in settings.json, one boolean per class; only an
@@ -1192,6 +1227,7 @@ pub(crate) fn build_mastery_overview(
     let aliases = inventory_path_aliases();
     let equipment = progress.map(|p| p.equipment).unwrap_or_default();
     let intrinsics = progress.map(|p| p.intrinsics).unwrap_or_default();
+    let standing = progress.map(|p| p.standing).unwrap_or_default();
     // XPInfo credits some aliases directly; the overview lists canonical entries only.
     let mut affinity: HashMap<&str, i64> = HashMap::new();
     for (path, &earned) in progress.iter().flat_map(|p| &p.affinity) {
@@ -1321,7 +1357,7 @@ pub(crate) fn build_mastery_overview(
         }
     }
     categories.retain(|c| !c.sources.is_empty());
-    let provenance = MasteryProvenance { equipment, intrinsics, nodes };
+    let provenance = MasteryProvenance { equipment, intrinsics, nodes, standing };
     MasteryOverview { counts, categories, provenance, mastery_rank: None, opportunities: vec![] }
 }
 
@@ -1354,7 +1390,7 @@ mod tests {
     use super::*;
     use std::sync::LazyLock;
     use crate::mastery_progress::{PlayerProgress, Provenance, ProvenanceState};
-    use crate::memory_scanner::BlobMission;
+    use crate::memory_scanner::{BlobAffiliation, BlobMission};
     use crate::mastery_recipe::{Requirement, FORMA};
     use crate::wfcd::{RecipeComponent, SyndicateOffer};
 
@@ -1724,7 +1760,7 @@ mod tests {
     static NO_DROPS: LazyLock<HashMap<String, Vec<DropLocation>>> = LazyLock::new(HashMap::new);
 
     fn observed_gear<'a>(owned: &'a HashMap<String, i64>, owned_levels: &'a HashMap<String, Vec<u32>>, crafting: &'a [CraftingJob], recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, mastery_rank: Option<u32>) -> Observed<'a> {
-        Observed { owned, stock: &NO_STOCK, owned_levels, owned_forma: &NO_FORMA, mastery_rank, crafting, recipes, offers, skills: None, relics: &NO_RELICS, drops: &NO_DROPS, tradeable: &NO_MARKET, quotes: &NO_QUOTES, now_ms: 1_000_000 }
+        Observed { owned, stock: &NO_STOCK, owned_levels, owned_forma: &NO_FORMA, mastery_rank, crafting, recipes, offers, skills: None, affiliations: None, relics: &NO_RELICS, drops: &NO_DROPS, tradeable: &NO_MARKET, quotes: &NO_QUOTES, now_ms: 1_000_000 }
     }
 
     fn observed_skills<'a>(progress: &'a PlayerProgress, recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, owned: &'a HashMap<String, i64>, levels: &'a HashMap<String, Vec<u32>>) -> Observed<'a> {
@@ -1753,7 +1789,7 @@ mod tests {
     fn offer(unique_name: &str, tier: &str, result_unique: Option<&str>) -> SyndicateOffer {
         SyndicateOffer {
             unique_name: unique_name.into(), name: String::new(), category: String::new(), image_name: None,
-            tier: tier.into(), ducats: None, result_unique: result_unique.map(Into::into),
+            tier: tier.into(), ducats: None, standing: None, result_unique: result_unique.map(Into::into),
         }
     }
 
@@ -1884,11 +1920,11 @@ mod tests {
         assert!(overview.opportunities[2].blockers.is_empty());
         let sweeper = &overview.opportunities[5];
         assert_eq!(sweeper.vendors, [
-            VendorOffer { syndicate: "Cephalon Simaris".into(), tier: "Neutral".into(), blueprint: true },
-            VendorOffer { syndicate: "Steel Meridian".into(), tier: "General".into(), blueprint: false },
+            VendorOffer { syndicate: "Cephalon Simaris".into(), tier: "Neutral".into(), blueprint: true, rank: Some(0), standing: None },
+            VendorOffer { syndicate: "Steel Meridian".into(), tier: "General".into(), blueprint: false, rank: Some(5), standing: None },
         ]);
         assert_eq!(sweeper.blockers, [Blocker::StandingUnknown]);
-        assert_eq!(overview.opportunities[4].vendors, [VendorOffer { syndicate: "Solaris United".into(), tier: "(Rude Zuud), Neutral".into(), blueprint: true }]);
+        assert_eq!(overview.opportunities[4].vendors, [VendorOffer { syndicate: "Solaris United".into(), tier: "(Rude Zuud), Neutral".into(), blueprint: true, rank: Some(0), standing: None }]);
     }
 
     #[test]
@@ -1907,6 +1943,44 @@ mod tests {
             &observed_gear(&owned, &levels, &[], &recipes, &offers, None));
         assert_eq!(summary(sourced(&unranked.opportunities)), [("Kuva Karak", Action::Acquire, Some(4_000), Access::Unknown), ("Sweeper", Action::Buy, Some(3_000), Access::Unknown)]);
         assert_eq!(unranked.opportunities[1].blockers, [Blocker::MasteryRankUnknown, Blocker::StandingUnknown]);
+    }
+
+    #[test]
+    fn a_buy_row_reads_its_access_from_parsed_standing() {
+        let (owned, levels, recipes) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let offers: HashMap<String, Vec<SyndicateOffer>> = [
+            ("Steel Meridian".to_string(), vec![SyndicateOffer { standing: Some(20_000), ..offer(SWEEPER, "Protector", None) }]),
+            ("Cephalon Simaris".to_string(), vec![SyndicateOffer { standing: Some(50_000), ..offer("/Lotus/Types/Recipes/Weapons/SweeperBlueprint", "", Some(SWEEPER)) }]),
+        ].into();
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
+        let sweeper = |affiliations: Option<&HashMap<String, BlobAffiliation>>| {
+            let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
+                &Observed { affiliations, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) });
+            let row = overview.opportunities.into_iter().find(|o| o.source.name == "Sweeper").expect("Sweeper is a Buy row");
+            (row.action, row.access, row.blockers)
+        };
+        assert_eq!(sweeper(None), (Action::Buy, Access::Unknown, vec![Blocker::StandingUnknown]));
+
+        let standing = |meridian: (i64, i32), simaris: i64| -> HashMap<String, BlobAffiliation> {
+            [("SteelMeridianSyndicate".to_string(), BlobAffiliation { standing: meridian.0, title: meridian.1 }),
+             ("LibrarySyndicate".to_string(), BlobAffiliation { standing: simaris, title: 0 })].into()
+        };
+        assert_eq!(sweeper(Some(&standing((20_000, 4), 0))), (Action::Buy, Access::Available, vec![]), "one vendor available is enough");
+        assert_eq!(sweeper(Some(&standing((25_000, 3), 46_000))), (Action::Buy, Access::Blocked, vec![
+            Blocker::StandingShort { short: 4_000 },
+            Blocker::StandingRankBelow { required: 4, syndicate: "Steel Meridian".into() },
+        ]));
+        assert_eq!(sweeper(Some(&standing((-71_000, -2), 50_000))), (Action::Buy, Access::Available, vec![]), "a rankless vendor only needs the standing");
+        assert_eq!(sweeper(Some(&HashMap::new())), (Action::Buy, Access::Blocked, vec![
+            Blocker::StandingShort { short: 50_000 },
+            Blocker::StandingRankBelow { required: 4, syndicate: "Steel Meridian".into() },
+        ]), "a syndicate absent from a confirmed record has nothing");
+
+        let unlisted: HashMap<String, Vec<SyndicateOffer>> = [("Nightwave Cred Offerings".to_string(), vec![offer(SWEEPER, "", None)])].into();
+        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
+            &Observed { affiliations: Some(&HashMap::new()), ..observed_gear(&owned, &levels, &[], &recipes, &unlisted, Some(30)) });
+        let row = overview.opportunities.iter().find(|o| o.source.name == "Sweeper").expect("Sweeper is a Buy row");
+        assert_eq!((row.access, row.blockers.clone()), (Access::Unknown, vec![Blocker::StandingUnknown]), "a vendor with no known tag has no standing to read");
     }
 
     #[test]

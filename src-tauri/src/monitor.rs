@@ -413,11 +413,14 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                 if blob.missions.is_none() {
                     warn!("Missions is not an array; inventory applied, node progress left as it was");
                 }
+                if blob.affiliations.is_none() {
+                    warn!("Affiliations is not an array; inventory applied, standing left as it was");
+                }
                 if capture_player != player {
                     warn!(captured_as = ?capture_player, drained_as = ?player, "player changed while blob was queued; inventory applied, mastery progress left as it was");
                     mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).discard_blob();
                 } else if mastery_progress.lock().unwrap_or_else(|e| e.into_inner())
-                    .apply_blob(player.as_deref(), blob.mastery_xp.as_ref(), blob.player_skills.as_ref(), blob.missions.as_ref(), now)
+                    .apply_blob(player.as_deref(), blob.mastery_xp.as_ref(), blob.player_skills.as_ref(), blob.missions.as_ref(), blob.affiliations.as_ref(), now)
                 {
                     let _ = app.emit("mastery-update", ());
                 }

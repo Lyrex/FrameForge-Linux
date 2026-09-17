@@ -6,6 +6,7 @@ export const SOURCE_KINDS: { key: keyof MasteryProvenance; label: string }[] = [
   { key: "equipment",  label: "Equipment" },
   { key: "intrinsics", label: "Intrinsics" },
   { key: "nodes",      label: "Nodes" },
+  { key: "standing",   label: "Standing" },
 ];
 
 const WORST: ProvenanceState[] = ["unknown", "unconfirmed", "confirmed"];

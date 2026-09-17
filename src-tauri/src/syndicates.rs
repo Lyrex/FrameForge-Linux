@@ -207,6 +207,55 @@ pub(crate) fn research_lab(name: &str) -> Option<&'static str> {
     LABS.iter().find(|(_, names)| names.iter().any(|n| n.eq_ignore_ascii_case(name))).map(|(lab, _)| *lab)
 }
 
+/// One vendor syndicate as the drop data names it, with the tag the
+/// account blob's `Affiliations` uses and its rank titles from rank 1 up.
+/// Rank 0 is "Neutral" everywhere; Kahl's Garrison starts at rank 1 and
+/// Cephalon Simaris has no ranks at all.
+pub(crate) struct Syndicate {
+    pub(crate) name: &'static str,
+    pub(crate) tag: &'static str,
+    ranks: &'static [&'static str],
+}
+
+const SYNDICATES: &[Syndicate] = &[
+    Syndicate { name: "Steel Meridian", tag: "SteelMeridianSyndicate", ranks: &["Brave", "Valiant", "Defender", "Protector", "General"] },
+    Syndicate { name: "Arbiters of Hexis", tag: "ArbitersSyndicate", ranks: &["Principled", "Authentic", "Lawful", "Crusader", "Maxim"] },
+    Syndicate { name: "Cephalon Suda", tag: "CephalonSudaSyndicate", ranks: &["Competent", "Intriguing", "Intelligent", "Wise", "Genius"] },
+    Syndicate { name: "The Perrin Sequence", tag: "PerrinSyndicate", ranks: &["Associate", "Senior Associate", "Executive", "Senior Executive", "Partner"] },
+    Syndicate { name: "Red Veil", tag: "RedVeilSyndicate", ranks: &["Respected", "Honored", "Esteemed", "Revered", "Exalted"] },
+    Syndicate { name: "New Loka", tag: "NewLokaSyndicate", ranks: &["Humane", "Bountiful", "Benevolent", "Pure", "Flawless"] },
+    Syndicate { name: "Conclave", tag: "ConclaveSyndicate", ranks: &["Mistral", "Whirlwind", "Tempest", "Hurricane", "Typhoon"] },
+    Syndicate { name: "Cephalon Simaris", tag: "LibrarySyndicate", ranks: &[] },
+    Syndicate { name: "Operational Supply", tag: "EventSyndicate", ranks: &["Collaborator", "Defender", "Champion"] },
+    Syndicate { name: "Ostron", tag: "CetusSyndicate", ranks: &["Offworlder", "Visitor", "Trusted", "Surah", "Kin"] },
+    Syndicate { name: "The Quills", tag: "QuillsSyndicate", ranks: &["Mote", "Observer", "Adherent", "Instrument", "Architect"] },
+    Syndicate { name: "Solaris United", tag: "SolarisSyndicate", ranks: &["Outworlder", "Rapscallion", "Doer", "Cove", "Old Mate"] },
+    Syndicate { name: "Vox Solaris", tag: "VoxSyndicate", ranks: &["Operative", "Agent", "Hand", "Instrument", "Shadow"] },
+    Syndicate { name: "Ventkids", tag: "VentKidsSyndicate", ranks: &["Glinty", "Whozit", "Proper Felon", "Primo", "Logical"] },
+    Syndicate { name: "Entrati", tag: "EntratiSyndicate", ranks: &["Stranger", "Acquaintance", "Associate", "Friend", "Family"] },
+    Syndicate { name: "Necraloid", tag: "NecraloidSyndicate", ranks: &["Clearance Agnesis", "Clearance Modus", "Clearance Odima"] },
+    Syndicate { name: "The Holdfasts", tag: "ZarimanSyndicate", ranks: &["Fallen", "Watcher", "Guardian", "Seraph", "Angel"] },
+    Syndicate { name: "Kahl's Garrison", tag: "KahlSyndicate", ranks: &["Shelter", "Encampment", "Fort", "Settlement", "Home"] },
+    Syndicate { name: "Cavia", tag: "EntratiLabSyndicate", ranks: &["Stranger", "Acquaintance", "Associate", "Friend", "Family"] },
+    Syndicate { name: "The Hex", tag: "HexSyndicate", ranks: &["Stranger", "Acquaintance", "Associate", "Friend", "Family"] },
+];
+
+pub(crate) fn syndicate(name: &str) -> Option<&'static Syndicate> {
+    SYNDICATES.iter().find(|s| s.name == name)
+}
+
+impl Syndicate {
+    /// The rank an offer tier names. The drop data prefixes open-world
+    /// tiers with the vendor, as in "(Hok), Neutral", so only the last
+    /// comma-separated part is the title. A title the table does not list
+    /// is `None`, which the caller treats as no rank requirement.
+    pub(crate) fn rank_of(&self, tier: &str) -> Option<u32> {
+        let title = tier.rsplit(", ").next().expect("rsplit yields at least one part").trim();
+        if title == "Neutral" { return Some(0); }
+        self.ranks.iter().position(|r| *r == title).map(|i| i as u32 + 1)
+    }
+}
+
 /// Returns clan dojo research lab stores, one per lab. Items come from the
 /// `LABS` name table because WFCD paths carry no lab segment to scan for.
 ///
@@ -354,4 +403,20 @@ pub(crate) fn get_research_lab_stores(state: State<AppState>) -> Vec<SyndicateSt
         store_items.sort_by(|a, b| a.tier.cmp(&b.tier).then(a.name.cmp(&b.name)));
         SyndicateStore { name: lab_name.to_string(), items: store_items }
     }).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offer_tiers_resolve_to_ranks_through_the_vendor_prefix() {
+        let meridian = syndicate("Steel Meridian").expect("listed");
+        assert_eq!((meridian.tag, meridian.rank_of("Protector"), meridian.rank_of("Neutral"), meridian.rank_of("Exalted")), ("SteelMeridianSyndicate", Some(4), Some(0), None));
+        let ostron = syndicate("Ostron").expect("listed");
+        assert_eq!((ostron.rank_of("(Hok), Neutral"), ostron.rank_of("(Old Man Suumbaat), Surah")), (Some(0), Some(4)));
+        assert_eq!(syndicate("Kahl's Garrison").and_then(|s| s.rank_of("Home")), Some(5), "Kahl's Garrison starts at rank 1");
+        assert_eq!(syndicate("Cephalon Simaris").and_then(|s| s.rank_of("")), None);
+        assert!(syndicate("Baro Ki'Teer").is_none());
+    }
 }

@@ -8,7 +8,7 @@ use tracing::{error, warn};
 use crate::cache::atomic_write;
 use crate::inventory_state::InventoryStateCache;
 use crate::mastery_rules::rank_to_affinity;
-use crate::memory_scanner::BlobMission;
+use crate::memory_scanner::{BlobAffiliation, BlobMission};
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "lowercase")]
@@ -71,6 +71,10 @@ pub(crate) struct PlayerProgress {
     /// covers both kinds.
     #[serde(default)]
     pub(crate) nodes: Provenance,
+    #[serde(default)]
+    pub(crate) affiliations: HashMap<String, BlobAffiliation>,
+    #[serde(default)]
+    pub(crate) standing: Provenance,
     /// Lives with the progress because both are keyed by the same player
     /// name. Observations never touch it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -116,6 +120,7 @@ struct ConfirmedKinds {
     equipment: bool,
     intrinsics: bool,
     nodes: bool,
+    standing: bool,
 }
 
 pub(crate) struct MasteryProgress {
@@ -174,19 +179,21 @@ impl MasteryProgress {
         true
     }
 
-    /// `affinity` is `XPInfo`, `skills` is `PlayerSkills` and `missions` is
-    /// `Missions`. Each confirms its own source kind, and one that was not
-    /// an array or object leaves its kind as it was.
+    /// `affinity` is `XPInfo`, `skills` is `PlayerSkills`, `missions` is
+    /// `Missions` and `affiliations` is `Affiliations`. Each confirms its
+    /// own source kind, and one that was not an array or object leaves its
+    /// kind as it was.
     pub(crate) fn apply_blob(
         &mut self,
         name: Option<&str>,
         affinity: Option<&HashMap<String, i64>>,
         skills: Option<&HashMap<String, i64>>,
         missions: Option<&HashMap<String, BlobMission>>,
+        affiliations: Option<&HashMap<String, BlobAffiliation>>,
         now: i64,
     ) -> bool {
         self.select_player(name);
-        if affinity.is_none() && skills.is_none() && missions.is_none() {
+        if affinity.is_none() && skills.is_none() && missions.is_none() && affiliations.is_none() {
             self.last_confirmed = None;
             return false;
         }
@@ -205,8 +212,12 @@ impl MasteryProgress {
             record.missions = missions.clone();
             record.nodes = confirmed;
         }
+        if let Some(affiliations) = affiliations {
+            record.affiliations = affiliations.clone();
+            record.standing = confirmed;
+        }
         self.last_confirmed = Some(ConfirmedKinds {
-            owner, equipment: affinity.is_some(), intrinsics: skills.is_some(), nodes: missions.is_some(),
+            owner, equipment: affinity.is_some(), intrinsics: skills.is_some(), nodes: missions.is_some(), standing: affiliations.is_some(),
         });
         self.save();
         true
@@ -227,6 +238,7 @@ impl MasteryProgress {
         if confirmed.equipment { record.equipment.observed_at = Some(now); }
         if confirmed.intrinsics { record.intrinsics.observed_at = Some(now); }
         if confirmed.nodes { record.nodes.observed_at = Some(now); }
+        if confirmed.standing { record.standing.observed_at = Some(now); }
         if self.last_reobserve_saved.is_none_or(|at| now - at >= Self::REOBSERVE_SAVE_INTERVAL) {
             self.last_reobserve_saved = Some(now);
             self.save();
@@ -350,18 +362,18 @@ mod tests {
     fn accepted_blob_confirms_equipment_and_replaces_the_previous_map() {
         let (_dir, _path, mut progress) = fresh("apply");
         let first = affinity(&[(BRATON, 450_000), (MAG, 144_000)]);
-        assert!(progress.apply_blob(Some("Tenno"), Some(&first), None, None, 1_000));
+        assert!(progress.apply_blob(Some("Tenno"), Some(&first), None, None, None, 1_000));
         let record = progress.current(Some("Tenno")).expect("confirmed");
         assert_eq!(record.equipment, Provenance { state: ProvenanceState::Confirmed, observed_at: Some(1_000) });
         assert_eq!(record.affinity, first);
 
         let second = affinity(&[(BRATON, 450_000)]);
-        assert!(progress.apply_blob(Some("Tenno"), Some(&second), None, None, 2_000));
+        assert!(progress.apply_blob(Some("Tenno"), Some(&second), None, None, None, 2_000));
         let record = progress.current(Some("Tenno")).expect("still confirmed");
         assert_eq!(record.affinity, second, "absent from a confirmed field is zero, not carried over");
         assert_eq!(record.equipment.observed_at, Some(2_000));
 
-        assert!(!progress.apply_blob(Some("Tenno"), None, None, None, 3_000), "XPInfo not an array confirms nothing");
+        assert!(!progress.apply_blob(Some("Tenno"), None, None, None, None, 3_000), "XPInfo not an array confirms nothing");
         let record = progress.current(Some("Tenno")).expect("previous observation kept");
         assert_eq!((record.affinity.clone(), record.equipment.observed_at), (second, Some(2_000)));
     }
@@ -370,7 +382,7 @@ mod tests {
     fn unchanged_scan_reobserves_only_for_the_confirmed_owner() {
         let (_dir, _path, mut progress) = fresh("reobserve");
         assert!(!progress.reobserve(Some("A"), 500), "nothing confirmed yet");
-        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, 1_000);
+        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, None, 1_000);
         assert!(progress.reobserve(Some("A"), 1_060));
         assert_eq!(progress.current(Some("A")).expect("A").equipment.observed_at, Some(1_060));
 
@@ -378,10 +390,10 @@ mod tests {
         assert!(progress.current(Some("B")).is_none());
         assert_eq!(progress.current(Some("A")).expect("A").equipment.observed_at, Some(1_060));
 
-        progress.apply_blob(Some("A"), None, None, None, 1_200);
+        progress.apply_blob(Some("A"), None, None, None, None, 1_200);
         assert!(!progress.reobserve(Some("A"), 1_260), "last blob confirmed nothing");
 
-        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, 1_300);
+        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, None, 1_300);
         progress.discard_blob();
         assert!(!progress.reobserve(Some("A"), 1_360), "rejected bytes are not an observation");
         assert_eq!(progress.current(Some("A")).expect("A").equipment.observed_at, Some(1_300));
@@ -392,14 +404,14 @@ mod tests {
         let (_dir, path, mut progress) = fresh("switch");
         let braton = affinity(&[(BRATON, 450_000)]);
         let mag = affinity(&[(MAG, 900_000)]);
-        progress.apply_blob(Some("A"), Some(&braton), None, None, 1_000);
-        progress.apply_blob(Some("B"), Some(&mag), None, None, 2_000);
+        progress.apply_blob(Some("A"), Some(&braton), None, None, None, 1_000);
+        progress.apply_blob(Some("B"), Some(&mag), None, None, None, 2_000);
         assert_eq!(progress.current(Some("A")).expect("A").affinity, braton);
         assert_eq!(progress.current(Some("B")).expect("B").affinity, mag);
         assert_eq!(progress.current(None).expect("last seen is B").affinity, mag);
 
         let kuva = affinity(&[(KUVA, 800_000)]);
-        progress.apply_blob(None, Some(&kuva), None, None, 3_000);
+        progress.apply_blob(None, Some(&kuva), None, None, None, 3_000);
         assert_eq!(progress.current(Some("B")).expect("B").affinity, kuva);
         assert_eq!(progress.current(Some("A")).expect("A").equipment.observed_at, Some(1_000));
 
@@ -409,7 +421,7 @@ mod tests {
         assert_eq!(reloaded.current(Some("A")).expect("A survives restart").affinity, braton);
 
         let braton_and_mag = affinity(&[(BRATON, 450_000), (MAG, 900_000)]);
-        reloaded.apply_blob(Some("A"), Some(&braton_and_mag), None, None, 4_000);
+        reloaded.apply_blob(Some("A"), Some(&braton_and_mag), None, None, None, 4_000);
         assert_eq!(reloaded.current(Some("A")).expect("A").affinity, braton_and_mag);
         assert_eq!(reloaded.current(Some("B")).expect("B untouched by A's return").affinity, kuva);
     }
@@ -419,7 +431,7 @@ mod tests {
         let (_dir, path) = scratch("unassigned");
         let mut progress = MasteryProgress::load(path.clone(), &pre_provenance_cache(&[(BRATON, 30)], true));
         let mag = affinity(&[(MAG, 900_000)]);
-        assert!(progress.apply_blob(None, Some(&mag), None, None, 1_000), "no name known yet: replaces the import");
+        assert!(progress.apply_blob(None, Some(&mag), None, None, None, 1_000), "no name known yet: replaces the import");
         assert_eq!(progress.current(None).expect("unassigned").equipment.state, ProvenanceState::Confirmed);
 
         assert!(progress.select_player(Some("A")));
@@ -438,7 +450,7 @@ mod tests {
         std::fs::write(&path, b"{ not json").expect("scratch writable");
         let mut progress = MasteryProgress::load(path.clone(), &pre_provenance_cache(&[(BRATON, 30)], true));
         assert!(progress.current(None).is_none(), "no import over an existing file");
-        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, 1_000);
+        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, None, 1_000);
         assert_eq!(progress.current(Some("A")).expect("in-memory progress works").equipment.observed_at, Some(1_000));
         assert_eq!(std::fs::read(&path).expect("file kept"), b"{ not json");
     }
@@ -447,12 +459,12 @@ mod tests {
     fn missions_confirm_nodes_separately_from_equipment() {
         let (_dir, _path, mut progress) = fresh("missions");
         let cleared = missions(&[("SolNode27", 14, Some(1)), ("EarthToVenusJunction", 2, None)]);
-        assert!(progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, Some(&cleared), 1_000));
+        assert!(progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, Some(&cleared), None, 1_000));
         let record = progress.current(Some("A")).expect("confirmed");
         assert_eq!(record.missions, cleared);
         assert_eq!(record.nodes, Provenance { state: ProvenanceState::Confirmed, observed_at: Some(1_000) });
 
-        assert!(progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, 2_000), "XPInfo alone still confirms equipment");
+        assert!(progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, None, 2_000), "XPInfo alone still confirms equipment");
         let record = progress.current(Some("A")).expect("kept");
         assert_eq!((record.equipment.observed_at, record.nodes.observed_at), (Some(2_000), Some(1_000)));
         assert_eq!(record.missions, cleared, "Missions not an array leaves the last observation in place");
@@ -460,12 +472,12 @@ mod tests {
         assert_eq!((record_of(&progress).equipment.observed_at, record_of(&progress).nodes.observed_at), (Some(2_060), Some(1_000)),
             "an unchanged scan re-observes only what the last blob confirmed");
 
-        assert!(progress.apply_blob(Some("A"), None, None, Some(&missions(&[("SolNode27", 15, Some(1))])), 3_000), "Missions alone confirms nodes");
+        assert!(progress.apply_blob(Some("A"), None, None, Some(&missions(&[("SolNode27", 15, Some(1))])), None, 3_000), "Missions alone confirms nodes");
         let record = progress.current(Some("A")).expect("kept");
         assert_eq!((record.equipment.observed_at, record.nodes.observed_at), (Some(2_060), Some(3_000)));
         assert_eq!(record.missions.len(), 1, "absent from a confirmed field is zero, not carried over");
 
-        assert!(!progress.apply_blob(Some("A"), None, None, None, 4_000));
+        assert!(!progress.apply_blob(Some("A"), None, None, None, None, 4_000));
         assert!(!progress.reobserve(Some("A"), 4_060));
     }
 
@@ -492,11 +504,11 @@ mod tests {
         let plan = |target: u32, selections: &[&str]| MasteryPlan {
             target, view: "suggestions".into(), selections: selections.iter().map(|s| (*s).to_string()).collect(), allowances: HashMap::new(), intrinsic_targets: HashMap::new(), purchase_comparison: String::new(),
         };
-        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, 1_000);
+        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, None, 1_000);
         assert_eq!(progress.current(Some("A")).and_then(|p| p.plan.as_ref()), None, "no plan until one is saved");
         progress.set_plan(Some("A"), plan(12, &[KUVA, MAG]));
         progress.set_plan(Some("B"), plan(5, &[]));
-        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000), (KUVA, 800_000)])), None, None, 2_000);
+        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000), (KUVA, 800_000)])), None, None, None, 2_000);
         assert_eq!(progress.current(Some("A")).and_then(|p| p.plan.clone()), Some(plan(12, &[KUVA, MAG])), "a new observation leaves the plan alone");
 
         let reloaded = MasteryProgress::load(path.clone(), &InventoryStateCache::default());
@@ -510,11 +522,11 @@ mod tests {
         let (_dir, path) = scratch("clear");
         std::fs::write(&path, b"{ not json").expect("scratch writable");
         let mut progress = MasteryProgress::load(path.clone(), &InventoryStateCache::default());
-        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, 1_000);
+        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, None, 1_000);
         progress.clear();
         assert!(progress.current(Some("A")).is_none());
         assert!(!path.exists());
-        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, 2_000);
+        progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, None, 2_000);
         assert!(path.exists(), "writes resume after clear");
     }
 
@@ -528,7 +540,7 @@ mod tests {
         assert_eq!((a.equipment.state, a.intrinsics), (ProvenanceState::Confirmed, Provenance::default()));
 
         let skills = affinity(&[("LPS_GUNNERY", 8), ("LPP_SPACE", 89_930)]);
-        assert!(progress.apply_blob(Some("A"), None, Some(&skills), None, 1_000), "skills alone confirm something");
+        assert!(progress.apply_blob(Some("A"), None, Some(&skills), None, None, 1_000), "skills alone confirm something");
         let a = progress.current(Some("A")).expect("A");
         assert_eq!(a.intrinsics, Provenance { state: ProvenanceState::Confirmed, observed_at: Some(1_000) });
         assert_eq!((a.skills.clone(), a.equipment.observed_at), (skills.clone(), Some(900)));
@@ -537,7 +549,7 @@ mod tests {
         let a = progress.current(Some("A")).expect("A");
         assert_eq!((a.intrinsics.observed_at, a.equipment.observed_at), (Some(1_060), Some(900)), "only what the last blob confirmed re-observes");
 
-        assert!(progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, 2_000));
+        assert!(progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, None, 2_000));
         let a = progress.current(Some("A")).expect("A");
         assert_eq!((a.equipment.observed_at, a.intrinsics.observed_at), (Some(2_000), Some(1_060)), "skills not an object: intrinsics kept as they were");
         assert!(progress.reobserve(Some("A"), 2_060));
@@ -547,6 +559,25 @@ mod tests {
         let reloaded = MasteryProgress::load(path.clone(), &InventoryStateCache::default());
         let a = reloaded.current(Some("A")).expect("A survives restart");
         assert_eq!((a.skills.clone(), a.intrinsics.observed_at), (skills, Some(1_060)));
+    }
+
+    #[test]
+    fn affiliations_confirm_standing_apart_from_the_other_kinds() {
+        let (_dir, path, mut progress) = fresh("standing");
+        let hex: HashMap<String, BlobAffiliation> = [("HexSyndicate".to_string(), BlobAffiliation { standing: 135_500, title: 5 })].into();
+        assert!(progress.apply_blob(Some("A"), None, None, None, Some(&hex), 1_000), "affiliations alone confirm standing");
+        let a = progress.current(Some("A")).expect("A");
+        assert_eq!((a.affiliations.clone(), a.standing), (hex.clone(), Provenance { state: ProvenanceState::Confirmed, observed_at: Some(1_000) }));
+        assert_eq!(a.equipment, Provenance::default());
+
+        assert!(progress.apply_blob(Some("A"), Some(&affinity(&[(BRATON, 450_000)])), None, None, None, 2_000));
+        assert!(progress.reobserve(Some("A"), 2_060));
+        let a = progress.current(Some("A")).expect("A");
+        assert_eq!((a.equipment.observed_at, a.standing.observed_at), (Some(2_060), Some(1_000)), "Affiliations not an array: standing kept as it was");
+
+        let reloaded = MasteryProgress::load(path.clone(), &InventoryStateCache::default());
+        let a = reloaded.current(Some("A")).expect("A survives restart");
+        assert_eq!((a.affiliations.clone(), a.standing.observed_at), (hex, Some(1_000)));
     }
 
     #[test]

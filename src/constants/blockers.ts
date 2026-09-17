@@ -9,6 +9,8 @@ export function blockerText(blocker: Blocker): string {
     case "credit_cost_unknown": return "Credit cost unknown";
     case "credits_unknown": return "Credits unknown";
     case "standing_unknown": return "Standing unknown";
+    case "standing_rank_below": return `Rank ${blocker.required} with ${blocker.syndicate} needed`;
+    case "standing_short": return `${blocker.short.toLocaleString("en-US")} standing short`;
     case "drop_sources_unknown": return "Drop sources unknown";
     case "missing_gate": return `${blocker.name} not cleared`;
     case "junction_tasks_unknown": return "Junction tasks unknown";

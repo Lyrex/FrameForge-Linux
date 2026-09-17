@@ -201,7 +201,7 @@ test("sorting by name stays inside the stage order", () => {
   const list = [
     opportunity("Zenith", { remaining_mastery: 3000 }),
     opportunity("Braton"),
-    opportunity("Amprex", { stage: "acquire", action: "buy", owned: false, owned_level: null, vendors: [{ syndicate: "Steel Meridian", tier: "General", blueprint: false }] }),
+    opportunity("Amprex", { stage: "acquire", action: "buy", owned: false, owned_level: null, vendors: [{ syndicate: "Steel Meridian", tier: "General", blueprint: false, rank: 5, standing: 20_000 }] }),
     opportunity("Vectis", { stage: "acquire", action: "buy", owned: false, owned_level: null, remaining_mastery: null }),
     opportunity("Argonak", { stage: "unsourced", action: "acquire", owned: false, owned_level: null, access: "blocked", remaining_mastery: 3000 }),
   ];
@@ -337,4 +337,6 @@ test("blocker labels come from the kind, with the numbers formatted", () => {
     assert.match(blockerText({ kind }), /unknown$/);
     assert.doesNotMatch(blockerText({ kind }), /observed/);
   }
+  assert.equal(blockerText({ kind: "standing_rank_below", required: 3, syndicate: "The Hex" }), "Rank 3 with The Hex needed");
+  assert.equal(blockerText({ kind: "standing_short", short: 4_000 }), "4,000 standing short");
 });

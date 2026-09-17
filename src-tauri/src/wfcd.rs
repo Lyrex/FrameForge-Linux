@@ -79,6 +79,8 @@ pub struct SyndicateOffer {
     pub image_name: Option<String>,
     pub tier: String,
     pub ducats: Option<u32>,
+    #[serde(default)]
+    pub standing: Option<u32>,
     /// For Blueprint items: the unique_name of the item crafted from this blueprint.
     /// None for mods, sigils, and other directly-owned items.
     #[serde(default)]
@@ -584,11 +586,11 @@ fn parse_syndicate_store_catalog(
             } else if raw_place.starts_with(raw_key.as_str()) {
                 let after = &raw_place[raw_key.len()..];
                 let t = after.trim_start_matches(", ").trim();
-                // Some entries have "Rank N\u{a0}: TierName" with non-breaking space — normalise
-                if t.contains('\u{00a0}') || t.starts_with("Rank ") {
-                    String::new()
-                } else {
-                    t.to_string()
+                // A few entries read "Rank 4\u{a0}: Protector" or "Rank 2:Valiant";
+                // the title after the colon is what the other entries carry.
+                match t.strip_prefix("Rank ").and_then(|rest| rest.split_once(':')) {
+                    Some((_, title)) => title.trim().to_string(),
+                    None => t.to_string(),
                 }
             } else {
                 String::new()
@@ -605,6 +607,7 @@ fn parse_syndicate_store_catalog(
                     image_name,
                     tier,
                     ducats,
+                    standing: entry["standing"].as_u64().map(|s| s as u32),
                     result_unique: None,
                 });
             }
@@ -1665,6 +1668,24 @@ mod tests {
         cached.drop_locations.insert("/Lotus/Types/Items/MiscItems/OrokinCell".into(), locations.clone());
         let again: FetchResult = serde_json::from_str(&serde_json::to_string(&cached).expect("serializes")).expect("parses");
         assert_eq!(again.drop_locations.get("/Lotus/Types/Items/MiscItems/OrokinCell"), Some(&locations));
+    }
+
+    #[test]
+    fn syndicate_offers_keep_the_title_and_standing_whatever_the_place_prefix() {
+        let syndicates = serde_json::json!({ "syndicates": {
+            "Steel Meridian": [
+                { "item": "Vaykor Hek", "place": "Steel Meridian, General", "standing": 125000 },
+                { "item": "Vaykor Marelok", "place": "Steel Meridian, Rank 4\u{a0}: Protector", "standing": 100000 },
+                { "item": "Ammo Case", "place": "Steel Meridian, Rank 2:Valiant" },
+            ],
+            "Ostron": [{ "item": "Jai Blueprint", "place": "Ostron (Hok), Neutral", "standing": 1000 }],
+        } });
+        let catalog = parse_syndicate_store_catalog(Some(&syndicates), &[]);
+        let offer = |syndicate: &str, name: &str| catalog[syndicate].iter().find(|o| o.name == name).map(|o| (o.tier.clone(), o.standing)).expect(name);
+        assert_eq!(offer("Steel Meridian", "Vaykor Hek"), ("General".into(), Some(125_000)));
+        assert_eq!(offer("Steel Meridian", "Vaykor Marelok"), ("Protector".into(), Some(100_000)));
+        assert_eq!(offer("Steel Meridian", "Ammo Case"), ("Valiant".into(), None));
+        assert_eq!(offer("Ostron", "Jai Blueprint"), ("(Hok), Neutral".into(), Some(1_000)));
     }
 
     fn spec() -> SourceSpec {

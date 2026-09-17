@@ -11,7 +11,7 @@ const unknown: Provenance = { state: "unknown", observed_at: null };
 const NOW = 10_000;
 
 const provenance = (patch: Partial<MasteryProvenance> = {}): MasteryProvenance =>
-  ({ equipment: confirmed(NOW - 300), intrinsics: confirmed(NOW - 300), nodes: confirmed(NOW - 7_200), ...patch });
+  ({ equipment: confirmed(NOW - 300), intrinsics: confirmed(NOW - 300), nodes: confirmed(NOW - 7_200), standing: confirmed(NOW - 300), ...patch });
 
 test("every kind confirmed reads as scanned at the oldest observation", () => {
   const pill = pillSummary(provenance(), NOW, "24h");
@@ -20,6 +20,7 @@ test("every kind confirmed reads as scanned at the oldest observation", () => {
   assert.match(pill.title, /^Equipment: /m);
   assert.match(pill.title, /^Intrinsics: /m);
   assert.match(pill.title, /^Nodes: /m);
+  assert.match(pill.title, /^Standing: /m);
   assert.doesNotMatch(pill.title, /Junctions/);
 });
 
@@ -39,7 +40,7 @@ test("one unknown kind wins over unconfirmed and confirmed", () => {
 });
 
 test("the kind list carries no junctions entry", () => {
-  assert.deepEqual(SOURCE_KINDS.map(k => k.key), ["equipment", "intrinsics", "nodes"]);
+  assert.deepEqual(SOURCE_KINDS.map(k => k.key), ["equipment", "intrinsics", "nodes", "standing"]);
 });
 
 const counts = (patch: Partial<MasteryCounts> = {}): MasteryCounts =>

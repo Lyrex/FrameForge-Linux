@@ -80,6 +80,7 @@ export interface MasteryProvenance {
   intrinsics: Provenance;
   /** Junctions read from the same `Missions` field, so they share the nodes kind. */
   nodes: Provenance;
+  standing: Provenance;
 }
 
 /** Unsourced holds the rows with remaining mastery and no route at all. */
@@ -96,6 +97,8 @@ export type Blocker =
   | { kind: "credit_cost_unknown" }
   | { kind: "credits_unknown" }
   | { kind: "standing_unknown" }
+  | { kind: "standing_rank_below"; required: number; syndicate: string }
+  | { kind: "standing_short"; short: number }
   | { kind: "drop_sources_unknown" }
   | { kind: "missing_gate"; path: string; name: string }
   | { kind: "junction_tasks_unknown" }
@@ -105,6 +108,8 @@ export interface VendorOffer {
   syndicate: string;
   tier: string;
   blueprint: boolean;
+  rank: number | null;
+  standing: number | null;
 }
 
 export interface TrackSpend {

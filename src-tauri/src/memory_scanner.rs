@@ -116,6 +116,10 @@ pub struct BlobInventory {
     /// Missions: completion counts per node key. `None` when the section was
     /// not an array. An empty array is a real zero and stays `Some`.
     pub missions:        Option<HashMap<String, BlobMission>>,
+    /// Affiliations: standing and rank per syndicate tag. `None` when the
+    /// section was not an array. A syndicate the player never touched has
+    /// no entry, so absence in a present array means zero standing.
+    pub affiliations:    Option<HashMap<String, BlobAffiliation>>,
     pub pending_recipes: Vec<BlobPendingRecipe>,
     /// Warframe paths fed to Helminth (InfestedFoundry.ConsumedSuits).
     pub consumed_suits:  Vec<String>,
@@ -160,6 +164,15 @@ impl BlobMission {
     pub fn steel_path_cleared(&self) -> bool {
         self.tier.is_some_and(|tier| tier & 1 != 0)
     }
+}
+
+/// One `Affiliations` entry. `Title` is the rank; it is absent at rank 0
+/// and negative for a syndicate the player has been demoted by, where
+/// `Standing` is negative too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlobAffiliation {
+    pub standing: i64,
+    pub title:    i32,
 }
 
 /// A stackable item: resource, blueprint, relic, Ayatan sculpture, etc.
@@ -618,6 +631,16 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
         ))).collect()
     });
 
+    let affiliations: Option<HashMap<String, BlobAffiliation>> = json["Affiliations"].as_array().map(|arr| {
+        arr.iter().filter_map(|e| Some((
+            e["Tag"].as_str()?.to_string(),
+            BlobAffiliation {
+                standing: e["Standing"].as_i64()?,
+                title: if e["Title"].is_null() { 0 } else { i32::try_from(e["Title"].as_i64()?).ok()? },
+            },
+        ))).collect()
+    });
+
     // PendingRecipes (Foundry)
     let pending_recipes: Vec<BlobPendingRecipe> = json["PendingRecipes"].as_array()
         .map(|a| a.iter().filter_map(|e| {
@@ -646,7 +669,7 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
     Some(BlobInventory {
         credits, endo, platinum, free_platinum, mastery_level,
         unique_items, stackable_items, mods,
-        flavour_items, weapon_skins, mastery_xp, player_skills, missions, pending_recipes, consumed_suits,
+        flavour_items, weapon_skins, mastery_xp, player_skills, missions, affiliations, pending_recipes, consumed_suits,
         rivens,
     })
 }
@@ -1750,7 +1773,7 @@ mod sync_marker_tests {
 
 #[cfg(test)]
 mod stitch_engine_tests {
-    use super::{blob_digest_test_guard, parse_full_account_blob, stitch_blobs, BlobInventory, BlobMission};
+    use super::{blob_digest_test_guard, parse_full_account_blob, stitch_blobs, BlobAffiliation, BlobInventory, BlobMission};
     use crate::mem_regions::RecordedRegions;
 
     /// The parser rejects a blob under 50 KB, and one with no owned Warframe in
@@ -1816,6 +1839,24 @@ mod stitch_engine_tests {
         assert_eq!(missions.get("SolNode27"), Some(&BlobMission { completes: 14, tier: Some(1) }));
         assert_eq!(missions.get("EarthToVenusJunction"), Some(&BlobMission { completes: 2, tier: None }));
         assert_eq!(missions.len(), 2, "an entry without both tag and count is dropped");
+    }
+
+    #[test]
+    fn affiliations_keep_standing_and_title_and_skip_malformed_entries() {
+        let absent = parse_full_account_blob(&make_blob(r#""RegularCredits":1"#)).expect("parses");
+        assert!(absent.affiliations.is_none());
+
+        let empty = parse_full_account_blob(&make_blob(r#""RegularCredits":1,"Affiliations":[]"#)).expect("parses");
+        assert_eq!(empty.affiliations.as_ref().map(|a| a.len()), Some(0));
+
+        let captured = parse_full_account_blob(&make_blob(
+            r#""RegularCredits":1,"Affiliations":[{"Standing":334561,"Title":5,"FreeFavorsEarned":[1,2],"Tag":"CetusSyndicate"},{"Initiated":true,"Standing":61579,"Tag":"LibrarySyndicate"},{"Standing":-71000,"Title":-2,"Tag":"NewLokaSyndicate"},{"Title":3,"Tag":"NoStanding"},{"Standing":5,"Title":1},{"Standing":"5","Title":1,"Tag":"TextStanding"},{"Standing":5,"Title":"1","Tag":"TextTitle"}]"#,
+        )).expect("parses");
+        let affiliations = captured.affiliations.expect("array");
+        assert_eq!(affiliations.get("CetusSyndicate"), Some(&BlobAffiliation { standing: 334_561, title: 5 }));
+        assert_eq!(affiliations.get("LibrarySyndicate"), Some(&BlobAffiliation { standing: 61_579, title: 0 }), "no Title is rank 0");
+        assert_eq!(affiliations.get("NewLokaSyndicate"), Some(&BlobAffiliation { standing: -71_000, title: -2 }));
+        assert_eq!(affiliations.len(), 3, "entries without a tag or with a non-numeric standing or title are dropped");
     }
 
     fn run(regions: Vec<(usize, Vec<u8>)>) -> Option<BlobInventory> {
