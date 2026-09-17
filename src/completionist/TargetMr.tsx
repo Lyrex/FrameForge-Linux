@@ -5,12 +5,40 @@ import Filters from "./Filters";
 import { OpportunityRow } from "./WhatNext";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import type { ClockFormat } from "../lib/clockFormat";
-import { addable, addToPlan, candidates, moved, planView, prefill, rangeText, snapshotIntrinsicTargets, summaryText, TARGET_RANK_MAX } from "./plan";
+import { addable, addToPlan, candidates, moved, planView, prefill, rangeText, ringTitle, snapshotIntrinsicTargets, summaryText, TARGET_RANK_MAX } from "./plan";
 import { RESULT_OPTIONS, remainingText, type MasteryControls, type ResultView } from "./suggestions";
-import type { MasteryOverview, MasteryPlan, PlanEntry, PlanEvaluation } from "../types/mastery";
+import type { MasteryOverview, MasteryPlan, PlanEntry, PlanEvaluation, Rings as RingFractions } from "../types/mastery";
 
 // Sixty rows are enough to browse, and the search narrows the rest.
 const ADD_LIST_LIMIT = 60;
+
+const RING_SIZE = 44;
+const RING_RADII = [19, 14.5, 10];
+
+function Ring({ radius, fraction, className }: { radius: number; fraction: number; className: string }) {
+  const length = 2 * Math.PI * radius;
+  const centre = RING_SIZE / 2;
+  return (
+    <>
+      <circle className="mst-ring-track" cx={centre} cy={centre} r={radius} />
+      <circle className={`mst-ring ${className}`} cx={centre} cy={centre} r={radius}
+        strokeDasharray={length} strokeDashoffset={length * (1 - Math.min(1, Math.max(0, fraction)))} />
+    </>
+  );
+}
+
+function Rings({ rings, target, title }: { rings: RingFractions | null; target: number; title: string }) {
+  const [earned, planned, band] = rings ? [rings.earned, rings.planned, rings.band] : [0, 0, 0];
+  return (
+    <svg className="mst-rings" width={RING_SIZE} height={RING_SIZE} viewBox={`0 0 ${RING_SIZE} ${RING_SIZE}`} role="img" aria-label={title}>
+      <title>{title}</title>
+      <Ring radius={RING_RADII[0]} fraction={earned} className="mst-ring-earned" />
+      <Ring radius={RING_RADII[1]} fraction={planned} className={planned >= 1 ? "mst-ring-covered" : "mst-ring-planned"} />
+      <Ring radius={RING_RADII[2]} fraction={band} className="mst-ring-band" />
+      <text x="50%" y="50%" textAnchor="middle" dominantBaseline="central">{target}</text>
+    </svg>
+  );
+}
 
 interface Props {
   overview: MasteryOverview;
@@ -140,6 +168,7 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
       </div>
 
       <div className="mst-toolbar mst-plan-summary">
+        <Rings rings={evaluation?.rings ?? null} target={plan.target} title={evaluation ? ringTitle(evaluation, plan.target) : "Evaluating plan…"} />
         {evaluation ? (
           <>
             <span className="mst-plan-summary-text" title='Projection means "if these actions finish"'>{summaryText(evaluation, plan.target)}</span>

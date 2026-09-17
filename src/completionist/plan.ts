@@ -80,6 +80,19 @@ export function summaryText(e: PlanEvaluation, target: number): string {
   return `Total ${totalText(e.total)} · ${gap} · plan adds ${n(e.gains)}${unknown} · projected ${rankText(e.projected)}`;
 }
 
+export function ringTitle(e: PlanEvaluation, target: number): string {
+  if (e.total == null || e.projected == null) return "Mastery Rank not observed yet";
+  const bound = e.total.exact == null ? "at least " : "";
+  const band = e.total.exact == null ? `Progress into MR ${e.total.rank} unknown`
+    : `${n(e.total.exact - e.total.lower)} of ${n(e.total.upper + 1 - e.total.lower)} into MR ${e.total.rank}`;
+  return [
+    `Earned ${bound}${n(e.total.exact ?? e.total.lower)}`,
+    `Projected ${bound}${n(e.projected.exact ?? e.projected.lower)}`,
+    `MR ${target} needs ${n(e.target_xp)}`,
+    band,
+  ].join("\n");
+}
+
 export function rangeText(e: PlanEvaluation): string {
   if (e.total == null || e.projected == null) return "";
   const total = e.total.exact == null ? `Total between ${n(e.total.lower)} and ${n(e.total.upper)}` : `Total ${n(e.total.exact)} exactly`;

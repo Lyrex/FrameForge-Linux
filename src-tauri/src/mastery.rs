@@ -801,10 +801,34 @@ pub(crate) struct MasteryTotal {
     pub(crate) rank_upper: u32,
 }
 
+/// Drawn by the Target MR view as three concentric rings.
+#[derive(serde::Serialize, Clone, Copy, PartialEq, Debug)]
+pub(crate) struct Rings {
+    /// Not clamped, so a target at or below the current rank reads above 1.
+    pub(crate) earned: f64,
+    pub(crate) planned: f64,
+    /// A lower bound says nothing about where inside the rank the account
+    /// sits, so it draws as 0.
+    pub(crate) band: f64,
+}
+
+fn rings(total: MasteryTotal, target_xp: u64, gains: u64) -> Rings {
+    let base = total.exact.unwrap_or(total.lower);
+    let gap = target_xp.saturating_sub(base);
+    Rings {
+        earned: base as f64 / target_xp as f64,
+        planned: if gap == 0 { 1.0 } else { (gains as f64 / gap as f64).min(1.0) },
+        band: match total.exact {
+            Some(exact) => (exact - total.lower) as f64 / (total.upper + 1 - total.lower) as f64,
+            None => 0.0,
+        },
+    }
+}
+
 #[derive(serde::Serialize, Clone, Debug)]
 pub(crate) struct PlanEvaluation {
     pub(crate) entries: Vec<PlanEntry>,
-    /// Absent until the Mastery Rank is observed, as are `gap` and `projected`.
+    /// Absent until the Mastery Rank is observed, as are `gap`, `projected` and `rings`.
     pub(crate) total: Option<MasteryTotal>,
     pub(crate) total_reason: Option<String>,
     pub(crate) target_xp: u64,
@@ -816,6 +840,7 @@ pub(crate) struct PlanEvaluation {
     /// Pending entries whose gain is unknown and so outside `gains`.
     pub(crate) unknown_gains: u32,
     pub(crate) projected: Option<MasteryTotal>,
+    pub(crate) rings: Option<Rings>,
     pub(crate) rejected_allowances: Vec<String>,
 }
 
@@ -1001,6 +1026,7 @@ pub(crate) fn evaluate(overview: &MasteryOverview, observed: Option<&Observed>, 
         entries, total, total_reason, target_xp,
         gap: base.map(|base| target_xp.saturating_sub(base)),
         gains, unknown_gains, projected, rejected_allowances,
+        rings: total.map(|t| rings(t, target_xp, gains)),
     }
 }
 
@@ -2559,6 +2585,7 @@ mod tests {
         assert_eq!(evaluation.total, Some(MasteryTotal { lower: 10_000, upper: 22_499, exact: None, rank: 2, rank_upper: 2 }));
         assert_eq!((evaluation.target_xp, evaluation.gap, evaluation.gains, evaluation.unknown_gains), (40_000, Some(30_000), 9_000, 0));
         assert_eq!(evaluation.projected, Some(MasteryTotal { lower: 19_000, upper: 31_499, exact: None, rank: 2, rank_upper: 3 }));
+        assert_eq!(evaluation.rings, Some(Rings { earned: 0.25, planned: 0.3, band: 0.0 }));
 
         let reversed = evaluate(&overview, Some(&observed_stock), &plan(4, &[BRATON, SIRIUS]));
         assert_eq!(entry_summary(&reversed).iter().map(|(path, action, ..)| (*path, *action)).collect::<Vec<_>>(),
@@ -2568,7 +2595,7 @@ mod tests {
         // and nothing is bounded.
         let unobserved = evaluate(&overview, None, &plan(4, &[SIRIUS, GRIMOIRE]));
         assert_eq!(entry_summary(&unobserved), [(SIRIUS, None, Some(6_000), false, vec![]), (GRIMOIRE, None, Some(0), true, vec![])]);
-        assert_eq!((unobserved.total, unobserved.gap, unobserved.gains, unobserved.projected), (None, None, 6_000, None));
+        assert_eq!((unobserved.total, unobserved.gap, unobserved.gains, unobserved.projected, unobserved.rings), (None, None, 6_000, None, None));
     }
 
     /// Worked by hand: 3,000 for the Braton, 3,500 for the rank-35 Kuva
@@ -2619,6 +2646,18 @@ mod tests {
                 assert_eq!(evaluation.total_reason, Some(format!("{kind} {label}")));
             }
         }
+    }
+
+    #[test]
+    fn rings_take_the_lower_bound_and_clamp_the_plan_at_the_gap() {
+        let range = MasteryTotal { lower: 10_000, upper: 22_499, exact: None, rank: 2, rank_upper: 2 };
+        assert_eq!(rings(range, 40_000, 15_000), Rings { earned: 0.25, planned: 0.5, band: 0.0 });
+        assert_eq!(rings(range, 40_000, 30_000), Rings { earned: 0.25, planned: 1.0, band: 0.0 });
+        assert_eq!(rings(range, 40_000, 45_000), Rings { earned: 0.25, planned: 1.0, band: 0.0 });
+        let exact = MasteryTotal { exact: Some(20_000), ..range };
+        assert_eq!(rings(exact, 40_000, 5_000), Rings { earned: 0.5, planned: 0.25, band: 0.8 });
+        // A target at or below the current rank is reached with nothing planned.
+        assert_eq!(rings(exact, 10_000, 0), Rings { earned: 2.0, planned: 1.0, band: 0.8 });
     }
 
     #[test]

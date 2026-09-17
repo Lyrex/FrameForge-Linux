@@ -295,6 +295,15 @@
 .mst-plan-summary { align-items: center; flex-wrap: wrap; }
 .mst-plan-summary-text { font-size: 12px; }
 .mst-plan-range { flex-basis: 100%; font-size: 11px; color: var(--text-dim); }
+.mst-rings { flex-shrink: 0; }
+.mst-rings circle { fill: none; stroke-width: 3; }
+.mst-ring-track { stroke: var(--muted); opacity: 0.25; }
+.mst-ring { transform: rotate(-90deg); transform-origin: center; stroke-linecap: round; transition: stroke-dashoffset 0.3s; }
+.mst-ring-earned { stroke: var(--accent); }
+.mst-ring-planned { stroke: var(--accent); opacity: 0.6; }
+.mst-ring-covered { stroke: var(--green); }
+.mst-ring-band { stroke: var(--muted); }
+.mst-rings text { fill: var(--text); font-size: 11px; font-weight: 600; }
 .mst-plan-row { display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap; }
 .mst-plan-row > .mst-opp { flex: 1; min-width: 0; }
 .mst-plan-index { font-size: 11px; color: var(--text-dim); width: 1.5em; text-align: right; padding-top: 8px; flex-shrink: 0; }
