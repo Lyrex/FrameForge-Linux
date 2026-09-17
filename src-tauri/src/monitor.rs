@@ -908,25 +908,21 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
 
             // ── Startup scan: seed player names from the existing log ─────────
             // The tail starts at file-end so lines written before FrameForge launched
-            // are invisible to it. Two bounded reads cover both cases:
-            //  • First 64 KB  → "Logged in NAME" is always within the first ~100 lines.
+            // are invisible to it. Two reads cover both cases:
+            //  • Forward to the first "Logged in NAME" → the account login can sit
+            //    anywhere before the first mission (127 KB into a 25 MB log has been
+            //    seen), so the read is bounded by where it sits, not by log size.
             //  • Last 1 MB    → AddSquadMember fires during mission load-in (recent).
-            // Bounded reads avoid stalling on a log file that has grown to hundreds of MB.
             {
-                use std::io::{Read, Seek, SeekFrom};
+                use std::io::{BufReader, Read, Seek, SeekFrom};
 
-                // Read the last 1 MB of EE.log. This covers both cases:
-                //   • EE.log resets on game launch → whole file fits in 1 MB.
-                //   • EE.log accumulates → current session's "Logged in" is near the end.
-                // Searching only the first 64 KB misses the current session when the log
-                // has grown large from previous runs.
                 if let Ok(mut f) = std::fs::File::open(&log_path) {
-                    let mut first = Vec::with_capacity(64 * 1024);
-                    let _ = (&mut f).take(64 * 1024).read_to_end(&mut first);
-                    if let Ok(text) = std::str::from_utf8(&first) {
-                        parse_logged_in_name(text, &shared_squad_names2, &ee_ocr_app);
+                    if let Some(name) = first_logged_in_name(BufReader::new(&f)) {
+                        publish_player_name(&name, &shared_squad_names2, &ee_ocr_app);
                     }
 
+                    // The tail still parses "Logged in" so a re-login within the
+                    // same log overrides the first one.
                     let file_len = f.seek(SeekFrom::End(0)).unwrap_or(0);
                     let read_from = file_len.saturating_sub(1_048_576); // last 1 MB
                     let _ = f.seek(SeekFrom::Start(read_from));
@@ -936,7 +932,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     let start = if read_from > 0 { buf.iter().position(|&b| b == b'\n').map_or(0, |i| i + 1) } else { 0 };
                     if let Ok(text) = std::str::from_utf8(&buf[start..]) {
                         // ── Local player name (most recent "Logged in NAME") ──────────
-                        parse_logged_in_name(text, &shared_squad_names2, &ee_ocr_app);
+                        publish_last_logged_in_name(text, &shared_squad_names2, &ee_ocr_app);
 
                         // ── Squad mate names ──────────────────────────────────────────
                         for line in text.lines() {
@@ -1131,7 +1127,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                         }
                     }
                     if line.contains("Logged in ") {
-                        parse_logged_in_name(line, &shared_squad_names2, &ee_ocr_app);
+                        publish_last_logged_in_name(line, &shared_squad_names2, &ee_ocr_app);
                     }
                 }
 
@@ -2067,33 +2063,59 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
 /// Extract the local player name from EE.log lines containing "Logged in NAME".
 /// Adds the name to shared_squad_names (for OCR filtering) and AppState.local_player_name
 /// (for UI display). Safe to call with a single line or the full log contents.
-fn parse_logged_in_name(
+fn publish_last_logged_in_name(
     text: &str,
     squad_names: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     app: &tauri::AppHandle,
 ) {
-    // Target: "Sys [Info]: Logged in Sikewyrm"
-    // The account-login line has exactly ONE token after "Logged in" and nothing more.
-    // Lines like "Logged in to region server" have multiple tokens — skip them.
-    // Match "]: Logged in " so we don't trigger on unrelated "Logged in …" phrases.
-    const MARKER: &str = "]: Logged in ";
-    for line in text.lines().rev() {
-        let Some(pos) = line.find(MARKER) else { continue };
-        let after = line[pos + MARKER.len()..].trim();
-        let name: String = after.chars().take_while(|c| !c.is_whitespace()).collect();
-        // Skip if anything follows the name — that means it's "Logged in to X", not an account.
-        let remainder = after[name.len()..].trim();
-        if name.len() < 3 || !remainder.is_empty() { continue; }
-        if let Ok(mut g) = squad_names.lock() {
-            if !g.iter().any(|n: &String| n == &name) { g.push(name.clone()); }
-        }
-        if let Ok(mut n) = app.state::<AppState>().local_player_name.lock() {
-            *n = Some(name.clone());
-        }
-        // Emit immediately so the header updates without waiting for the next scan tick.
-        let _ = app.emit("player-name", &name);
-        return;
+    if let Some(name) = text.lines().rev().find_map(logged_in_name) {
+        publish_player_name(&name, squad_names, app);
     }
+}
+
+/// The account name on a "Sys [Info]: Logged in Sikewyrm" line.
+/// The account-login line has exactly ONE token after "Logged in" and nothing more.
+/// Lines like "Logged in to region server" have multiple tokens — skip them.
+fn logged_in_name(line: &str) -> Option<String> {
+    const MARKER: &str = "]: Logged in ";
+    let pos = line.find(MARKER)?;
+    let after = line[pos + MARKER.len()..].trim();
+    let name: String = after.chars().take_while(|c| !c.is_whitespace()).collect();
+    let remainder = after[name.len()..].trim();
+    (name.len() >= 3 && remainder.is_empty()).then_some(name)
+}
+
+/// First account login in the log, read forward line by line.
+// ponytail: a log with no login is read in full; cap the scan if that ever
+// shows up as a slow first tail read.
+fn first_logged_in_name(mut reader: impl std::io::BufRead) -> Option<String> {
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => {}
+        }
+        // Lossy: a stray non-UTF-8 byte on one line must not hide the login on another.
+        if let Some(name) = logged_in_name(&String::from_utf8_lossy(&line)) {
+            return Some(name);
+        }
+    }
+}
+
+fn publish_player_name(
+    name: &str,
+    squad_names: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    app: &tauri::AppHandle,
+) {
+    if let Ok(mut g) = squad_names.lock() {
+        if !g.iter().any(|n: &String| n == name) { g.push(name.to_string()); }
+    }
+    if let Ok(mut n) = app.state::<AppState>().local_player_name.lock() {
+        *n = Some(name.to_string());
+    }
+    // Emit immediately so the header updates without waiting for the next scan tick.
+    let _ = app.emit("player-name", name);
 }
 
 pub(crate) fn now_hms() -> String {
@@ -2198,5 +2220,63 @@ mod walk_policy_tests {
     #[test]
     fn the_first_walk_is_never_delayed() {
         assert!(walk_is_due(&ScanOutcome::CacheMiss, false, false, Duration::MAX));
+    }
+}
+
+#[cfg(test)]
+mod login_scan_tests {
+    use super::first_logged_in_name;
+    use std::io::{BufReader, Cursor};
+
+    const LOGIN: &str = "12.345 Sys [Info]: Logged in Sikewyrm\n";
+
+    /// A log with `head` bytes before the login line and `tail` bytes after
+    /// it, the shape of an app restart partway through a long session.
+    fn log_with_login_at(head: usize, tail: usize) -> String {
+        let filler = "12.345 Net [Info]: Logged in to region server\n";
+        let mut log = filler.repeat(head / filler.len() + 1);
+        log.push_str(LOGIN);
+        log.push_str(&filler.repeat(tail / filler.len() + 1));
+        log
+    }
+
+    /// Login 64 KB in with more than 1 MB after it: seen in the wild as
+    /// "Logged in" at byte 127115 of a 25 MB log.
+    #[test]
+    fn a_login_deep_in_a_large_log_is_found() {
+        let log = log_with_login_at(64 * 1024, 1024 * 1024);
+        let name = first_logged_in_name(BufReader::new(Cursor::new(log)));
+        assert_eq!(name.as_deref(), Some("Sikewyrm"));
+    }
+
+    #[test]
+    fn a_log_without_a_login_reads_to_the_end_and_yields_nothing() {
+        let log = "12.345 Net [Info]: Logged in to region server\n".repeat(2000);
+        assert_eq!(first_logged_in_name(BufReader::new(Cursor::new(log))), None);
+    }
+
+    /// The scan cost is bounded by where the login sits, so a 25 MB log with
+    /// the login in the first few hundred KB must not be read to the end.
+    #[test]
+    fn the_scan_stops_at_the_first_login() {
+        let log = log_with_login_at(100 * 1024, 4 * 1024 * 1024);
+        let login_end = log.find(LOGIN).expect("login line was appended") + LOGIN.len();
+        let mut cursor = Cursor::new(log);
+        const READ_AHEAD: usize = 8 * 1024;
+        let name = first_logged_in_name(BufReader::with_capacity(READ_AHEAD, &mut cursor));
+        assert_eq!(name.as_deref(), Some("Sikewyrm"));
+        assert!(
+            cursor.position() as usize <= login_end + READ_AHEAD,
+            "read {} bytes past the login line",
+            cursor.position() as usize - login_end
+        );
+    }
+
+    #[test]
+    fn a_line_with_invalid_utf8_does_not_end_the_scan() {
+        let mut log = b"12.345 Sys [Info]: \xff\xfe garbage\n".to_vec();
+        log.extend_from_slice(LOGIN.as_bytes());
+        let name = first_logged_in_name(BufReader::new(Cursor::new(log)));
+        assert_eq!(name.as_deref(), Some("Sikewyrm"));
     }
 }
