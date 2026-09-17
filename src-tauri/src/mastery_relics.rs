@@ -181,7 +181,7 @@ impl Relics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mastery_recipe::Requirement;
+    use crate::mastery_recipe::{IngredientState, Requirement};
 
     const BARREL: &str = "/Lotus/Types/Recipes/Weapons/WeaponParts/AkstilettoPrimeBarrel";
     const RECEIVER: &str = "/Lotus/Types/Recipes/Weapons/WeaponParts/AkstilettoPrimeReceiver";
@@ -218,7 +218,7 @@ mod tests {
     fn plan(short: &[(&str, u32)]) -> CraftPlan {
         CraftPlan {
             requirements: short.iter().map(|&(path, short)| Requirement {
-                unique_name: path.into(), name: short_name(path).into(), needed: short, from_stock: 0, short,
+                unique_name: path.into(), name: short_name(path).into(), image_name: None, needed: short, from_stock: 0, short, state: IngredientState::Missing,
             }).collect(),
             ..Default::default()
         }

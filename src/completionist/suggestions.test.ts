@@ -233,9 +233,9 @@ test("route labels come from the kind, and an acquire row without one reads sour
   // A farm row tells its recipe, relic and drop through the plan, so only an origin kind is repeated in the detail.
   const farm = (route: RouteKind) => opportunity("Fluctus", { stage: "craft", action: "farm", owned: false, owned_level: null, route,
     craft: { requirements: [], builds: [], credits: 15_000, credits_short: 0 } });
-  assert.equal(detailText(farm({ kind: "research", lab: "Tenno Lab" }), 0), "Research at Tenno Lab · Credits 15,000");
-  assert.equal(detailText(farm({ kind: "market_credits", credits: 20_000 }), 0), "Market, 20,000 credits blueprint · Credits 15,000");
-  assert.equal(detailText(farm({ kind: "relic" }), 0), "Credits 15,000");
+  assert.equal(detailText(farm({ kind: "research", lab: "Tenno Lab" }), 0), "Research at Tenno Lab");
+  assert.equal(detailText(farm({ kind: "market_credits", credits: 20_000 }), 0), "Market, 20,000 credits blueprint");
+  assert.equal(detailText(farm({ kind: "relic" }), 0), "", "the ingredient icons carry the credits");
   assert.equal(detailText(opportunity("Kuva Karak", { route: { kind: "adversary" } }), 0), "Owned copy", "an owned copy is past its route");
 });
 
@@ -247,7 +247,7 @@ test("labels spell out the action, the route and unknowns", () => {
   assert.equal(remainingText(null, { level_cap: 30, forma: 5, mastery: 1000 }), "Unknown");
   const gated = opportunity("Kuva Karak", { cap: 40, remaining_mastery: 4000, forma: { level_cap: 30, forma: 5, mastery: 1000 },
     craft: { requirements: [{ unique_name: "/Lotus/Types/Items/MiscItems/Forma", name: "Forma", needed: 5, from_stock: 2, short: 3 }], builds: [], credits: 0, credits_short: 0 } });
-  assert.equal(detailText(gated, now), "Owned copy · Short Forma ×3", "levelling itself costs no credits");
+  assert.equal(detailText(gated, now), "Owned copy", "the Forma shortage is an ingredient icon");
   assert.equal(actionText({ ...gated, owned_level: 12 }), "Level R12 → R30", "the action stops at the copy's level cap");
   assert.equal(actionText(opportunity("Braton", { owned_level: 5 })), "Level R5 → R30");
   assert.equal(actionText(opportunity("Braton", { owned_level: null })), "Level to R30");
@@ -263,7 +263,7 @@ test("labels spell out the action, the route and unknowns", () => {
     requirements: [], builds: [], credits: 25000, credits_short: 0,
     level_first: [{ unique_name: "/Lotus/Weapons/Tenno/Pistol/Bolto", name: "Bolto", gain: 1800 }],
   } });
-  assert.equal(detailText(akbolto, now), "Level Bolto first (+1,800 mastery) · Credits 25,000");
+  assert.equal(detailText(akbolto, now), "Level Bolto first (+1,800 mastery)");
   const node = { key: "SolNode27", planet: "Earth", mode: "normal" as const, junction: false, amount: 24 };
   const ePrime = opportunity("E Prime", { unique_name: "SolNode27", category: "Star Chart", cap: 1, earned_rank: 0, state: "missing",
     stage: "acquire", action: "complete", remaining_mastery: null, owned: false, owned_level: null, access: "unknown", blockers: [{ kind: "node_unlock_unknown" }], node });
@@ -287,15 +287,15 @@ test("labels spell out the action, the route and unknowns", () => {
     craft: { requirements: [chassis], builds: [], credits: 15_000, credits_short: 0 } });
   assert.equal(actionText(crafted), "Craft now");
   assert.equal(actionText({ ...crafted, access: "blocked", blockers: [{ kind: "credits_short", short: 5_000 }] }), "Craft");
-  assert.equal(detailText(crafted, now), "Credits 15,000");
+  assert.equal(detailText(crafted, now), "");
   const built = opportunity("Hek", { stage: "craft", action: "build", owned: false, owned_level: null,
     craft: { requirements: [chassis], builds: [{ unique_name: chassis.unique_name, name: "Chassis", crafts: 2 }], credits: null, credits_short: 0 } });
   assert.equal(actionText(built), "Build 1 part, then craft");
-  assert.equal(detailText(built, now), "Credits unknown · Build Chassis ×2");
+  assert.equal(detailText(built, now), "");
   const farmed = opportunity("Hek", { stage: "craft", action: "farm", owned: false, owned_level: null,
     craft: { requirements: [chassis, ferrite], builds: [], credits: 20_000, credits_short: 5_000 } });
   assert.equal(actionText(farmed), "Farm 1 item");
-  assert.equal(detailText(farmed, now), "Credits 20,000 · Short Ferrite ×100");
+  assert.equal(detailText(farmed, now), "");
   const barrel = { unique_name: "/Lotus/Types/Recipes/Weapons/WeaponParts/BratonPrimeBarrel", name: "Barrel", needed: 1, from_stock: 0, short: 1 };
   const relicParts: RelicPart[] = [{ unique_name: barrel.unique_name, name: "Barrel", short: 2, relics: [
     { unique_name: "/Lotus/Types/Game/Projections/T1VoidProjectionBPlatinum", name: "Lith B4 Radiant", count: 3, chance: 0.1667 },
@@ -310,20 +310,20 @@ test("labels spell out the action, the route and unknowns", () => {
   assert.equal(chanceText(complete(0)), "0%");
   assert.equal(chanceText({ kind: "partial", missing: [], short: ["Barrel"] }), "Partial");
   assert.equal(chanceText({ kind: "unknown" }), "Unknown");
-  assert.equal(detailText(relicFarmed, now), "Barrel ×2 from Lith B4 Radiant ×3, Lith B4 Intact ×1 · Credits 15,000 · Short Ferrite ×100");
+  assert.equal(detailText(relicFarmed, now), "Barrel ×2 from Lith B4 Radiant ×3, Lith B4 Intact ×1");
   const partial = relicFarm("Braton Prime", { kind: "partial", missing: ["Blueprint"], short: ["Barrel"] },
     [{ unique_name: "/bp", name: "Blueprint", short: 1, relics: [] }, ...relicParts]);
-  assert.equal(detailText(partial, now), "No relic for Blueprint · Too few relics for Barrel · Barrel ×2 from Lith B4 Radiant ×3, Lith B4 Intact ×1 · Credits 15,000");
+  assert.equal(detailText(partial, now), "No relic for Blueprint · Too few relics for Barrel · Barrel ×2 from Lith B4 Radiant ×3, Lith B4 Intact ×1");
   const cell = { unique_name: "/Lotus/Types/Items/MiscItems/OrokinCell", name: "Orokin Cell", needed: 10, from_stock: 7, short: 3 };
   const dropParts: DropPart[] = [{ unique_name: cell.unique_name, name: "Orokin Cell", short: 3, locations: [
     { location: "Corrupted Vor", chance: 50 }, { location: "Saturn/Titan (Survival), Rotation C", chance: 12.5 }, { location: "Cephalon Simaris", chance: null },
   ] }];
   const dropFarmed = { ...relicFarmed, craft: { ...relicFarmed.craft!, requirements: [barrel, cell, ferrite] }, drop: { parts: dropParts } };
   assert.equal(actionText(dropFarmed), "Farm relics + 2 items");
-  assert.equal(detailText(dropFarmed, now), "Barrel ×2 from Lith B4 Radiant ×3, Lith B4 Intact ×1 · Orokin Cell ×3 from Corrupted Vor (50%), Saturn/Titan (Survival), Rotation C (12.5%), Cephalon Simaris · Credits 15,000 · Short Ferrite ×100");
+  assert.equal(detailText(dropFarmed, now), "Barrel ×2 from Lith B4 Radiant ×3, Lith B4 Intact ×1 · Orokin Cell ×3 from Corrupted Vor (50%), Saturn/Titan (Survival), Rotation C (12.5%), Cephalon Simaris");
   const onlyDrops = { ...dropFarmed, relic: null, craft: { ...dropFarmed.craft, requirements: [cell] }, drop: { parts: [{ ...dropParts[0], short: 1 }] } };
   assert.equal(actionText(onlyDrops), "Farm 1 item");
-  assert.equal(detailText(onlyDrops, now), "Orokin Cell from Corrupted Vor (50%), Saturn/Titan (Survival), Rotation C (12.5%), Cephalon Simaris · Credits 15,000");
+  assert.equal(detailText(onlyDrops, now), "Orokin Cell from Corrupted Vor (50%), Saturn/Titan (Survival), Rotation C (12.5%), Cephalon Simaris");
   assert.equal(readyText(5_000_000, now), "ready");
   assert.equal(readyText(now + 3_720_000, now), "ready in 1h 2m");
   assert.equal(readyText(now + 45_000, now), "ready in 1m");

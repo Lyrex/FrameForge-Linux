@@ -336,14 +336,7 @@ export function detailText(o: Opportunity, nowMs: number, readyAt?: string): str
     const count = p.short > 1 ? ` ×${p.short}` : "";
     parts.push(`${p.name}${count} from ${p.locations.map(l => l.chance == null ? l.location : `${l.location} (${l.chance}%)`).join(", ")}`);
   }
-  if (o.craft) {
-    for (const step of o.craft.level_first ?? []) parts.push(`Level ${step.name} first (+${n(step.gain)} mastery)`);
-    // Levelling itself costs nothing, so a Forma requirement with no builds prices at zero.
-    if (o.craft.credits !== 0) parts.push(o.craft.credits == null ? "Credits unknown" : `Credits ${o.craft.credits.toLocaleString("en-US")}`);
-    if (o.craft.builds.length) parts.push(`Build ${o.craft.builds.map(b => b.crafts > 1 ? `${b.name} ×${b.crafts}` : b.name).join(", ")}`);
-    const located = new Set([...o.relic?.parts ?? [], ...o.drop?.parts ?? []].map(p => p.unique_name));
-    const short = o.craft.requirements.filter(r => r.short > 0 && !located.has(r.unique_name));
-    if (short.length) parts.push(`Short ${short.map(r => `${r.name} ×${r.short.toLocaleString("en-US")}`).join(", ")}`);
-  }
+  // The ingredient icons carry the credits, builds and shortages.
+  for (const step of o.craft?.level_first ?? []) parts.push(`Level ${step.name} first (+${n(step.gain)} mastery)`);
   return parts.join(" · ");
 }

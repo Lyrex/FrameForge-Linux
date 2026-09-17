@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ItemImg from "../ItemImg";
 import ItemMarketPopup from "../market/ItemMarketPopup";
+import { IngredientIcons } from "../shared/IngredientIcons";
 import Filters from "./Filters";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import { blockerText } from "../constants/blockers";
@@ -49,15 +50,17 @@ interface RowProps {
 }
 
 export function OpportunityRow({ opportunity, nowMs, clockFormat, notes = [], levelFirst = false, children }: RowProps) {
-  const { access, build_completion_ms, image_name, name, relic } = opportunity;
+  const { access, build_completion_ms, craft, image_name, name, relic } = opportunity;
   const readyAt = build_completion_ms == null ? undefined : fmtClock(Math.floor(build_completion_ms / 1000), clockFormat);
+  const detail = detailText(opportunity, nowMs, readyAt);
   const blockers = [...opportunity.blockers.map(blockerText), ...notes];
   return (
     <div className={`mst-opp mst-opp-${access}`} tabIndex={0}>
       <ItemImg imageName={image_name ?? undefined} fallback={<div className="img-fallback">{name[0]?.toUpperCase() ?? "?"}</div>} />
       <div className="mst-opp-main">
         <Title opportunity={opportunity} />
-        <div className="mst-opp-detail">{detailText(opportunity, nowMs, readyAt)}</div>
+        {detail && <div className="mst-opp-detail">{detail}</div>}
+        {craft && <IngredientIcons plan={craft} />}
         {blockers.length > 0 && <div className="mst-opp-blockers">{blockers.join(" · ")}</div>}
       </div>
       <span className="mst-opp-action">{levelFirst ? `Level ${name} first` : actionText(opportunity)}</span>

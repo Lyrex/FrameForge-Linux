@@ -14,19 +14,42 @@ use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
 use crate::app_state::AppState;
 use crate::inventory_state::{load_inventory_state_cache, InventoryStateCache, CREDITS_PATH};
-use crate::wfcd::RecipeComponent;
+use crate::mastery_rules::DEFAULT_RANK_CAP;
+use crate::monitor::CraftingJob;
+use crate::wfcd::{RecipeComponent, WfcdItem};
 use tauri::Manager;
+
+/// `Partial` outranks every other state, so a line that stock half covers
+/// reads yellow whatever the remainder would be. `MasterFirst` and
+/// `Building` describe the item itself and only apply when stock covers
+/// none of the line.
+#[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum IngredientState {
+    Owned,
+    Partial,
+    Missing,
+    /// The blueprint is in hand and every ingredient is ready.
+    Buildable,
+    /// The blueprint is in hand but an ingredient is short somewhere below.
+    Blocked,
+    /// The player owns an unmastered copy, which the ledger will not spend.
+    MasterFirst,
+    Building,
+}
 
 #[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Requirement {
     pub(crate) unique_name: String,
     pub(crate) name: String,
+    pub(crate) image_name: Option<String>,
     pub(crate) needed: u32,
     /// How many came out of projected stock. A reusable blueprint counts once
     /// and is not consumed.
     pub(crate) from_stock: u32,
     /// The remainder that neither stock nor a build covers.
     pub(crate) short: u32,
+    pub(crate) state: IngredientState,
 }
 
 #[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
@@ -73,16 +96,41 @@ impl CraftPlan {
         !self.builds.is_empty() && self.shortages().next().is_none()
     }
 
-    fn require(&mut self, component: &RecipeComponent, needed: u32, from_stock: u32, short: u32) {
+    /// Foundry jobs and images live outside the ledger, so they land after
+    /// the plan is drawn.
+    pub(crate) fn decorate(&mut self, image: impl Fn(&str) -> Option<String>, building: impl Fn(&str) -> bool) {
+        for line in &mut self.requirements {
+            line.image_name = image(&line.unique_name);
+            if line.from_stock == 0 && building(&line.unique_name) { line.state = IngredientState::Building; }
+        }
+    }
+
+    fn require(&mut self, component: &RecipeComponent, needed: u32, from_stock: u32, short: u32, state: IngredientState) {
         match self.requirements.iter_mut().find(|r| r.unique_name == component.unique_name) {
             Some(line) => {
                 line.needed += needed;
                 line.from_stock += from_stock;
                 line.short += short;
+                // A second listing of a blocked line stays blocked, because its
+                // ingredients draw on the stock the first listing already ran
+                // short of.
+                let unmet = if line.state == IngredientState::Blocked { IngredientState::Blocked } else { state };
+                line.state = stock_state(line.from_stock, line.needed, unmet);
             }
             None => self.requirements.push(Requirement {
-                unique_name: component.unique_name.clone(), name: component.name.clone(), needed, from_stock, short,
+                unique_name: component.unique_name.clone(), name: component.name.clone(), image_name: None, needed, from_stock, short, state,
             }),
+        }
+    }
+
+    /// A built line's state waits on its ingredients, which are only known
+    /// once they have expanded below it. An owned unmastered copy keeps
+    /// `MasterFirst` although the ledger builds another, since the copy to
+    /// level is what the player needs to see.
+    fn settle_build(&mut self, component: &RecipeComponent, ready: bool) {
+        let line = self.requirements.iter_mut().find(|r| r.unique_name == component.unique_name).expect("the built line was required first");
+        if line.from_stock == 0 && !matches!(line.state, IngredientState::Blocked | IngredientState::MasterFirst) {
+            line.state = if ready { IngredientState::Buildable } else { IngredientState::Blocked };
         }
     }
 
@@ -94,9 +142,14 @@ impl CraftPlan {
     }
 }
 
+fn stock_state(from_stock: u32, needed: u32, unmet: IngredientState) -> IngredientState {
+    if from_stock >= needed { IngredientState::Owned } else if from_stock > 0 { IngredientState::Partial } else { unmet }
+}
+
 #[derive(Clone)]
 pub(crate) struct Ledger<'a> {
     stock: HashMap<&'a str, i64>,
+    unmastered: HashSet<&'a str>,
 }
 
 impl<'a> Ledger<'a> {
@@ -125,7 +178,11 @@ impl<'a> Ledger<'a> {
             }
         }
         rejected.sort();
-        (Self { stock }, rejected)
+        let unmastered = equipment.iter()
+            .filter(|(path, &n)| n > 0 && !mastered.contains(path.as_str()))
+            .map(|(path, _)| path.as_str())
+            .collect();
+        (Self { stock, unmastered }, rejected)
     }
 
     pub(crate) fn plan(&mut self, target: &str, components: &'a [RecipeComponent]) -> CraftPlan {
@@ -159,8 +216,9 @@ impl<'a> Ledger<'a> {
         }
     }
 
-    fn expand(&mut self, target: &str, components: &'a [RecipeComponent], crafts: u32, plan: &mut CraftPlan, priced_by_blueprint: bool) {
+    fn expand(&mut self, target: &str, components: &'a [RecipeComponent], crafts: u32, plan: &mut CraftPlan, priced_by_blueprint: bool) -> bool {
         let mut priced = !priced_by_blueprint;
+        let mut ready = true;
         for (count, component) in merged(components) {
             // A recipe occasionally lists its own result among the ingredients.
             if component.unique_name == target { continue; }
@@ -180,17 +238,24 @@ impl<'a> Ledger<'a> {
             if !keep { *self.stock.entry(path).or_insert(0) -= i64::from(from_stock); }
             let missing = needed - from_stock;
             let expands = missing > 0 && !component.components.is_empty() && self.can_expand(component);
-            plan.require(component, needed, from_stock, if expands { 0 } else { missing });
+            let unmet = if self.unmastered.contains(path) { IngredientState::MasterFirst } else { IngredientState::Missing };
+            let state = stock_state(from_stock, needed, unmet);
+            plan.require(component, needed, from_stock, if expands { 0 } else { missing }, state);
             if expands {
                 let per_craft = component.result_count.max(1);
                 let builds = missing.div_ceil(per_craft);
                 let surplus = builds * per_craft - missing;
                 if surplus > 0 { *self.stock.entry(path).or_insert(0) += i64::from(surplus); }
                 plan.build(component, builds);
-                self.expand(target, &component.components, builds, plan, true);
+                let built = self.expand(target, &component.components, builds, plan, true);
+                plan.settle_build(component, built);
+                ready &= built;
+            } else {
+                ready &= missing == 0;
             }
         }
         if !priced { plan.credits = None; }
+        ready
     }
 
     /// A missing consumable blueprint shows up as a shortage like any part,
@@ -229,8 +294,8 @@ pub(crate) fn forma_ingredient(count: u32, recipes: &HashMap<String, Vec<RecipeC
 }
 
 pub(crate) fn plan_all(inventory: &InventoryStateCache, recipes: &HashMap<String, Vec<RecipeComponent>>, targets: &[String]) -> Vec<CraftPlan> {
-    let (stock, owned) = (inventory.stackable_quantities(), inventory.owned_copies());
-    let (mut ledger, _) = Ledger::new(&stock, &owned, &HashSet::new(), &HashMap::new());
+    let (stock, owned, ranks) = (inventory.stackable_quantities(), inventory.owned_copies(), inventory.mastery_data());
+    let (mut ledger, _) = Ledger::new(&stock, &owned, &mastered_by_rank(&ranks), &HashMap::new());
     targets.iter().map(|target| ledger.plan(target, recipes.get(target).map_or(&[], Vec::as_slice))).collect()
 }
 
@@ -238,9 +303,16 @@ pub(crate) fn plan_all(inventory: &InventoryStateCache, recipes: &HashMap<String
 /// The Foundry grid reads this so a card agrees with its modal, which plans
 /// the item alone.
 pub(crate) fn plan_each(inventory: &InventoryStateCache, recipes: &HashMap<String, Vec<RecipeComponent>>, targets: &[String]) -> Vec<CraftPlan> {
-    let (stock, owned) = (inventory.stackable_quantities(), inventory.owned_copies());
-    let (ledger, _) = Ledger::new(&stock, &owned, &HashSet::new(), &HashMap::new());
+    let (stock, owned, ranks) = (inventory.stackable_quantities(), inventory.owned_copies(), inventory.mastery_data());
+    let (ledger, _) = Ledger::new(&stock, &owned, &mastered_by_rank(&ranks), &HashMap::new());
     targets.iter().map(|target| ledger.clone().plan(target, recipes.get(target).map_or(&[], Vec::as_slice))).collect()
+}
+
+/// The inventory cache carries ranks but no rank caps, so a rank-40 weapon
+/// at 30 passes as mastered here. The mastery views know the caps and judge
+/// their own plans.
+fn mastered_by_rank(ranks: &HashMap<String, u32>) -> HashSet<&str> {
+    ranks.iter().filter(|(_, &rank)| rank >= DEFAULT_RANK_CAP).map(|(path, _)| path.as_str()).collect()
 }
 
 #[tauri::command]
@@ -249,8 +321,25 @@ pub(crate) async fn plan_crafts(app: tauri::AppHandle, unique_names: Vec<String>
         let state = app.state::<AppState>();
         let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
         let recipes = Arc::clone(&state.recipes.lock().unwrap_or_else(|e| e.into_inner()));
-        if standalone.unwrap_or(false) { plan_each(&inventory, &recipes, &unique_names) } else { plan_all(&inventory, &recipes, &unique_names) }
+        let mut plans = if standalone.unwrap_or(false) { plan_each(&inventory, &recipes, &unique_names) } else { plan_all(&inventory, &recipes, &unique_names) };
+        let images = image_index(&state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()));
+        let jobs = state.current_crafting.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let building = building_results(&jobs, &recipes);
+        for plan in &mut plans {
+            plan.decorate(|path| images.get(path).cloned(), |path| building.contains(path));
+        }
+        plans
     }).await.map_err(|e| e.to_string())
+}
+
+pub(crate) fn image_index(items: &[WfcdItem]) -> HashMap<String, String> {
+    items.iter().filter_map(|i| Some((i.unique_name.clone(), i.image_name.clone()?))).collect()
+}
+
+/// A Foundry job carries its blueprint path, while the plan lists the result.
+pub(crate) fn building_results<'a>(jobs: &'a [CraftingJob], recipes: &'a HashMap<String, Vec<RecipeComponent>>) -> HashSet<&'a str> {
+    let results = blueprint_results(recipes);
+    jobs.iter().map(|job| results.get(job.unique_name.as_str()).copied().unwrap_or(&job.unique_name)).collect()
 }
 
 /// Names a recipe ingredient the market sells, and the count the whole
@@ -517,7 +606,7 @@ mod tests {
         assert!(shared.plan(BALLA, &first).craftable_now());
         let plan = shared.plan(BALLA, &second);
         assert!(plan.craftable_now());
-        assert_eq!(plan.requirements[0], Requirement { unique_name: BALLA_BP.into(), name: "TipOneBlueprint".into(), needed: 1, from_stock: 1, short: 0 });
+        assert_eq!(plan.requirements[0], Requirement { unique_name: BALLA_BP.into(), name: "TipOneBlueprint".into(), image_name: None, needed: 1, from_stock: 1, short: 0, state: IngredientState::Owned });
 
         let stock = stock_of(&[(IRADITE, 40)]);
         let plan = ledger(&stock, &NO_EQUIPMENT).plan(BALLA, &first);
@@ -612,5 +701,56 @@ mod tests {
         let stock = stock_of(&[(FROST_BP, 1), (CHASSIS_BP, 1), (FERRITE, 1_000), (CELL, 1), (CREDITS_PATH, 10_000)]);
         let plan = ledger(&stock, &NO_EQUIPMENT).plan(FROST, &recipe);
         assert_eq!(plan.credits_short, 30_000);
+    }
+
+    fn states(plan: &CraftPlan) -> Vec<(&str, IngredientState)> {
+        plan.requirements.iter().map(|r| (r.unique_name.as_str(), r.state)).collect()
+    }
+
+    /// Frost's chassis is built from a blueprint in hand while its cell waits
+    /// on a reusable blueprint the player lacks, so the two intermediates
+    /// read differently although both are short of stock.
+    #[test]
+    fn each_line_carries_the_state_the_ledger_decided() {
+        use IngredientState::*;
+        let recipe = frost();
+        let stock = stock_of(&[(FROST_BP, 1), (CHASSIS_BP, 1), (FERRITE, 400)]);
+        let plan = ledger(&stock, &NO_EQUIPMENT).plan(FROST, &recipe);
+        assert_eq!(states(&plan), [(FROST_BP, Owned), (CHASSIS, Blocked), (CHASSIS_BP, Owned), (FERRITE, Partial), (CELL, Missing)]);
+
+        let stock = stock_of(&[(FROST_BP, 1), (CHASSIS_BP, 1), (FERRITE, 1_000), (CELL_BP, 1), (ALLOY, 50_000)]);
+        let plan = ledger(&stock, &NO_EQUIPMENT).plan(FROST, &recipe);
+        assert_eq!(states(&plan), [(FROST_BP, Owned), (CHASSIS, Buildable), (CHASSIS_BP, Owned), (FERRITE, Owned), (CELL, Buildable), (CELL_BP, Owned), (ALLOY, Owned)]);
+
+        // One of two Boltos in stock reads partial even though the other gets built.
+        let stock = stock_of(&[(AKBOLTO_BP, 1), (BOLTO, 1), (BOLTO_BP, 1), (LATO, 1), (CELL, 5)]);
+        let plan = ledger(&stock, &NO_EQUIPMENT).plan(AKBOLTO, &akbolto());
+        assert_eq!(line(&plan, BOLTO).state, Partial);
+        assert_eq!(builds(&plan), [(BOLTO, 1)]);
+    }
+
+    #[test]
+    fn an_owned_unmastered_ingredient_reads_master_first_and_a_mastered_one_missing() {
+        let recipe = akbolto();
+        let stock = stock_of(&[(AKBOLTO_BP, 1), (CELL, 5)]);
+        let equipment = stock_of(&[(BOLTO, 1), (LATO, 1)]);
+        let mastered: HashSet<&str> = [LATO].into();
+        let (mut ledger, _) = Ledger::new(&stock, &equipment, &mastered, &HashMap::new());
+        let plan = ledger.plan(AKBOLTO, &recipe);
+        assert_eq!(line(&plan, BOLTO).state, IngredientState::MasterFirst);
+        assert_eq!(line(&plan, LATO).state, IngredientState::Missing);
+    }
+
+    #[test]
+    fn decorating_marks_foundry_jobs_and_looks_up_images() {
+        let recipe = frost();
+        let stock = stock_of(&[(FROST_BP, 1)]);
+        let mut plan = ledger(&stock, &NO_EQUIPMENT).plan(FROST, &recipe);
+        plan.decorate(|path| (path == CHASSIS).then(|| "chassis.png".into()), |path| path == CELL);
+        assert_eq!((line(&plan, CHASSIS).image_name.as_deref(), line(&plan, CHASSIS).state), (Some("chassis.png"), IngredientState::Blocked));
+        assert_eq!((line(&plan, CELL).image_name.as_deref(), line(&plan, CELL).state), (None, IngredientState::Building));
+        // Stock already covers the blueprint, so a job for it changes nothing.
+        plan.decorate(|_| None, |path| path == FROST_BP);
+        assert_eq!(line(&plan, FROST_BP).state, IngredientState::Owned);
     }
 }

@@ -127,12 +127,21 @@ export interface Spend {
   tracks: TrackSpend[];
 }
 
+/**
+ * Partial outranks the build states. Buildable and blocked both mean the blueprint is in hand, with
+ * the ingredients ready or one short. Master first is an owned unmastered copy the ledger will not
+ * spend.
+ */
+export type IngredientState = "owned" | "partial" | "missing" | "buildable" | "blocked" | "master_first" | "building";
+
 export interface Requirement {
   unique_name: string;
   name: string;
+  image_name: string | null;
   needed: number;
   from_stock: number;
   short: number;
+  state: IngredientState;
 }
 
 export interface Build {

@@ -709,18 +709,13 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
   border-right: 1px solid var(--border); border-top: 1px solid rgba(48,54,61,.4);
 }
 
-/* Col 2, rows 1-4: ingredient list — items grow to fill full height */
+/* Col 2, rows 1-4: ingredient icons */
 .cc-ingredients {
   grid-column: 2; grid-row: 1 / 5;
   display: flex; flex-direction: column;
-  overflow: hidden; /* clamp so rows never escape the card boundary */
+  overflow: hidden;
 }
-.cc-ingredients .comp-row {
-  flex: 1 1 0; min-height: 0; border-radius: 0; /* min-height: 0 lets flex shrink below 22px */
-  border-left: none; border-right: none; border-top: none;
-  border-bottom: 1px solid rgba(48,54,61,.3);
-}
-.cc-ingredients .comp-row-name { font-size: 11px; }
+.cc-ingredients .ingredients { padding: 4px; align-content: flex-start; }
 .comp-row-loading {
   flex: 1; display: flex; align-items: center;
   font-size: 10px; color: var(--muted); padding: 0 6px;
@@ -797,40 +792,6 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
   font-size: 13px; line-height: 1.6; color: var(--text);
 }
 .craft-kuva-icon { font-size: 20px; flex-shrink: 0; }
-
-/* Component rows */
-.comp-row {
-  display: flex; align-items: center; justify-content: space-between;
-  height: 21px; padding: 0 5px; border-radius: 3px; border: 1px solid transparent;
-  min-width: 0; flex-shrink: 0;
-}
-.comp-row-empty { height: 21px; flex-shrink: 0; }
-.comp-row-none      { background: rgba(255,255,255,.02); border-color: rgba(255,255,255,.04); }
-.comp-row-blueprint { background: rgba(56,139,253,.12);  border-color: rgba(56,139,253,.3); }
-.comp-row-part      { background: rgba(240,192,64,.12);  border-color: rgba(240,192,64,.35); }
-.relic-icon-wrap {
-  flex-shrink: 0; margin-right: 2px; position: relative; display: flex; cursor: help;
-}
-.relic-icon-wrap:hover::after {
-  content: attr(title);
-  position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
-  background: #1a1f2e; border: 1px solid rgba(255,220,100,.4);
-  color: rgba(255,220,100,.9); font-size: 10px; white-space: pre;
-  padding: 4px 7px; border-radius: 5px; pointer-events: none;
-  z-index: 100; margin-bottom: 4px; line-height: 1.5;
-}
-.relic-icon { flex-shrink: 0; opacity: .9; }
-.comp-row-name {
-  flex: 1; font-size: 10px; color: var(--muted);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
-}
-.comp-row-blueprint .comp-row-name { color: #6eb4ff; }
-.comp-row-part .comp-row-name      { color: #f0c040; }
-.comp-row-badge {
-  font-size: 9px; font-weight: 700; flex-shrink: 0; margin-left: 3px;
-}
-.comp-row-blueprint .comp-row-badge { color: var(--accent); }
-.comp-row-part .comp-row-badge      { color: #f0c040; }
 
 /* Detail close button (used in modal header) */
 .craft-detail-close {
