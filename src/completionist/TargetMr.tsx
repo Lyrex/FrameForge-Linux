@@ -7,7 +7,7 @@ import { OpportunityModal } from "./OpportunityModal";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import type { ClockFormat } from "../lib/clockFormat";
 import { addable, addToPlan, candidates, moved, planView, prefill, rangeText, ringFractions, ringTitle, snapshotIntrinsicTargets, summaryText, TARGET_RANK_MAX, type RingFractions } from "./plan";
-import { RESULT_OPTIONS, remainingText, type MasteryControls, type ResultView } from "./suggestions";
+import { activeFilters, RESULT_OPTIONS, remainingText, type MasteryControls, type ResultView } from "./suggestions";
 import type { MasteryOverview, MasteryPlan, Opportunity, PlanEntry, PlanEvaluation } from "../types/mastery";
 
 // Sixty rows are enough to browse, and the search narrows the rest.
@@ -111,7 +111,9 @@ export default function TargetMr({ overview, controls, onChange, now, clockForma
 
   const view = plan ? planView(plan.view) : "suggestions";
   useEffect(() => { onView(view); }, [view]); // eslint-disable-line
-  const pool = useMemo(() => candidates(overview.opportunities, controls, view, search), [overview.opportunities, controls, view, search]);
+  // A stale saved category filters nothing, as in What next.
+  const { category } = activeFilters(overview, controls, search);
+  const pool = useMemo(() => candidates(overview.opportunities, { ...controls, category }, view, search), [overview.opportunities, controls, category, view, search]);
 
   const save = (next: MasteryPlan) => {
     next = { ...next, intrinsic_targets: snapshotIntrinsicTargets(next, overview.opportunities), purchase_comparison: controls.comparison };

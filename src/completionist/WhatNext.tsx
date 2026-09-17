@@ -38,7 +38,7 @@ function Title({ opportunity: { category, mastery_req, name, action, needed_for 
 
 function Remaining({ opportunity: { remaining_mastery, state, spend, forma } }: { opportunity: Opportunity }) {
   return (
-    <span className={`mst-rank rank-${state}`} title={remaining_mastery == null ? "Remaining mastery unknown: no account observation yet" : "Remaining mastery"}>
+    <span className={`mst-rank rank-${state}`} title={remaining_mastery == null ? "Remaining mastery unknown: no scan yet" : "Remaining mastery"}>
       {remainingText(spend?.mastery ?? remaining_mastery, forma)}
     </span>
   );

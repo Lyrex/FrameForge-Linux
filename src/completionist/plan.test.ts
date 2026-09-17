@@ -134,5 +134,5 @@ test("the ring tooltip carries the four numbers and says when the band is unknow
   assert.equal(ringTitle(evaluation({}), 8), "Earned at least 122,500\nProjected at least 131,500\nMR 8 needs 160,000\nProgress into MR 7 unknown");
   const exact = evaluation({ total: { ...total, exact: 147_200 }, projected: { lower: 131_500, upper: 168_999, exact: 156_200, rank: 7, rank_upper: 8 } });
   assert.equal(ringTitle(exact, 8), "Earned 147,200\nProjected 156,200\nMR 8 needs 160,000\n24,700 of 37,500 into MR 7");
-  assert.equal(ringTitle(evaluation({ total: null, projected: null }), 8), "Mastery Rank not observed yet");
+  assert.equal(ringTitle(evaluation({ total: null, projected: null }), 8), "Mastery Rank unknown: no scan yet");
 });

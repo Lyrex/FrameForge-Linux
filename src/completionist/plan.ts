@@ -99,7 +99,7 @@ export function ringFractions(e: PlanEvaluation): RingFractions | null {
 }
 
 export function ringTitle(e: PlanEvaluation, target: number): string {
-  if (e.total == null || e.projected == null) return "Mastery Rank not observed yet";
+  if (e.total == null || e.projected == null) return "Mastery Rank unknown: no scan yet";
   const bound = e.total.exact == null ? "at least " : "";
   const band = e.total.exact == null ? `Progress into MR ${e.total.rank} unknown`
     : `${n(e.total.exact - e.total.lower)} of ${n(e.total.upper + 1 - e.total.lower)} into MR ${e.total.rank}`;

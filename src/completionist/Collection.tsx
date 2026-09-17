@@ -51,7 +51,7 @@ function SourceRow({ source }: { source: MasterySource }) {
       {source.remaining_mastery != null && source.remaining_mastery > 0 && (
         <span className="mst-mr" title="Remaining mastery">+{formatCount(source.remaining_mastery)}</span>
       )}
-      <span className={`mst-rank rank-${source.state}`} title={source.state === "unknown" ? "No account observation yet" : undefined}>
+      <span className={`mst-rank rank-${source.state}`} title={source.state === "unknown" ? "No scan yet" : undefined}>
         {source.state === "mastered" ? "✓" : rank}
       </span>
     </div>
