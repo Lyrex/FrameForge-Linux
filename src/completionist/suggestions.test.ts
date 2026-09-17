@@ -15,7 +15,7 @@ const opportunity = (name: string, over: Partial<Opportunity> = {}): Opportunity
   unique_name: `/Lotus/Weapons/Tenno/${name}`, name, category: "Primary", image_name: null, mastery_req: null,
   cap: 30, earned_rank: 12, remaining_mastery: 1800, state: "partial", unobtainable: null, excluded: false,
   stage: "level_claim", action: "level", owned: true, owned_level: 12, build_completion_ms: null,
-  forma: null, vendors: [], spend: null, craft: null, relic: null, drop: null, purchase: null, access: "available", blockers: [], route: null, ...over,
+  forma: null, vendors: [], spend: null, baro: null, craft: null, relic: null, drop: null, purchase: null, access: "available", blockers: [], route: null, ...over,
 });
 
 const NOW = 1_700_000_000;
@@ -219,10 +219,13 @@ test("route labels come from the kind, and an acquire row without one reads sour
     [{ kind: "trade" }, "Player trade"],
     [{ kind: "adversary" }, "Lich, Sister or Technocyte Coda reward"],
     [{ kind: "conservation" }, "Revived by Son on Deimos"],
-    [{ kind: "market_credits", credits: 25_000 }, "Market, 25,000 credits blueprint"],
+    [{ kind: "market_credits", credits: 25_000, blueprint: true }, "Market, 25,000 credits blueprint"],
+    [{ kind: "market_credits", credits: 25_000, blueprint: false }, "Market, 25,000 credits"],
     [{ kind: "baro" }, "Baro Ki'Teer"],
     [{ kind: "nightwave" }, "Nightwave"],
     [{ kind: "quest" }, "Quest"],
+    [{ kind: "quest", quest: "The Teacher" }, "Quest: The Teacher"],
+    [{ kind: "vendor", syndicate: "The Hex", rank: 5 }, "Vendor"],
     [{ kind: "research", lab: "Tenno Lab" }, "Research at Tenno Lab"],
   ];
   for (const [route, label] of labels) assert.equal(routeText(route), label);
@@ -234,9 +237,29 @@ test("route labels come from the kind, and an acquire row without one reads sour
   const farm = (route: RouteKind) => opportunity("Fluctus", { stage: "craft", action: "farm", owned: false, owned_level: null, route,
     craft: { requirements: [], builds: [], credits: 15_000, credits_short: 0 } });
   assert.equal(detailText(farm({ kind: "research", lab: "Tenno Lab" }), 0), "Research at Tenno Lab");
-  assert.equal(detailText(farm({ kind: "market_credits", credits: 20_000 }), 0), "Market, 20,000 credits blueprint");
+  assert.equal(detailText(farm({ kind: "market_credits", credits: 20_000, blueprint: true }), 0), "Market, 20,000 credits blueprint");
   assert.equal(detailText(farm({ kind: "relic" }), 0), "", "the ingredient icons carry the credits");
   assert.equal(detailText(opportunity("Kuva Karak", { route: { kind: "adversary" } }), 0), "Owned copy", "an owned copy is past its route");
+});
+
+test("a Baro row reads his stock while he is here and his return while he is away", () => {
+  const until = (ms: number) => `T${ms}`;
+  const baro = (baro: Opportunity["baro"], blockers: Opportunity["blockers"] = []) =>
+    opportunity("Mara Detron", { stage: "acquire", action: "acquire", owned: false, owned_level: null, route: { kind: "baro" }, baro, blockers });
+  assert.equal(actionText(baro({ state: "present", until: 2_000, ducats: 500, credits: 200_000 }), until), "At Baro until T2000, 500 ducats + 200,000 credits");
+  assert.equal(actionText(baro({ state: "away", until: 3_000 }, [{ kind: "baro_away" }]), until), "Baro, away until T3000");
+  assert.equal(actionText(baro({ state: "unstocked", until: 2_000 }, [{ kind: "baro_not_stocking" }]), until), "Baro, not in this visit (until T2000)");
+  assert.equal(actionText(baro({ state: "away", until: null }, [{ kind: "baro_away" }]), until), "Baro, away");
+  assert.equal(actionText(baro(null, [{ kind: "baro_visit_unknown" }]), until), "Baro Ki'Teer");
+  assert.equal(blockerText({ kind: "baro_away" }), "Baro away");
+  assert.equal(blockerText({ kind: "baro_not_stocking" }), "Not in Baro's stock");
+  assert.equal(blockerText({ kind: "baro_visit_unknown" }), "Baro's schedule unknown");
+});
+
+test("a curated vendor offer names its rank where the catalogue would name a title", () => {
+  const buy = (vendors: Opportunity["vendors"]) => opportunity("Vesper 77", { stage: "craft", action: "buy", owned: false, owned_level: null, route: { kind: "vendor", syndicate: "The Hex", rank: 3 }, vendors });
+  assert.equal(detailText(buy([{ syndicate: "The Hex", tier: "", rank: 3, blueprint: true }]), 0), "The Hex, Rank 3 (blueprint)");
+  assert.equal(detailText(buy([{ syndicate: "Steel Meridian", tier: "General", rank: null, blueprint: false }]), 0), "Steel Meridian, General");
 });
 
 test("labels spell out the action, the route and unknowns", () => {
@@ -253,8 +276,8 @@ test("labels spell out the action, the route and unknowns", () => {
   assert.equal(actionText(opportunity("Braton", { owned_level: null })), "Level to R30");
   assert.equal(actionText(opportunity("Hek", { action: "claim", owned: false, owned_level: null, build_completion_ms: 5_000_000 })), "Claim from Foundry");
   const bought = opportunity("Hek", { action: "buy", owned: false, owned_level: null, vendors: [
-    { syndicate: "Cephalon Simaris", tier: "", blueprint: true },
-    { syndicate: "Steel Meridian", tier: "General", blueprint: false },
+    { syndicate: "Cephalon Simaris", tier: "", rank: null, blueprint: true },
+    { syndicate: "Steel Meridian", tier: "General", rank: null, blueprint: false },
   ] });
   assert.equal(actionText(bought), "Buy blueprint from Cephalon Simaris");
   assert.equal(detailText(bought, now), "Cephalon Simaris (blueprint) · Steel Meridian, General");

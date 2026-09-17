@@ -53,6 +53,7 @@ export function OpportunityRow({ opportunity, nowMs, clockFormat, notes = [], le
   const { access, build_completion_ms, craft, image_name, name, relic } = opportunity;
   const readyAt = build_completion_ms == null ? undefined : fmtClock(Math.floor(build_completion_ms / 1000), clockFormat);
   const detail = detailText(opportunity, nowMs, readyAt);
+  const dayAndClock = (ms: number) => `${new Date(ms).toLocaleDateString(navigator.language, { month: "short", day: "numeric" })} ${fmtClock(Math.floor(ms / 1000), clockFormat)}`;
   const blockers = [...opportunity.blockers.map(blockerText), ...notes];
   return (
     <div className={`mst-opp mst-opp-${access}`} tabIndex={0}>
@@ -63,7 +64,7 @@ export function OpportunityRow({ opportunity, nowMs, clockFormat, notes = [], le
         {craft && <IngredientIcons plan={craft} />}
         {blockers.length > 0 && <div className="mst-opp-blockers">{blockers.join(" · ")}</div>}
       </div>
-      <span className="mst-opp-action">{levelFirst ? `Level ${name} first` : actionText(opportunity)}</span>
+      <span className="mst-opp-action">{levelFirst ? `Level ${name} first` : actionText(opportunity, dayAndClock)}</span>
       {relic && (
         <span className={`mst-pill mst-pill-relic-${relic.coverage.kind}`} title="Chance of every missing relic part dropping from the relics you own, run solo at their current refinement">
           <span className="mst-pill-kind">Relics</span> {chanceText(relic.coverage)}

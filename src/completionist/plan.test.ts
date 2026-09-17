@@ -10,7 +10,7 @@ const opportunity = (name: string, remaining_mastery: number | null, over: Parti
   unique_name: `/Lotus/Weapons/Tenno/${name}`, name, category: "Primary", image_name: null, mastery_req: null,
   cap: 30, earned_rank: 0, remaining_mastery, state: "missing", unobtainable: null, excluded: false,
   stage: "acquire", action: "farm", owned: false, owned_level: null, build_completion_ms: null,
-  vendors: [], spend: null, craft: null, relic: null, drop: null, purchase: null, access: "available", blockers: [], route: null, ...over,
+  vendors: [], spend: null, baro: null, craft: null, relic: null, drop: null, purchase: null, access: "available", blockers: [], route: null, ...over,
 });
 
 const paths = (list: Opportunity[]) => list.map(o => o.unique_name);

@@ -1,7 +1,7 @@
 import { RELIC_SUGGESTION_THRESHOLD } from "../constants/relics.ts";
 import { isOrigin, routeText, SOURCE_UNKNOWN } from "../constants/routes.ts";
 import { formatAge, formatCount as n } from "../lib/formatters.ts";
-import type { Access, Coverage, FormaGate, Listing, MasteryState, Opportunity, Purchase, Stage } from "../types/mastery";
+import type { Access, Baro, Coverage, FormaGate, Listing, MasteryState, Opportunity, Purchase, Stage } from "../types/mastery";
 
 export type MasteryView = "whatnext" | "target" | "collection";
 export type ResultView = "suggestions" | "relics" | "platinum";
@@ -184,8 +184,16 @@ export function remainingText(remaining: number | null, gate?: FormaGate | null)
   return gate ? `+${n(remaining - gate.mastery)} to ${gate.level_cap} + ${n(gate.mastery)} with ${gate.forma} Forma` : `+${n(remaining)}`;
 }
 
+/** The caller formats the time so it follows the clock setting. */
+function baroText(baro: Baro | null, until: (ms: number) => string): string {
+  if (baro?.state === "present") return `At Baro until ${until(baro.until)}, ${n(baro.ducats)} ducats + ${n(baro.credits)} credits`;
+  if (baro?.state === "unstocked") return `Baro, not in this visit (until ${until(baro.until)})`;
+  if (baro?.state === "away") return baro.until == null ? "Baro, away" : `Baro, away until ${until(baro.until)}`;
+  return "Baro Ki'Teer";
+}
+
 /** Uses the owned copy's level and cap. A forma'd copy can sit below the mastery credit already earned. */
-export function actionText(o: Opportunity): string {
+export function actionText(o: Opportunity, until: (ms: number) => string = ms => new Date(ms).toLocaleString()): string {
   switch (o.action) {
     case "level": {
       const cap = o.forma?.level_cap ?? o.cap;
@@ -212,7 +220,7 @@ export function actionText(o: Opportunity): string {
       return first ? `Buy ${first.blueprint ? "blueprint " : ""}from ${first.syndicate}` : "Buy";
     }
     case "trade": return "Buy from players";
-    case "acquire": return o.route ? routeText(o.route) : SOURCE_UNKNOWN;
+    case "acquire": return o.route?.kind === "baro" ? baroText(o.baro, until) : o.route ? routeText(o.route) : SOURCE_UNKNOWN;
     case "complete": return "Complete node";
     case "unlock": return "Unlock junction";
   }
@@ -315,7 +323,7 @@ export function detailText(o: Opportunity, nowMs: number, readyAt?: string): str
   if (o.build_completion_ms != null) {
     parts.push(`Build ${readyText(o.build_completion_ms, nowMs)}${readyAt ? ` (${readyAt})` : ""}`);
   }
-  for (const v of o.vendors) parts.push(`${v.syndicate}${v.tier ? `, ${v.tier}` : ""}${v.blueprint ? " (blueprint)" : ""}`);
+  for (const v of o.vendors) parts.push(`${v.syndicate}${v.tier ? `, ${v.tier}` : v.rank != null ? `, Rank ${v.rank}` : ""}${v.blueprint ? " (blueprint)" : ""}`);
   if (o.spend) {
     parts.push(`+${o.spend.mastery.toLocaleString("en-US")} mastery`);
     for (const t of o.spend.tracks) parts.push(`${t.track} R${t.from} → R${t.to}`);

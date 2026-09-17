@@ -15,5 +15,8 @@ export function blockerText(blocker: Blocker): string {
     case "missing_gate": return `${blocker.name} not cleared`;
     case "junction_tasks_unknown": return "Junction tasks unknown";
     case "node_unlock_unknown": return "Node unlock unknown";
+    case "baro_away": return "Baro away";
+    case "baro_not_stocking": return "Not in Baro's stock";
+    case "baro_visit_unknown": return "Baro's schedule unknown";
   }
 }

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+use crate::mastery::RouteKind;
 use crate::mastery_progress::MasteryProgress;
 use crate::mastery_rules::Unobtainable;
 use crate::monitor::CraftingJob;
@@ -55,6 +56,9 @@ pub struct CorrectionEntry {
     pub masterable:    Option<bool>,
     pub rank_cap:      Option<u32>,
     pub unobtainable:  Option<Unobtainable>,
+    /// Names the source when no dataset does, such as Baro's stock, a quest
+    /// or a vendor the catalogue lacks, and wins over the derived route.
+    pub route:         Option<RouteKind>,
 }
 
 impl CorrectionEntry {
@@ -66,6 +70,7 @@ impl CorrectionEntry {
         self.masterable    = other.masterable.or(self.masterable);
         self.rank_cap      = other.rank_cap.or(self.rank_cap);
         self.unobtainable  = other.unobtainable.or(self.unobtainable);
+        self.route         = other.route.or(self.route.take());
     }
 }
 
@@ -221,8 +226,28 @@ mod tests {
     }
 
     #[test]
+    fn user_entry_adds_a_route_to_a_bundled_path() {
+        let route = RouteKind::Quest { quest: Some("The Teacher".into()) };
+        let user = CorrectionEntry { path: EXCAL.into(), route: Some(route.clone()), ..Default::default() };
+        let map = merge_corrections(vec![bundled_excal()], vec![user]);
+        assert_eq!((map[EXCAL].route.as_ref(), map[EXCAL].unobtainable), (Some(&route), Some(Unobtainable::Founders)));
+        let untouched = merge_corrections(vec![CorrectionEntry { path: EXCAL.into(), route: Some(route.clone()), ..Default::default() }], vec![CorrectionEntry { path: EXCAL.into(), name: Some("Excal P".into()), ..Default::default() }]);
+        assert_eq!(untouched[EXCAL].route.as_ref(), Some(&route));
+    }
+
+    #[test]
     fn bundled_file_parses() {
         let bundled: Vec<CorrectionEntry> = serde_json::from_str(BUNDLED_CORRECTIONS).expect("bundled corrections.json is valid");
         assert!(bundled.iter().any(|e| e.path == EXCAL && e.unobtainable == Some(Unobtainable::Founders)));
+        const MARA_DETRON: &str = "/Lotus/Weapons/VoidTrader/VTDetron";
+        const VESPER: &str = "/Lotus/Weapons/Lasria/LasSilencedPistol/LasSilencedPistolWeapon";
+        assert!(bundled.iter().any(|e| e.path == MARA_DETRON && e.route == Some(RouteKind::Baro)));
+        assert!(bundled.iter().any(|e| e.path == VESPER && e.route == Some(RouteKind::Vendor { syndicate: Some("The Hex".into()), rank: Some(3) })));
+        // A vendor outside the syndicate table can never read Available.
+        for entry in &bundled {
+            if let Some(RouteKind::Vendor { syndicate: Some(name), .. }) = &entry.route {
+                assert!(crate::syndicates::syndicate(name).is_some(), "{}: {name} has no standing to read", entry.path);
+            }
+        }
     }
 }

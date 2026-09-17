@@ -9,10 +9,10 @@ export function routeText(route: RouteKind): string {
     case "trade": return "Player trade";
     case "adversary": return "Lich, Sister or Technocyte Coda reward";
     case "conservation": return "Revived by Son on Deimos";
-    case "market_credits": return `Market, ${route.credits.toLocaleString("en-US")} credits blueprint`;
+    case "market_credits": return `Market, ${route.credits.toLocaleString("en-US")} credits${route.blueprint ? " blueprint" : ""}`;
     case "baro": return "Baro Ki'Teer";
     case "nightwave": return "Nightwave";
-    case "quest": return "Quest";
+    case "quest": return route.quest ? `Quest: ${route.quest}` : "Quest";
     case "research": return `Research at ${route.lab}`;
   }
 }

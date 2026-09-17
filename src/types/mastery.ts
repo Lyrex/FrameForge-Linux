@@ -41,14 +41,16 @@ export type RouteKind =
   | { kind: "craft" }
   | { kind: "relic" }
   | { kind: "drop" }
-  | { kind: "vendor" }
+  /** Both are set on a curated route only. A derived vendor route leaves them out, since the catalogue's offers in `vendors` carry their own. */
+  | { kind: "vendor"; syndicate?: string; rank?: number }
   | { kind: "trade" }
   | { kind: "adversary" }
   | { kind: "conservation" }
-  | { kind: "market_credits"; credits: number }
+  /** `blueprint` is false where the Market sells the built item. */
+  | { kind: "market_credits"; credits: number; blueprint: boolean }
   | { kind: "baro" }
   | { kind: "nightwave" }
-  | { kind: "quest" }
+  | { kind: "quest"; quest?: string }
   | { kind: "research"; lab: string };
 
 export interface MasteryCounts {
@@ -102,15 +104,25 @@ export type Blocker =
   | { kind: "drop_sources_unknown" }
   | { kind: "missing_gate"; path: string; name: string }
   | { kind: "junction_tasks_unknown" }
-  | { kind: "node_unlock_unknown" };
+  | { kind: "node_unlock_unknown" }
+  | { kind: "baro_away" }
+  | { kind: "baro_not_stocking" }
+  | { kind: "baro_visit_unknown" };
 
 export interface VendorOffer {
   syndicate: string;
+  /** Holds the catalogue's title name and is empty on a curated offer, which carries only `rank`. */
   tier: string;
   blueprint: boolean;
   rank: number | null;
   standing: number | null;
 }
+
+/** Present carries Baro's departure and the summed price of what the row still needs from him, Unstocked his departure alone. Away carries his next arrival, and null when the fetched visit has already ended. Times are in ms. */
+export type Baro =
+  | { state: "present"; until: number; ducats: number; credits: number }
+  | { state: "unstocked"; until: number }
+  | { state: "away"; until: number | null };
 
 export interface TrackSpend {
   track: string;
@@ -271,6 +283,8 @@ export interface Opportunity extends MasterySource {
   build_completion_ms: number | null;
   vendors: VendorOffer[];
   spend: Spend | null;
+  /** Present on a row that comes from Baro, once a worldstate is in hand. */
+  baro: Baro | null;
   /** A source that is neither owned nor building carries its plan whenever a recipe exists. */
   craft: CraftPlan | null;
   /** Present when something short in the plan drops from a relic. */

@@ -9,7 +9,7 @@ use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache,
 use crate::mastery_nodes;
 use crate::mastery_progress::{MasteryPlan, PlayerProgress, Provenance, ProvenanceState};
 use crate::memory_scanner::BlobAffiliation;
-use crate::mastery_recipe::{blueprint_results, forma_ingredient, image_index, is_blueprint, purchasable, CraftPlan, Ledger};
+use crate::mastery_recipe::{blueprint_results, forma_ingredient, image_index, is_blueprint, purchasable, CraftPlan, Ledger, Requirement};
 use crate::mastery_relics::{Relics, RelicRoute};
 use crate::mastery_rules::{self, Unobtainable};
 use crate::monitor::CraftingJob;
@@ -18,6 +18,7 @@ use crate::settings::read_settings_map;
 use crate::syndicates::{self, research_lab};
 use crate::wfcd::{DropLocation, RecipeComponent, SyndicateOffer, WfcdItem};
 use crate::wfm::{to_wfm_slug, PriceQuote};
+use crate::worldstate::VoidTrader;
 
 const COLLECTION_CATEGORIES: &[&str] = &[
     "Warframes", "Primary", "Secondary", "Melee", "Operator Weapons",
@@ -130,26 +131,35 @@ pub(crate) enum Stage { LevelClaim, Craft, Acquire, Unsourced }
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Action { Level, Claim, Spend, Craft, Build, Buy, Farm, Trade, Acquire, Complete, Unlock }
 
-/// Labels live in the frontend.
-// TODO: Baro, Nightwave and Quest wait on a curated route table, since
-// nothing in the catalogue names them.
-#[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
+/// Labels live in the frontend. A curated corrections entry is written in
+/// this wire shape.
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RouteKind {
     Craft,
     Relic,
     Drop,
-    Vendor,
+    /// Both are empty on a derived route, where the catalogue's offers name
+    /// their syndicate themselves. A curated entry fills them for a vendor
+    /// the catalogue lacks.
+    Vendor {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        syndicate: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rank: Option<u32>,
+    },
     Trade,
     Adversary,
     Conservation,
-    MarketCredits { credits: u32 },
-    #[allow(dead_code)]
+    /// `blueprint` is false where the Market sells the built item, as it
+    /// does for the starter weapons.
+    MarketCredits { credits: u32, #[serde(default)] blueprint: bool },
     Baro,
-    #[allow(dead_code)]
     Nightwave,
-    #[allow(dead_code)]
-    Quest,
+    Quest {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quest: Option<String>,
+    },
     Research { lab: String },
 }
 
@@ -157,7 +167,15 @@ impl RouteKind {
     /// A route of this kind hands over the item's own blueprint, and the
     /// parts still have to drop.
     fn supplies_blueprint(&self) -> bool {
-        matches!(self, Self::MarketCredits { .. } | Self::Research { .. } | Self::Baro | Self::Nightwave | Self::Quest)
+        matches!(self, Self::MarketCredits { .. } | Self::Research { .. } | Self::Baro | Self::Nightwave | Self::Quest { .. })
+    }
+
+    /// Baro and the Nightwave cred store sell the parts as well as the
+    /// blueprint, so whatever no drop table locates comes from them.
+    /// TODO: the cred store rotates its stock, so a Nightwave row reads
+    /// Available unchecked until the worldstate's offerings are read.
+    fn supplies_parts(&self) -> bool {
+        matches!(self, Self::Baro | Self::Nightwave)
     }
 }
 
@@ -171,7 +189,7 @@ fn derived_route(name: &str, path: &str, bp_cost: Option<u32>) -> Option<RouteKi
     if name.split(' ').any(|word| matches!(word, "Kuva" | "Tenet" | "Coda")) { return Some(RouteKind::Adversary); }
     if path.contains("/CreaturePets/") && path.ends_with("PetPowerSuit") { return Some(RouteKind::Conservation); }
     if let Some(lab) = research_lab(name) { return Some(RouteKind::Research { lab: lab.into() }); }
-    bp_cost.map(|credits| RouteKind::MarketCredits { credits })
+    bp_cost.map(|credits| RouteKind::MarketCredits { credits, blueprint: true })
 }
 
 /// The variant order runs by severity so `max` keeps a blocker over an
@@ -197,15 +215,31 @@ pub(crate) enum Blocker {
     MissingGate { path: String, name: String },
     JunctionTasksUnknown,
     NodeUnlockUnknown,
+    BaroAway,
+    BaroNotStocking,
+    BaroVisitUnknown,
 }
 
 #[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct VendorOffer {
     pub(crate) syndicate: String,
+    /// Holds the catalogue's title name and is empty on a curated offer,
+    /// which carries only `rank`.
     pub(crate) tier: String,
     pub(crate) blueprint: bool,
     pub(crate) rank: Option<u32>,
     pub(crate) standing: Option<u32>,
+}
+
+/// Present carries Baro's departure and the summed price of what the row
+/// still needs from him, Unstocked his departure alone. Away carries his
+/// next arrival, and nothing when the fetched visit has already ended.
+#[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub(crate) enum Baro {
+    Present { until: i64, ducats: u32, credits: u32 },
+    Unstocked { until: i64 },
+    Away { until: Option<i64> },
 }
 
 #[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
@@ -317,6 +351,8 @@ pub(crate) struct Opportunity {
     pub(crate) build_completion_ms: Option<i64>,
     pub(crate) vendors: Vec<VendorOffer>,
     pub(crate) spend: Option<Spend>,
+    /// Present on a row that comes from Baro, once a worldstate is in hand.
+    pub(crate) baro: Option<Baro>,
     pub(crate) access: Access,
     pub(crate) blockers: Vec<Blocker>,
     /// A source that is neither owned nor building carries its plan whenever
@@ -365,6 +401,8 @@ pub(crate) struct Observed<'a> {
     pub(crate) images: &'a HashMap<String, String>,
     /// Holds every quote by slug, expired ones included.
     pub(crate) quotes: &'a HashMap<String, PriceQuote>,
+    /// `None` until the first worldstate fetch.
+    pub(crate) trader: Option<&'a VoidTrader>,
     pub(crate) now_ms: i64,
 }
 
@@ -455,6 +493,8 @@ fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Ob
     let recipes = Arc::clone(&state.recipes.lock().unwrap_or_else(|e| e.into_inner()));
     let offers = Arc::clone(&state.syndicate_catalog.lock().unwrap_or_else(|e| e.into_inner()));
     let drops = Arc::clone(&state.drop_locations.lock().unwrap_or_else(|e| e.into_inner()));
+    let baro = state.worldstate_cache.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        .and_then(|(_, raw, _)| crate::worldstate::void_trader(raw));
     f(overview, Some(&Observed {
         owned: &inventory.owned_copies(),
         stock: &stock,
@@ -471,6 +511,7 @@ fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Ob
         tradeable: &tradeable,
         images: &images,
         quotes: &state.wfm.quotes(),
+        trader: baro.as_ref(),
         now_ms: chrono::Utc::now().timestamp_millis(),
     }))
 }
@@ -519,7 +560,7 @@ fn plan_spend(system: &mastery_rules::IntrinsicSystem, skills: &HashMap<String, 
 fn spend_opportunity(source: MasterySource, spend: Spend, access: Access) -> Opportunity {
     Opportunity {
         source, stage: Stage::LevelClaim, action: Action::Spend,
-        owned: false, owned_level: None, forma: None, build_completion_ms: None, vendors: vec![], spend: Some(spend),
+        owned: false, owned_level: None, forma: None, build_completion_ms: None, vendors: vec![], spend: Some(spend), baro: None,
         access, blockers: vec![], craft: None, relic: None, drop: None, purchase: None,
     }
 }
@@ -549,9 +590,16 @@ fn system_source(system: &mastery_rules::IntrinsicSystem, by_name: &HashMap<&str
 }
 
 /// Hok and Rude Zuud offers have an empty result_unique, so they match on
-/// the part path with "Blueprint" appended.
-fn vendor_index(offers: &HashMap<String, Vec<SyndicateOffer>>) -> HashMap<&str, Vec<VendorOffer>> {
+/// the part path with "Blueprint" appended. A curated vendor route stands
+/// in for an offer the catalogue lacks and sells the blueprint wherever the
+/// item has a recipe.
+fn vendor_index<'a>(offers: &'a HashMap<String, Vec<SyndicateOffer>>, sources: &HashMap<&'a str, &'a MasterySource>, recipes: &HashMap<String, Vec<RecipeComponent>>) -> HashMap<&'a str, Vec<VendorOffer>> {
     let mut index: HashMap<&str, Vec<VendorOffer>> = HashMap::new();
+    for (&path, source) in sources {
+        if let Some(RouteKind::Vendor { syndicate: Some(syndicate), rank }) = &source.route {
+            index.entry(path).or_default().push(VendorOffer { syndicate: syndicate.clone(), tier: String::new(), blueprint: recipes.contains_key(path), rank: *rank, standing: None });
+        }
+    }
     for (syndicate, offers) in offers {
         for o in offers {
             let (source, blueprint) = match o.result_unique.as_deref() {
@@ -588,7 +636,7 @@ fn node_opportunity(source: &MasterySource, node: &NodeInfo, sources: &HashMap<&
     Some(Opportunity {
         source: source.clone(), stage: Stage::Acquire,
         action: if node.junction { Action::Unlock } else { Action::Complete },
-        owned: false, owned_level: None, forma: None, build_completion_ms: None, vendors: vec![], spend: None, access, blockers, craft: None, relic: None, drop: None, purchase: None,
+        owned: false, owned_level: None, forma: None, build_completion_ms: None, vendors: vec![], spend: None, baro: None, access, blockers, craft: None, relic: None, drop: None, purchase: None,
     })
 }
 
@@ -658,7 +706,7 @@ impl<'a> Rows<'a> {
                 (needed > 0).then(|| (path, forma_ingredient(needed, observed.recipes)))
             })
             .collect();
-        Self { by_name, building, vendors: vendor_index(observed.offers), copies, forma }
+        Self { by_name, building, vendors: vendor_index(observed.offers, by_name, observed.recipes), copies, forma }
     }
 
     fn row(&self, source: &MasterySource, observed: &Observed) -> Option<Opportunity> {
@@ -686,7 +734,7 @@ impl<'a> Rows<'a> {
             else if source.route.is_some() || source.remaining_mastery.is_some_and(|left| left > 0) { Action::Acquire }
             else { return None };
         Some(Opportunity {
-            source: source.clone(), stage: Stage::Acquire, action, owned, owned_level, forma, build_completion_ms, vendors, spend: None,
+            source: source.clone(), stage: Stage::Acquire, action, owned, owned_level, forma, build_completion_ms, vendors, spend: None, baro: None,
             access: Access::Available, blockers: vec![], craft: None, relic: None, drop: None, purchase: None,
         })
     }
@@ -709,12 +757,17 @@ fn settle<'a>(o: &mut Opportunity, rows: &'a Rows<'a>, ledger: &mut Ledger<'a>, 
                 if source.excluded || !observed.owned.get(&r.unique_name).is_some_and(|&n| n > 0) { return None; }
                 Some(crate::mastery_recipe::LevelFirst { unique_name: r.unique_name.clone(), name: source.name.clone(), gain })
             }).collect();
+        o.relic = observed.relics.route(&plan);
+        o.drop = drop_route(&plan, o.relic.as_ref(), observed.drops);
+        // A route that sells parts covers whatever no table locates, so the
+        // row is an acquisition. A row every table locates stays a farm even
+        // when Baro stocks it.
+        let from_route = o.source.route.as_ref().is_some_and(|r| r.supplies_parts()) && unlocated(o, &plan).next().is_some();
         o.action = if plan.craftable_now() { Action::Craft }
             else if plan.buildable() { Action::Build }
             else if !o.vendors.is_empty() { Action::Buy }
+            else if from_route { Action::Acquire }
             else { Action::Farm };
-        o.relic = observed.relics.route(&plan);
-        o.drop = drop_route(&plan, o.relic.as_ref(), observed.drops);
         o.craft = Some(plan);
     }
     if let Some(plan) = &mut o.craft {
@@ -723,7 +776,7 @@ fn settle<'a>(o: &mut Opportunity, rows: &'a Rows<'a>, ledger: &mut Ledger<'a>, 
     if matches!(o.action, Action::Spend | Action::Complete | Action::Unlock) { return; }
     if o.source.route.is_none() {
         o.source.route = match o.action {
-            Action::Buy => Some(RouteKind::Vendor),
+            Action::Buy => Some(RouteKind::Vendor { syndicate: None, rank: None }),
             Action::Trade => Some(RouteKind::Trade),
             Action::Craft | Action::Build | Action::Farm => Some(if o.relic.is_some() { RouteKind::Relic } else if o.drop.is_some() { RouteKind::Drop } else { RouteKind::Craft }),
             _ => None,
@@ -732,9 +785,11 @@ fn settle<'a>(o: &mut Opportunity, rows: &'a Rows<'a>, ledger: &mut Ledger<'a>, 
     o.stage = match o.action {
         Action::Level | Action::Claim => Stage::LevelClaim,
         Action::Acquire if o.source.route.is_none() => Stage::Unsourced,
+        Action::Acquire => Stage::Acquire,
         _ if o.craft.is_some() && o.relic.is_none() => Stage::Craft,
         _ => Stage::Acquire,
     };
+    o.baro = baro(o, observed);
     (o.access, o.blockers) = access(o, observed);
     o.purchase = purchase(o, observed);
 }
@@ -1152,6 +1207,36 @@ fn drop_route(plan: &CraftPlan, relic: Option<&RelicRoute>, drops: &HashMap<Stri
     Some(DropRoute { parts })
 }
 
+fn unlocated<'a>(o: &'a Opportunity, plan: &'a CraftPlan) -> impl Iterator<Item = &'a Requirement> + 'a {
+    let located: HashSet<&str> = o.relic.iter().flat_map(|r| &r.parts).map(|p| p.unique_name.as_str())
+        .chain(o.drop.iter().flat_map(|r| &r.parts).map(|p| p.unique_name.as_str()))
+        .collect();
+    plan.shortages().filter(move |r| !located.contains(r.unique_name.as_str()))
+}
+
+/// A Baro row needs the item itself, or every shortage no table locates.
+/// He counts as Present for the row only while his manifest carries all of
+/// it, and the price is summed by the count short.
+fn baro(o: &Opportunity, observed: &Observed) -> Option<Baro> {
+    if o.action != Action::Acquire || o.source.route != Some(RouteKind::Baro) { return None; }
+    let trader = observed.trader?;
+    if observed.now_ms < trader.activation_ms || observed.now_ms >= trader.expiry_ms {
+        return Some(Baro::Away { until: (observed.now_ms < trader.activation_ms).then_some(trader.activation_ms) });
+    }
+    let wanted: Vec<(&str, u32)> = match &o.craft {
+        Some(plan) => unlocated(o, plan).map(|r| (r.unique_name.as_str(), r.short)).collect(),
+        None => vec![(o.source.unique_name.as_str(), 1)],
+    };
+    let mut ducats = 0;
+    let mut credits = 0;
+    for (path, count) in wanted {
+        let Some(price) = trader.manifest.get(path) else { return Some(Baro::Unstocked { until: trader.expiry_ms }) };
+        ducats += price.ducats * count;
+        credits += price.credits * count;
+    }
+    Some(Baro::Present { until: trader.expiry_ms, ducats, credits })
+}
+
 fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<Blocker>) {
     let mut access = Access::Available;
     let mut blockers = vec![];
@@ -1189,6 +1274,12 @@ fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<Blocker>) {
                         }
                     }
                 },
+                Action::Acquire if o.source.route == Some(RouteKind::Baro) => match o.baro {
+                    Some(Baro::Present { .. }) => {}
+                    Some(Baro::Unstocked { .. }) => note(Access::Blocked, Blocker::BaroNotStocking),
+                    Some(Baro::Away { .. }) => note(Access::Blocked, Blocker::BaroAway),
+                    None => note(Access::Unknown, Blocker::BaroVisitUnknown),
+                },
                 Action::Trade | Action::Acquire => {}
                 _ => {
                     let plan = o.craft.as_ref().expect("a farm row carries its plan");
@@ -1196,11 +1287,7 @@ fn access(o: &Opportunity, observed: &Observed) -> (Access, Vec<Blocker>) {
                         .and_then(|_| observed.recipes.get(&o.source.unique_name))
                         .and_then(|components| components.iter().find(|c| is_blueprint(c)))
                         .map(|c| c.unique_name.as_str());
-                    let located: Vec<&str> = route_blueprint.into_iter()
-                        .chain(o.relic.iter().flat_map(|r| &r.parts).map(|p| p.unique_name.as_str()))
-                        .chain(o.drop.iter().flat_map(|r| &r.parts).map(|p| p.unique_name.as_str()))
-                        .collect();
-                    if plan.shortages().any(|r| !located.contains(&r.unique_name.as_str())) {
+                    if unlocated(o, plan).any(|r| Some(r.unique_name.as_str()) != route_blueprint) {
                         note(Access::Unknown, Blocker::DropSourcesUnknown);
                     }
                 }
@@ -1277,7 +1364,7 @@ pub(crate) fn build_mastery_overview(
             .unwrap_or_else(|| fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name));
         let Some(category) = collection_category(&i.item_type, &display_category) else { continue };
         let name = correction.and_then(|c| c.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| i.name.clone());
-        let route = derived_route(&name, &i.unique_name, i.bp_cost);
+        let route = correction.and_then(|c| c.route.clone()).or_else(|| derived_route(&name, &i.unique_name, i.bp_cost));
         sources.entry(i.unique_name.clone()).or_insert_with(|| MasterySource {
             unique_name: i.unique_name.clone(),
             name,
@@ -1780,7 +1867,7 @@ mod tests {
     static NO_IMAGES: LazyLock<HashMap<String, String>> = LazyLock::new(HashMap::new);
 
     fn observed_gear<'a>(owned: &'a HashMap<String, i64>, owned_levels: &'a HashMap<String, Vec<u32>>, crafting: &'a [CraftingJob], recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, mastery_rank: Option<u32>) -> Observed<'a> {
-        Observed { owned, stock: &NO_STOCK, owned_levels, owned_forma: &NO_FORMA, mastery_rank, crafting, recipes, offers, skills: None, affiliations: None, relics: &NO_RELICS, drops: &NO_DROPS, tradeable: &NO_MARKET, images: &NO_IMAGES, quotes: &NO_QUOTES, now_ms: 1_000_000 }
+        Observed { owned, stock: &NO_STOCK, owned_levels, owned_forma: &NO_FORMA, mastery_rank, crafting, recipes, offers, skills: None, affiliations: None, relics: &NO_RELICS, drops: &NO_DROPS, tradeable: &NO_MARKET, images: &NO_IMAGES, quotes: &NO_QUOTES, trader: None, now_ms: 1_000_000 }
     }
 
     fn observed_skills<'a>(progress: &'a PlayerProgress, recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, owned: &'a HashMap<String, i64>, levels: &'a HashMap<String, Vec<u32>>) -> Observed<'a> {
@@ -1871,12 +1958,12 @@ mod tests {
         assert_eq!(routed("Amprex"), (Action::Acquire, Stage::Acquire, Access::Available, Some(RouteKind::Research { lab: "Energy Lab".into() })));
         // The route locates the blueprint itself, so Fluctus is left with
         // only its chassis blueprint unlocated.
-        assert_eq!(routed("Astilla"), (Action::Farm, Stage::Craft, Access::Available, Some(RouteKind::MarketCredits { credits: 20_000 })));
+        assert_eq!(routed("Astilla"), (Action::Farm, Stage::Craft, Access::Available, Some(RouteKind::MarketCredits { credits: 20_000, blueprint: true })));
         assert_eq!((row("Astilla").blockers.clone(), row("Fluctus").blockers.clone()), (vec![], vec![Blocker::DropSourcesUnknown]));
         assert_eq!(routed("Vulpaphyla"), (Action::Acquire, Stage::Acquire, Access::Available, Some(RouteKind::Conservation)));
         assert_eq!(routed("Kuva Bramma"), (Action::Acquire, Stage::Acquire, Access::Available, Some(RouteKind::Adversary)));
         assert_eq!(routed("Dual Coda Torxica"), (Action::Acquire, Stage::Acquire, Access::Available, Some(RouteKind::Adversary)));
-        assert_eq!(routed("Sweeper"), (Action::Buy, Stage::Acquire, Access::Unknown, Some(RouteKind::Vendor)));
+        assert_eq!(routed("Sweeper"), (Action::Buy, Stage::Acquire, Access::Unknown, Some(RouteKind::Vendor { syndicate: None, rank: None })));
         // The stub recipe and the market listing do not turn an adversary
         // weapon into a farm or a trade, and it stays in Suggestions.
         let kuva = row("Kuva Karak");
@@ -1893,6 +1980,114 @@ mod tests {
         assert_eq!((braton.action, braton.stage, braton.access, braton.source.route.clone(), braton.blockers.clone()), (Action::Acquire, Stage::Unsourced, Access::Available, None, vec![]));
         assert!(overview.opportunities.iter().all(|o| o.stage != Stage::Unsourced || (o.action == Action::Acquire && o.source.route.is_none() && o.craft.is_none() && o.purchase.is_none())));
         assert_eq!(overview.opportunities.iter().position(|o| o.stage == Stage::Unsourced), Some(overview.opportunities.len() - unsourced.len()), "the stage sorts last");
+    }
+
+    /// The curated table names what no dataset carries. Baro rows follow
+    /// the worldstate through four states, with nothing fetched, away, here
+    /// with the row's needs priced by what is short, and here without them.
+    #[test]
+    fn curated_routes_come_from_the_table_and_baro_rows_follow_the_worldstate() {
+        const DETRON: &str = "/Lotus/Weapons/VoidTrader/VTDetron";
+        const DERA: &str = "/Lotus/Weapons/ClanTech/Energy/DeraVandal";
+        const DERA_BP: &str = "/Lotus/Types/Recipes/Weapons/DeraVandalBlueprint";
+        const STRUN: &str = "/Lotus/Weapons/Tenno/Shotgun/Shotgun";
+        const THORNBAK: &str = "/Lotus/Weapons/Tenno/LongGuns/TnModQuestRifle/TnModQuestRifleWeapon";
+        const THORNBAK_BP: &str = "/Lotus/Types/Recipes/Weapons/TnModQuestRifleWeaponBlueprint";
+        const SLEDGE: &str = "/Lotus/Weapons/Tenno/Melee/Hammer/ThrowingHammer";
+        const SLEDGE_BP: &str = "/Lotus/Types/Recipes/Weapons/ThrowingHammerBlueprint";
+        const SICKLE_BP: &str = "/Lotus/Types/Recipes/Weapons/LasGooSicklesPlayerWeaponBlueprint";
+        let mut items = catalog();
+        items.extend([
+            item("Mara Detron", DETRON, "Pistol", "Pistols", "Secondary", Some(true)),
+            item("Dera Vandal", DERA, "Rifle", "LongGuns", "Primary", Some(true)),
+            item("Strun", STRUN, "Shotgun", "LongGuns", "Primary", Some(true)),
+            item("Thornbak", THORNBAK, "Rifle", "LongGuns", "Primary", Some(true)),
+            item("Wolf Sledge", SLEDGE, "Hammer", "Melee", "Melee", Some(true)),
+        ]);
+        let mut corrections = corrections();
+        let route = |path: &str, route: RouteKind| (path.to_string(), CorrectionEntry { path: path.into(), route: Some(route), ..Default::default() });
+        corrections.extend([
+            route(DETRON, RouteKind::Baro),
+            route(DERA, RouteKind::Baro),
+            route(STRUN, RouteKind::MarketCredits { credits: 25_000, blueprint: false }),
+            route(THORNBAK, RouteKind::Quest { quest: Some("The Teacher".into()) }),
+            route(SLEDGE, RouteKind::Nightwave),
+            route(SICKLE, RouteKind::Vendor { syndicate: Some("The Hex".into()), rank: Some(5) }),
+        ]);
+        let owned = HashMap::new();
+        let levels = HashMap::new();
+        let recipes: HashMap<String, Vec<RecipeComponent>> = [
+            recipe(DERA, DERA_BP), recipe(THORNBAK, THORNBAK_BP), recipe(SLEDGE, SLEDGE_BP), recipe(SICKLE, SICKLE_BP),
+        ].into();
+        let offers = HashMap::new();
+        // Ferrite is a mission drop, so Baro is only asked for the blueprints.
+        let drops: HashMap<String, Vec<DropLocation>> = [(FERRITE.to_string(), vec![DropLocation { location: "Earth/E Prime".into(), chance: Some(20.0) }])].into();
+        let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
+        let no_worldstate = Observed { drops: &drops, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
+        let overview = with_suggestions(&items, &corrections, Some(&progress), &HashSet::new(), &no_worldstate);
+        let row = |overview: &MasteryOverview, name: &str| overview.opportunities.iter().find(|o| o.source.name == name).cloned().expect("listed");
+        let routed = |o: &Opportunity| (o.action, o.stage, o.access, o.blockers.clone(), o.baro);
+
+        assert_eq!(routed(&row(&overview, "Mara Detron")), (Action::Acquire, Stage::Acquire, Access::Unknown, vec![Blocker::BaroVisitUnknown], None));
+        let dera = row(&overview, "Dera Vandal");
+        assert_eq!((routed(&dera), dera.craft.is_some(), dera.source.route.clone()), ((Action::Acquire, Stage::Acquire, Access::Unknown, vec![Blocker::BaroVisitUnknown], None), true, Some(RouteKind::Baro)));
+        let strun = row(&overview, "Strun");
+        assert_eq!((routed(&strun), strun.source.route.clone()), ((Action::Acquire, Stage::Acquire, Access::Available, vec![], None), Some(RouteKind::MarketCredits { credits: 25_000, blueprint: false })));
+        // The quest hands over the main blueprint, and nothing locates the chassis blueprint.
+        let thornbak = row(&overview, "Thornbak");
+        assert_eq!((routed(&thornbak), thornbak.source.route.clone()), ((Action::Farm, Stage::Craft, Access::Unknown, vec![Blocker::DropSourcesUnknown], None), Some(RouteKind::Quest { quest: Some("The Teacher".into()) })));
+        // The cred store sells the parts too, so nothing is unlocated.
+        let sledge = row(&overview, "Wolf Sledge");
+        assert_eq!((routed(&sledge), sledge.craft.is_some(), sledge.source.route.clone()), ((Action::Acquire, Stage::Acquire, Access::Available, vec![], None), true, Some(RouteKind::Nightwave)));
+        let viciss = row(&overview, "Dual Viciss");
+        assert_eq!((viciss.action, viciss.stage, viciss.source.route.clone()), (Action::Buy, Stage::Craft, Some(RouteKind::Vendor { syndicate: Some("The Hex".into()), rank: Some(5) })));
+        assert_eq!(viciss.vendors, [VendorOffer { syndicate: "The Hex".into(), tier: String::new(), blueprint: true, rank: Some(5), standing: None }]);
+        assert_eq!((viciss.access, viciss.blockers), (Access::Unknown, vec![Blocker::StandingUnknown]));
+        let hex = |title: i32| -> HashMap<String, BlobAffiliation> { [("HexSyndicate".to_string(), BlobAffiliation { standing: 0, title })].into() };
+        let ranked = |title: i32| {
+            let overview = with_suggestions(&items, &corrections, Some(&progress), &HashSet::new(), &Observed { affiliations: Some(&hex(title)), ..no_worldstate });
+            let viciss = row(&overview, "Dual Viciss");
+            (viciss.access, viciss.blockers)
+        };
+        assert_eq!(ranked(4), (Access::Blocked, vec![Blocker::StandingRankBelow { required: 5, syndicate: "The Hex".into() }]));
+        assert_eq!(ranked(5), (Access::Available, vec![]));
+
+        let visit = |activation_ms: i64, expiry_ms: i64, manifest: &[(&str, u32, u32)]| VoidTrader {
+            activation_ms, expiry_ms,
+            manifest: manifest.iter().map(|&(path, ducats, credits)| (path.to_string(), crate::worldstate::BaroPrice { ducats, credits })).collect(),
+        };
+        let stocked = visit(500_000, 2_000_000, &[(DETRON, 500, 200_000), (DERA_BP, 50, 25_000), (CHASSIS_BP, 25, 10_000)]);
+        let present = Observed { trader: Some(&stocked), ..no_worldstate };
+        let overview = with_suggestions(&items, &corrections, Some(&progress), &HashSet::new(), &present);
+        assert_eq!(routed(&row(&overview, "Mara Detron")), (Action::Acquire, Stage::Acquire, Access::Available, vec![], Some(Baro::Present { until: 2_000_000, ducats: 500, credits: 200_000 })));
+        assert_eq!(routed(&row(&overview, "Dera Vandal")), (Action::Acquire, Stage::Acquire, Access::Available, vec![], Some(Baro::Present { until: 2_000_000, ducats: 75, credits: 35_000 })));
+
+        let without_dera = visit(500_000, 2_000_000, &[(DETRON, 500, 200_000)]);
+        let partial = Observed { trader: Some(&without_dera), ..no_worldstate };
+        let overview = with_suggestions(&items, &corrections, Some(&progress), &HashSet::new(), &partial);
+        assert_eq!(routed(&row(&overview, "Dera Vandal")), (Action::Acquire, Stage::Acquire, Access::Blocked, vec![Blocker::BaroNotStocking], Some(Baro::Unstocked { until: 2_000_000 })));
+
+        let ended = visit(100_000, 200_000, &[(DETRON, 500, 200_000)]);
+        let stale = Observed { trader: Some(&ended), ..no_worldstate };
+        let overview = with_suggestions(&items, &corrections, Some(&progress), &HashSet::new(), &stale);
+        assert_eq!(routed(&row(&overview, "Mara Detron")), (Action::Acquire, Stage::Acquire, Access::Blocked, vec![Blocker::BaroAway], Some(Baro::Away { until: None })));
+
+        let next = visit(3_000_000, 4_000_000, &[]);
+        let away = Observed { trader: Some(&next), ..no_worldstate };
+        let overview = with_suggestions(&items, &corrections, Some(&progress), &HashSet::new(), &away);
+        assert_eq!(routed(&row(&overview, "Mara Detron")), (Action::Acquire, Stage::Acquire, Access::Blocked, vec![Blocker::BaroAway], Some(Baro::Away { until: Some(3_000_000) })));
+        assert_eq!(routed(&row(&overview, "Strun")).2, Access::Available, "only Baro rows follow the worldstate");
+    }
+
+    #[test]
+    fn route_kinds_serialise_without_the_fields_they_lack() {
+        let json = |route: RouteKind| serde_json::to_value(route).expect("serialisable");
+        assert_eq!(json(RouteKind::Vendor { syndicate: None, rank: None }), serde_json::json!({ "kind": "vendor" }));
+        assert_eq!(json(RouteKind::Vendor { syndicate: Some("The Hex".into()), rank: Some(3) }), serde_json::json!({ "kind": "vendor", "syndicate": "The Hex", "rank": 3 }));
+        assert_eq!(json(RouteKind::Quest { quest: None }), serde_json::json!({ "kind": "quest" }));
+        assert_eq!(json(RouteKind::MarketCredits { credits: 25_000, blueprint: true }), serde_json::json!({ "kind": "market_credits", "credits": 25_000, "blueprint": true }));
+        let parsed: RouteKind = serde_json::from_value(serde_json::json!({ "kind": "market_credits", "credits": 25_000 })).expect("a curated entry may omit the flag");
+        assert_eq!(parsed, RouteKind::MarketCredits { credits: 25_000, blueprint: false });
     }
 
     #[test]
