@@ -112,6 +112,20 @@ impl Owner {
             (Owner::Unassigned, true, Some(_)) => false,
         }
     }
+
+    /// A rejected cache shows in the UI only as empty suggestions, so the
+    /// reason names both owners.
+    pub(crate) fn inventory_rejection(&self, stamped: bool, cache_player: Option<&str>) -> Option<String> {
+        (!self.trusts_inventory(stamped, cache_player))
+            .then(|| format!("inventory cache stamped {cache_player:?} rejected: progress owner is {self:?}; no suggestions until a scan under this account"))
+    }
+
+    pub(crate) fn into_player(self) -> Option<String> {
+        match self {
+            Owner::Player(player) => Some(player),
+            Owner::Unassigned => None,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -592,5 +606,26 @@ mod tests {
         assert!(!progress.owner(Some("B")).trusts_inventory(true, None), "scan before login could be anyone's");
         assert!(!progress.owner(Some("B")).trusts_inventory(true, Some("A")), "A's scan must not serve B");
         assert!(progress.owner(Some("B")).trusts_inventory(true, Some("B")));
+    }
+
+    #[test]
+    fn cache_stamp_follows_the_progress_owner() {
+        let (_dir, _path, mut progress) = fresh("cache-stamp");
+        assert_eq!(progress.owner(None).into_player(), None, "no name, nobody seen: unstamped");
+        progress.select_player(Some("A"));
+        assert_eq!(progress.owner(None).into_player().as_deref(), Some("A"), "no name resolves to the last seen player");
+        assert_eq!(progress.owner(Some("B")).into_player().as_deref(), Some("B"));
+    }
+
+    #[test]
+    fn rejected_inventory_names_both_owners() {
+        let (_dir, _path, mut progress) = fresh("inventory-rejection");
+        progress.select_player(Some("A"));
+        let reason = progress.owner(None).inventory_rejection(true, Some("B")).expect("B's scan rejected for A");
+        assert!(reason.contains("\"B\"") && reason.contains("\"A\""), "{reason}");
+        let reason = progress.owner(None).inventory_rejection(true, None).expect("unstamped scan rejected once A is known");
+        assert!(reason.contains("None") && reason.contains("\"A\""), "{reason}");
+        assert_eq!(progress.owner(None).inventory_rejection(true, Some("A")), None);
+        assert_eq!(progress.owner(None).inventory_rejection(false, None), None);
     }
 }

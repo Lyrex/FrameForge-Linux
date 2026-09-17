@@ -1,7 +1,8 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tauri::Manager;
+use tracing::warn;
 use crate::app_state::{AppState, CorrectionEntry};
 use crate::catalogue::fix_category;
 use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache, CREDITS_PATH};
@@ -410,6 +411,10 @@ pub(crate) fn save_mastery_plan(state: tauri::State<'_, AppState>, plan: Mastery
 /// player and the inventory cache is not, so after a player switch the
 /// previous account's copies would otherwise stay listed until the next
 /// full pass.
+/// The gate runs on every overview read, a few times a minute while the
+/// game is closed, so the same rejection is logged once until it changes.
+static LAST_INVENTORY_REJECTION: Mutex<Option<String>> = Mutex::new(None);
+
 fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Observed>) -> R) -> R {
     let player = state.local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let excluded = excluded_classes(&state.settings_path);
@@ -427,7 +432,16 @@ fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Ob
         (build_mastery_overview(&items, &state.corrections, record, &excluded), skills, affiliations, relic_names, market_items(&items), image_index(&items), owner)
     };
     let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
-    if inventory.items.is_empty() || !owner.trusts_inventory(inventory.stamped, inventory.player.as_deref()) { return f(overview, None); }
+    if inventory.items.is_empty() { return f(overview, None); }
+    let mut last_rejection = LAST_INVENTORY_REJECTION.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(reason) = owner.inventory_rejection(inventory.stamped, inventory.player.as_deref()) {
+        if last_rejection.as_deref() != Some(&reason) {
+            warn!("{reason}");
+            *last_rejection = Some(reason);
+        }
+        return f(overview, None);
+    }
+    *last_rejection = None;
     annotate_needed_for(&mut overview, &inventory.owned_copies(),
         &state.recipe_consumers.lock().unwrap_or_else(|e| e.into_inner()));
     overview.mastery_rank = inventory.mastery_rank;

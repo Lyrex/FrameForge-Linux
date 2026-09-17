@@ -399,7 +399,11 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     relic_drops: &relic_drops_snapshot, existing_wfm_prices: &existing_wfm,
                     excluded_paths: &alias_excluded,
                 });
-                sc.player = capture_player.clone();
+                // A scan captured before EE.log named the account is stamped
+                // with the last seen player, the owner the progress records
+                // it under. A stamp with no player fails the trust gate once
+                // any account is known.
+                sc.player = mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).owner(capture_player.as_deref()).into_player();
                 if !persist_complete_inventory(&blob, &unique_quantities, &sc, &inventory_state_cache_path) {
                     mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).discard_blob();
                     continue;
