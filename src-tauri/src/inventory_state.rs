@@ -127,13 +127,6 @@ fn is_zero_u32(v: &u32) -> bool { *v == 0 }
 /// Full inventory snapshot persisted to disk. Survives app restarts.
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
 pub(crate) struct InventoryStateCache {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) player: Option<String>,
-    /// False only for a file written before the player stamp existed. A live
-    /// scan whose player is still unknown is stamped too, so the two cases
-    /// stay distinguishable.
-    #[serde(default)]
-    pub(crate) stamped: bool,
     /// All owned items: unique_name → item entry.
     #[serde(default)]
     pub(crate) items: HashMap<String, CachedItem>,
@@ -385,8 +378,6 @@ pub(crate) fn build_inventory_from_blob(
     for path in excluded_paths { items.remove(path); }
 
     InventoryStateCache {
-        player: None,
-        stamped: true,
         items,
         mastery_rank: if blob.mastery_level > 0 { Some(blob.mastery_level) } else { None },
         rivens: blob.rivens.clone(),
@@ -503,7 +494,7 @@ mod inventory_quantity_tests {
         );
         let blob = memory_scanner::parse_full_account_blob(raw.as_bytes()).expect("complete account");
         // WFCD carries 40 for Kuva weapons and null for Necramechs.
-        let mut live = build_inventory_from_blob(BlobBuildParams {
+        let live = build_inventory_from_blob(BlobBuildParams {
             blob: &blob,
             path_to_name: &HashMap::new(), path_to_category: &HashMap::new(),
             path_to_max_level_cap: &[(NUKOR.into(), 40), (DRAKGOON.into(), 40)].into(),
@@ -512,7 +503,6 @@ mod inventory_quantity_tests {
             relic_drops: &HashMap::new(), existing_wfm_prices: &HashMap::new(),
             excluded_paths: &std::collections::HashSet::new(),
         });
-        live.player = Some("A".into());
         let expected = [(NUKOR, 40), (DRAKGOON, 30), (VOIDRIG, 40)];
         for (path, rank) in expected {
             assert_eq!(live.items[path].mastery_rank, rank, "{path}");
@@ -526,7 +516,6 @@ mod inventory_quantity_tests {
             assert_eq!(restarted.items[path].mastery_rank, rank, "{path}");
         }
         assert_eq!(restarted.items[NUKOR].max_level_cap, Some(40));
-        assert_eq!(restarted.player.as_deref(), Some("A"));
     }
 
     #[test]

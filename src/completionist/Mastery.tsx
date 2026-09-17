@@ -35,17 +35,16 @@ interface Props {
   inventory: Record<string, InventoryItem>;
   refreshKey: number;
   clockFormat: ClockFormat;
-  playerName: string | null;
   tracked: string[];
   onTrackToggle: (uniqueName: string) => void;
 }
 
-export default function Mastery({ inventory, refreshKey, clockFormat, playerName, tracked, onTrackToggle }: Props) {
+export default function Mastery({ inventory, refreshKey, clockFormat, tracked, onTrackToggle }: Props) {
   const [overview, setOverview] = useState<MasteryOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [controls, setControls] = useState<MasteryControls>(() => parseControls(localStorage.getItem(PREFERENCE_KEYS.MASTERY_CONTROLS)));
-  // Provenance changes (a re-observation, a player switch) and the exclusion
-  // settings leave the inventory prop untouched, so the backend announces them.
+  // A re-observation and the exclusion settings leave the inventory prop
+  // untouched, so the backend announces them.
   const [observationKey, setObservationKey] = useState(0);
   const [planView, setPlanView] = useState<ResultView | null>(null);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
@@ -147,7 +146,7 @@ export default function Mastery({ inventory, refreshKey, clockFormat, playerName
       )}
       {overview && controls.view === "target" && (
         <TargetMr overview={overview} controls={controls} onChange={update} nowMs={now * 1000} clockFormat={clockFormat}
-          playerName={playerName} tracked={tracked} onTrackToggle={onTrackToggle} onView={setPlanView} />
+          tracked={tracked} onTrackToggle={onTrackToggle} onView={setPlanView} />
       )}
     </div>
   );

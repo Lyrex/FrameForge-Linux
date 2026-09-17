@@ -47,8 +47,6 @@ interface Props {
   onChange: (patch: Partial<MasteryControls>) => void;
   nowMs: number;
   clockFormat: ClockFormat;
-  /** A switch reloads the plan, since each player has their own. */
-  playerName: string | null;
   tracked: string[];
   onTrackToggle: (uniqueName: string) => void;
   /** Tells the parent which result view the plan draws from, so a platinum plan gets quotes. */
@@ -77,7 +75,7 @@ function Placeholder({ path, entry, overview }: { path: string; entry: PlanEntry
   );
 }
 
-export default function TargetMr({ overview, controls, onChange, nowMs, clockFormat, playerName, tracked, onTrackToggle, onView }: Props) {
+export default function TargetMr({ overview, controls, onChange, nowMs, clockFormat, tracked, onTrackToggle, onView }: Props) {
   const [plan, setPlan] = useState<MasteryPlan | null>(null);
   // A plan that was never saved prefills itself once the gap is known. A cleared plan stays empty.
   const [fresh, setFresh] = useState(false);
@@ -98,7 +96,7 @@ export default function TargetMr({ overview, controls, onChange, nowMs, clockFor
       })
       .catch(() => {});
     return () => { stale = true; };
-  }, [playerName, overview.mastery_rank]); // eslint-disable-line
+  }, [overview.mastery_rank]); // eslint-disable-line
 
   // Every observation re-evaluates the same selections. Only the player changes them.
   useEffect(() => {

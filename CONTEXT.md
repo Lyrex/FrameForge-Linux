@@ -35,9 +35,10 @@ _Avoid_: url_name, item_url, market id
 **Account state**:
 The player's possessions and progression, including equipment history,
 Intrinsic ranks, and mission completion. Inventory is its owned-item subset.
-Realistically one account per install: mastery progress is keyed per player
-name because switching happens, but everything else holds one account's
-state at a time, and cross-account handling stays as cheap as possible.
+One account per install: FrameForge holds the state the last observation
+wrote, whichever account was logged in. A switch is not tracked; the next
+observation overwrites, and the mastery plan stays until the player
+re-plans.
 _Avoid_: inventory (when progression is included)
 
 **Mastery source**:

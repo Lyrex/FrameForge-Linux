@@ -229,7 +229,6 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
     let db_path = state.db_path.clone();
     let inventory_state_cache_path = state.inventory_state_cache_path.clone();
     let mastery_progress     = state.mastery_progress.clone();
-    let local_player_name    = state.local_player_name.clone();
     let shared_quantities    = state.current_quantities.clone();
     let shared_unique        = state.unique_quantities.clone();
     let shared_mods          = state.current_mods.clone();
@@ -347,10 +346,6 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
             .collect();
         let mut last_walk_time: Option<std::time::Instant> = None;
         let mut last_probe_time: Option<std::time::Instant> = None;
-        // Name under which every blob still in the channel was captured. A
-        // probe drains one tick later and a walk one or two, and the log tail
-        // can rename the player in between; such a blob confirms nobody.
-        let mut capture_player: Option<String> = None;
         let mut last_blob_probe: Option<std::time::Instant> = None;
         // Guard against overlapping captures: a full memory walk can take >10 s on large
         // game processes, so without this flag we'd stack up concurrent scan threads.
@@ -378,11 +373,6 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
 
             let now = chrono::Utc::now().timestamp();
 
-            let player = local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            if mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).select_player(player.as_deref()) {
-                let _ = app.emit("mastery-update", ());
-            }
-
             // Process any incoming blob (non-blocking)
             while let Ok(blob) = blob_rx.try_recv() {
                 let existing_wfm: HashMap<String, u32> =
@@ -390,7 +380,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                         .items.into_iter()
                         .filter_map(|(k, v)| v.wfm_price.map(|p| (k, p)))
                         .collect();
-                let mut sc = build_inventory_from_blob(BlobBuildParams {
+                let sc = build_inventory_from_blob(BlobBuildParams {
                     blob: &blob,
                     path_to_name: &path_to_name, path_to_category: &path_to_category,
                     path_to_ducat: &path_to_ducat, path_to_vaulted: &path_to_vaulted,
@@ -399,11 +389,6 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     relic_drops: &relic_drops_snapshot, existing_wfm_prices: &existing_wfm,
                     excluded_paths: &alias_excluded,
                 });
-                // A scan captured before EE.log named the account is stamped
-                // with the last seen player, the owner the progress records
-                // it under. A stamp with no player fails the trust gate once
-                // any account is known.
-                sc.player = mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).owner(capture_player.as_deref()).into_player();
                 if !persist_complete_inventory(&blob, &unique_quantities, &sc, &inventory_state_cache_path) {
                     mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).discard_blob();
                     continue;
@@ -420,11 +405,8 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                 if blob.affiliations.is_none() {
                     warn!("Affiliations is not an array; inventory applied, standing left as it was");
                 }
-                if capture_player != player {
-                    warn!(captured_as = ?capture_player, drained_as = ?player, "player changed while blob was queued; inventory applied, mastery progress left as it was");
-                    mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).discard_blob();
-                } else if mastery_progress.lock().unwrap_or_else(|e| e.into_inner())
-                    .apply_blob(player.as_deref(), blob.mastery_xp.as_ref(), blob.player_skills.as_ref(), blob.missions.as_ref(), blob.affiliations.as_ref(), now)
+                if mastery_progress.lock().unwrap_or_else(|e| e.into_inner())
+                    .apply_blob(blob.mastery_xp.as_ref(), blob.player_skills.as_ref(), blob.missions.as_ref(), blob.affiliations.as_ref(), now)
                 {
                     let _ = app.emit("mastery-update", ());
                 }
@@ -710,7 +692,6 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                 let mut should_capture = false;
                 if probe_due && !walk_in_flight {
                     last_probe_time = Some(std::time::Instant::now());
-                    capture_player = player.clone();
                     let stitch_due = last_blob_probe
                         .is_none_or(|t: std::time::Instant| t.elapsed() >= BLOB_PROBE_FALLBACK)
                         || blob_sync_pending.load(Ordering::SeqCst)
@@ -725,7 +706,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     // A full overview refetch would rerun the planning pass
                     // to move one pill, so the stamp goes out on its own.
                     if outcome == Some(memory_scanner::ScanOutcome::Unchanged)
-                        && mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).reobserve(player.as_deref(), now)
+                        && mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).reobserve(now)
                     {
                         let _ = app.emit("mastery-observed", now);
                     }

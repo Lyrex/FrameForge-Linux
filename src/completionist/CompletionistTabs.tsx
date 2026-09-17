@@ -12,12 +12,11 @@ interface CompletionistTabsProps {
   inventory: Record<string, InventoryItem>;
   refreshKey: number;
   clockFormat: ClockFormat;
-  playerName: string | null;
   tracked: string[];
   onTrackToggle: (uniqueName: string) => void;
 }
 
-export default function CompletionistTabs({ inventory, refreshKey, clockFormat, playerName, tracked, onTrackToggle }: CompletionistTabsProps) {
+export default function CompletionistTabs({ inventory, refreshKey, clockFormat, tracked, onTrackToggle }: CompletionistTabsProps) {
   const [view, setView] = useState<CompletionistView>("syndicates");
   const [syndicateFilters, setSyndicateFilters] = useState<SyndicateFilters>(SYNDICATE_FILTERS_DEFAULT);
 
@@ -49,7 +48,7 @@ export default function CompletionistTabs({ inventory, refreshKey, clockFormat, 
         />
       )}
       {view === "mastery" && (
-        <Mastery inventory={inventory} refreshKey={refreshKey} clockFormat={clockFormat} playerName={playerName} tracked={tracked} onTrackToggle={onTrackToggle} />
+        <Mastery inventory={inventory} refreshKey={refreshKey} clockFormat={clockFormat} tracked={tracked} onTrackToggle={onTrackToggle} />
       )}
     </div>
   );

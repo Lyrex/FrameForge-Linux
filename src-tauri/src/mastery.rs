@@ -1,8 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tauri::Manager;
-use tracing::warn;
 use crate::app_state::{AppState, CorrectionEntry};
 use crate::catalogue::fix_category;
 use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache, CREDITS_PATH};
@@ -431,55 +430,33 @@ pub(crate) async fn evaluate_mastery_plan(app: tauri::AppHandle, plan: MasteryPl
 
 #[tauri::command]
 pub(crate) fn load_mastery_plan(state: tauri::State<'_, AppState>) -> Option<MasteryPlan> {
-    let player = state.local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let progress = state.mastery_progress.lock().unwrap_or_else(|e| e.into_inner());
-    progress.current(player.as_deref()).and_then(|record| record.plan.clone())
+    state.mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).record().plan.clone()
 }
 
 #[tauri::command]
 pub(crate) fn save_mastery_plan(state: tauri::State<'_, AppState>, plan: MasteryPlan) {
-    let player = state.local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    state.mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).set_plan(player.as_deref(), plan);
+    state.mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).set_plan(plan);
 }
 
 /// Builds the overview and, once an inventory scan says what the player
 /// owns, everything a row is planned against. Without a scan there are no
-/// suggestions to make, so the closure sees no `Observed`. A scan another
-/// account wrote is treated as no scan. The mastery record is kept per
-/// player and the inventory cache is not, so after a player switch the
-/// previous account's copies would otherwise stay listed until the next
-/// full pass.
-/// The gate runs on every overview read, a few times a minute while the
-/// game is closed, so the same rejection is logged once until it changes.
-static LAST_INVENTORY_REJECTION: Mutex<Option<String>> = Mutex::new(None);
-
+/// suggestions to make, so the closure sees no `Observed`.
 fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Observed>) -> R) -> R {
-    let player = state.local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let excluded = excluded_classes(&state.settings_path);
-    let (mut overview, skills, affiliations, relic_names, tradeable, catalogue, owner) = {
+    let (mut overview, skills, affiliations, relic_names, tradeable, catalogue) = {
         let progress = state.mastery_progress.lock().unwrap_or_else(|e| e.into_inner());
         let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
-        let owner = progress.owner(player.as_deref());
-        let record = progress.current(player.as_deref());
-        let skills = record.filter(|r| r.intrinsics.state != ProvenanceState::Unknown).map(|r| r.skills.clone());
-        let affiliations = record.filter(|r| r.standing.state != ProvenanceState::Unknown).map(|r| r.affiliations.clone());
+        let record = progress.record();
+        let skills = (record.intrinsics.state != ProvenanceState::Unknown).then(|| record.skills.clone());
+        let affiliations = (record.standing.state != ProvenanceState::Unknown).then(|| record.affiliations.clone());
         let relic_names: HashMap<String, String> = items.iter()
             .filter(|i| i.category == "Relics")
             .map(|i| (i.unique_name.clone(), i.name.clone()))
             .collect();
-        (build_mastery_overview(&items, &state.corrections, record, &excluded), skills, affiliations, relic_names, market_items(&items), catalogue_index(&items), owner)
+        (build_mastery_overview(&items, &state.corrections, record, &excluded), skills, affiliations, relic_names, market_items(&items), catalogue_index(&items))
     };
     let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
     if inventory.items.is_empty() { return f(overview, None); }
-    let mut last_rejection = LAST_INVENTORY_REJECTION.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(reason) = owner.inventory_rejection(inventory.stamped, inventory.player.as_deref()) {
-        if last_rejection.as_deref() != Some(&reason) {
-            warn!("{reason}");
-            *last_rejection = Some(reason);
-        }
-        return f(overview, None);
-    }
-    *last_rejection = None;
     annotate_needed_for(&mut overview, &inventory.owned_copies(),
         &state.recipe_consumers.lock().unwrap_or_else(|e| e.into_inner()));
     overview.mastery_rank = inventory.mastery_rank;
@@ -1327,16 +1304,16 @@ pub(crate) fn excluded_classes(settings_path: &Path) -> HashSet<Unobtainable> {
 pub(crate) fn build_mastery_overview(
     items: &[WfcdItem],
     corrections: &HashMap<String, CorrectionEntry>,
-    progress: Option<&PlayerProgress>,
+    progress: &PlayerProgress,
     excluded: &HashSet<Unobtainable>,
 ) -> MasteryOverview {
     let aliases = inventory_path_aliases();
-    let equipment = progress.map(|p| p.equipment).unwrap_or_default();
-    let intrinsics = progress.map(|p| p.intrinsics).unwrap_or_default();
-    let standing = progress.map(|p| p.standing).unwrap_or_default();
+    let equipment = progress.equipment;
+    let intrinsics = progress.intrinsics;
+    let standing = progress.standing;
     // XPInfo credits some aliases directly; the overview lists canonical entries only.
     let mut affinity: HashMap<&str, i64> = HashMap::new();
-    for (path, &earned) in progress.iter().flat_map(|p| &p.affinity) {
+    for (path, &earned) in &progress.affinity {
         let canonical = aliases.get(path.as_str()).copied().unwrap_or(path);
         let credit = affinity.entry(canonical).or_insert(earned);
         *credit = (*credit).max(earned);
@@ -1404,7 +1381,7 @@ pub(crate) fn build_mastery_overview(
         place(source, equipment.resolve(rank, 0));
     }
     for system in &mastery_rules::INTRINSIC_SYSTEMS {
-        let ranks = progress.filter(|p| p.intrinsics.state != ProvenanceState::Unknown).map(|p| system.track_ranks(&p.skills));
+        let ranks = (progress.intrinsics.state != ProvenanceState::Unknown).then(|| system.track_ranks(&progress.skills));
         for (i, (track, field)) in system.tracks.iter().enumerate() {
             let source = MasterySource {
                 unique_name: (*field).into(),
@@ -1431,10 +1408,10 @@ pub(crate) fn build_mastery_overview(
         category.sources.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.unique_name.cmp(&b.unique_name)));
     }
 
-    let nodes = progress.map(|p| p.nodes).unwrap_or_default();
+    let nodes = progress.nodes;
     let chart = categories.iter_mut().find(|c| c.category == STAR_CHART).expect("category comes from COLLECTION_CATEGORIES");
     for node in mastery_nodes::all().filter(|node| node.amount > 0) {
-        let mission = progress.and_then(|p| p.missions.get(node.key));
+        let mission = progress.missions.get(node.key);
         for mode in [Mode::Normal, Mode::SteelPath] {
             let observed = mission.map(|m| match mode {
                 Mode::Normal => m.completes > 0,
@@ -1630,7 +1607,7 @@ mod tests {
 
     #[test]
     fn every_masterable_category_is_listed_once_by_canonical_identity() {
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&observed(ProvenanceState::Confirmed, Some(1_000), &[])), &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections(), &observed(ProvenanceState::Confirmed, Some(1_000), &[]), &HashSet::new());
         let categories: Vec<&str> = overview.categories.iter().map(|c| c.category.as_str()).collect();
         assert_eq!(categories, ["Warframes", "Primary", "Secondary", "Melee", "Operator Weapons",
             "Archwing", "Companions", "Companion Weapons", "Vehicles", "Intrinsics", "Star Chart"]);
@@ -1659,7 +1636,7 @@ mod tests {
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[
             (ORION, 900_000), (BRATON, 450_000), (KUVA, 612_500), (STRIKE, 72_000),
         ]);
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections(), &progress, &HashSet::new());
         assert_eq!(overview.provenance.equipment, Provenance { state: ProvenanceState::Confirmed, observed_at: Some(1_000) });
         assert_eq!(overview.provenance.intrinsics.state, ProvenanceState::Unknown);
         assert_eq!((source(&overview, SIRIUS).earned_rank, source(&overview, SIRIUS).state), (Some(30), MasteryState::Mastered));
@@ -1679,7 +1656,7 @@ mod tests {
             ("SolNode27", 14, Some(1)), ("EarthToVenusJunction", 2, None), ("SolNode239", 1, Some(1)),
             ("SolNode1", 1, Some(2)), ("SolNode2", 3, Some(8)), ("VenusToMercuryJunction", 1, Some(1)),
         ]);
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections(), &progress, &HashSet::new());
         assert_eq!(overview.provenance.nodes, Provenance { state: ProvenanceState::Confirmed, observed_at: Some(1_000) });
 
         let e_prime = source(&overview, "SolNode27");
@@ -1719,7 +1696,7 @@ mod tests {
     #[test]
     fn missions_field_absent_leaves_every_star_chart_row_unknown() {
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(BRATON, 450_000)]);
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections(), &progress, &HashSet::new());
         assert_eq!(overview.provenance.nodes, Provenance::default());
         assert_eq!(source(&overview, BRATON).state, MasteryState::Mastered);
         let chart = star_chart(&overview);
@@ -1730,7 +1707,7 @@ mod tests {
     #[test]
     fn chart_omits_zero_credit_nodes_and_awards_each_modes_full_amount() {
         let progress = with_missions(observed(ProvenanceState::Confirmed, Some(1_000), &[]), &[]);
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections(), &progress, &HashSet::new());
         let chart = star_chart(&overview);
         for mode in [Mode::Normal, Mode::SteelPath] {
             let rows: Vec<_> = chart.sources.iter().filter(|s| s.node.as_ref().expect("chart row").mode == mode).collect();
@@ -1748,7 +1725,7 @@ mod tests {
 
     #[test]
     fn no_observation_means_unknown_not_missing() {
-        let overview = build_mastery_overview(&catalog(), &corrections(), None, &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections(), &PlayerProgress::default(), &HashSet::new());
         assert!(overview.categories.iter().flat_map(|c| &c.sources)
             .all(|s| s.state == MasteryState::Unknown && s.earned_rank.is_none() && s.remaining_mastery.is_none()));
         assert_eq!(overview.counts, MasteryCounts { total: 16 + INTRINSIC_ROWS + CHART_ROWS, mastered: 0, partial: 0, missing: 0, unknown: 16 + INTRINSIC_ROWS + CHART_ROWS, unobtainable: 0 });
@@ -1760,7 +1737,7 @@ mod tests {
     #[test]
     fn unconfirmed_progress_shows_saved_ranks_and_leaves_absent_entries_unknown() {
         let progress = observed(ProvenanceState::Unconfirmed, None, &[(BRATON, 450_000), (KUVA, 612_500)]);
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections(), &progress, &HashSet::new());
         assert_eq!(overview.provenance.equipment, Provenance { state: ProvenanceState::Unconfirmed, observed_at: None });
         assert_eq!((source(&overview, BRATON).earned_rank, source(&overview, BRATON).state), (Some(30), MasteryState::Mastered));
         assert_eq!((source(&overview, KUVA).earned_rank, source(&overview, KUVA).state), (Some(35), MasteryState::Partial));
@@ -1787,7 +1764,7 @@ mod tests {
         corrections.insert(CHAMBER.into(), CorrectionEntry { path: CHAMBER.into(), masterable: Some(false), ..Default::default() });
         corrections.insert(SICKLE.into(), CorrectionEntry { path: SICKLE.into(), rank_cap: Some(40), ..Default::default() });
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(SICKLE, 450_000)]);
-        let overview = build_mastery_overview(&items, &corrections, Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&items, &corrections, &progress, &HashSet::new());
         assert_eq!(names(&overview, "Warframes"), ["Excalibur Umbra", "Sirius & Orion"]);
         assert_eq!(names(&overview, "Secondary"), ["Grimoire", "Sporelacer"]);
         assert_eq!((source(&overview, SICKLE).cap, source(&overview, SICKLE).earned_rank, source(&overview, SICKLE).state), (40, Some(30), MasteryState::Partial));
@@ -1802,7 +1779,7 @@ mod tests {
             masterable: Some(true), ..Default::default()
         });
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(PLEXUS, 640_341)]);
-        let overview = build_mastery_overview(&catalog(), &corrections, Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections, &progress, &HashSet::new());
         assert_eq!(names(&overview, "Vehicles"), ["Bad Baby", "Plexus", "Voidrig"]);
         let plexus = source(&overview, PLEXUS);
         assert_eq!((plexus.cap, plexus.earned_rank, plexus.state), (30, Some(25), MasteryState::Partial));
@@ -1810,7 +1787,7 @@ mod tests {
         assert_eq!(overview.counts.total, 17 + INTRINSIC_ROWS + CHART_ROWS);
 
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
-        let overview = build_mastery_overview(&catalog(), &corrections, Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections, &progress, &HashSet::new());
         assert_eq!((source(&overview, PLEXUS).earned_rank, source(&overview, PLEXUS).state), (Some(0), MasteryState::Missing));
     }
 
@@ -1831,7 +1808,7 @@ mod tests {
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(EXCALIBUR_PRIME, 900_000)]);
         let all: HashSet<Unobtainable> = Unobtainable::ALL.into();
 
-        let overview = build_mastery_overview(&items, &corrections, Some(&progress), &all);
+        let overview = build_mastery_overview(&items, &corrections, &progress, &all);
         assert_eq!(overview.counts, MasteryCounts { total: 15 + INTRINSIC_ROWS + CHART_ROWS, mastered: 0, partial: 0, missing: 15, unknown: INTRINSIC_ROWS + CHART_ROWS, unobtainable: 3 });
         let excalibur = source(&overview, EXCALIBUR_PRIME);
         assert_eq!((excalibur.excluded, excalibur.unobtainable), (true, Some(Unobtainable::Founders)));
@@ -1842,16 +1819,16 @@ mod tests {
         for (path, class) in marked {
             let mut excluded = all.clone();
             excluded.remove(&class);
-            let overview = build_mastery_overview(&items, &corrections, Some(&progress), &excluded);
+            let overview = build_mastery_overview(&items, &corrections, &progress, &excluded);
             assert_eq!((source(&overview, path).excluded, source(&overview, path).unobtainable), (false, Some(class)));
             assert_eq!((overview.counts.total, overview.counts.unobtainable), (16 + INTRINSIC_ROWS + CHART_ROWS, 2), "{class:?}");
         }
 
-        let overview = build_mastery_overview(&items, &corrections, Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&items, &corrections, &progress, &HashSet::new());
         assert_eq!(overview.counts, MasteryCounts { total: 18 + INTRINSIC_ROWS + CHART_ROWS, mastered: 1, partial: 0, missing: 17, unknown: INTRINSIC_ROWS + CHART_ROWS, unobtainable: 0 });
     }
 
-    fn with_suggestions(items: &[WfcdItem], corrections: &HashMap<String, CorrectionEntry>, progress: Option<&PlayerProgress>, excluded: &HashSet<Unobtainable>, observed: &Observed) -> MasteryOverview {
+    fn with_suggestions(items: &[WfcdItem], corrections: &HashMap<String, CorrectionEntry>, progress: &PlayerProgress, excluded: &HashSet<Unobtainable>, observed: &Observed) -> MasteryOverview {
         let mut overview = build_mastery_overview(items, corrections, progress, excluded);
         annotate_needed_for(&mut overview, observed.owned, &crate::mastery_recipe::recipe_consumers(observed.recipes));
         overview.opportunities = suggest(&overview, observed);
@@ -1949,7 +1926,7 @@ mod tests {
         let tradeable: HashSet<String> = [KUVA.to_string()].into();
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
         let observed_market = Observed { tradeable: &tradeable, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
-        let overview = with_suggestions(&items, &corrections(), Some(&progress), &HashSet::new(), &observed_market);
+        let overview = with_suggestions(&items, &corrections(), &progress, &HashSet::new(), &observed_market);
         let row = |name: &str| overview.opportunities.iter().find(|o| o.source.name == name).expect("listed");
         let routed = |name: &str| { let o = row(name); (o.action, o.stage, o.access, o.source.route.clone()) };
 
@@ -2024,7 +2001,7 @@ mod tests {
         let drops: HashMap<String, Vec<DropLocation>> = [(FERRITE.to_string(), vec![DropLocation { location: "Earth/E Prime".into(), chance: Some(20.0) }])].into();
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
         let no_worldstate = Observed { drops: &drops, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
-        let overview = with_suggestions(&items, &corrections, Some(&progress), &HashSet::new(), &no_worldstate);
+        let overview = with_suggestions(&items, &corrections, &progress, &HashSet::new(), &no_worldstate);
         let row = |overview: &MasteryOverview, name: &str| overview.opportunities.iter().find(|o| o.source.name == name).cloned().expect("listed");
         let routed = |o: &Opportunity| (o.action, o.stage, o.access, o.blockers.clone(), o.baro);
 
@@ -2045,7 +2022,7 @@ mod tests {
         assert_eq!((viciss.access, viciss.blockers), (Access::Unknown, vec![Blocker::StandingUnknown]));
         let hex = |title: i32| -> HashMap<String, BlobAffiliation> { [("HexSyndicate".to_string(), BlobAffiliation { standing: 0, title })].into() };
         let ranked = |title: i32| {
-            let overview = with_suggestions(&items, &corrections, Some(&progress), &HashSet::new(), &Observed { affiliations: Some(&hex(title)), ..no_worldstate });
+            let overview = with_suggestions(&items, &corrections, &progress, &HashSet::new(), &Observed { affiliations: Some(&hex(title)), ..no_worldstate });
             let viciss = row(&overview, "Dual Viciss");
             (viciss.access, viciss.blockers)
         };
@@ -2058,23 +2035,23 @@ mod tests {
         };
         let stocked = visit(500_000, 2_000_000, &[(DETRON, 500, 200_000), (DERA_BP, 50, 25_000), (CHASSIS_BP, 25, 10_000)]);
         let present = Observed { trader: Some(&stocked), ..no_worldstate };
-        let overview = with_suggestions(&items, &corrections, Some(&progress), &HashSet::new(), &present);
+        let overview = with_suggestions(&items, &corrections, &progress, &HashSet::new(), &present);
         assert_eq!(routed(&row(&overview, "Mara Detron")), (Action::Acquire, Stage::Acquire, Access::Available, vec![], Some(Baro::Present { until: 2_000_000, ducats: 500, credits: 200_000 })));
         assert_eq!(routed(&row(&overview, "Dera Vandal")), (Action::Acquire, Stage::Acquire, Access::Available, vec![], Some(Baro::Present { until: 2_000_000, ducats: 75, credits: 35_000 })));
 
         let without_dera = visit(500_000, 2_000_000, &[(DETRON, 500, 200_000)]);
         let partial = Observed { trader: Some(&without_dera), ..no_worldstate };
-        let overview = with_suggestions(&items, &corrections, Some(&progress), &HashSet::new(), &partial);
+        let overview = with_suggestions(&items, &corrections, &progress, &HashSet::new(), &partial);
         assert_eq!(routed(&row(&overview, "Dera Vandal")), (Action::Acquire, Stage::Acquire, Access::Blocked, vec![Blocker::BaroNotStocking], Some(Baro::Unstocked { until: 2_000_000 })));
 
         let ended = visit(100_000, 200_000, &[(DETRON, 500, 200_000)]);
         let stale = Observed { trader: Some(&ended), ..no_worldstate };
-        let overview = with_suggestions(&items, &corrections, Some(&progress), &HashSet::new(), &stale);
+        let overview = with_suggestions(&items, &corrections, &progress, &HashSet::new(), &stale);
         assert_eq!(routed(&row(&overview, "Mara Detron")), (Action::Acquire, Stage::Acquire, Access::Blocked, vec![Blocker::BaroAway], Some(Baro::Away { until: None })));
 
         let next = visit(3_000_000, 4_000_000, &[]);
         let away = Observed { trader: Some(&next), ..no_worldstate };
-        let overview = with_suggestions(&items, &corrections, Some(&progress), &HashSet::new(), &away);
+        let overview = with_suggestions(&items, &corrections, &progress, &HashSet::new(), &away);
         assert_eq!(routed(&row(&overview, "Mara Detron")), (Action::Acquire, Stage::Acquire, Access::Blocked, vec![Blocker::BaroAway], Some(Baro::Away { until: Some(3_000_000) })));
         assert_eq!(routed(&row(&overview, "Strun")).2, Access::Available, "only Baro rows follow the worldstate");
     }
@@ -2113,7 +2090,7 @@ mod tests {
             ("Solaris United".to_string(), vec![offer(&format!("{CHAMBER}Blueprint"), "(Rude Zuud), Neutral", None)]),
             ("Cephalon Simaris".to_string(), vec![offer("/Lotus/Types/Recipes/Weapons/SweeperBlueprint", "Neutral", Some(SWEEPER))]),
         ].into();
-        let overview = with_suggestions(&items, &corrections, Some(&progress), &Unobtainable::ALL.into(),
+        let overview = with_suggestions(&items, &corrections, &progress, &Unobtainable::ALL.into(),
             &observed_gear(&owned, &levels, &crafting, &recipes, &offers, Some(2)));
 
         assert_eq!(summary(sourced(&overview.opportunities)), [
@@ -2149,12 +2126,12 @@ mod tests {
         let recipes = HashMap::new();
         let offers: HashMap<String, Vec<SyndicateOffer>> = [("Steel Meridian".to_string(), vec![offer(SWEEPER, "General", None)])].into();
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
-        let locked = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
+        let locked = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(),
             &observed_gear(&owned, &levels, &[], &recipes, &offers, Some(1)));
         assert_eq!(summary(sourced(&locked.opportunities)), [("Kuva Karak", Action::Acquire, Some(4_000), Access::Blocked), ("Sweeper", Action::Buy, Some(3_000), Access::Blocked)]);
         assert_eq!(locked.opportunities[1].blockers, [Blocker::MasteryRankBelow { required: 2 }, Blocker::StandingUnknown]);
         assert!(locked.opportunities.iter().all(|o| o.blockers.contains(&Blocker::MasteryRankBelow { required: 2 })), "the lock holds whatever the route");
-        let unranked = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
+        let unranked = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(),
             &observed_gear(&owned, &levels, &[], &recipes, &offers, None));
         assert_eq!(summary(sourced(&unranked.opportunities)), [("Kuva Karak", Action::Acquire, Some(4_000), Access::Unknown), ("Sweeper", Action::Buy, Some(3_000), Access::Unknown)]);
         assert_eq!(unranked.opportunities[1].blockers, [Blocker::MasteryRankUnknown, Blocker::StandingUnknown]);
@@ -2169,7 +2146,7 @@ mod tests {
         ].into();
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
         let sweeper = |affiliations: Option<&HashMap<String, BlobAffiliation>>| {
-            let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
+            let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(),
                 &Observed { affiliations, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) });
             let row = overview.opportunities.into_iter().find(|o| o.source.name == "Sweeper").expect("Sweeper is a Buy row");
             (row.action, row.access, row.blockers)
@@ -2192,7 +2169,7 @@ mod tests {
         ]), "a syndicate absent from a confirmed record has nothing");
 
         let unlisted: HashMap<String, Vec<SyndicateOffer>> = [("Nightwave Cred Offerings".to_string(), vec![offer(SWEEPER, "", None)])].into();
-        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
+        let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(),
             &Observed { affiliations: Some(&HashMap::new()), ..observed_gear(&owned, &levels, &[], &recipes, &unlisted, Some(30)) });
         let row = overview.opportunities.iter().find(|o| o.source.name == "Sweeper").expect("Sweeper is a Buy row");
         assert_eq!((row.access, row.blockers.clone()), (Access::Unknown, vec![Blocker::StandingUnknown]), "a vendor with no known tag has no standing to read");
@@ -2204,7 +2181,7 @@ mod tests {
         let levels: HashMap<String, Vec<u32>> = [(BRATON.to_string(), vec![12]), (SIRIUS.to_string(), vec![3]), (KUVA.to_string(), vec![35])].into();
         let recipes = HashMap::new();
         let offers = HashMap::new();
-        let unobserved = with_suggestions(&catalog(), &corrections(), None, &HashSet::new(),
+        let unobserved = with_suggestions(&catalog(), &corrections(), &PlayerProgress::default(), &HashSet::new(),
             &observed_gear(&owned, &levels, &[], &recipes, &offers, None));
         assert_eq!(summary(sourced(&unobserved.opportunities)), [
             ("Braton", Action::Level, None, Access::Available),
@@ -2212,7 +2189,7 @@ mod tests {
             ("Sirius & Orion", Action::Level, None, Access::Available),
         ]);
         let progress = observed(ProvenanceState::Unconfirmed, None, &[(BRATON, 72_000), (KUVA, 612_500)]);
-        let unconfirmed = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
+        let unconfirmed = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(),
             &observed_gear(&owned, &levels, &[], &recipes, &offers, None));
         assert_eq!(summary(sourced(&unconfirmed.opportunities)), [
             ("Braton", Action::Level, Some(1_800), Access::Available),
@@ -2230,7 +2207,7 @@ mod tests {
         let progress = with_missions(observed(ProvenanceState::Confirmed, Some(1_000), &[]), &[
             ("EarthToVenusJunction", 1, None), ("SolNode27", 1, None),
         ]);
-        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
+        let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(),
             &observed_gear(&owned, &levels, &[], &recipes, &offers, Some(2)));
         let nodes: Vec<&Opportunity> = overview.opportunities.iter().filter(|o| o.source.node.is_some()).collect();
         assert_eq!(nodes.len(), CHART_ROWS as usize - 2, "every missing row in both modes");
@@ -2260,7 +2237,7 @@ mod tests {
         assert!(nodes.iter().all(|o| o.source.node.as_ref().is_some_and(|n| n.mode == Mode::SteelPath) || (o.source.name != "E Prime" && o.source.name != "Venus Junction")),
             "cleared rows are not suggested; their Steel Path rows still are");
 
-        let unknown = with_suggestions(&catalog(), &corrections(), Some(&observed(ProvenanceState::Confirmed, Some(1_000), &[])), &HashSet::new(),
+        let unknown = with_suggestions(&catalog(), &corrections(), &observed(ProvenanceState::Confirmed, Some(1_000), &[]), &HashSet::new(),
             &observed_gear(&owned, &levels, &[], &recipes, &offers, Some(2)));
         assert!(unknown.opportunities.iter().all(|o| o.source.node.is_none()), "no Missions field: nothing to suggest");
     }
@@ -2273,7 +2250,7 @@ mod tests {
         let recipes: HashMap<String, Vec<RecipeComponent>> = [recipe(KUVA, "/Lotus/Types/Recipes/Weapons/KuvaKarakBlueprint")].into();
         let offers: HashMap<String, Vec<SyndicateOffer>> = [("Kahl's Garrison".to_string(), vec![offer(KUVA, "Champion", None)])].into();
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(KUVA, 50_000)]);
-        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(),
+        let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(),
             &observed_gear(&owned, &levels, &crafting, &recipes, &offers, Some(30)));
         assert_eq!(summary(sourced(&overview.opportunities)), [("Kuva Karak", Action::Level, Some(3_000), Access::Available)]);
         let kuva = &overview.opportunities[0];
@@ -2291,7 +2268,7 @@ mod tests {
         let (recipes, offers) = (HashMap::new(), HashMap::new());
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(KUVA, 288_000), (BRATON, 162_000)]);
         let bare = Observed { owned_forma: &forma, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
-        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &bare);
+        let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(), &bare);
         assert_eq!(summary(sourced(&overview.opportunities)), [
             ("Braton", Action::Level, Some(1_200), Access::Available),
             ("Kuva Karak", Action::Level, Some(1_600), Access::Available),
@@ -2307,7 +2284,7 @@ mod tests {
 
         let stock: HashMap<String, i64> = [(FORMA.to_string(), 2)].into();
         let stocked = Observed { owned_forma: &forma, stock: &stock, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
-        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &stocked);
+        let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(), &stocked);
         let plan = overview.opportunities[1].craft.as_ref().expect("Forma is a requirement of levelling");
         assert_eq!((plan.requirements[0].from_stock, plan.requirements[0].short), (2, 0));
         assert!(plan.craftable_now());
@@ -2323,7 +2300,7 @@ mod tests {
         let stock: HashMap<String, i64> = [(FORMA.to_string(), 5)].into();
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(KUVA, 450_000), (MECH, 900_000)]);
         let observed = Observed { stock: &stock, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections(), &progress, &HashSet::new());
         for (first, second) in [(MECH, KUVA), (KUVA, MECH)] {
             let evaluation = evaluate(&overview, Some(&observed), &plan(31, &[first, second]));
             let forma_line = |i: usize| {
@@ -2338,7 +2315,7 @@ mod tests {
     #[test]
     fn each_intrinsic_track_is_one_row_and_the_spend_row_sums_its_system() {
         let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &CAPTURED_SKILLS);
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections(), &progress, &HashSet::new());
         assert_eq!(overview.provenance.intrinsics, Provenance { state: ProvenanceState::Confirmed, observed_at: Some(2_000) });
         assert_eq!(names(&overview, "Intrinsics"), ["Combat", "Command", "Endurance", "Engineering", "Gunnery", "Opportunity", "Piloting", "Riding", "Tactical"]);
         let piloting = source(&overview, "LPS_PILOTING");
@@ -2358,21 +2335,21 @@ mod tests {
 
         // A confirmed object with no track fields is an account that never earned a rank.
         let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &[]);
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections(), &progress, &HashSet::new());
         assert_eq!((source(&overview, "LPS_PILOTING").earned_rank, source(&overview, "LPS_PILOTING").state), (Some(0), MasteryState::Missing));
         let railjack = system_source(mastery_rules::intrinsic_system(RAILJACK).expect("railjack"), &sources_by_name(&overview));
         assert_eq!((railjack.earned_rank, railjack.state), (Some(0), MasteryState::Missing));
 
         // A rank past 10 or below 0 is not one the game hands out.
         let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &[("LPS_DRIFT_RIDING", 12), ("LPS_DRIFT_COMBAT", -3)]);
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections(), &progress, &HashSet::new());
         assert_eq!((source(&overview, "LPS_DRIFT_RIDING").earned_rank, source(&overview, "LPS_DRIFT_COMBAT").earned_rank), (Some(10), Some(0)));
     }
 
     #[test]
     fn intrinsics_stay_unknown_while_equipment_is_confirmed() {
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(BRATON, 450_000)]);
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections(), &progress, &HashSet::new());
         assert_eq!(overview.provenance.intrinsics, Provenance::default());
         assert_eq!(source(&overview, BRATON).state, MasteryState::Mastered);
         for track in ["LPS_PILOTING", "LPS_DRIFT_RIDING"] {
@@ -2396,7 +2373,7 @@ mod tests {
         let owned = HashMap::new();
         let levels: HashMap<String, Vec<u32>> = [(KUVA.to_string(), vec![0])].into();
         let (recipes, offers) = (HashMap::new(), HashMap::new());
-        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_skills(&progress, &recipes, &offers, &owned, &levels));
+        let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(), &observed_skills(&progress, &recipes, &offers, &owned, &levels));
         assert_eq!(summary(sourced(&overview.opportunities)), [
             ("Railjack", Action::Spend, Some(60_000), Access::Available),
             ("Drifter", Action::Spend, Some(4_500), Access::Available),
@@ -2415,7 +2392,7 @@ mod tests {
     fn no_spend_without_enough_banked_points_or_without_an_observation() {
         let (owned, levels, recipes, offers) = (HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new());
         let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &CAPTURED_SKILLS);
-        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_skills(&progress, &recipes, &offers, &owned, &levels));
+        let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(), &observed_skills(&progress, &recipes, &offers, &owned, &levels));
         assert_eq!(summary(sourced(&overview.opportunities)), [("Railjack", Action::Spend, Some(7_500), Access::Available), ("Kuva Karak", Action::Acquire, Some(4_000), Access::Available)], "a mastered Drifter has nothing to buy");
         let railjack = overview.opportunities[0].spend.as_ref().expect("spend");
         assert_eq!((railjack.ranks, railjack.points, railjack.mastery), (5, 2_048, 7_500));
@@ -2423,11 +2400,11 @@ mod tests {
 
         // One system has nothing banked and the other sits one point short of its cheapest rank.
         let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed, &[("LPS_GUNNERY", 4), ("LPP_DRIFTER", 19)]);
-        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_skills(&progress, &recipes, &offers, &owned, &levels));
+        let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(), &observed_skills(&progress, &recipes, &offers, &owned, &levels));
         assert!(overview.opportunities.iter().all(|o| o.spend.is_none()), "{:?}", summary(sourced(&overview.opportunities)));
 
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[]);
-        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)));
+        let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(), &observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)));
         assert!(overview.opportunities.iter().all(|o| o.spend.is_none()), "Unknown Intrinsics suggest nothing");
     }
 
@@ -2455,7 +2432,7 @@ mod tests {
             (SIRIUS_BP, 1), (BRATON_BP, 1), (CHASSIS_BP, 1), (IMPERATOR_BP, 1), (FERRITE, 250), (CREDITS_PATH, 35_000),
         ].into_iter().map(|(path, n)| (path.to_string(), n)).collect();
         let observed_stock = Observed { stock: &stock, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
-        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
+        let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(), &observed_stock);
 
         // Craftable targets draw first, so the rows read top to bottom as the
         // ledger ran.
@@ -2483,7 +2460,7 @@ mod tests {
         stock.remove(CREDITS_PATH);
         let no_offers = HashMap::new();
         let observed_stock = Observed { stock: &stock, ..observed_gear(&owned, &levels, &[], &recipes, &no_offers, Some(30)) };
-        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
+        let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(), &observed_stock);
         assert_eq!(summary(sourced(&overview.opportunities)), [
             ("Sirius & Orion", Action::Craft, Some(6_000), Access::Unknown),
             ("Imperator", Action::Craft, Some(3_000), Access::Unknown),
@@ -2563,7 +2540,7 @@ mod tests {
         ]);
         let with_market = |market: &HashMap<String, PriceQuote>| {
             let observed_stock = Observed { stock: &stock, tradeable: &tradeable, quotes: market, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
-            with_suggestions(&catalog_with_market(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock)
+            with_suggestions(&catalog_with_market(), &corrections(), &progress, &HashSet::new(), &observed_stock)
         };
 
         let overview = with_market(&market);
@@ -2610,7 +2587,7 @@ mod tests {
         let tradeable: HashSet<String> = [BRATON_PRIME_BP, BARREL, RECEIVER_BP, PRISMA_GORGON, DERA_VANDAL].into_iter().map(String::from).collect();
         let market = quotes(&[("prisma_gorgon", quote(Some(90), Some(NOW))), ("dera_vandal_set", quote(Some(35), Some(NOW)))]);
         let observed_stock = Observed { stock: &stock, tradeable: &tradeable, quotes: &market, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
-        let overview = with_suggestions(&catalog_with_market(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
+        let overview = with_suggestions(&catalog_with_market(), &corrections(), &progress, &HashSet::new(), &observed_stock);
 
         // Braton Prime is craftable from stock, so platinum has nothing to buy.
         let braton = overview.opportunities.iter().find(|o| o.source.unique_name == BRATON_PRIME).expect("craft row");
@@ -2668,7 +2645,7 @@ mod tests {
             at("Saturn/Titan (Survival), Rotation C", Some(12.5)),
         ])].into();
         let observed_stock = Observed { stock: &stock, drops: &drops, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
-        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
+        let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(), &observed_stock);
         let row = |name: &str| overview.opportunities.iter().find(|o| o.source.name == name).expect("listed");
         let braton = row("Braton");
         assert_eq!((braton.action, braton.access, braton.blockers.clone()), (Action::Farm, Access::Unknown, vec![Blocker::DropSourcesUnknown]));
@@ -2694,7 +2671,7 @@ mod tests {
         let tables: HashMap<String, Vec<RelicReward>> = [(LITH.to_string(), vec![reward(SIRIUS_BP, 25.0)])].into();
         let relics = Relics::new(&stock, &tables, &HashMap::new());
         let observed_stock = Observed { stock: &stock, drops: &drops, relics: &relics, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
-        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
+        let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(), &observed_stock);
         let sirius = overview.opportunities.iter().find(|o| o.source.name == "Sirius & Orion").expect("listed");
         assert_eq!(sirius.relic.as_ref().map(|r| r.coverage.clone()), Some(Coverage::Partial { missing: vec!["Blueprint".into()], short: vec![] }));
         assert_eq!((sirius.drop.is_none(), sirius.source.route.clone()), (true, Some(RouteKind::Relic)));
@@ -2726,7 +2703,7 @@ mod tests {
             .into_iter().map(|(path, n)| (path.to_string(), n)).collect();
         let relics = Relics::new(&stock, &tables, &names);
         let observed_stock = Observed { stock: &stock, relics: &relics, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
-        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
+        let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(), &observed_stock);
         assert_eq!(summary(sourced(&overview.opportunities)), [
             ("Braton", Action::Farm, Some(3_000), Access::Unknown),
             ("Sirius & Orion", Action::Farm, Some(6_000), Access::Unknown),
@@ -2753,7 +2730,7 @@ mod tests {
         stock.remove(LITH);
         let relics = Relics::new(&stock, &tables, &names);
         let observed_stock = Observed { stock: &stock, relics: &relics, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
-        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
+        let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(), &observed_stock);
         let sirius = overview.opportunities.iter().find(|o| o.source.name == "Sirius & Orion").expect("listed");
         assert_eq!((sirius.stage, sirius.access, sirius.blockers.clone()), (Stage::Acquire, Access::Available, vec![]));
         assert_eq!(sirius.relic.as_ref().map(|r| r.coverage.clone()), Some(Coverage::Partial { missing: vec!["Blueprint".into()], short: vec![] }));
@@ -2780,7 +2757,7 @@ mod tests {
             let progress = with_skills(observed(ProvenanceState::Confirmed, Some(1_000), &[]), ProvenanceState::Confirmed,
                 &[("LPS_TACTICAL", rank), ("LPP_SPACE", banked)]);
             let observed = observed_skills(&progress, &recipes, &offers, &owned, &levels);
-            let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+            let overview = build_mastery_overview(&catalog(), &corrections(), &progress, &HashSet::new());
             let evaluated = evaluate(&overview, Some(&observed), &selected);
             assert_eq!((evaluated.entries[0].gain, evaluated.entries[0].completed), (Some(expected_gain), completed));
             assert_eq!(evaluated.gains, u64::from(expected_gain));
@@ -2810,7 +2787,7 @@ mod tests {
         let mut market = quotes(&[("braton_prime_blueprint", quote(Some(10), Some(NOW))),
             ("braton_prime_receiver_blueprint", quote(Some(10), Some(NOW))),
             ("braton_prime_barrel", quote(Some(10), Some(NOW)))]);
-        let overview = build_mastery_overview(&catalog_with_market(), &corrections(), Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&catalog_with_market(), &corrections(), &progress, &HashSet::new());
         for (set_price, comparison, route, price, second_purchase) in [
             (5, "cheapest", Route::Set, 5, false), (25, "cheapest", Route::Parts, 20, true),
             (25, "full", Route::Set, 25, false), (35, "full", Route::Parts, 30, false),
@@ -2854,7 +2831,7 @@ mod tests {
         let stock: HashMap<String, i64> = [(SIRIUS_BP, 1), (BRATON_BP, 1), (CHASSIS, 1), (FERRITE, 60), (CREDITS_PATH, 100_000)]
             .into_iter().map(|(path, n)| (path.to_string(), n)).collect();
         let observed_stock = Observed { stock: &stock, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(2)) };
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections(), &progress, &HashSet::new());
 
         let evaluation = evaluate(&overview, Some(&observed_stock), &plan(4, &[SIRIUS, BRATON, SIRIUS, GRIMOIRE, "/Lotus/Weapons/Nope"]));
         assert_eq!(entry_summary(&evaluation), [
@@ -2901,7 +2878,7 @@ mod tests {
         let progress = with_skills(with_missions(observed(ProvenanceState::Confirmed, Some(1_000), &[
             (ORION, 900_000), (BRATON, 450_000), (KUVA, 612_500), (STRIKE, 72_000), (EXCALIBUR_PRIME, 900_000),
         ]), &[("SolNode27", 1, Some(1)), ("SolNode239", 1, Some(1)), ("EarthToVenusJunction", 1, Some(1))]), ProvenanceState::Confirmed, &CAPTURED_SKILLS);
-        let full = build_mastery_overview(&items, &corrections, Some(&progress), &Unobtainable::ALL.into());
+        let full = build_mastery_overview(&items, &corrections, &progress, &Unobtainable::ALL.into());
         for kind in [full.provenance.equipment, full.provenance.intrinsics, full.provenance.nodes] {
             assert_eq!(kind.state, ProvenanceState::Confirmed);
         }
@@ -2975,7 +2952,7 @@ mod tests {
         let names: HashMap<String, String> = [LITH, MESO].into_iter().map(|path| (path.into(), "Lith A1 Intact".into())).collect();
         let stock: HashMap<String, i64> = [(LITH, 3), (MESO, 3), (FERRITE, 1_000), (CREDITS_PATH, 100_000)]
             .into_iter().map(|(path, n)| (path.to_string(), n)).collect();
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections(), &progress, &HashSet::new());
         for shared in [false, true] {
             let tables = if shared {
                 [(LITH.into(), [rewards(BRATON_BP), rewards(SIRIUS_BP)].concat())].into()
@@ -3007,7 +2984,7 @@ mod tests {
         let gear = observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30));
         for (affinity, expected) in [(0, vec!["Imperator"]), (450_000, vec![])] {
             let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(IMPERATOR, affinity), (BRATON, 72_000)]);
-            let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &gear);
+            let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(), &gear);
             assert_eq!(source(&overview, BRATON).needed_for, expected);
             let level = overview.opportunities.iter().find(|o| o.source.unique_name == BRATON).expect("owned Braton has mastery left");
             assert_eq!(level.source.needed_for, expected);
@@ -3029,7 +3006,7 @@ mod tests {
         let offers = HashMap::new();
         let gear = observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30));
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(bolto, 72_000)]);
-        let overview = with_suggestions(&items, &HashMap::new(), Some(&progress), &HashSet::new(), &gear);
+        let overview = with_suggestions(&items, &HashMap::new(), &progress, &HashSet::new(), &gear);
         let craft = overview.opportunities.iter().find(|o| o.source.unique_name == akbolto)
             .expect("Akbolto has a recipe").craft.as_ref().expect("recipe has a plan");
         assert_eq!(craft.level_first, [crate::mastery_recipe::LevelFirst { unique_name: bolto.into(), name: "Bolto".into(), gain: 1_800 }]);
@@ -3050,13 +3027,13 @@ mod tests {
         assert_eq!(expanded.builds[0].crafts, 2);
         assert_eq!(expanded.level_first, craft.level_first, "crafting replacements still warns about owned mastery");
 
-        let unknown = build_mastery_overview(&items, &HashMap::new(), None, &HashSet::new());
+        let unknown = build_mastery_overview(&items, &HashMap::new(), &PlayerProgress::default(), &HashSet::new());
         let evaluation = evaluate(&unknown, Some(&gear), &plan(31, &[akbolto]));
         assert!(evaluation.entries[0].opportunity.as_ref().expect("Akbolto row").craft.as_ref().expect("Akbolto recipe").level_first.is_empty(),
             "unknown mastery cannot promise a gain");
 
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(bolto, 450_000)]);
-        let overview = with_suggestions(&items, &HashMap::new(), Some(&progress), &HashSet::new(), &gear);
+        let overview = with_suggestions(&items, &HashMap::new(), &progress, &HashSet::new(), &gear);
         let mut allowed = plan(31, &[akbolto]);
         allowed.allowances.insert(bolto.into(), 2);
         let evaluation = evaluate(&overview, Some(&gear), &allowed);
@@ -3087,7 +3064,7 @@ mod tests {
         let catalogue = [(bolto.to_string(), WfcdItem { image_name: Some("bolto.png".into()), category: "Secondary".into(), ..Default::default() })].into();
         let gear = Observed { catalogue: &catalogue, ..observed_gear(&owned, &levels, &jobs, &recipes, &offers, Some(30)) };
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(bolto, 72_000)]);
-        let overview = with_suggestions(&items, &HashMap::new(), Some(&progress), &HashSet::new(), &gear);
+        let overview = with_suggestions(&items, &HashMap::new(), &progress, &HashSet::new(), &gear);
         let craft = overview.opportunities.iter().find(|o| o.source.unique_name == akbolto)
             .expect("Akbolto has a recipe").craft.as_ref().expect("recipe has a plan");
         let lines: Vec<_> = craft.requirements.iter().map(|r| (r.unique_name.as_str(), r.image_name.as_deref(), r.category.as_deref(), r.state)).collect();
@@ -3110,7 +3087,7 @@ mod tests {
         let stock: HashMap<String, i64> = [(IMPERATOR_BP, 1), (FERRITE, 100), (CREDITS_PATH, 100_000)]
             .into_iter().map(|(path, n)| (path.to_string(), n)).collect();
         let observed_stock = Observed { stock: &stock, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(30)) };
-        let overview = build_mastery_overview(&catalog(), &corrections(), Some(&progress), &HashSet::new());
+        let overview = build_mastery_overview(&catalog(), &corrections(), &progress, &HashSet::new());
 
         let evaluation = evaluate(&overview, Some(&observed_stock), &plan(31, &[IMPERATOR]));
         let imperator = &evaluation.entries[0];
@@ -3140,7 +3117,7 @@ mod tests {
         let stock: HashMap<String, i64> = [(BRATON_BP, 1), (CHASSIS, 1), (FERRITE, 50), (CREDITS_PATH, 0)]
             .into_iter().map(|(path, n)| (path.to_string(), n)).collect();
         let observed_stock = Observed { stock: &stock, ..observed_gear(&owned, &levels, &[], &recipes, &offers, Some(1)) };
-        let overview = with_suggestions(&catalog(), &corrections(), Some(&progress), &HashSet::new(), &observed_stock);
+        let overview = with_suggestions(&catalog(), &corrections(), &progress, &HashSet::new(), &observed_stock);
         assert_eq!(summary(sourced(&overview.opportunities)), [("Braton", Action::Craft, Some(3_000), Access::Blocked), ("Kuva Karak", Action::Acquire, Some(4_000), Access::Blocked)]);
         assert_eq!(overview.opportunities[0].blockers, [Blocker::MasteryRankBelow { required: 2 }, Blocker::CreditCostUnknown]);
     }

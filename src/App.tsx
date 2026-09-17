@@ -1624,7 +1624,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
         {/* ── Completionist module ── */}
         {activeModule === "completionist" && (
           <ErrorBoundary>
-            <CompletionistTabs inventory={inventory} refreshKey={itemsRefreshKey} clockFormat={clockFormat} playerName={playerName} tracked={tracked} onTrackToggle={toggleTracked} />
+            <CompletionistTabs inventory={inventory} refreshKey={itemsRefreshKey} clockFormat={clockFormat} tracked={tracked} onTrackToggle={toggleTracked} />
           </ErrorBoundary>
         )}
 
