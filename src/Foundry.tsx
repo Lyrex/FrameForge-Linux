@@ -7,10 +7,9 @@ import { PREFERENCE_KEYS } from "./constants/preferences";
 import { FOUNDRY_FILTERS_DEFAULT } from "./constants/filters";
 import { WARFRAME_WIKI_BASE } from "./constants/urls";
 import { TAURI_COMMANDS } from "./constants/tauri";
-import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeMap } from "./types/items";
+import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeMap, RelicDropMap } from "./types/items";
 import type { CraftPlan } from "./types/mastery";
-import { craftableNow, craftRows, type CraftRow } from "./lib/craftPlan";
-import { IngredientIcons } from "./shared/IngredientIcons";
+import { componentStatus, craftableNow, craftRows, type CraftRow } from "./lib/craftPlan";
 import { usePlanCrafts } from "./shared/usePlanCrafts";
 import { CraftCounts } from "./shared/CraftCounts";
 import type { FoundryFilters } from "./types/filters";
@@ -120,6 +119,16 @@ function ArchonCrystalIcon({ shards }: { shards: ArchonShard[] }) {
 }
 
 
+function RelicIcon() {
+  return (
+    <svg viewBox="0 0 20 26" width="11" height="14" fill="none" xmlns="http://www.w3.org/2000/svg" className="relic-icon">
+      <ellipse cx="10" cy="13" rx="8.5" ry="11.5" fill="rgba(255,220,100,.15)" stroke="rgba(255,220,100,.7)" strokeWidth="1.2"/>
+      <path d="M10 4 C7 7 6 10 8 13 C10 16 9 19 10 22" stroke="rgba(255,220,100,.9)" strokeWidth="1.3" strokeLinecap="round" fill="none"/>
+      <path d="M10 4 C13 7 14 10 12 13 C10 16 11 19 10 22" stroke="rgba(255,220,100,.6)" strokeWidth="0.9" strokeLinecap="round" fill="none"/>
+    </svg>
+  );
+}
+
 function FormaIcon({ count }: { count: number }) {
   return (
     <span className="craft-icon-tag craft-icon-forma" title={`${count} Forma applied`}>
@@ -128,6 +137,41 @@ function FormaIcon({ count }: { count: number }) {
       </span>
       <span className="craft-icon-forma-count">{count}</span>
     </span>
+  );
+}
+
+const RELIC_SUFFIXES = ["Bronze", "Silver", "Gold", "Platinum"];
+function ownsRelicVariant(relicUnique: string, inventory: Record<string, InventoryItem>): boolean {
+  const base = relicUnique.replace(/(Bronze|Silver|Gold|Platinum)$/, "");
+  return RELIC_SUFFIXES.some(s => (inventory[`${base}${s}`]?.quantity ?? 0) > 0);
+}
+
+// ─── Comp row (used inside modal tree) ───────────────────────────────────────
+
+function CompRow({ comp, plan, inventory, relicDrops, relicNames }: {
+  comp: RecipeComponent; plan: CraftPlan | undefined; inventory: Record<string, InventoryItem>;
+  relicDrops: RelicDropMap; relicNames: Record<string, string>;
+}) {
+  const status = plan ? componentStatus(comp, plan) : "none";
+  const ownedRelics = [...new Set(
+    (relicDrops[comp.unique_name] ?? [])
+      .filter(r => ownsRelicVariant(r, inventory))
+      .map(r => {
+        const base = r.replace(/(Bronze|Silver|Gold|Platinum)$/, "");
+        const owned = RELIC_SUFFIXES.find(s => (inventory[`${base}${s}`]?.quantity ?? 0) > 0);
+        const key = owned ? `${base}${owned}` : r;
+        return relicNames[key] ?? relicNames[r] ?? r.split("/").pop() ?? r;
+      })
+  )];
+  return (
+    <div className={`comp-row comp-row-${status}`}>
+      {ownedRelics.length > 0 && (
+        <span className="relic-icon-wrap" title={ownedRelics.join("\n")}><RelicIcon /></span>
+      )}
+      <span className="comp-row-name">{comp.name}</span>
+      {status === "part"      && <span className="comp-row-badge">✓</span>}
+      {status === "blueprint" && <span className="comp-row-badge">BP</span>}
+    </div>
   );
 }
 
@@ -250,9 +294,10 @@ function RecipeModal({ item, recipe, inventory, isTracked, onTrack, onClose, bui
 
 // ─── Craft card ───────────────────────────────────────────────────────────────
 
-const CraftCard = memo(function CraftCard({ item, recipe, plan, inventory, building, isTracked, onTrack, onOpen, subsummedWarframes, view }: {
+const CraftCard = memo(function CraftCard({ item, recipe, plan, inventory, relicDrops, relicNames, building, isTracked, onTrack, onOpen, subsummedWarframes, view }: {
   item: CatalogItem; recipe: RecipeComponent[] | null; plan: CraftPlan | undefined;
-  inventory: Record<string, InventoryItem>;
+  inventory: Record<string, InventoryItem>; relicDrops: RelicDropMap;
+  relicNames: Record<string, string>;
   building: Set<string>; isTracked: boolean;
   onTrack: (item: CatalogItem) => void;
   onOpen: (item: CatalogItem) => void;
@@ -374,16 +419,18 @@ const CraftCard = memo(function CraftCard({ item, recipe, plan, inventory, build
         {!isOwned && ready && <span className="foundry-cb-badge foundry-cb-ready">⚡</span>}
       </div>
 
-      {/* Col 2, rows 1-4: ingredient icons */}
+      {/* Col 2, rows 1-7: ingredient list — rows grow to fill available height */}
       <div className="cc-ingredients">
-        {item.source_type ? (
-          <div className="comp-row-acquired">Acquired in-game</div>
-        ) : recipe?.length === 0 ? (
-          <div className="comp-row-loading">No recipe</div>
-        ) : recipe && plan ? (
-          <IngredientIcons plan={plan} />
-        ) : (
+        {recipe === null ? (
           <div className="comp-row-loading">Loading…</div>
+        ) : item.source_type ? (
+          <div className="comp-row-acquired">Acquired in-game</div>
+        ) : recipe.length === 0 ? (
+          <div className="comp-row-loading">No recipe</div>
+        ) : (
+          parts!.map((comp, i) => (
+            <CompRow key={i} comp={comp} plan={plan} inventory={inventory} relicDrops={relicDrops} relicNames={relicNames} />
+          ))
         )}
       </div>
     </div>
@@ -398,6 +445,8 @@ const CraftCard = memo(function CraftCard({ item, recipe, plan, inventory, build
   if (prev.building      !== next.building)      return false;
   if (prev.onTrack       !== next.onTrack)       return false;
   if (prev.onOpen        !== next.onOpen)        return false;
+  if (prev.relicDrops    !== next.relicDrops)    return false;
+  if (prev.relicNames    !== next.relicNames)    return false;
   if (prev.subsummedWarframes !== next.subsummedWarframes) return false;
   // Every re-plan yields fresh plan objects, so compare by content.
   if (JSON.stringify(prev.plan) !== JSON.stringify(next.plan)) return false;
@@ -423,6 +472,8 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
   const [craftable, setCraftable] = useState<CatalogItem[]>([]);
   const [recipes, setRecipes]     = useState<Map<string, RecipeComponent[]>>(new Map());
   const [blueprintResults, setBlueprintResults] = useState<Record<string, string>>({});
+  const [relicDrops, setRelicDrops] = useState<RelicDropMap>({});
+  const [relicNames, setRelicNames] = useState<Record<string, string>>({});
   const [modalItem, setModalItem] = useState<CatalogItem | null>(null);
   const [inputSearch, setInputSearch] = useState(filters.search);
   const [page, setPage] = useState(0);
@@ -457,7 +508,14 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
 
   useEffect(() => {
     invoke<CatalogItem[]>(TAURI_COMMANDS.GET_CRAFTABLE_ITEMS).then(setCraftable).catch(() => setCraftable([]));
+    invoke<RelicDropMap>("get_relic_drops").then(setRelicDrops).catch(() => {});
     invoke<Record<string, string>>(TAURI_COMMANDS.GET_BLUEPRINT_RESULTS).then(setBlueprintResults).catch(() => {});
+    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS)
+      .then(items => {
+        const map: Record<string, string> = {};
+        for (const i of items) if (i.category === "Relics") map[i.unique_name] = i.name;
+        setRelicNames(map);
+      }).catch(() => {});
   }, [refreshKey]);
 
   // A Foundry job carries the blueprint path, so it is resolved to the item it builds before matching catalog items.
@@ -619,11 +677,8 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
           <HelpTip items={[
             { swatch: "rgba(240,192,64,.5)", icon: "✓✓", label: "Owned",          desc: "Gold border + ✓✓ — item built and in inventory" },
             { swatch: "rgba(56,139,253,.5)", icon: "⚡",  label: "Ready to craft", desc: "Blue border + ⚡ — all parts collected" },
-            { swatch: "#3fb950", label: "Green ring",  desc: "Ingredient in stock; ★ marks an owned copy to master first" },
-            { swatch: "#d29922", label: "Yellow ring", desc: "Ingredient partly in stock" },
-            { swatch: "#f85149", label: "Red ring",    desc: "Ingredient missing" },
-            { swatch: "#a371f7", label: "Purple ring", desc: "Blueprint in hand and every part ready; ◷ marks a part building in the Foundry" },
-            { swatch: "#388bfd", label: "Blue ring",   desc: "Blueprint in hand but a part missing" },
+            { swatch: "rgba(240,192,64,.4)", icon: "BP",  label: "Blueprint",      desc: "Gold comp row — blueprint in inventory" },
+            { swatch: "rgba(63,185,80,.4)",  icon: "✓",   label: "Part owned",     desc: "Green comp row — component in inventory" },
             { icon: "★",  label: "★ Mastered", desc: "Item levelled to its max rank" },
             { icon: "⚒",  label: "⚒ Building", desc: "Currently crafting in the Foundry" },
             { icon: "MR", label: "MR{n}",       desc: "Required Mastery Rank to use" },
@@ -643,6 +698,8 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
               recipe={recipes.has(item.unique_name) ? recipes.get(item.unique_name)! : null}
               plan={plans[item.unique_name]}
               inventory={inventory}
+              relicDrops={relicDrops}
+              relicNames={relicNames}
               building={building}
               isTracked={trackedSet.has(item.unique_name)}
               onTrack={handleTrack}

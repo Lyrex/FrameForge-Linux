@@ -150,10 +150,14 @@ export interface Requirement {
   unique_name: string;
   name: string;
   image_name: string | null;
+  category: string | null;
   needed: number;
+  /** The projected stock before this recipe drew on it, which can exceed `needed`. */
+  owned: number;
   from_stock: number;
   short: number;
   state: IngredientState;
+  reusable?: boolean;
 }
 
 export interface Build {
@@ -169,6 +173,8 @@ export interface CraftPlan {
   /** Null as soon as any recipe in the plan carries no price. */
   credits: number | null;
   credits_short: number;
+  /** The projected balance before this plan took its price. It is null when the cost is unknown as well as when the balance is. */
+  credit_balance: number | null;
 }
 
 /** One owned relic, at one refinement, that drops the part. */

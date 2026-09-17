@@ -5,11 +5,10 @@ import ItemMarketPopup from "../market/ItemMarketPopup";
 import { IngredientIcons } from "../shared/IngredientIcons";
 import Filters from "./Filters";
 import { TAURI_COMMANDS } from "../constants/tauri";
-import { blockerText } from "../constants/blockers";
 import { wfmSlugLookup } from "../utils";
 import { fmtClock, type ClockFormat } from "../lib/clockFormat";
 import {
-  actionText, alsoNeedsText, chanceText, costText, detailText, quoteText, remainingText, shownControls, visibleOpportunities, visiblePurchases,
+  actionText, chanceText, costText, quoteText, remainingText, shownControls, visibleOpportunities, visiblePurchases,
   COMPARISON_OPTIONS, RELIC_GROUP_LABELS, RELIC_GROUP_ORDER, RESULT_OPTIONS, STAGE_LABELS, STAGE_ORDER,
   type Comparison, type MasteryControls, type Priced,
 } from "./suggestions";
@@ -49,20 +48,16 @@ interface RowProps {
   children?: ReactNode;
 }
 
-export function OpportunityRow({ opportunity, nowMs, clockFormat, notes = [], levelFirst = false, children }: RowProps) {
-  const { access, build_completion_ms, craft, image_name, name, relic } = opportunity;
-  const readyAt = build_completion_ms == null ? undefined : fmtClock(Math.floor(build_completion_ms / 1000), clockFormat);
-  const detail = detailText(opportunity, nowMs, readyAt);
+export function OpportunityRow({ opportunity, clockFormat, notes = [], levelFirst = false, children }: RowProps) {
+  const { access, craft, image_name, name, relic } = opportunity;
   const dayAndClock = (ms: number) => `${new Date(ms).toLocaleDateString(navigator.language, { month: "short", day: "numeric" })} ${fmtClock(Math.floor(ms / 1000), clockFormat)}`;
-  const blockers = [...opportunity.blockers.map(blockerText), ...notes];
   return (
     <div className={`mst-opp mst-opp-${access}`} tabIndex={0}>
       <ItemImg imageName={image_name ?? undefined} fallback={<div className="img-fallback">{name[0]?.toUpperCase() ?? "?"}</div>} />
       <div className="mst-opp-main">
         <Title opportunity={opportunity} />
-        {detail && <div className="mst-opp-detail">{detail}</div>}
         {craft && <IngredientIcons plan={craft} />}
-        {blockers.length > 0 && <div className="mst-opp-blockers">{blockers.join(" · ")}</div>}
+        {notes.length > 0 && <div className="mst-opp-blockers">{notes.join(" · ")}</div>}
       </div>
       <span className="mst-opp-action">{levelFirst ? `Level ${name} first` : actionText(opportunity, dayAndClock)}</span>
       {relic && (
@@ -86,7 +81,6 @@ interface PurchaseRowProps {
 
 function PurchaseRow({ opportunity, comparison, now, onOpen }: PurchaseRowProps) {
   const { access, image_name, name, purchase } = opportunity;
-  const blockers = opportunity.blockers.map(blockerText);
   const set = purchase.set;
   const cost = comparison === "full" ? purchase.full_purchase : purchase.cheapest_finish;
   const count = (part: { needed: number; short: number }) => comparison === "full" ? part.needed : part.short;
@@ -108,8 +102,6 @@ function PurchaseRow({ opportunity, comparison, now, onOpen }: PurchaseRowProps)
             </button>
           ))}
         </div>
-        <div className="mst-opp-detail">Also needs {alsoNeedsText(opportunity)}</div>
-        {blockers.length > 0 && <div className="mst-opp-blockers">{blockers.join(" · ")}</div>}
       </div>
       <span className="mst-opp-action">{costText(opportunity, comparison)}</span>
       <span className={`mst-pill mst-pill-${access}`}>{ACCESS_LABELS[access]}</span>

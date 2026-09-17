@@ -9,7 +9,7 @@ use crate::inventory_state::{inventory_path_aliases, load_inventory_state_cache,
 use crate::mastery_nodes;
 use crate::mastery_progress::{MasteryPlan, PlayerProgress, Provenance, ProvenanceState};
 use crate::memory_scanner::BlobAffiliation;
-use crate::mastery_recipe::{blueprint_results, forma_ingredient, image_index, is_blueprint, purchasable, CraftPlan, Ledger, Requirement};
+use crate::mastery_recipe::{blueprint_results, catalogue_index, forma_ingredient, is_blueprint, purchasable, CraftPlan, Ledger, Requirement};
 use crate::mastery_relics::{Relics, RelicRoute};
 use crate::mastery_rules::{self, Unobtainable};
 use crate::monitor::CraftingJob;
@@ -398,7 +398,7 @@ pub(crate) struct Observed<'a> {
     /// Holds every non-relic drop location by item or component `unique_name`.
     pub(crate) drops: &'a HashMap<String, Vec<DropLocation>>,
     pub(crate) tradeable: &'a HashSet<String>,
-    pub(crate) images: &'a HashMap<String, String>,
+    pub(crate) catalogue: &'a HashMap<String, WfcdItem>,
     /// Holds every quote by slug, expired ones included.
     pub(crate) quotes: &'a HashMap<String, PriceQuote>,
     /// `None` until the first worldstate fetch.
@@ -456,7 +456,7 @@ static LAST_INVENTORY_REJECTION: Mutex<Option<String>> = Mutex::new(None);
 fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Observed>) -> R) -> R {
     let player = state.local_player_name.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let excluded = excluded_classes(&state.settings_path);
-    let (mut overview, skills, affiliations, relic_names, tradeable, images, owner) = {
+    let (mut overview, skills, affiliations, relic_names, tradeable, catalogue, owner) = {
         let progress = state.mastery_progress.lock().unwrap_or_else(|e| e.into_inner());
         let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
         let owner = progress.owner(player.as_deref());
@@ -467,7 +467,7 @@ fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Ob
             .filter(|i| i.category == "Relics")
             .map(|i| (i.unique_name.clone(), i.name.clone()))
             .collect();
-        (build_mastery_overview(&items, &state.corrections, record, &excluded), skills, affiliations, relic_names, market_items(&items), image_index(&items), owner)
+        (build_mastery_overview(&items, &state.corrections, record, &excluded), skills, affiliations, relic_names, market_items(&items), catalogue_index(&items), owner)
     };
     let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
     if inventory.items.is_empty() { return f(overview, None); }
@@ -509,7 +509,7 @@ fn with_observed<R>(state: &AppState, f: impl FnOnce(MasteryOverview, Option<&Ob
         relics: &relics,
         drops: &drops,
         tradeable: &tradeable,
-        images: &images,
+        catalogue: &catalogue,
         quotes: &state.wfm.quotes(),
         trader: baro.as_ref(),
         now_ms: chrono::Utc::now().timestamp_millis(),
@@ -771,7 +771,7 @@ fn settle<'a>(o: &mut Opportunity, rows: &'a Rows<'a>, ledger: &mut Ledger<'a>, 
         o.craft = Some(plan);
     }
     if let Some(plan) = &mut o.craft {
-        plan.decorate(|path| observed.images.get(path).cloned(), |path| rows.building.contains_key(path));
+        plan.decorate(observed.catalogue, |path| rows.building.contains_key(path));
     }
     if matches!(o.action, Action::Spend | Action::Complete | Action::Unlock) { return; }
     if o.source.route.is_none() {
@@ -1864,10 +1864,10 @@ mod tests {
     static NO_MARKET: LazyLock<HashSet<String>> = LazyLock::new(HashSet::new);
     static NO_QUOTES: LazyLock<HashMap<String, PriceQuote>> = LazyLock::new(HashMap::new);
     static NO_DROPS: LazyLock<HashMap<String, Vec<DropLocation>>> = LazyLock::new(HashMap::new);
-    static NO_IMAGES: LazyLock<HashMap<String, String>> = LazyLock::new(HashMap::new);
+    static NO_CATALOGUE: LazyLock<HashMap<String, WfcdItem>> = LazyLock::new(HashMap::new);
 
     fn observed_gear<'a>(owned: &'a HashMap<String, i64>, owned_levels: &'a HashMap<String, Vec<u32>>, crafting: &'a [CraftingJob], recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, mastery_rank: Option<u32>) -> Observed<'a> {
-        Observed { owned, stock: &NO_STOCK, owned_levels, owned_forma: &NO_FORMA, mastery_rank, crafting, recipes, offers, skills: None, affiliations: None, relics: &NO_RELICS, drops: &NO_DROPS, tradeable: &NO_MARKET, images: &NO_IMAGES, quotes: &NO_QUOTES, trader: None, now_ms: 1_000_000 }
+        Observed { owned, stock: &NO_STOCK, owned_levels, owned_forma: &NO_FORMA, mastery_rank, crafting, recipes, offers, skills: None, affiliations: None, relics: &NO_RELICS, drops: &NO_DROPS, tradeable: &NO_MARKET, catalogue: &NO_CATALOGUE, quotes: &NO_QUOTES, trader: None, now_ms: 1_000_000 }
     }
 
     fn observed_skills<'a>(progress: &'a PlayerProgress, recipes: &'a HashMap<String, Vec<RecipeComponent>>, offers: &'a HashMap<String, Vec<SyndicateOffer>>, owned: &'a HashMap<String, i64>, levels: &'a HashMap<String, Vec<u32>>) -> Observed<'a> {
@@ -2302,7 +2302,7 @@ mod tests {
         assert_eq!(kuva.owned_level, Some(12), "the copy with the highest level cap is levelled");
         assert_eq!(kuva.forma, Some(FormaGate { level_cap: 36, forma: 2, mastery: 400 }));
         let plan = kuva.craft.as_ref().expect("Forma is a requirement of levelling");
-        assert_eq!(plan.requirements, [Requirement { unique_name: FORMA.into(), name: "Forma".into(), image_name: None, needed: 2, from_stock: 0, short: 2, state: IngredientState::Missing }]);
+        assert_eq!(plan.requirements, [Requirement { unique_name: FORMA.into(), name: "Forma".into(), image_name: None, category: None, needed: 2, owned: 0, from_stock: 0, short: 2, state: IngredientState::Missing, reusable: false }]);
         assert_eq!((plan.credits, kuva.stage), (Some(0), Stage::LevelClaim));
 
         let stock: HashMap<String, i64> = [(FORMA.to_string(), 2)].into();
@@ -3084,14 +3084,14 @@ mod tests {
         let levels = [(bolto.to_string(), vec![12])].into();
         let offers = HashMap::new();
         let jobs = [job(lato, 5_000_000)];
-        let images = [(bolto.to_string(), "bolto.png".to_string())].into();
-        let gear = Observed { images: &images, ..observed_gear(&owned, &levels, &jobs, &recipes, &offers, Some(30)) };
+        let catalogue = [(bolto.to_string(), WfcdItem { image_name: Some("bolto.png".into()), category: "Secondary".into(), ..Default::default() })].into();
+        let gear = Observed { catalogue: &catalogue, ..observed_gear(&owned, &levels, &jobs, &recipes, &offers, Some(30)) };
         let progress = observed(ProvenanceState::Confirmed, Some(1_000), &[(bolto, 72_000)]);
         let overview = with_suggestions(&items, &HashMap::new(), Some(&progress), &HashSet::new(), &gear);
         let craft = overview.opportunities.iter().find(|o| o.source.unique_name == akbolto)
             .expect("Akbolto has a recipe").craft.as_ref().expect("recipe has a plan");
-        let lines: Vec<_> = craft.requirements.iter().map(|r| (r.unique_name.as_str(), r.image_name.as_deref(), r.state)).collect();
-        assert_eq!(lines, [(bolto, Some("bolto.png"), IngredientState::MasterFirst), (lato, None, IngredientState::Building)]);
+        let lines: Vec<_> = craft.requirements.iter().map(|r| (r.unique_name.as_str(), r.image_name.as_deref(), r.category.as_deref(), r.state)).collect();
+        assert_eq!(lines, [(bolto, Some("bolto.png"), Some("Secondary"), IngredientState::MasterFirst), (lato, None, None, IngredientState::Building)]);
     }
 
     #[test]

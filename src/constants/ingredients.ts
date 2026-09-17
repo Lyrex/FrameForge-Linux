@@ -3,6 +3,11 @@ import type { IngredientState } from "../types/mastery";
 /** The inventory cache's key for the credit balance. */
 export const CREDITS_PATH = "/_currency/Credits";
 
+export const FORMA_PATH = "/Lotus/Types/Items/MiscItems/Forma";
+
+/** The catalogue's shared art for a blueprint that has none of its own. */
+export const BLUEPRINT_ART = "blueprint.png";
+
 /** The tooltip's third line. The stock states are left out because the count already says it. */
 export const INGREDIENT_STATE_LABELS: Record<IngredientState, string | null> = {
   owned: null,

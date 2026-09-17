@@ -218,7 +218,7 @@ mod tests {
     fn plan(short: &[(&str, u32)]) -> CraftPlan {
         CraftPlan {
             requirements: short.iter().map(|&(path, short)| Requirement {
-                unique_name: path.into(), name: short_name(path).into(), image_name: None, needed: short, from_stock: 0, short, state: IngredientState::Missing,
+                unique_name: path.into(), name: short_name(path).into(), image_name: None, category: None, needed: short, owned: 0, from_stock: 0, short, state: IngredientState::Missing, reusable: false,
             }).collect(),
             ..Default::default()
         }

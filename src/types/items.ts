@@ -33,6 +33,8 @@ export interface RecipeComponent {
   reusable?: boolean;
 }
 
+export type RecipeComponentStatus = "none" | "blueprint" | "part";
+
 export interface ShallowRecipeComponent {
   unique_name: string;
   name: string;

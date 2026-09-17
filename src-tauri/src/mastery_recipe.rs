@@ -43,13 +43,19 @@ pub(crate) struct Requirement {
     pub(crate) unique_name: String,
     pub(crate) name: String,
     pub(crate) image_name: Option<String>,
+    pub(crate) category: Option<String>,
     pub(crate) needed: u32,
+    /// The projected stock before this recipe drew on it, which can exceed
+    /// `needed`.
+    pub(crate) owned: u32,
     /// How many came out of projected stock. A reusable blueprint counts once
     /// and is not consumed.
     pub(crate) from_stock: u32,
     /// The remainder that neither stock nor a build covers.
     pub(crate) short: u32,
     pub(crate) state: IngredientState,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) reusable: bool,
 }
 
 #[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
@@ -74,6 +80,9 @@ pub(crate) struct CraftPlan {
     /// Credits still missing once earlier targets took theirs. It stays 0
     /// while the cost or the balance is unknown.
     pub(crate) credits_short: u64,
+    /// The projected balance before this plan took its price. It is None
+    /// when the cost is unknown as well as when the balance is.
+    pub(crate) credit_balance: Option<u64>,
 }
 
 #[derive(serde::Serialize, Clone, PartialEq, Eq, Debug)]
@@ -96,30 +105,33 @@ impl CraftPlan {
         !self.builds.is_empty() && self.shortages().next().is_none()
     }
 
-    /// Foundry jobs and images live outside the ledger, so they land after
-    /// the plan is drawn.
-    pub(crate) fn decorate(&mut self, image: impl Fn(&str) -> Option<String>, building: impl Fn(&str) -> bool) {
+    /// Foundry jobs and the catalogue live outside the ledger, so they land
+    /// after the plan is drawn.
+    pub(crate) fn decorate(&mut self, catalogue: &HashMap<String, WfcdItem>, building: impl Fn(&str) -> bool) {
         for line in &mut self.requirements {
-            line.image_name = image(&line.unique_name);
+            if let Some(item) = catalogue.get(&line.unique_name) {
+                line.image_name = item.image_name.clone();
+                line.category = Some(item.category.clone());
+            }
             if line.from_stock == 0 && building(&line.unique_name) { line.state = IngredientState::Building; }
         }
     }
 
-    fn require(&mut self, component: &RecipeComponent, needed: u32, from_stock: u32, short: u32, state: IngredientState) {
-        match self.requirements.iter_mut().find(|r| r.unique_name == component.unique_name) {
+    /// A second listing of a component reads the stock the first listing
+    /// already drew on, so `owned` keeps the first reading.
+    fn require(&mut self, new: Requirement) {
+        match self.requirements.iter_mut().find(|r| r.unique_name == new.unique_name) {
             Some(line) => {
-                line.needed += needed;
-                line.from_stock += from_stock;
-                line.short += short;
+                line.needed += new.needed;
+                line.from_stock += new.from_stock;
+                line.short += new.short;
                 // A second listing of a blocked line stays blocked, because its
                 // ingredients draw on the stock the first listing already ran
                 // short of.
-                let unmet = if line.state == IngredientState::Blocked { IngredientState::Blocked } else { state };
+                let unmet = if line.state == IngredientState::Blocked { IngredientState::Blocked } else { new.state };
                 line.state = stock_state(line.from_stock, line.needed, unmet);
             }
-            None => self.requirements.push(Requirement {
-                unique_name: component.unique_name.clone(), name: component.name.clone(), image_name: None, needed, from_stock, short, state,
-            }),
+            None => self.requirements.push(new),
         }
     }
 
@@ -202,6 +214,7 @@ impl<'a> Ledger<'a> {
             let taken = cost.min(balance.max(0) as u64);
             self.stock.insert(CREDITS_PATH, balance - taken as i64);
             plan.credits_short = cost - taken;
+            plan.credit_balance = Some(balance.max(0) as u64);
         }
         plan
     }
@@ -233,14 +246,17 @@ impl<'a> Ledger<'a> {
             let keep = blueprint && component.reusable;
             let needed = if keep { 1 } else { count * crafts };
             let path = component.unique_name.as_str();
-            let have = self.stock.get(path).copied().unwrap_or(0).max(0);
-            let from_stock = needed.min(u32::try_from(have).unwrap_or(u32::MAX));
+            let have = u32::try_from(self.stock.get(path).copied().unwrap_or(0).max(0)).unwrap_or(u32::MAX);
+            let from_stock = needed.min(have);
             if !keep { *self.stock.entry(path).or_insert(0) -= i64::from(from_stock); }
             let missing = needed - from_stock;
             let expands = missing > 0 && !component.components.is_empty() && self.can_expand(component);
             let unmet = if self.unmastered.contains(path) { IngredientState::MasterFirst } else { IngredientState::Missing };
             let state = stock_state(from_stock, needed, unmet);
-            plan.require(component, needed, from_stock, if expands { 0 } else { missing }, state);
+            plan.require(Requirement {
+                unique_name: component.unique_name.clone(), name: component.name.clone(), image_name: None, category: None,
+                needed, owned: have, from_stock, short: if expands { 0 } else { missing }, state, reusable: keep,
+            });
             if expands {
                 let per_craft = component.result_count.max(1);
                 let builds = missing.div_ceil(per_craft);
@@ -322,18 +338,18 @@ pub(crate) async fn plan_crafts(app: tauri::AppHandle, unique_names: Vec<String>
         let inventory = load_inventory_state_cache(&state.inventory_state_cache_path);
         let recipes = Arc::clone(&state.recipes.lock().unwrap_or_else(|e| e.into_inner()));
         let mut plans = if standalone.unwrap_or(false) { plan_each(&inventory, &recipes, &unique_names) } else { plan_all(&inventory, &recipes, &unique_names) };
-        let images = image_index(&state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()));
+        let catalogue = catalogue_index(&state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()));
         let jobs = state.current_crafting.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let building = building_results(&jobs, &recipes);
         for plan in &mut plans {
-            plan.decorate(|path| images.get(path).cloned(), |path| building.contains(path));
+            plan.decorate(&catalogue, |path| building.contains(path));
         }
         plans
     }).await.map_err(|e| e.to_string())
 }
 
-pub(crate) fn image_index(items: &[WfcdItem]) -> HashMap<String, String> {
-    items.iter().filter_map(|i| Some((i.unique_name.clone(), i.image_name.clone()?))).collect()
+pub(crate) fn catalogue_index(items: &[WfcdItem]) -> HashMap<String, WfcdItem> {
+    items.iter().map(|i| (i.unique_name.clone(), i.clone())).collect()
 }
 
 /// A Foundry job carries its blueprint path, while the plan lists the result.
@@ -606,7 +622,7 @@ mod tests {
         assert!(shared.plan(BALLA, &first).craftable_now());
         let plan = shared.plan(BALLA, &second);
         assert!(plan.craftable_now());
-        assert_eq!(plan.requirements[0], Requirement { unique_name: BALLA_BP.into(), name: "TipOneBlueprint".into(), image_name: None, needed: 1, from_stock: 1, short: 0, state: IngredientState::Owned });
+        assert_eq!(plan.requirements[0], Requirement { unique_name: BALLA_BP.into(), name: "TipOneBlueprint".into(), image_name: None, category: None, needed: 1, owned: 1, from_stock: 1, short: 0, state: IngredientState::Owned, reusable: true });
 
         let stock = stock_of(&[(IRADITE, 40)]);
         let plan = ledger(&stock, &NO_EQUIPMENT).plan(BALLA, &first);
@@ -741,16 +757,38 @@ mod tests {
         assert_eq!(line(&plan, LATO).state, IngredientState::Missing);
     }
 
+    /// Akbolto lists its cell twice, once under the built Boltos and once on
+    /// its own. The second listing reads what the first left, so the line
+    /// keeps the first reading of the projected stock.
     #[test]
-    fn decorating_marks_foundry_jobs_and_looks_up_images() {
+    fn owned_is_the_whole_stock_before_the_recipe_took_its_share() {
+        let counts = |plan: &CraftPlan, path| { let l = line(plan, path); (l.owned, l.from_stock, l.needed, l.reusable) };
+        let stock = stock_of(&[(FROST_BP, 1), (CHASSIS_BP, 3), (FERRITE, 5_000), (CELL_BP, 1), (CREDITS_PATH, 100_000)]);
+        let plan = ledger(&stock, &NO_EQUIPMENT).plan(FROST, &frost());
+        assert_eq!(counts(&plan, FERRITE), (5_000, 1_000, 1_000, false));
+        assert_eq!(counts(&plan, CHASSIS_BP), (3, 1, 1, false));
+        assert_eq!(counts(&plan, CELL_BP), (1, 1, 1, true));
+        assert_eq!(counts(&plan, ALLOY), (0, 0, 50_000, false));
+        assert_eq!(plan.credit_balance, Some(100_000));
+
+        let stock = stock_of(&[(AKBOLTO_BP, 1), (BOLTO_BP, 2), (LATO, 2), (CELL, 6)]);
+        let plan = ledger(&stock, &NO_EQUIPMENT).plan(AKBOLTO, &akbolto());
+        assert_eq!(counts(&plan, CELL), (6, 5, 5, false));
+        assert_eq!(plan.credit_balance, None);
+    }
+
+    #[test]
+    fn decorating_marks_foundry_jobs_and_looks_up_the_catalogue() {
         let recipe = frost();
         let stock = stock_of(&[(FROST_BP, 1)]);
         let mut plan = ledger(&stock, &NO_EQUIPMENT).plan(FROST, &recipe);
-        plan.decorate(|path| (path == CHASSIS).then(|| "chassis.png".into()), |path| path == CELL);
-        assert_eq!((line(&plan, CHASSIS).image_name.as_deref(), line(&plan, CHASSIS).state), (Some("chassis.png"), IngredientState::Blocked));
-        assert_eq!((line(&plan, CELL).image_name.as_deref(), line(&plan, CELL).state), (None, IngredientState::Building));
+        let catalogue = [(CHASSIS.to_string(), WfcdItem { image_name: Some("chassis.png".into()), category: "Warframes".into(), ..Default::default() })].into();
+        plan.decorate(&catalogue, |path| path == CELL);
+        let facts = |path| { let l = line(&plan, path); (l.image_name.as_deref(), l.category.as_deref(), l.state) };
+        assert_eq!(facts(CHASSIS), (Some("chassis.png"), Some("Warframes"), IngredientState::Blocked));
+        assert_eq!(facts(CELL), (None, None, IngredientState::Building));
         // Stock already covers the blueprint, so a job for it changes nothing.
-        plan.decorate(|_| None, |path| path == FROST_BP);
+        plan.decorate(&HashMap::new(), |path| path == FROST_BP);
         assert_eq!(line(&plan, FROST_BP).state, IngredientState::Owned);
     }
 }
