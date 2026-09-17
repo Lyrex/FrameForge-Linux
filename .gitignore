@@ -21,6 +21,9 @@ build-and-release.bat
 backup-memory.bat
 pnpm-workspace.yaml
 
+# Stray backup copies of source files — git history already covers this
+src/_backup/
+
 # Tauri build output
 src-tauri/target/
 
