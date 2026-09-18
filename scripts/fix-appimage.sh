@@ -60,6 +60,14 @@ printf '%s' "$updinfo" | dd of=runtime bs=1 seek="$updinfo_offset" \
 # with the updated excludelist will stop bundling it.
 rm -f squashfs-root/usr/lib/libwayland-client.so.0
 
+# Tauri's bundler copies the build host's xdg-open and xdg-mime into usr/bin,
+# and AppRun puts that directory first on PATH, so every opener call runs the
+# bundled script. The bundled xdg-open 1.1.3 knows KDE session versions 4 and
+# 5 only. Under Plasma 6 its KDE branch matches nothing and exits 0 without
+# opening anything, so the app sees no error. xdg-mime goes too because the
+# host's xdg-open looks it up on PATH and would find the stale copy first.
+rm -f squashfs-root/usr/bin/xdg-open squashfs-root/usr/bin/xdg-mime
+
 # The desktop file's real copy lives under usr/share/applications, and the
 # root FrameForge.png is already a regular file, so both are safe sources.
 rm squashfs-root/FrameForge.desktop squashfs-root/.DirIcon
