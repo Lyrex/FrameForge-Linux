@@ -1,6 +1,7 @@
 import type { TierKey } from "../arbitration/arbitrationTiers";
 import type { ClockFormat } from "../lib/clockFormat";
 import type { Unobtainable } from "./mastery";
+import type { FilterPresetSettings } from "./filterPresets";
 export type RelicOverlayPriority = "completion" | "plat" | "ducat" | "setPlat";
 export type RelicPickPriority = "unowned" | "ducat" | "platinum";
 export type RelicRefinement = "intact" | "exceptional" | "flawless" | "radiant";
@@ -31,4 +32,5 @@ export interface SettingsSnapshot {
   relicPickPriority: RelicPickPriority; relicPickRefinement: RelicRefinement;
   relicPickLines: RelicPickLines; foundryPageSize: FoundryPageSize; memTriggerEnabled: boolean;
   masteryExclude: MasteryExclude;
+  filterPresets: FilterPresetSettings;
 }

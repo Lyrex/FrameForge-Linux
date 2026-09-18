@@ -1,10 +1,11 @@
-import { useState, useEffect, useMemo, useCallback, memo, startTransition, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, memo, startTransition, useRef, type Dispatch, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ItemImg from "./ItemImg";
 import { useModal } from "./shared/useModal";
 import { HelpTip } from "./shared/HelpTip";
+import FilterPresets from "./shared/FilterPresets";
 import { PREFERENCE_KEYS } from "./constants/preferences";
-import { FOUNDRY_FILTERS_DEFAULT } from "./constants/filters";
+import { matchesSearchTerms, splitSearchTerms } from "./lib/search";
 import { WARFRAME_WIKI_BASE } from "./constants/urls";
 import { TAURI_COMMANDS } from "./constants/tauri";
 import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeMap, RelicDropMap } from "./types/items";
@@ -13,6 +14,7 @@ import { componentStatus, craftableNow, craftRows, distinct, type CraftRow } fro
 import { usePlanCrafts } from "./shared/usePlanCrafts";
 import { CraftCounts } from "./shared/CraftCounts";
 import type { FoundryFilters } from "./types/filters";
+import type { FilterPresetModule, FilterPresetSettings } from "./types/filterPresets";
 import type { ViewMode } from "./types/ui";
 import { ViewToggle } from "./shared/ViewToggle";
 import sentientIcon from "./assets/SentientFactionIcon.webp";
@@ -27,6 +29,11 @@ interface Props {
   tracked: string[];
   onTrackToggle: (id: string) => void;
   pageSize?: number;
+  filters: FoundryFilters;
+  onFiltersChange: Dispatch<SetStateAction<FoundryFilters>>;
+  filterPresets: FilterPresetSettings;
+  onFilterPresetsChange: Dispatch<SetStateAction<FilterPresetSettings>>;
+  onOpenSettings: (module: FilterPresetModule) => void;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -462,8 +469,7 @@ const CRAFT_CATEGORIES = [
   "Companions", "Archwing", "Operator Weapons", "Parts", "Blueprints", "Miscellaneous",
 ];
 
-export default function Foundry({ inventory, refreshKey, crafting, subsummedWarframes = new Set(), tracked, onTrackToggle, pageSize = 30 }: Props) {
-  const [filters, onFiltersChange] = useState<FoundryFilters>(FOUNDRY_FILTERS_DEFAULT);
+export default function Foundry({ inventory, refreshKey, crafting, subsummedWarframes = new Set(), tracked, onTrackToggle, pageSize = 30, filters, onFiltersChange, filterPresets, onFilterPresetsChange, onOpenSettings }: Props) {
   const [craftable, setCraftable] = useState<CatalogItem[]>([]);
   const [recipes, setRecipes]     = useState<Map<string, RecipeComponent[]>>(new Map());
   const [blueprintResults, setBlueprintResults] = useState<Record<string, string>>({});
@@ -484,7 +490,6 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
 
   const trackedSet = useMemo(() => new Set(tracked), [tracked]);
 
-  // Sync local input when parent resets search (e.g. "Show All" button)
   useEffect(() => { setInputSearch(filters.search); }, [filters.search]); // eslint-disable-line
 
   // Wait 150 ms after last keystroke before propagating to parent filters
@@ -499,7 +504,6 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
 
   const { search, activeCat, filterPrime, filterNonPrime, filterVaulted, filterUnvaulted, filterMastered, filterUnmastered, filterOwned, filterUnowned, filterReady, filterLvlCap, ignoreFormaKuva } = filters;
   const set = <K extends keyof FoundryFilters>(k: K, v: FoundryFilters[K]) => onFiltersChange({ ...filters, [k]: v });
-  const isFiltered = search !== "" || filterPrime || filterNonPrime || filterVaulted || filterUnvaulted || filterMastered || filterUnmastered || filterOwned || filterUnowned || filterReady || filterLvlCap || ignoreFormaKuva;
 
   useEffect(() => {
     invoke<CatalogItem[]>(TAURI_COMMANDS.GET_CRAFTABLE_ITEMS).then(setCraftable).catch(() => setCraftable([]));
@@ -519,10 +523,10 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
     [crafting, blueprintResults]);
 
   const candidates = useMemo(() => {
-    const q = search.toLowerCase();
+    const searchTerms = splitSearchTerms(search);
     return craftable
       .filter(i => i.category === activeCat || activeCat === "All")
-      .filter(i => !q || i.name.toLowerCase().includes(q))
+      .filter(i => matchesSearchTerms(searchTerms, i.name))
       .filter(i => !filterPrime    || i.name.includes("Prime") || i.vaulted != null)
       .filter(i => !filterNonPrime || (!i.name.includes("Prime") && i.vaulted == null))
       .filter(i => !filterVaulted   || i.vaulted === true)
@@ -635,7 +639,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
       {/* ── Col 1: Category sidebar ── */}
       <div className="foundry-sidebar">
         <div className="foundry-search-wrap">
-          <input className="foundry-search" placeholder="Search…" value={inputSearch}
+          <input className="foundry-search" placeholder="Search (comma-separated)…" value={inputSearch}
             onChange={e => setInputSearch(e.target.value)} />
         </div>
         {CRAFT_CATEGORIES.map(cat => (
@@ -666,7 +670,8 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
           <button className={`fchip ${filterUnmastered? "fchip-on" : ""}`} onClick={() => onFiltersChange({ ...filters, filterUnmastered: !filterUnmastered, filterMastered: false })}>☆ Unmastered</button>
           <span className="fbar-sep"/>
           <button className={`fchip ${filterLvlCap   ? "fchip-on" : ""}`} onClick={() => onFiltersChange({ ...filters, filterLvlCap: !filterLvlCap, ...(!filterLvlCap ? { activeCat: "All" } : {}) })}>Lvl &gt; 30</button>
-          {isFiltered && <button className="fchip fchip-reset" onClick={() => onFiltersChange({ ...FOUNDRY_FILTERS_DEFAULT, activeCat })}>Show All</button>}
+          <span className="fbar-sep"/>
+          <FilterPresets module="foundry" {...{ filters, onFiltersChange, filterPresets, onFilterPresetsChange, onOpenSettings }} />
           <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>{visible.length} items</span>
           <ViewToggle view={craftView} onChange={v => { setCraftView(v); localStorage.setItem(PREFERENCE_KEYS.FOUNDRY_VIEW, v); }} />
           <HelpTip items={[

@@ -1,14 +1,16 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, type Dispatch, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { HelpTip } from "./shared/HelpTip";
+import FilterPresets from "./shared/FilterPresets";
 import { PREFERENCE_KEYS } from "./constants/preferences";
-import { RELIC_FILTERS_DEFAULT } from "./constants/filters";
+import { matchesSearchTerms, splitSearchTerms } from "./lib/search";
 import { RELIC_DROP_RATES, RELIC_REFINEMENT_LABELS, RELIC_REFINEMENT_ORDER } from "./constants/relics";
 import ItemImg from "./ItemImg";
 import { toggle, normalizeForWfm } from "./utils";
 import { TAURI_COMMANDS } from "./constants/tauri";
 import type { CatalogItem, InventoryItem } from "./types/items";
 import type { RelicFilters } from "./types/filters";
+import type { FilterPresetModule, FilterPresetSettings } from "./types/filterPresets";
 import type { DropReward, RelicDrop } from "./types/relics";
 import type { ViewMode } from "./types/ui";
 import type { WfmCachedPrices, WfmItem } from "./types/market";
@@ -18,6 +20,11 @@ interface Props {
   inventory: Record<string, InventoryItem>;
   refreshKey: number;
   colorblindMode?: boolean;
+  filters: RelicFilters;
+  onFiltersChange: Dispatch<SetStateAction<RelicFilters>>;
+  filterPresets: FilterPresetSettings;
+  onFilterPresetsChange: Dispatch<SetStateAction<FilterPresetSettings>>;
+  onOpenSettings: (module: FilterPresetModule) => void;
 }
 
 // ─── Module-level constants ───────────────────────────────────────────────────
@@ -148,12 +155,12 @@ function isFormaOrKuva(itemName: string): boolean {
   return itemName.includes("Forma") || itemName === "Kuva";
 }
 
-function RelicCard({ drop, catalogRelicByName, inventory, ownedPrimeNames, searchQ, nameMap, colorblindMode, view, ignoreFormaKuva }: {
+function RelicCard({ drop, catalogRelicByName, inventory, ownedPrimeNames, searchTerms, nameMap, colorblindMode, view, ignoreFormaKuva }: {
   drop: RelicDrop;
   catalogRelicByName: Map<string, CatalogItem>;
   inventory: Record<string, InventoryItem>;
   ownedPrimeNames: Set<string>;
-  searchQ: string;
+  searchTerms: readonly string[];
   nameMap: Map<string, CatalogItem>;
   colorblindMode: boolean;
   view: ViewMode;
@@ -351,7 +358,7 @@ function RelicCard({ drop, catalogRelicByName, inventory, ownedPrimeNames, searc
               imageSrcs={imageSrcs}
               isOwned={isOwned}
               isComplete={isComplete}
-              isHighlighted={searchQ.length > 1 && r.itemName.toLowerCase().includes(searchQ)}
+              isHighlighted={searchTerms.some(term => term.length > 1) && matchesSearchTerms(searchTerms.filter(term => term.length > 1), r.itemName)}
               colorblindMode={colorblindMode}
             />
           );
@@ -630,8 +637,7 @@ function PlannerTab({
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function RelicHelper({ inventory, refreshKey, colorblindMode = false }: Props) {
-  const [filters, onFiltersChange] = useState<RelicFilters>(RELIC_FILTERS_DEFAULT);
+export default function RelicHelper({ inventory, refreshKey, colorblindMode = false, filters, onFiltersChange, filterPresets, onFilterPresetsChange, onOpenSettings }: Props) {
   const [plannerActive, setPlannerActive] = useState(false);
   const [relicView, setRelicView] = useState<ViewMode>(() =>
     (localStorage.getItem(PREFERENCE_KEYS.RELIC_VIEW) as ViewMode | null) ?? "cards"
@@ -700,14 +706,11 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
     }, 0);
   }, [catalogRelicByName, inventory]);
 
-  const searchQ = search.toLowerCase();
+  const searchTerms = useMemo(() => splitSearchTerms(search), [search]);
 
   const visibleDrops = useMemo(() => drops
     .filter(d => {
-      if (!searchQ) return true;
-      return (d.fullName ?? "").toLowerCase().includes(searchQ)
-        || (d.relicName ?? "").toLowerCase().includes(searchQ)
-        || d.rewards.some(r => (r.itemName ?? "").toLowerCase().includes(searchQ));
+      return matchesSearchTerms(searchTerms, d.fullName ?? "", d.relicName ?? "", ...d.rewards.map(reward => reward.itemName ?? ""));
     })
     .filter(d => {
       if (tiers.length === 0) return true;
@@ -751,7 +754,7 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
       if (sortMode === "za") return (b.fullName ?? "").localeCompare(a.fullName ?? "");
       return (a.fullName ?? "").localeCompare(b.fullName ?? ""); // az + plat fallback
     }),
-  [drops, searchQ, tiers, ownership, vault, completion, sortMode, getTotal, catalogRelicByName, nameMap, inventory, ownedPrimeNames]);
+  [drops, searchTerms, tiers, ownership, vault, completion, sortMode, getTotal, catalogRelicByName, nameMap, inventory, ownedPrimeNames]);
 
   const ownedCount = useMemo(() =>
     drops.filter(d => getTotal(d) > 0).length,
@@ -762,8 +765,9 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
   const pagedDrops = visibleDrops.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const totalPages = Math.ceil(visibleDrops.length / PAGE_SIZE);
 
-  const searchMatchesReward = searchQ.length > 1
-    && drops.some(d => d.rewards.some(r => (r.itemName ?? "").toLowerCase().includes(searchQ)));
+  const highlightSearchTerms = searchTerms.filter(term => term.length > 1);
+  const searchMatchesReward = highlightSearchTerms.length > 0
+    && drops.some(d => d.rewards.some(reward => matchesSearchTerms(highlightSearchTerms, reward.itemName ?? "")));
 
   return (
     <div className="relic-helper">
@@ -784,7 +788,7 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
       <div className="market-header">
         <input
           className="foundry-search" style={{ width: 220 }}
-          placeholder="Relic name or item name…"
+          placeholder="Relic or item names (comma-separated)…"
           value={search} onChange={e => set("search", e.target.value)}
         />
         <div className="filter-bar" style={{ border: "none", padding: 0, flex: 1, flexWrap: "wrap" }}>
@@ -803,6 +807,8 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
           <button className={`fchip ${completion.includes("incomplete") ? "fchip-on" : ""}`} onClick={() => set("completion", toggle(completion, "incomplete"))}>Uncompleted</button>
           <button className={`fchip ${ignoreFormaKuva ? "fchip-on" : ""}`} onClick={() => set("ignoreFormaKuva", !ignoreFormaKuva)} title="Treat Forma and Kuva rewards as always obtained when checking completion">Ignore Forma/Kuva</button>
           <span className="fbar-sep"/>
+          <FilterPresets module="relics" {...{ filters, onFiltersChange, filterPresets, onFilterPresetsChange, onOpenSettings }} />
+          <span className="fbar-sep"/>
           <span className="fbar-label">Sort:</span>
           <button className={`fchip ${sortMode === "count"  ? "fchip-on" : ""}`} onClick={() => set("sortMode", "count")}>Most Owned</button>
           <button className={`fchip ${sortMode === "plat"   ? "fchip-on" : ""}`} onClick={() => set("sortMode", "plat")}>Avg Plat</button>
@@ -810,7 +816,6 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
           <button className={`fchip ${sortMode === "az"     ? "fchip-on" : ""}`} onClick={() => set("sortMode", "az")}>A–Z</button>
           <button className={`fchip ${sortMode === "za"     ? "fchip-on" : ""}`} onClick={() => set("sortMode", "za")}>Z–A</button>
           <span className="fbar-sep"/>
-          <button className="fchip fchip-reset" onClick={() => onFiltersChange(RELIC_FILTERS_DEFAULT)}>Show All</button>
           {dropError && <button className="btn-secondary" style={{ marginLeft: 4 }} onClick={() => loadDrops(true)}>↺ Retry</button>}
           <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>
             {dropLoading ? "Loading…" : `${visibleDrops.length} relics · ${ownedCount} owned`}
@@ -828,7 +833,7 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
 
       {searchMatchesReward && (
         <div style={{ padding: "4px 14px", fontSize: 11, color: "var(--accent)" }}>
-          Showing relics that drop "<strong>{search}</strong>" — highlighted in blue
+          Showing relics with reward drops matching one or more search terms — highlighted in blue
         </div>
       )}
 
@@ -852,7 +857,7 @@ export default function RelicHelper({ inventory, refreshKey, colorblindMode = fa
             catalogRelicByName={catalogRelicByName}
             inventory={inventory}
             ownedPrimeNames={ownedPrimeNames}
-            searchQ={searchQ}
+            searchTerms={searchTerms}
             nameMap={nameMap}
             colorblindMode={colorblindMode}
             view={relicView}

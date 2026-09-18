@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, memo } from "react";
+import { useState, useEffect, useMemo, useRef, memo, type Dispatch, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ItemImg from "../ItemImg";
 import { PlatIcon, DucatIcon } from "../shared/icons";
@@ -6,12 +6,14 @@ import { useModal } from "../shared/useModal";
 import { fmt, toggle, normalizeForWfm, wfmSlugLookup } from "../utils";
 import { listen } from "@tauri-apps/api/event";
 import { HelpTip } from "../shared/HelpTip";
+import FilterPresets from "../shared/FilterPresets";
 import WfmTrading from "./WfmTrading";
 import ItemMarketPopup from "./ItemMarketPopup";
-import { MARKET_FILTERS_DEFAULT } from "../constants/filters";
+import { matchesSearchTerms, splitSearchTerms } from "../lib/search";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import type { CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeMap } from "../types/items";
 import type { MarketFilters } from "../types/filters";
+import type { FilterPresetModule, FilterPresetSettings } from "../types/filterPresets";
 import type { ModCopy } from "../types/inventory";
 import type { BlobRivenEntry, BlobRivenStat, WfmCachedPrices, WfmItem, WfmItemInfo, WfmPrice, WfmPriceUpdate, WfmRivenAttribute } from "../types/market";
 import type { WfmCreateOrderArgs, WfmCreateRivenAuctionArgs, WfmSession } from "../types/tauri";
@@ -31,6 +33,11 @@ interface Props {
   crafting: CraftingJob[];
   onWfmLoginChange?: (loggedIn: boolean) => void;
   modCopiesMap?: Record<string, ModCopy[]>;
+  filters: MarketFilters;
+  onFiltersChange: Dispatch<SetStateAction<MarketFilters>>;
+  filterPresets: FilterPresetSettings;
+  onFilterPresetsChange: Dispatch<SetStateAction<FilterPresetSettings>>;
+  onOpenSettings: (module: FilterPresetModule) => void;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -148,8 +155,7 @@ function SetCard({ setKey, parts, parentItem, setPrice, setPriceLoading, pricesF
 
 // ─── Market Helper ────────────────────────────────────────────────────────────
 
-export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLoginChange, modCopiesMap = {} }: Props) {
-  const [filters, onFiltersChange] = useState<MarketFilters>(MARKET_FILTERS_DEFAULT);
+export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLoginChange, modCopiesMap = {}, filters, onFiltersChange, filterPresets, onFilterPresetsChange, onOpenSettings }: Props) {
   const [allItems, setAllItems]           = useState<CatalogItem[]>([]);
   const [wfmItems, setWfmItems]           = useState<WfmItem[]>([]);
   const [wfmLoading, setWfmLoading]       = useState(false);
@@ -393,9 +399,9 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
   }, [wfmLookup.size, sets.size]); // eslint-disable-line
 
   const visibleSets = useMemo(() => {
-    const q = search.toLowerCase();
+    const searchTerms = splitSearchTerms(search);
     return Array.from(sets.entries())
-      .filter(([key]) => !q || key.toLowerCase().includes(q))
+      .filter(([key]) => matchesSearchTerms(searchTerms, key))
       .filter(([key, parts]) => {
         const ownedAny    = parts.some(p => (inventory[p.unique_name]?.quantity ?? 0) > 0);
         const parent      = parentItems.get(key);
@@ -510,7 +516,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
 
       {activeMarketTab === "sets" && <>
       <div className="market-header">
-        <input className="foundry-search" style={{ width: 200 }} placeholder="Search sets…"
+        <input className="foundry-search" style={{ width: 200 }} placeholder="Search sets (comma-separated)…"
           value={search} onChange={e => set("search", e.target.value)} />
         <div className="filter-bar" style={{ border: "none", padding: 0, flex: 1, flexWrap: "wrap" }}>
           <button className={`fchip ${ownership.includes("owned")    ? "fchip-on" : ""}`} onClick={() => set("ownership", toggle(ownership, "owned"))}>Owned</button>
@@ -524,13 +530,14 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
           <button className={`fchip ${vault.includes("vaulted")   ? "fchip-on" : ""}`} onClick={() => set("vault", toggle(vault, "vaulted"))}>Vaulted</button>
           <button className={`fchip ${vault.includes("unvaulted") ? "fchip-on" : ""}`} onClick={() => set("vault", toggle(vault, "unvaulted"))}>Unvaulted</button>
           <span className="fbar-sep"/>
+          <FilterPresets module="market" {...{ filters, onFiltersChange, filterPresets, onFilterPresetsChange, onOpenSettings }} />
+          <span className="fbar-sep"/>
           <span className="fbar-label">Sort:</span>
           <button className={`fchip ${sortMode === "plat"   ? "fchip-on" : ""}`} onClick={() => set("sortMode", "plat")}>Most Plat</button>
           <button className={`fchip ${sortMode === "ducats" ? "fchip-on" : ""}`} onClick={() => set("sortMode", "ducats")}>Most Ducats</button>
           <button className={`fchip ${sortMode === "az"     ? "fchip-on" : ""}`} onClick={() => set("sortMode", "az")}>A–Z</button>
           <button className={`fchip ${sortMode === "za"     ? "fchip-on" : ""}`} onClick={() => set("sortMode", "za")}>Z–A</button>
           <span className="fbar-sep"/>
-          <button className="fchip fchip-reset" onClick={() => onFiltersChange(MARKET_FILTERS_DEFAULT)}>Show All</button>
           <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>{visibleSets.length} sets</span>
           <HelpTip items={[
             { swatch: "rgba(240,192,64,.5)", icon: "✓", label: "Complete set", desc: "Gold border + ✓ — all parts in inventory" },

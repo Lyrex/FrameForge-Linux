@@ -6,6 +6,7 @@ import StatsDataTransfer from "./statistics/StatsDataTransfer";
 import UpdateCheckRow from "./update/UpdateCheck";
 import type { UpdateAvailable } from "./update/updater";
 import { formatBytes } from "./lib/formatters";
+import FilterPresets from "./shared/FilterPresets";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import { CLOCK_FORMAT_OPTIONS, FOUNDRY_PAGE_SIZE_OPTIONS, MASTERY_EXCLUDE_OPTIONS, RELIC_OVERLAY_PRIORITY_OPTIONS, RELIC_PICK_LINES_OPTIONS, RELIC_PICK_PRIORITY_OPTIONS } from "./constants/settings";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
@@ -14,9 +15,11 @@ import type { ChangeLogEntry } from "./types/inventory";
 import type { ClockFormat } from "./lib/clockFormat";
 import { useModal } from "./shared/useModal";
 import type { FoundryPageSize, MasteryExclude, RelicOverlayPriority, RelicPickLines, RelicPickPriority, SettingsSnapshot } from "./types/settings";
+import type { FilterPresetModule, FilterPresetSettings } from "./types/filterPresets";
+import type { FoundryFilters, InventoryFilters, MarketFilters, RelicFilters } from "./types/filters";
 import "./SettingsModal.css";
 
-type SettingsTab = "general" | "overlays" | "market" | "accessibility" | "data" | "debugging";
+type SettingsTab = "general" | "overlays" | "market" | "filters" | "accessibility" | "data" | "debugging";
 type Setter<T> = Dispatch<SetStateAction<T>>;
 type ScannerMods = Record<string, { total: number; by_rank: Record<string, number> }>;
 type ArchonShards = Record<string, ArchonShard[]>;
@@ -25,6 +28,12 @@ export interface SettingsModalProps {
   onClose: () => void;
   settingsTab: SettingsTab;
   setSettingsTab: (tab: SettingsTab) => void;
+  settingsFilterModule: FilterPresetModule; setSettingsFilterModule: Setter<FilterPresetModule>;
+  filterPresets: FilterPresetSettings; setFilterPresets: Setter<FilterPresetSettings>;
+  inventoryFilters: InventoryFilters; setInventoryFilters: Setter<InventoryFilters>;
+  foundryFilters: FoundryFilters; setFoundryFilters: Setter<FoundryFilters>;
+  marketFilters: MarketFilters; setMarketFilters: Setter<MarketFilters>;
+  relicFilters: RelicFilters; setRelicFilters: Setter<RelicFilters>;
   foundryPageSize: FoundryPageSize; setFoundryPageSize: Setter<FoundryPageSize>; settingsRef: MutableRefObject<SettingsSnapshot>; saveAllSettings: () => void;
   memoryScannerEnabled: boolean; setMemoryScannerEnabled: Setter<boolean>; modularPopout: boolean; setModularPopout: Setter<boolean>; overlayStatus: string;
   overlayEnabled: boolean; setOverlayEnabled: Setter<boolean>; overlayPriority: RelicOverlayPriority; setOverlayPriority: Setter<RelicOverlayPriority>; memTriggerEnabled: boolean; setMemTriggerEnabled: Setter<boolean>;
@@ -69,7 +78,7 @@ function RefreshAllButton() {
 }
 
 export default function SettingsModal(props: SettingsModalProps) {
-  const { settingsTab, setSettingsTab, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, masteryExclude, setMasteryExclude, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setItemsRefreshKey, blobLogEnabled, setBlobLogEnabled, setShowInventoryBatchPreview, autoDiagEnabled, setAutoDiagEnabled, appVersion, arbOverlayEnabled, setArbOverlayEnabled, onUpdateFound, onClose } = props;
+  const { settingsTab, setSettingsTab, settingsFilterModule, setSettingsFilterModule, filterPresets, setFilterPresets, inventoryFilters, setInventoryFilters, foundryFilters, setFoundryFilters, marketFilters, setMarketFilters, relicFilters, setRelicFilters, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, masteryExclude, setMasteryExclude, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setItemsRefreshKey, blobLogEnabled, setBlobLogEnabled, setShowInventoryBatchPreview, autoDiagEnabled, setAutoDiagEnabled, appVersion, arbOverlayEnabled, setArbOverlayEnabled, onUpdateFound, onClose } = props;
   const modal = useModal(onClose);
   const [clearMsg, setClearMsg] = useState("");
   const [notifyTestResult, setNotifyTestResult] = useState("");
@@ -105,7 +114,7 @@ export default function SettingsModal(props: SettingsModalProps) {
   }, [settingsTab]); // eslint-disable-line
   return (
       <dialog className="settings-overlay" {...modal}>
-        <div className="settings-modal" onClick={e => e.stopPropagation()}>
+        <div className={`settings-modal settings-modal-${settingsTab}`} onClick={e => e.stopPropagation()}>
           <div className="settings-header">
             <span className="settings-title">Settings</span>
             <button className="craft-detail-close" onClick={onClose}>✕</button>
@@ -114,7 +123,7 @@ export default function SettingsModal(props: SettingsModalProps) {
           <div className="settings-layout">
             {/* ── Sidebar nav ── */}
             <nav className="settings-sidebar">
-              {(["general", "overlays", "market", "accessibility", "data", "debugging"] as const).map(tab => (
+              {(["general", "overlays", "market", "filters", "accessibility", "data", "debugging"] as const).map(tab => (
                 <button
                   key={tab}
                   className={`settings-tab-item${settingsTab === tab ? " active" : ""}`}
@@ -475,6 +484,35 @@ export default function SettingsModal(props: SettingsModalProps) {
                     >{wfmAutoInvisible ? "On" : "Off"}</button>
                   </div>
                 </div>
+              </>}
+
+              {settingsTab === "filters" && <>
+                <div className="settings-section">
+                  <div className="settings-section-title">Filter Presets</div>
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <span className="settings-row-label">Page</span>
+                      <span className="settings-row-desc">Manage saved and pinned presets for one page.</span>
+                    </div>
+                    <select className="settings-select" value={settingsFilterModule} onChange={event => setSettingsFilterModule(event.target.value as FilterPresetModule)}>
+                      <option value="inventory">Inventory</option>
+                      <option value="foundry">Foundry</option>
+                      <option value="market">Market Sets</option>
+                      <option value="relics">Relic Browser</option>
+                    </select>
+                  </div>
+                  <div className="settings-row" style={{ marginTop: 12 }}>
+                    <div className="settings-row-info">
+                      <span className="settings-row-label">Restore previous filters on active preset click</span>
+                      <span className="settings-row-desc">When clicking an active pinned preset again, restore the filters from before it was applied instead of clearing filters.</span>
+                    </div>
+                    <button className="btn-secondary" style={{ minWidth: 64, background: filterPresets.restorePreviousFiltersOnPresetClick ? "rgba(56,139,253,.15)" : undefined, borderColor: filterPresets.restorePreviousFiltersOnPresetClick ? "var(--accent)" : undefined }} onClick={() => setFilterPresets(current => ({ ...current, restorePreviousFiltersOnPresetClick: !current.restorePreviousFiltersOnPresetClick }))}>{filterPresets.restorePreviousFiltersOnPresetClick ? "On" : "Off"}</button>
+                  </div>
+                </div>
+                {settingsFilterModule === "inventory" && <FilterPresets variant="settings" module="inventory" filters={inventoryFilters} onFiltersChange={setInventoryFilters} filterPresets={filterPresets} onFilterPresetsChange={setFilterPresets} />}
+                {settingsFilterModule === "foundry" && <FilterPresets variant="settings" module="foundry" filters={foundryFilters} onFiltersChange={setFoundryFilters} filterPresets={filterPresets} onFilterPresetsChange={setFilterPresets} />}
+                {settingsFilterModule === "market" && <FilterPresets variant="settings" module="market" filters={marketFilters} onFiltersChange={setMarketFilters} filterPresets={filterPresets} onFilterPresetsChange={setFilterPresets} />}
+                {settingsFilterModule === "relics" && <FilterPresets variant="settings" module="relics" filters={relicFilters} onFiltersChange={setRelicFilters} filterPresets={filterPresets} onFilterPresetsChange={setFilterPresets} />}
               </>}
 
               {/* ════════════ ACCESSIBILITY ════════════ */}
