@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::collections::HashMap;
 use tauri::{Manager, State};
 use crate::app_state::AppState;
@@ -5,7 +6,7 @@ use crate::cache::atomic_write;
 use crate::inventory_state::{load_inventory_state_cache, CachedItem};
 use crate::monitor::CraftingJob;
 use crate::wfcd::{RecipeComponent, WfcdItem};
-use crate::{cache, wfcd};
+use crate::{cache, mastery_recipe, mastery_rules, wfcd};
 
 // ─── Item catalog ─────────────────────────────────────────────────────────────
 
@@ -103,7 +104,8 @@ pub(crate) fn fix_category(name: &str, item_type: &str, product_category: &str, 
 
     // ── Tier 3: type field — most reliable, covers all 17 000 items ───────────
     match item_type {
-        "Warframe" => return "Warframes".to_string(),
+        // Venari carries type Warframe; the game's profile files it with Kavats.
+        "Warframe" => return if wfcd_cat == "Companions" { "Companions" } else { "Warframes" }.to_string(),
 
         // Companion weapons MUST come before Primary/Secondary checks — WFCD stores
         // Sentinel weapons (Akaten, Sweeper, Verglas, etc.) with category=Primary.
@@ -112,6 +114,8 @@ pub(crate) fn fix_category(name: &str, item_type: &str, product_category: &str, 
         "Rifle" | "Shotgun" | "Bow" | "Sniper" | "Launcher" | "Throwing" => {
             // Railjack turrets/crew weapons share weapon types with Primary weapons.
             if product_category == "CrewShipWeapons" { return "Railjack".to_string(); }
+            // WFCD types ten melee weapons (Paracesis, Prova, Mk1-Bo, …) as Rifle.
+            if product_category == "Melee" { return "Melee".to_string(); }
             return "Primary".to_string();
         }
 
@@ -261,22 +265,7 @@ fn prime_set_prefix(name: &str) -> Option<String> {
     Some(name[..pos + 5].to_string()) // 5 = "prime".len()
 }
 
-/// WFCD marks all Amp components as `masterable: false`, but Prisms (barrels)
-/// DO grant mastery XP. Path-based overrides run first so they beat WFCD's value.
-fn resolve_masterable(wfcd: Option<bool>, path: &str) -> Option<bool> {
-    if !path.ends_with("Blueprint") {
-        // Amp Prisms (barrels) grant mastery; WFCD incorrectly says false.
-        if path.contains("/OperatorAmplifiers/") && path.contains("/Barrel/") {
-            return Some(true);
-        }
-        // Operator amp weapons (Sirocco, etc.) grant mastery.
-        if path.contains("/Operator/Pistols/") {
-            return Some(true);
-        }
-    }
-    wfcd
-}
-
+#[tracing::instrument(level = "info", skip_all)]
 fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
     // Clone data and release locks immediately — the catalog build below is O(n²)
     // and holding the locks blocks the monitor thread and other commands.
@@ -526,6 +515,7 @@ fn get_all_items_inner(state: &AppState) -> Vec<CatalogItem> {
     result
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
     get_all_items_inner(&state)
@@ -534,6 +524,7 @@ pub(crate) fn get_all_items(state: State<AppState>) -> Vec<CatalogItem> {
 /// Return catalog items for the given unique-name paths plus all set-sibling items
 /// (every item whose name shares the same "X Prime" prefix).  Used by the relic
 /// overlay so it never needs the full 19 000-item catalog at startup.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_items_by_paths(paths: Vec<String>, state: State<AppState>) -> Vec<CatalogItem> {
     let all = get_all_items_inner(&state);
@@ -565,6 +556,7 @@ pub(crate) fn get_items_by_paths(paths: Vec<String>, state: State<AppState>) -> 
         .collect()
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_current_quantities(state: State<AppState>) -> HashMap<String, i64> {
     let mut q = state.current_quantities.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -584,11 +576,13 @@ pub(crate) fn get_player_name(state: State<AppState>) -> Option<String> {
     state.local_player_name.lock().ok().and_then(|name| name.clone())
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_current_crafting(state: State<AppState>) -> Vec<CraftingJob> {
     state.current_crafting.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+#[tracing::instrument(level = "info", skip_all)]
 #[tauri::command]
 pub(crate) fn get_item_list_status(state: State<AppState>) -> serde_json::Value {
     let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
@@ -602,7 +596,7 @@ pub(crate) fn get_item_list_status(state: State<AppState>) -> serde_json::Value 
     })
 }
 
-pub(crate) const CATALOGUE_CACHE: &str = "catalogue-v1.json";
+pub(crate) const CATALOGUE_CACHE: &str = "catalogue-v6.json";
 
 /// Game updates land far more slowly than once a day, and a conditional GET
 /// makes an unchanged catalogue nearly free anyway.
@@ -610,6 +604,7 @@ const CATALOGUE_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 3
 
 /// Corrections that live in the code rather than in the payload, so they are
 /// reapplied on every load and a new build never needs the cache cleared.
+#[tracing::instrument(level = "info", skip_all)]
 pub(crate) fn patch_catalogue_items(items: Vec<WfcdItem>) -> Vec<WfcdItem> {
     dedup_known_aliases(
         items
@@ -623,6 +618,7 @@ pub(crate) fn patch_catalogue_items(items: Vec<WfcdItem>) -> Vec<WfcdItem> {
     )
 }
 
+#[tracing::instrument(level = "info", skip_all)]
 #[tauri::command]
 pub(crate) async fn fetch_item_list(state: State<'_, AppState>, force: Option<bool>) -> Result<usize, String> {
     let force = force.unwrap_or(false);
@@ -660,6 +656,7 @@ pub(crate) fn refresh_catalogue(app: &tauri::AppHandle, force: bool) -> Result<(
     }
 }
 
+#[tracing::instrument(level = "info", skip_all)]
 fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> usize {
     let count = result.items.len();
     let deduped = patch_catalogue_items(result.items);
@@ -677,18 +674,13 @@ fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> usize {
                 .or_insert_with(|| CachedItem { unique_name: item.unique_name.clone(), ..Default::default() });
             if entry.name.is_empty() { entry.name = item.name.clone(); }
             if item.fusion_limit.is_some() { entry.mod_max_rank = item.fusion_limit; }
-            // Effective level cap: use WFCD's explicit value when present (e.g. 40 for
-            // Necramechs/Paracesis), otherwise fall back to the standard rank-30 cap for
-            // all levelable categories. Non-levelable items get no entry.
-            let effective_cap = item.max_level_cap.or_else(|| {
-                let cat = fix_category(&item.name, &item.item_type, &item.product_category, &item.category, &item.unique_name);
-                match cat.as_str() {
-                    "Warframes" | "Primary" | "Secondary" | "Melee"
-                    | "Companions" | "Archwing" | "Operator Weapons" => Some(30),
-                    _ => None,
-                }
-            });
-            if effective_cap.is_some() { entry.max_level_cap = effective_cap; }
+            let cat = fix_category(&item.name, &item.item_type, &item.product_category, &item.category, &item.unique_name);
+            let levelable = item.max_level_cap.is_some() || matches!(cat.as_str(),
+                "Warframes" | "Primary" | "Secondary" | "Melee"
+                | "Companions" | "Archwing" | "Operator Weapons");
+            if levelable {
+                entry.max_level_cap = Some(mastery_rules::rank_cap(state.corrections.get(&item.unique_name), &item.unique_name, item.max_level_cap));
+            }
         }
         if let Ok(json) = serde_json::to_string(&inv) {
             let _ = atomic_write(&state.inventory_state_cache_path, json.as_bytes());
@@ -696,90 +688,22 @@ fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> usize {
     }
 
     *state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()) = deduped;
-    *state.recipes.lock().unwrap_or_else(|e| e.into_inner()) = result.recipes;
+    *state.recipe_consumers.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(mastery_recipe::recipe_consumers(&result.recipes));
+    *state.recipes.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(result.recipes);
     *state.relic_drops.lock().unwrap_or_else(|e| e.into_inner()) = result.relic_drops;
+    *state.drop_locations.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(result.drop_locations);
     *state.relic_rewards.lock().unwrap_or_else(|e| e.into_inner()) = result.relic_rewards;
     *state.blueprint_to_result.lock().unwrap_or_else(|e| e.into_inner()) = result.blueprint_names;
     if !result.weapon_dispositions.is_empty() {
         *state.weapon_dispositions.lock().unwrap_or_else(|e| e.into_inner()) = result.weapon_dispositions;
     }
-    if !result.wiki_reward_names.is_empty() {
-        *state.wiki_reward_names.lock().unwrap_or_else(|e| e.into_inner()) = result.wiki_reward_names;
-    }
     if !result.syndicate_catalog.is_empty() {
-        *state.syndicate_catalog.lock().unwrap_or_else(|e| e.into_inner()) = result.syndicate_catalog;
+        *state.syndicate_catalog.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(result.syndicate_catalog);
     }
     count
 }
 
 // ─── Foundry / Recipes ────────────────────────────────────────────────────────
-
-/// Returns all Primary / Secondary / Melee / Operator Weapons from the catalog (for the
-/// Weapons completionist tracker). Includes non-craftable weapons (Coda, Prisms, etc.).
-#[tauri::command]
-pub(crate) fn get_weapon_catalog(state: State<AppState>) -> Vec<CatalogItem> {
-    let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
-    let corrections = &state.corrections;
-
-    let mut result: Vec<CatalogItem> = items.iter()
-        .filter(|i| !i.unique_name.contains("PvPVariant")
-            && i.item_type != "Companion Weapon"
-            && i.product_category != "SentinelWeapons")
-        .filter_map(|i| {
-            let mut cat = fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name);
-            let mut name = i.name.clone();
-            if let Some(c) = corrections.get(&i.unique_name) {
-                if c.category.as_deref() == Some("Ignored") { return None; }
-                if let Some(ref cn) = c.name { name = cn.clone(); }
-                if let Some(ref cc) = c.category { cat = cc.clone(); }
-            }
-            if !matches!(cat.as_str(), "Primary" | "Secondary" | "Melee" | "Operator Weapons") {
-                return None;
-            }
-            Some(CatalogItem {
-                unique_name:   i.unique_name.clone(),
-                name,
-                category:      cat,
-                image_name:    i.image_name.clone(),
-                vaulted:       i.vaulted,
-                ducats:        i.ducats,
-                mastery_req:   i.mastery_req,
-                max_level_cap: i.max_level_cap,
-                masterable:    resolve_masterable(i.masterable, &i.unique_name),
-                tradeable_wfm: None,
-                source_type:   None,
-            })
-        })
-        .collect();
-
-    // Corrections-only items (e.g. Prisms, Zaw Strikes) not in WFCD but tagged as a weapon category
-    let covered: std::collections::HashSet<String> = result.iter().map(|i| i.unique_name.clone()).collect();
-    for (path, c) in corrections.iter() {
-        if covered.contains(path) { continue; }
-        let cat = match c.category.as_deref() {
-            Some(cat) if matches!(cat, "Primary" | "Secondary" | "Melee" | "Operator Weapons") => cat.to_string(),
-            _ => continue,
-        };
-        let name = match c.name.as_deref() {
-            Some(n) if !n.is_empty() => n.to_string(),
-            _ => continue,
-        };
-        result.push(CatalogItem {
-            unique_name:   path.clone(),
-            name,
-            category:      cat,
-            image_name:    None,
-            vaulted:       None,
-            ducats:        None,
-            mastery_req:   None,
-            max_level_cap: None,
-            masterable:    None,
-            tradeable_wfm: c.tradeable_wfm,
-            source_type:   None,
-        });
-    }
-    result
-}
 
 fn acquired_source_label(name: &str, path: &str) -> &'static str {
     if name.ends_with(" Prisma") || name.starts_with("Prisma ") { return "baro"; }
@@ -791,6 +715,7 @@ fn acquired_source_label(name: &str, path: &str) -> &'static str {
 }
 
 /// Returns all items that have a crafting recipe (for the Foundry search list).
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
     // Collect recipe keys first, drop the lock, then lock items separately
@@ -823,7 +748,7 @@ pub(crate) fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
                 ducats:        i.ducats,
                 mastery_req:   i.mastery_req,
                 max_level_cap: i.max_level_cap,
-                masterable:    resolve_masterable(i.masterable, &i.unique_name),
+                masterable:    mastery_rules::masterable(corrections.get(&i.unique_name), i.masterable, &i.unique_name),
                 tradeable_wfm: None,
                 source_type:   None,
             })
@@ -892,12 +817,25 @@ pub(crate) fn get_craftable_items(state: State<AppState>) -> Vec<CatalogItem> {
 
 /// Returns the recipe component tree for a single item (empty vec = not found).
 /// Returns Vec instead of Option to avoid Tauri serialization edge cases.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_recipe(state: State<AppState>, unique_name: String) -> Vec<RecipeComponent> {
     let recipes = state.recipes.lock().unwrap_or_else(|e| e.into_inner());
     recipes.get(&unique_name).cloned().unwrap_or_default()
 }
 
+/// Maps each blueprint path to the item its recipe builds. A Foundry job
+/// carries the blueprint path.
+#[tracing::instrument(level = "debug", skip_all)]
+#[tauri::command]
+pub(crate) fn get_blueprint_results(state: State<AppState>) -> HashMap<String, String> {
+    let recipes = state.recipes.lock().unwrap_or_else(|e| e.into_inner());
+    mastery_recipe::blueprint_results(&recipes).into_iter()
+        .map(|(blueprint, result)| (blueprint.to_string(), result.to_string()))
+        .collect()
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_recipes_bulk(state: State<AppState>, unique_names: Vec<String>) -> HashMap<String, Vec<RecipeComponent>> {
     let recipes = state.recipes.lock().unwrap_or_else(|e| e.into_inner());
@@ -910,6 +848,7 @@ pub(crate) fn get_recipes_bulk(state: State<AppState>, unique_names: Vec<String>
 }
 
 /// Returns the relic drop map: component unique_name → relic unique_names.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_relic_drops(state: State<AppState>) -> HashMap<String, Vec<String>> {
     state.relic_drops.lock().unwrap_or_else(|e| e.into_inner()).clone()

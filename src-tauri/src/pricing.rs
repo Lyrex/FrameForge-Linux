@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use tracing::warn;
 use tauri::Manager;
 use crate::app_state::AppState;
-use crate::wfm::to_wfm_slug;
+use crate::wfm::{to_wfm_slug, PriceQuote};
 use crate::{cache, refresh};
 
 /// Background-refresh entry point. Unlike the manual command it defers to any
@@ -12,7 +12,8 @@ pub(crate) fn refresh_bulk_prices_task(app: &tauri::AppHandle, force: bool) -> R
     let (prices, _, warning) = cache::get_or_refresh(BULK_PRICES_CACHE, ttl, fetch_relics_run_data);
     match prices {
         Some(prices) if warning.is_none() => {
-            apply_bulk_prices(&app.state::<AppState>(), prices, false);
+            let retrieved_at = cache::statuses().get(BULK_PRICES_CACHE).and_then(|s| s.last_updated).map(|t| t as i64);
+            apply_bulk_prices(&app.state::<AppState>(), prices, retrieved_at);
             Ok(())
         }
         _ => Err(warning.unwrap_or_else(|| "bulk prices unavailable".into())),
@@ -21,6 +22,7 @@ pub(crate) fn refresh_bulk_prices_task(app: &tauri::AppHandle, force: bool) -> R
 
 /// Per-cache freshness for the status chip: which rung each cache last answered
 /// from, when it was last updated, and what went wrong if anything did.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_cache_statuses() -> HashMap<String, cache::CacheStatus> {
     cache::statuses()
@@ -28,23 +30,21 @@ pub(crate) fn get_cache_statuses() -> HashMap<String, cache::CacheStatus> {
 
 /// Bring every cache due at once, ignoring both TTLs and ETags. The scheduler
 /// picks this up on its next tick, so the work happens off the UI thread.
+#[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn refresh_all_caches() {
     refresh::force_all();
 }
 
-/// Publish bulk prices into the shared state. `overwrite_slugs` decides whether
-/// a slug already priced by a per-item WFM lookup gets replaced — a manual
-/// refresh replaces, the background one defers to the fresher single lookup.
-fn apply_bulk_prices(state: &AppState, prices: BulkPrices, overwrite_slugs: bool) {
+/// Publish bulk prices into the shared state. They carry the time the mirror
+/// was read, so a per-item lookup made since stays ahead of them.
+fn apply_bulk_prices(state: &AppState, prices: BulkPrices, retrieved_at: Option<i64>) {
     if prices.by_name.is_empty() {
         return;
     }
     *state.relics_run_prices.lock().unwrap_or_else(|e| e.into_inner()) = prices.by_name;
     for (slug, price) in prices.by_slug {
-        if overwrite_slugs || !state.wfm.is_price_cached(&slug) {
-            state.wfm.cache_price(slug, Some(price));
-        }
+        state.wfm.seed_price(slug, PriceQuote { price: Some(price), fetched_at: retrieved_at });
     }
 }
 

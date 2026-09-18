@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use tracing::warn;
+use tracing::{info, warn};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
@@ -9,7 +9,7 @@ use inventory_state::load_inventory_state_cache;
 use pricing::{BulkPrices, BULK_PRICES_CACHE};
 use relic_pick::park_overlay_offscreen;
 use settings::{restore_window_state, save_window_state};
-use wfm::Wfm;
+use wfm::{PriceQuote, Wfm};
 
 pub mod arbitration;
 mod arbitrations;
@@ -42,6 +42,12 @@ mod diagnostics;
 mod image_cache;
 mod inventory_state;
 mod log_watcher;
+mod mastery;
+mod mastery_nodes;
+mod mastery_progress;
+mod mastery_recipe;
+mod mastery_relics;
+mod mastery_rules;
 mod monitor;
 mod platform;
 mod pricing;
@@ -58,6 +64,7 @@ mod worldstate;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    logging::mark_process_start();
     // ==========================================================================
     // Linux: run the GTK/WebKit side under XWayland, not native Wayland
     // ==========================================================================
@@ -96,11 +103,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Everything below used to sit in a single directory; carry the files that
     // cannot be refetched over to the split layout before anything opens them.
     let roots = paths::init()?;
+    // Before the DB open and cache loads below, so their spans are captured.
+    logging::init(&roots.state);
     let paths::Roots { config: config_dir, data: data_dir, cache: cache_dir, state: state_dir } = &roots;
 
     let db_path = data_dir.join("data.db");
     let quantities_cache_path = cache_dir.join("quantities_cache.json");
     let inventory_state_cache_path = cache_dir.join("inventory_state_cache.json");
+    let mastery_progress_path = cache_dir.join("mastery-progress-v1.json");
+    let wfm_quotes_path = cache_dir.join("wfm-quotes-v1.json");
     let settings_path = config_dir.join("settings.json");
     log_parser::init_watched_log_path(&settings_path);
     let log_path = state_dir.join("scan_log.txt");
@@ -127,8 +138,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     // Serve whatever prices were last written, however old; the background
     // refresh below replaces them once the window is up.
-    let initial_relics_run = cache::load::<BulkPrices>(BULK_PRICES_CACHE)
-        .map(|c| c.data)
+    let (initial_relics_run, bulk_retrieved_at) = cache::load::<BulkPrices>(BULK_PRICES_CACHE)
+        .map(|c| (c.data, Some(c.retrieved_at_unix as i64)))
         .unwrap_or_default();
     let initial_relics_run_prices = initial_relics_run.by_name;
     let initial_wfm_prices: HashMap<String, Option<u32>> = initial_relics_run
@@ -157,18 +168,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         initial_items,
         initial_recipes,
         initial_relic_drops,
+        initial_drop_locations,
         initial_relic_rewards,
         initial_blueprint_names,
-        initial_wiki_reward_names,
         initial_syndicate_catalog,
     ) = match cached_catalogue {
         Some(c) => (
             patch_catalogue_items(c.items),
             c.recipes,
             c.relic_drops,
+            c.drop_locations,
             c.relic_rewards,
             c.blueprint_names,
-            c.wiki_reward_names,
             c.syndicate_catalog,
         ),
         None => (
@@ -177,7 +188,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
-            std::collections::HashSet::new(),
+            HashMap::new(),
             HashMap::new(),
         ),
     };
@@ -186,6 +197,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
     // Load unified inventory state cache. All data lives in items: unique_name → CachedItem.
     let initial_state = load_inventory_state_cache(&inventory_state_cache_path);
+    let mastery_progress = mastery_progress::MasteryProgress::load(mastery_progress_path, &initial_state);
     let initial_quantities = initial_state.stackable_quantities();
     let initial_unique = initial_state.unique_quantities();
     // Mods and arcanes.
@@ -211,6 +223,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    info!(elapsed_ms = logging::since_start_ms(), "startup: state seeded");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -224,16 +238,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             db_path,
             quantities_cache_path,
             inventory_state_cache_path,
+            mastery_progress: Arc::new(Mutex::new(mastery_progress)),
             settings_path,
             log_path,
             changes_log_path,
             conn: Mutex::new(conn),
             wfcd_items: Mutex::new(initial_items),
-            recipes: Mutex::new(initial_recipes),
+            recipe_consumers: Mutex::new(Arc::new(mastery_recipe::recipe_consumers(&initial_recipes))),
+            recipes: Mutex::new(Arc::new(initial_recipes)),
             relic_drops: Mutex::new(initial_relic_drops),
+            drop_locations: Mutex::new(Arc::new(initial_drop_locations)),
             relic_rewards: Mutex::new(initial_relic_rewards),
             blueprint_to_result: Mutex::new(initial_blueprint_names),
-            wiki_reward_names: Mutex::new(initial_wiki_reward_names),
             weapon_dispositions: Mutex::new(initial_weapon_dispositions),
             current_quantities: Arc::new(Mutex::new(initial_quantities)),
             unique_quantities: Arc::new(Mutex::new(initial_unique)),
@@ -248,14 +264,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             blob_log_dir,
             wfm: {
                 let w = Arc::new(Wfm::new());
+                w.load_quotes(&wfm_quotes_path);
                 for (slug, price) in initial_wfm_prices {
-                    w.cache_price(slug, price);
+                    w.seed_price(slug, PriceQuote { price, fetched_at: bulk_retrieved_at });
                 }
                 w
             },
+            wfm_quotes_path,
             wfm_price_queue: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             wfm_queue_started: Arc::new(AtomicBool::new(false)),
-            syndicate_catalog: Mutex::new(initial_syndicate_catalog),
+            syndicate_catalog: Mutex::new(Arc::new(initial_syndicate_catalog)),
             auction_ids: Mutex::new(initial_auction_ids),
             auction_ids_path,
             img_cache_dir,
@@ -276,8 +294,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         })
         .setup(|app| {
             use tauri::Manager;
-
-            logging::init(&app.state::<AppState>().roots.state);
 
             // Every Linux bundle carries its own Tesseract language model. Point
             // the OCR engine at it before anything can call it.
@@ -303,6 +319,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let state = app.state::<AppState>();
                 restore_window_state(app.handle(), &window, &state.settings_path, "window", 400, 300);
                 let _ = window.show();
+                info!(elapsed_ms = logging::since_start_ms(), "startup: main window shown");
             }
 
             // Overlay windows start as visible:false in tauri.conf.json. show() here
@@ -350,6 +367,24 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             updater::spawn_launch_check(app.handle().clone());
 
+            // Sync commands and window events run on the GTK thread, so a stall
+            // there delays every IPC message.
+            #[cfg(debug_assertions)]
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    let sent = std::time::Instant::now();
+                    let _ = handle.run_on_main_thread(move || {
+                        let lag = sent.elapsed();
+                        if lag > std::time::Duration::from_millis(250) {
+                            warn!(lag_ms = lag.as_millis(), "main thread lag");
+                        }
+                    });
+                });
+            }
+
+            info!(elapsed_ms = logging::since_start_ms(), "startup: setup done");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -359,6 +394,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             catalogue::get_player_name,
             catalogue::get_item_list_status,
             catalogue::fetch_item_list,
+            logging::startup_mark,
             stats::get_change_log,
             stats::get_tracked_items,
             stats::add_tracked_item,
@@ -381,11 +417,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             updater::pending_update,
             updater::restart_app,
             settings::force_quit,
-            catalogue::get_weapon_catalog,
+            mastery::get_mastery_overview,
+            mastery::evaluate_mastery_plan,
+            mastery::load_mastery_plan,
+            mastery::save_mastery_plan,
+            mastery_recipe::plan_crafts,
             catalogue::get_craftable_items,
             diagnostics::toggle_debug_categorization,
             catalogue::get_recipe,
             catalogue::get_recipes_bulk,
+            catalogue::get_blueprint_results,
             catalogue::get_relic_drops,
             wfcd::get_drop_data,
             wfm_commands::fetch_wfm_items,
@@ -494,6 +535,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         // State is already saved on every Moved/Resized event.
                     }
                     tauri::WindowEvent::Destroyed if label == "main" => {
+                        let state = window.app_handle().state::<AppState>();
+                        state.wfm.flush_quotes(&state.wfm_quotes_path);
                         // Kill the process only when the main window is destroyed
                         // (prevents orphaned overlay/modular windows keeping the process alive)
                         std::process::exit(0);

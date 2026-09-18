@@ -92,7 +92,7 @@ mod tests {
             fusion_limit: None,
             max_level_cap: None,
             tradable: None,
-            masterable: None,
+            masterable: None, bp_cost: None,
         };
         vec![
             mk(

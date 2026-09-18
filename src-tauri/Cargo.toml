@@ -59,3 +59,6 @@ raw-window-handle = "0.6"
 secret-service = { version = "5.1.0", default-features = false, features = ["rt-async-io-crypto-rust"] }
 tesseract = "0.15.2"
 xcb = "1.7"
+
+[dev-dependencies]
+tempfile = "3.27.0"

@@ -131,6 +131,15 @@ impl RateLimiter {
 // The client
 // ==============================================================================
 
+/// One warframe.market sell quote. `price` None means the slug is not listed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PriceQuote {
+    pub price: Option<u32>,
+    /// Unix seconds. None for a quote replayed from a cache written before
+    /// quotes were stamped, whose age nobody knows.
+    pub fetched_at: Option<i64>,
+}
+
 pub struct Wfm {
     session: Mutex<Option<WfmSession>>,
     /// Counts session changes. A restore validates its token over the network
@@ -143,8 +152,9 @@ pub struct Wfm {
     limiter: Mutex<RateLimiter>,
     /// Contract limit: ≤10 requests/minute for /v1/auctions/... (rivens, liches, sisters).
     auction_limiter: Mutex<RateLimiter>,
-    /// slug → (price, fetched_at). None price = unlisted. Shared with the prefetch thread.
-    price_cache: Mutex<std::collections::HashMap<String, (Option<u32>, Instant)>>,
+    /// Shared with the prefetch thread.
+    price_cache: Mutex<std::collections::HashMap<String, PriceQuote>>,
+    quotes_dirty: std::sync::atomic::AtomicBool,
     /// Top-items-by-volume result, cached in memory for the session.
     top_cache: Mutex<Option<(Instant, Vec<WfmTopItem>)>>,
     /// Prime-set (name, slug) pairs, fetched once per session.
@@ -171,6 +181,7 @@ impl Default for Wfm {
             limiter: Mutex::new(RateLimiter::new(3, Duration::from_secs(1))),
             auction_limiter: Mutex::new(RateLimiter::new(10, Duration::from_secs(60))),
             price_cache: Mutex::new(std::collections::HashMap::new()),
+            quotes_dirty: std::sync::atomic::AtomicBool::new(false),
             memo: Mutex::new(std::collections::HashMap::new()),
             memo_flights: Mutex::new(std::collections::HashMap::new()),
             restore_flight: Mutex::new(()),
@@ -1314,18 +1325,21 @@ impl Wfm {
     /// How long a priced entry stays cached before we re-check.
     const POSITIVE_PRICE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
 
-    fn price_entry_live(price: Option<u32>, fetched_at: Instant) -> bool {
-        let ttl = if price.is_some() { Self::POSITIVE_PRICE_TTL } else { Self::NEGATIVE_PRICE_TTL };
-        fetched_at.elapsed() < ttl
+    /// A quote of unknown age is never live, so it gets refetched as soon as
+    /// something asks for it.
+    fn price_entry_live(quote: &PriceQuote) -> bool {
+        let ttl = if quote.price.is_some() { Self::POSITIVE_PRICE_TTL } else { Self::NEGATIVE_PRICE_TTL };
+        // A stamp ahead of the clock (restored backup, skewed clock) would
+        // otherwise stay live forever, since `seed_price` keeps the newer one.
+        let now = crate::cache::now_unix() as i64;
+        quote.fetched_at.is_some_and(|at| at <= now && now - at < ttl.as_secs() as i64)
     }
 
     /// The cached price for a slug when the entry is still live: `Some(price_opt)`
     /// when the slug was fetched recently, `None` when never fetched or TTL expired.
     pub fn cached_price(&self, slug: &str) -> Option<Option<u32>> {
         let guard = self.price_cache.lock().unwrap_or_else(|e| e.into_inner());
-        guard.get(slug).and_then(|&(price, ts)| {
-            if Self::price_entry_live(price, ts) { Some(price) } else { None }
-        })
+        guard.get(slug).filter(|q| Self::price_entry_live(q)).map(|q| q.price)
     }
 
     pub fn is_price_cached(&self, slug: &str) -> bool {
@@ -1333,17 +1347,58 @@ impl Wfm {
     }
 
     pub fn cache_price(&self, slug: String, price: Option<u32>) {
-        self.price_cache.lock().unwrap_or_else(|e| e.into_inner()).insert(slug, (price, Instant::now()));
+        let quote = PriceQuote { price, fetched_at: Some(crate::cache::now_unix() as i64) };
+        self.price_cache.lock().unwrap_or_else(|e| e.into_inner()).insert(slug, quote);
+        self.quotes_dirty.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The queue lands a few quotes a second and every save rewrites the
+    /// whole file, so the queue flushes on idle and on a timer.
+    pub fn flush_quotes(&self, path: &std::path::Path) {
+        if self.quotes_dirty.swap(false, std::sync::atomic::Ordering::SeqCst) { self.save_quotes(path); }
+    }
+
+    /// Offers a quote replayed from disk or the bulk mirror. The newer one
+    /// stays, and a quote of unknown age never displaces a stamped one.
+    pub fn seed_price(&self, slug: String, quote: PriceQuote) {
+        let mut guard = self.price_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.get(&slug).is_none_or(|have| have.fetched_at < quote.fetched_at) {
+            guard.insert(slug, quote);
+        }
+    }
+
+    /// Returns every quote, expired ones included, since the views show them
+    /// as estimates with their age.
+    pub fn quotes(&self) -> std::collections::HashMap<String, PriceQuote> {
+        self.price_cache.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// A clone of the whole slug → price cache (live entries only).
     pub fn cached_prices(&self) -> std::collections::HashMap<String, Option<u32>> {
         self.price_cache.lock().unwrap_or_else(|e| e.into_inner())
             .iter()
-            .filter_map(|(slug, &(price, ts))| {
-                if Self::price_entry_live(price, ts) { Some((slug.clone(), price)) } else { None }
-            })
+            .filter(|(_, q)| Self::price_entry_live(q))
+            .map(|(slug, q)| (slug.clone(), q.price))
             .collect()
+    }
+
+    /// Only stamped quotes are saved. A seed of unknown age stays where it
+    /// came from.
+    pub fn save_quotes(&self, path: &std::path::Path) {
+        let stamped: std::collections::HashMap<String, PriceQuote> = self.quotes()
+            .into_iter().filter(|(_, q)| q.fetched_at.is_some()).collect();
+        match serde_json::to_vec(&stamped) {
+            Ok(json) => if let Err(e) = crate::cache::atomic_write(path, &json) {
+                warn!(path = %path.display(), error = %e, "quote cache not written");
+            },
+            Err(e) => warn!(error = %e, "quote cache not serialized"),
+        }
+    }
+
+    pub fn load_quotes(&self, path: &std::path::Path) {
+        let saved: Option<std::collections::HashMap<String, PriceQuote>> =
+            std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        for (slug, q) in saved.unwrap_or_default() { self.seed_price(slug, q); }
     }
 
     // ── Top items cache ───────────────────────────────────────────────────────
@@ -1568,6 +1623,73 @@ mod tests {
         // Too few points to trim → plain median.
         assert_eq!(trimmed_median_from_stats(&[bucket(5.0), bucket(7.0)]), Some(6));
         assert_eq!(trimmed_median_from_stats(&[]), None);
+    }
+
+    /// A quote replayed from disk keeps the time it was fetched, so an old
+    /// one is neither skipped by the queue nor shown as fresh; one from a
+    /// cache written before quotes were stamped has no age at all.
+    #[test]
+    fn replayed_quotes_keep_their_age_and_only_a_recent_one_is_live() {
+        let wfm = Wfm::new();
+        let now = crate::cache::now_unix() as i64;
+        let quote = |price, fetched_at| PriceQuote { price, fetched_at };
+        wfm.seed_price("old_set".into(), quote(Some(40), Some(now - 7 * 3600)));
+        wfm.seed_price("unstamped_part".into(), quote(Some(12), None));
+        wfm.seed_price("fresh_part".into(), quote(Some(9), Some(now - 60)));
+        wfm.seed_price("future_part".into(), quote(Some(3), Some(now + 7 * 24 * 3600)));
+        wfm.cache_price("fetched_now".into(), None);
+
+        assert_eq!(wfm.cached_price("old_set"), None);
+        assert_eq!(wfm.cached_price("future_part"), None, "a stamp ahead of the clock is not live");
+        assert_eq!(wfm.cached_price("unstamped_part"), None);
+        assert_eq!(wfm.cached_price("fresh_part"), Some(Some(9)));
+        assert_eq!(wfm.cached_price("fetched_now"), Some(None));
+
+        let quotes = wfm.quotes();
+        assert_eq!(quotes["old_set"], quote(Some(40), Some(now - 7 * 3600)));
+        assert_eq!(quotes["unstamped_part"], quote(Some(12), None));
+        assert!(quotes["fetched_now"].fetched_at.is_some_and(|t| t >= now));
+        // The older views only see live quotes, while the platinum view reads them all.
+        let mut live: Vec<String> = wfm.cached_prices().into_keys().collect();
+        live.sort();
+        assert_eq!(live, ["fetched_now", "fresh_part"]);
+    }
+
+    /// The newer quote wins between a seed and the cache, and one of
+    /// unknown age never wins.
+    #[test]
+    fn a_seed_only_replaces_an_older_quote() {
+        let wfm = Wfm::new();
+        let quote = |price, fetched_at| PriceQuote { price, fetched_at };
+        wfm.cache_price("part".into(), Some(20));
+        wfm.seed_price("part".into(), quote(Some(15), Some(1)));
+        assert_eq!(wfm.cached_price("part"), Some(Some(20)));
+
+        wfm.seed_price("set".into(), quote(Some(50), None));
+        wfm.seed_price("set".into(), quote(Some(45), Some(10)));
+        wfm.seed_price("set".into(), quote(Some(40), Some(5)));
+        wfm.seed_price("set".into(), quote(Some(35), None));
+        assert_eq!(wfm.quotes()["set"], quote(Some(45), Some(10)));
+    }
+
+    #[test]
+    fn quotes_round_trip_through_their_file_with_negatives_included() {
+        let (_dir, path) = crate::cache::test_scratch("wfm-quotes-round-trip");
+        let wfm = Wfm::new();
+        wfm.cache_price("part".into(), Some(20));
+        wfm.cache_price("unlisted".into(), None);
+        wfm.seed_price("unstamped".into(), PriceQuote { price: Some(3), fetched_at: None });
+        wfm.save_quotes(&path);
+
+        let replayed = Wfm::new();
+        replayed.load_quotes(&path);
+        let _ = std::fs::remove_file(&path);
+        let (saved, loaded) = (wfm.quotes(), replayed.quotes());
+        assert_eq!(loaded.len(), 2, "a quote with no fetch time is not worth saving");
+        assert_eq!(loaded["part"], saved["part"]);
+        assert_eq!(loaded["unlisted"], saved["unlisted"]);
+        replayed.load_quotes(&path);
+        assert_eq!(replayed.quotes().len(), 2, "a missing file loads nothing");
     }
 
     #[test]
