@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { groupSources, masteryGroup, systemRank } from "./masteryGroups.ts";
+import { groupSources, masteryGroup, matchesSearch, sectionCategories, systemRank } from "./masteryGroups.ts";
 import type { MasterySource } from "../types/mastery.ts";
 
 const source = (name: string, unique_name = `/Lotus/Weapons/Tenno/${name}`): MasterySource => ({
@@ -57,4 +57,43 @@ test("groups keep the fixed order and unknown groups trail", () => {
   ]);
   assert.deepEqual(groups.map(g => g.group), ["Standard", "Prime", "Kuva"]);
   assert.deepEqual(groups[1].sources.map(s => s.name), ["Aaa Prime", "Zzz Prime"]);
+});
+
+test("search matches inside the name or at the start of the group, case-insensitively", () => {
+  const casta: MasterySource = { ...source("Casta", "SolNode1"), category: "Star Chart", cap: 1, node: { key: "SolNode1", planet: "Ceres", mode: "normal", junction: false, amount: 18 } };
+  const piloting: MasterySource = { ...source("Piloting", "LPS_PILOTING"), category: "Intrinsics", cap: 10 };
+  assert.ok(matchesSearch(source("Braton Prime"), "PRIME"));
+  assert.ok(matchesSearch(casta, "cer"));
+  assert.ok(matchesSearch(piloting, "railjack"));
+  assert.ok(matchesSearch(source("Braton"), ""));
+  assert.ok(!matchesSearch(source("Braton"), "prime"));
+  assert.ok(!matchesSearch(source("Braton"), "an"));
+});
+
+const category = (name: string, sources: MasterySource[]) => ({
+  category: name, sources, counts: { total: 0, mastered: 0, partial: 0, missing: 0, unknown: 0, unobtainable: 0 },
+});
+const melee = category("Melee", [source("Braton"), source("Braton Prime")]);
+const vehicles = category("Vehicles", [source("Bonewidow")]);
+const intrinsics = category("Intrinsics", [
+  { ...source("Piloting", "LPS_PILOTING"), category: "Intrinsics", cap: 10, earned_rank: 9 },
+  { ...source("Combat", "LPS_DRIFT_COMBAT"), category: "Intrinsics", cap: 10, earned_rank: 10 },
+]);
+
+test("one category's sections carry group headers, none for a lone group", () => {
+  assert.deepEqual(sectionCategories([melee], () => true).map(s => s.header), ["Standard", "Prime"]);
+  assert.deepEqual(sectionCategories([vehicles], () => true).map(s => s.header), [null]);
+  assert.deepEqual(sectionCategories([intrinsics], () => true).map(s => s.header), ["Railjack 9/10", "Drifter 10/10"]);
+});
+
+test("several categories prefix each header with the category, a lone group with the category alone", () => {
+  assert.deepEqual(sectionCategories([melee, vehicles, intrinsics], () => true).map(s => s.header),
+    ["Melee · Standard", "Melee · Prime", "Vehicles", "Intrinsics · Railjack 9/10", "Intrinsics · Drifter 10/10"]);
+});
+
+test("a filter narrows the rows but reads the lone-group test and the system rank off the whole category", () => {
+  const sections = sectionCategories([melee, intrinsics], s => s.name === "Braton Prime" || s.name === "Combat");
+  assert.deepEqual(sections.map(s => s.header), ["Melee · Prime", "Intrinsics · Drifter 10/10"]);
+  assert.deepEqual(sections.map(s => s.sources.map(r => r.name)), [["Braton Prime"], ["Combat"]]);
+  assert.deepEqual(sectionCategories([vehicles], () => false), []);
 });

@@ -1,4 +1,4 @@
-import type { MasterySource } from "../types/mastery";
+import type { MasteryCategory, MasterySource } from "../types/mastery";
 
 const GROUP_ORDER = ["Railjack", "Drifter", "Standard", "Zaw", "Kitgun", "Amp", "Prime", "Kuva", "Tenet", "Coda", "Wraith", "Vandal", "Prisma", "MK1"];
 
@@ -50,4 +50,34 @@ export function groupSources(sources: MasterySource[]): SourceGroup[] {
 export function systemRank(tracks: MasterySource[]): string {
   const rank = tracks.some(t => t.earned_rank == null) ? "?" : tracks.reduce((sum, t) => sum + (t.earned_rank ?? 0), 0);
   return `${rank}/${tracks.reduce((sum, t) => sum + t.cap, 0)}`;
+}
+
+export function matchesSearch(source: MasterySource, query: string): boolean {
+  const q = query.toLowerCase();
+  // A group matches by prefix, since a substring match for "an" would list
+  // every Standard weapon while someone types "Ankyros".
+  return source.name.toLowerCase().includes(q) || masteryGroup(source).toLowerCase().startsWith(q);
+}
+
+export interface Section {
+  key: string;
+  header: string | null;
+  sources: MasterySource[];
+}
+
+export function sectionCategories(categories: MasteryCategory[], keep: (source: MasterySource) => boolean): Section[] {
+  const prefixed = categories.length > 1;
+  return categories.flatMap(category => {
+    // The lone-group test and the system rank read the whole category, so a
+    // filter can neither flicker the header away nor shrink a system's sum.
+    const whole = groupSources(category.sources);
+    const lone = whole.length === 1;
+    return groupSources(category.sources.filter(keep)).map(({ group, sources }) => {
+      const label = category.category === "Intrinsics"
+        ? `${group} ${systemRank(whole.find(g => g.group === group)?.sources ?? [])}`
+        : group;
+      const header = lone ? (prefixed ? category.category : null) : prefixed ? `${category.category} · ${label}` : label;
+      return { key: `${category.category}/${group}`, header, sources };
+    });
+  });
 }

@@ -3,7 +3,7 @@ import ItemImg from "../ItemImg";
 import { formatCount } from "../lib/formatters.ts";
 import SearchBar from "../shared/SearchBar";
 import { MASTERY_EXCLUDE_OPTIONS } from "../constants/settings";
-import { groupSources, systemRank } from "./masteryGroups";
+import { matchesSearch, sectionCategories } from "./masteryGroups";
 import { progressText } from "./topBar";
 import type { MasteryCounts, MasteryOverview, MasterySource, MasteryState } from "../types/mastery";
 
@@ -58,45 +58,40 @@ function SourceRow({ source }: { source: MasterySource }) {
   );
 }
 
+const ALL = "All";
+
 export default function Collection({ overview }: { overview: MasteryOverview }) {
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [bucket, setBucket] = useState<Bucket | null>(null);
 
   const categories = overview.categories;
-  const category = categories.find(c => c.category === activeCategory) ?? categories[0];
+  const all = activeCategory === ALL;
+  const category = all ? undefined : categories.find(c => c.category === activeCategory) ?? categories[0];
+  const active = all ? ALL : category?.category;
+  const counts = all ? overview.counts : category?.counts;
+  const tabs = categories.length > 0 ? [ALL, ...categories.map(c => c.category)] : [];
 
-  useEffect(() => { setSearch(""); }, [category?.category]);
+  useEffect(() => { setSearch(""); }, [active]);
 
-  const groups = useMemo(() => {
-    if (!category) return [];
-    const q = search.toLowerCase();
-    const visible = category.sources.filter(s =>
-      inBucket(s, bucket) && (!q || s.name.toLowerCase().includes(q)));
-    return groupSources(visible);
-  }, [category, search, bucket]);
+  const sections = useMemo(() => {
+    const shown = all ? categories : category ? [category] : [];
+    return sectionCategories(shown, s => inBucket(s, bucket) && matchesSearch(s, search));
+  }, [all, categories, category, search, bucket]);
 
   const isFiltered = search !== "" || bucket != null;
-  // Both header facts come from the whole category. A search that narrows
-  // the view to one group would otherwise flicker the header away, and a
-  // bucket filter would change a system's sum.
-  const allGroups = useMemo(() => category ? groupSources(category.sources) : [], [category]);
-  const singleGroup = allGroups.length === 1;
-  const headerText = (group: string) => category?.category === "Intrinsics"
-    ? `${group} ${systemRank(allGroups.find(g => g.group === group)?.sources ?? [])}`
-    : group;
 
   return (
     <>
       <div className="mst-tabs" role="group" aria-label="Category">
-        {categories.map(c => (
+        {tabs.map(tab => (
           <button
-            key={c.category}
-            aria-pressed={c.category === category?.category}
-            className={`mst-tab ${c.category === category?.category ? "active" : ""}`}
-            onClick={() => setActiveCategory(c.category)}
+            key={tab}
+            aria-pressed={tab === active}
+            className={`mst-tab ${tab === active ? "active" : ""}`}
+            onClick={() => setActiveCategory(tab)}
           >
-            {c.category}
+            {tab}
           </button>
         ))}
       </div>
@@ -107,7 +102,7 @@ export default function Collection({ overview }: { overview: MasteryOverview }) 
       </div>
       <div className="mst-toolbar mst-buckets" role="group" aria-label="Progress filter">
         {BUCKETS.map(b => {
-          const n = category?.counts[b.bucket] ?? 0;
+          const n = counts?.[b.bucket] ?? 0;
           if ((b.bucket === "unknown" || b.bucket === "unobtainable") && n === 0) return null;
           return (
             <button
@@ -129,12 +124,12 @@ export default function Collection({ overview }: { overview: MasteryOverview }) 
 
       <div className="mst-body">
         {categories.length === 0 && <div className="mst-empty">Item catalogue not loaded yet.</div>}
-        {category && groups.length === 0 && (
+        {categories.length > 0 && sections.length === 0 && (
           <div className="mst-empty">{isFiltered ? "Nothing matches." : "Nothing in this category."}</div>
         )}
-        {groups.map(({ group, sources }) => (
-          <div key={group} className="mst-group">
-            {!singleGroup && <div className="mst-group-header">{headerText(group)}</div>}
+        {sections.map(({ key, header, sources }) => (
+          <div key={key} className="mst-group">
+            {header && <div className="mst-group-header">{header}</div>}
             <div className="mst-group-grid">
               {sources.map(s => <SourceRow key={s.unique_name} source={s} />)}
             </div>
