@@ -266,7 +266,7 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat }: P
 
   useEffect(() => {
     const loadTrades = () => invoke<Trade[]>("get_trades")
-      .then(t => { setTrades(t.map(trade => ({ ...trade, item_name: displayItemName(trade.item_name) }))); setLoading(false); })
+      .then(t => { setTrades(t.map(trade => ({ ...trade, item_name: displayItemName(trade.item_name) }))); setTradesError(null); setLoading(false); })
       .catch((e) => { console.error("[Reports] get_trades failed:", e); setTradesError(String(e)); setLoading(false); });
     loadTrades();
 
@@ -360,10 +360,11 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat }: P
       .map(([item_name, v]) => ({ item_name, total_plat: v.total_plat, quantity: v.quantity }));
   }, [filtered]);
 
+  // Barters carry no platinum, so a list with none priced is charted by count instead.
   const topItemsChartData = useMemo(() =>
     topTradedItems.map((item, i) => ({
       label: item.item_name,
-      value: item.total_plat > 0 ? item.total_plat : item.quantity,
+      value: topTradedItems.some(t => t.total_plat > 0) ? item.total_plat : item.quantity,
       color: Object.values(CATEGORY_COLORS)[i % Object.values(CATEGORY_COLORS).length],
     })),
   [topTradedItems]);

@@ -72,7 +72,7 @@ function RivenSellHandoff({ riven, onClose }: { riven: GradedRiven; onClose: () 
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function RivenAnalyzer() {
+export default function RivenAnalyzer({ wfmLoggedIn }: { wfmLoggedIn: boolean }) {
   const [weapons, setWeapons]         = useState<string[]>([]);
   const [weaponInput, setWeaponInput] = useState("");
   const [filtered, setFiltered]       = useState<string[]>([]);
@@ -81,7 +81,6 @@ export default function RivenAnalyzer() {
   const [_rollCount, setRollCount]     = useState(0);
   const [tab, setTab]                 = useState<"analyzer" | "owned" | "search">("analyzer");
   const [sellTarget, setSellTarget]   = useState<GradedRiven | null>(null);
-  const [canSell, setCanSell]         = useState(false);
 
   // Unified stat builder: each stat has a name, value, sign, and format
   const [builtStats, setBuiltStats]   = useState<RivenStat[]>([]);
@@ -137,16 +136,6 @@ export default function RivenAnalyzer() {
   }, []);
 
   useEffect(() => { loadSavedRivens(); }, [loadSavedRivens]);
-
-  // Posting an auction needs a warframe.market session; App.tsx loads the JWT on
-  // startup, so this answers even before the Trading tab has been opened. There
-  // is no login event to subscribe to, so re-asking on every tab switch is what
-  // picks up a login that happened after this component first rendered.
-  useEffect(() => {
-    invoke<[string, string] | null>("wfm_get_session")
-      .then(session => setCanSell(!!session))
-      .catch(() => setCanSell(false));
-  }, [tab]);
 
   const saveCurrentRoll = async () => {
     if (!selectedWeapon) return;
@@ -370,7 +359,7 @@ export default function RivenAnalyzer() {
         <button className={tab === "search" ? "active" : ""} onClick={() => setTab("search")}>Search</button>
       </div>
 
-      {tab === "owned"  && <RivenOwned onOpenInAnalyzer={openInAnalyzer} onSell={setSellTarget} canSell={canSell} />}
+      {tab === "owned"  && <RivenOwned onOpenInAnalyzer={openInAnalyzer} onSell={setSellTarget} canSell={wfmLoggedIn} />}
       {tab === "search" && <RivenSearch />}
 
       {tab === "analyzer" && <>

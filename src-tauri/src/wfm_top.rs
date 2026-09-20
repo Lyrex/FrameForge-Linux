@@ -192,6 +192,8 @@ fn finish_wfm_top_scan(wfm: &Wfm, results: Vec<WfmTopItem>, app: &AppHandle) {
             last_updated: cache::load::<Vec<WfmTopItem>>(WFM_TOP_CACHE).map(|c| c.retrieved_at_unix),
             warning:      Some("warframe.market top items: scan returned nothing".into()),
         });
+        // Closes the progress bar in Reports without replacing the ranking on screen.
+        let _ = app.emit("wfm-top-updated", wfm.top_items().unwrap_or_default());
         return;
     }
     if let Err(e) = cache::store(WFM_TOP_CACHE, None, &results) {

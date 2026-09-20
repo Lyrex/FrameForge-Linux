@@ -16,6 +16,7 @@ type Snapshot = {
 
 let current: Snapshot = { catalog: [], relicDropMap: {}, loaded: false };
 let inFlight: Promise<void> | null = null;
+let lastError: unknown = null;
 const subscribers = new Set<(s: Snapshot) => void>();
 
 function publish(next: Snapshot) {
@@ -29,9 +30,11 @@ function fetchOnce(): Promise<void> {
     invoke<RelicDropMap>("get_relic_drops"),
   ])
     .then(([catalog, relicDropMap]) => {
+      lastError = null;
       publish({ catalog, relicDropMap, loaded: true });
     })
-    .catch(() => {
+    .catch((e: unknown) => {
+      lastError = e;
       publish({ ...current, loaded: false });
     })
     .finally(() => {
@@ -40,10 +43,20 @@ function fetchOnce(): Promise<void> {
   return inFlight;
 }
 
-/** Re-reads the catalogue after the backend rebuilt it. A fetch already in
- *  flight finishes first so its stale result cannot land after the fresh one. */
-export function refreshCatalog(): Promise<void> {
-  return (inFlight ?? Promise.resolve()).then(fetchOnce);
+function settled(): CatalogItem[] {
+  if (!current.loaded) throw lastError;
+  return current.catalog;
+}
+
+export function loadCatalog(): Promise<CatalogItem[]> {
+  return (current.loaded ? Promise.resolve() : fetchOnce()).then(settled);
+}
+
+/** Re-reads the catalogue after the backend rebuilt it and resolves with it.
+ *  A fetch already in flight finishes first so its stale result cannot land
+ *  after the fresh one. */
+export function refreshCatalog(): Promise<CatalogItem[]> {
+  return (inFlight ?? Promise.resolve()).then(fetchOnce).then(settled);
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────

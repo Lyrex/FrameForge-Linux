@@ -842,7 +842,7 @@ pub fn reset_last_blob_region() {
 /// its bytes are. Call after a parse failure: skipping a re-parse is only safe
 /// while the baseline names bytes that are known to parse, and `blob_unchanged`
 /// records its argument before the parse outcome is known.
-fn forget_blob_digest() {
+pub(crate) fn forget_blob_digest() {
     LAST_BLOB_DIGEST.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 

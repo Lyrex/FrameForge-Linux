@@ -360,7 +360,7 @@ export default function App() {
   // ── Arbitration alerts ─────────────────────────────────────────────────────
   //
   // Here rather than in Arbitrations, for the same reason the fissure alerts
-  // are: that module is unmounted whenever another one is on screen.
+  // are: that module is not mounted until the user first opens it.
 
   const arbAlertsOn = arbFavorites.length > 0 || arbAlertTiers.length > 0;
 
@@ -383,8 +383,8 @@ export default function App() {
   // passes reading the same fired state would raise one occurrence twice.
   const arbCheckingRef = useRef(false);
 
-  // Held here so a denial survives Arbitrations' unmount, but written only by
-  // that module: it raises the prompt on a gesture and shows the warning.
+  // TODO: move into Arbitrations. Only that module reads or writes it, and the
+  // module stays mounted once visited, so nothing here needs to hold it.
   const [arbPermissionDenied, setArbPermissionDenied] = useState(false);
 
   useEffect(() => {
@@ -817,7 +817,7 @@ export default function App() {
         <KeepMountedWhenHidden active={activeModule === "rivens"}>
           <ErrorBoundary>
             <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-              <RivenAnalyzer />
+              <RivenAnalyzer wfmLoggedIn={wfmLoggedIn} />
             </div>
           </ErrorBoundary>
         </KeepMountedWhenHidden>

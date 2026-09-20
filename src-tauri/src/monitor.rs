@@ -397,6 +397,10 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     Err(missing) => {
                         warn!(?missing, "blob rejected: sections present in last good blob are missing — truncated capture");
                         mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).discard_blob();
+                        last_applied_hash = None;
+                        // The scanner would otherwise report these bytes as unchanged and
+                        // never resend them, so the missing-section streak could not advance.
+                        memory_scanner::forget_blob_digest();
                         continue;
                     }
                     Ok(true) => {
@@ -442,6 +446,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                 });
                 if !persist_complete_inventory(&blob, &unique_quantities, &sc, &inventory_state_cache_path) {
                     mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).discard_blob();
+                    last_applied_hash = None;
                     continue;
                 }
                 if blob.mastery_xp.is_none() {

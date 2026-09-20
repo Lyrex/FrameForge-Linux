@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { mark } from "../startupMark";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
-import { refreshCatalog } from "./useCatalog";
+import { loadCatalog, refreshCatalog } from "./useCatalog";
 import type { CatalogItem, CraftingJob, QuantityMap } from "../types/items";
 import type { ChangeLogEntry, InventoryUpdate } from "../types/inventory";
 import type { ItemListStatus } from "../types/tauri";
@@ -89,7 +89,7 @@ export function useInventoryData(): UseInventoryDataReturn {
   const catalogRef = useRef<CatalogItem[]>([]);
 
   const reloadCatalog = async () => {
-    const items = await invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS);
+    const items = await refreshCatalog();
     setCatalog(items);
     catalogRef.current = items;
     mark("catalog state set");
@@ -97,7 +97,6 @@ export function useInventoryData(): UseInventoryDataReturn {
     setItemCount(status.count);
     setRecipeCount(status.recipe_count);
     setItemsRefreshKey(k => k + 1);
-    void refreshCatalog();
     invoke("prewarm_image_cache").catch(() => {});
     return status;
   };
@@ -134,7 +133,7 @@ export function useInventoryData(): UseInventoryDataReturn {
       .catch(() => {});
 
     invoke<string | null>("get_player_name").then(name => { if (name) setPlayerName(name); }).catch(() => {});
-    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS).then(items => { setCatalog(items); catalogRef.current = items; });
+    loadCatalog().then(items => { setCatalog(items); catalogRef.current = items; }).catch(() => {});
     invoke<QuantityMap>(TAURI_COMMANDS.GET_CURRENT_QUANTITIES)
       .then(setQuantities)
       .catch(() => {})
