@@ -1,6 +1,6 @@
 [package]
 name = "warframe-companion"
-version = "4.3.1"
+version = "4.3.2"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -34,7 +34,7 @@ tracing-log = "0.2.0"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2.7.3"
-tauri-plugin-updater = "2"
+tauri-plugin-updater = "2.12"
 
 # Incremental codegen units follow modules, and lib.rs is one 10k-line module:
 # an edit anywhere in it rebuilds in 16 s at opt-level 1, 4 s at 0. Deps stay

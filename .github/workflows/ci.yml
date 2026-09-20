@@ -122,8 +122,10 @@ jobs:
       # its platform binary comes through optionalDependencies, so skipping
       # loses nothing. Approving it instead would mean tracking
       # pnpm-workspace.yaml: pnpm 11 reads build approvals from nowhere else,
-      # and that is one more file in the delta.
-      - run: pnpm install --frozen-lockfile --ignore-scripts
+      # and that is one more file in the delta. The same file holds the
+      # minimumReleaseAge exclusions, so without it CI rejects every lockfile
+      # entry they cover. trustLockfile skips that re-check.
+      - run: pnpm install --frozen-lockfile --ignore-scripts --config.trustLockfile=true
 
       - run: pnpm build
 

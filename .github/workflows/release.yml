@@ -55,7 +55,7 @@ jobs:
           key: tessdata-${{ hashFiles('scripts/fetch-tessdata.sh') }}
 
       - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts --config.trustLockfile=true
 
       # NO_STRIP=true is needed only for the AppImage: linuxdeploy bundles an
       # old `strip` that cannot read the `.relr.dyn` sections modern
