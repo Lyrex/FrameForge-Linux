@@ -14,6 +14,7 @@ import { useInventoryData } from "./hooks/useInventoryData";
 import { useOverlays } from "./hooks/useOverlays";
 import { useTimerPreferences } from "./hooks/useTimerPreferences";
 import { useFissureNotifications } from "./hooks/useFissureNotifications";
+import { useArbitrationAlerts } from "./hooks/useArbitrationAlerts";
 import { CATEGORIES } from "./constants/categories";
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -28,10 +29,7 @@ import RivenOverlayWindow from "./riven/RivenOverlayWindow";
 import RelicPickOverlay from "./relic-overlay/RelicPickOverlay";
 import ArbitrationOverlay from "./arbitration/ArbitrationOverlay";
 import Arbitrations from "./arbitration/Arbitrations";
-import TimerHelper, { fmtMs } from "./TimerHelper";
-import { notify } from "./lib/notify";
-import { runAlertPass, DEFAULT_LEAD_MINS, EVAL_INTERVAL_MS, type AlertRule, type ScheduleEntry } from "./arbitration/arbitrationAlerts";
-import { useArbitrationSchedule } from "./arbitration/arbitrationSchedule";
+import TimerHelper from "./TimerHelper";
 import UpdateDialog from "./update/UpdateDialog";
 import { onUpdateAvailable, pendingUpdate, type UpdateAvailable } from "./update/updater";
 import Statistics from "./statistics/Statistics";
@@ -357,76 +355,7 @@ export default function App() {
     if (settingsLoadedRef.current) saveAllSettings();
   }, [tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbFavorites, arbLeadMins, arbTierFilter, arbAlertTiers, arbScheduleDays, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, modularSectionOrder, modularPopout, filterPresets]); // eslint-disable-line
 
-  // ── Arbitration alerts ─────────────────────────────────────────────────────
-  //
-  // Here rather than in Arbitrations, for the same reason the fissure alerts
-  // are: that module is not mounted until the user first opens it.
-
-  const arbAlertsOn = arbFavorites.length > 0 || arbAlertTiers.length > 0;
-
-  const { schedule: arbSchedule, error: arbScheduleError } = useArbitrationSchedule(arbAlertsOn);
-
-  // The loop reads its inputs from here rather than from the effect closure, so
-  // starring a node changes what the next tick sees without tearing the timer
-  // down and starting a fresh pass on top of one already running. This effect
-  // has to stay above the loop's own, which reads the ref on its first tick.
-  const arbInputsRef = useRef({ entries: [] as ScheduleEntry[], rule: {} as AlertRule, leadMins: DEFAULT_LEAD_MINS });
-  useEffect(() => {
-    arbInputsRef.current = {
-      entries: arbSchedule?.entries ?? [],
-      rule: { favorites: arbFavorites, tiers: arbAlertTiers },
-      leadMins: arbLeadMins,
-    };
-  });
-
-  // A pass outlives its tick whenever the notification IPC is slow, and two
-  // passes reading the same fired state would raise one occurrence twice.
-  const arbCheckingRef = useRef(false);
-
-  // TODO: move into Arbitrations. Only that module reads or writes it, and the
-  // module stays mounted once visited, so nothing here needs to hold it.
-  const [arbPermissionDenied, setArbPermissionDenied] = useState(false);
-
-  useEffect(() => {
-    if (arbAlertsOn && arbScheduleError) {
-      console.error("arbitration schedule unavailable, alerts paused:", arbScheduleError);
-    }
-  }, [arbAlertsOn, arbScheduleError]);
-
-  useEffect(() => {
-    const check = async () => {
-      // A prune raises nothing, so it need not wait for a pass already running;
-      // queuing it behind the guard would drop it, since unstarring the last
-      // node also stops the timer that would otherwise come back to it.
-      if (arbAlertsOn && arbCheckingRef.current) return;
-      arbCheckingRef.current = true;
-      try {
-        const { entries, rule, leadMins } = arbInputsRef.current;
-        const nowMs = Date.now();
-        const fired = await runAlertPass(
-          entries, rule, leadMins, arbFiredRef.current, nowMs / 1000,
-          e => notify(
-            `Arbitration — ${e.node}${e.region ? ` (${e.region})` : ""}`,
-            `${[e.mission_type, e.faction].filter(Boolean).join(" · ")} — ${e.start * 1000 > nowMs
-              ? `starts in ${fmtMs(e.start * 1000 - nowMs)}`
-              : `under way, ${fmtMs(e.end * 1000 - nowMs)} left`}`,
-          ));
-        if (fired === null) return;
-        arbFiredRef.current = fired;
-        invoke("save_settings", { json: JSON.stringify({ arbitrationAlertsFired: fired }) })
-          .catch(e => console.error("saving arbitration alert state failed", e));
-      } finally {
-        arbCheckingRef.current = false;
-      }
-    };
-
-    // Unstarring the last node still leaves keys behind, so one pass runs to
-    // prune them; only a user with favorites keeps the timer.
-    void check();
-    if (!arbAlertsOn) return;
-    const poll = setInterval(check, EVAL_INTERVAL_MS);
-    return () => clearInterval(poll);
-  }, [arbAlertsOn]); // eslint-disable-line
+  useArbitrationAlerts(arbFavorites, arbAlertTiers, arbLeadMins, arbFiredRef);
 
   const commitModularWidth = useCallback((width: number) => {
     const patch: SettingsPatch = { modularWidth: width };
@@ -834,8 +763,6 @@ export default function App() {
               )}
               leadMins={arbLeadMins}
               onLeadChange={setArbLeadMins}
-              permissionDenied={arbPermissionDenied}
-              onPermissionChange={setArbPermissionDenied}
               tierFilter={arbTierFilter}
               onTierFilterChange={setArbTierFilter}
               alertTiers={arbAlertTiers}

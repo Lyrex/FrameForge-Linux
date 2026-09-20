@@ -16,16 +16,13 @@ const dayLabel = (unix: number) =>
   new Date(unix * 1000).toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
 
 // Favorites and lead time are owned by App: the alerts have to keep firing
-// while the user is looking at another module, and this component is unmounted
-// for all of that time. Permission state too: a denial only this component
-// knows about is invisible for as long as the user is elsewhere.
+// while the user is looking at another module, and this component is not
+// mounted until the user first opens it.
 type Props = {
   favorites: string[];
   onToggleFavorite: (nodeId: string) => void;
   leadMins: number;
   onLeadChange: (mins: number) => void;
-  permissionDenied: boolean;
-  onPermissionChange: (denied: boolean) => void;
   tierFilter: TierKey[];
   onTierFilterChange: (next: TierKey[]) => void;
   alertTiers: TierKey[];
@@ -35,15 +32,42 @@ type Props = {
   clockFormat: ClockFormat;
 };
 
+type ScheduleProps = Props & {
+  permissionDenied: boolean;
+  onPermissionChange: (denied: boolean) => void;
+};
+
 export default function Arbitrations(props: Props) {
   const [tab, setTab] = useState<"schedule" | "history">("schedule");
+  const [permissionDenied, setPermissionDenied] = useState(false);
+  const alertsOn = props.favorites.length > 0 || props.alertTiers.length > 0;
+
+  // The alert rule arrives from settings after mount, so this waits for it
+  // rather than reading the empty state the first render sees.
+  const askedRef = useRef(false);
+  useEffect(() => {
+    if (!alertsOn || askedRef.current) return;
+    askedRef.current = true;
+    void ensurePermission().then(granted => setPermissionDenied(!granted));
+  }, [alertsOn]);
+
+  // Permission is granted in system settings, so the app hears about it by
+  // getting the window back, not by anything happening inside it. Read-only:
+  // a dialog raised by a focus event is one the user did nothing to invite.
+  useEffect(() => {
+    if (!alertsOn) return;
+    const recheck = () => void permissionGranted().then(granted => setPermissionDenied(!granted));
+    window.addEventListener("focus", recheck);
+    return () => window.removeEventListener("focus", recheck);
+  }, [alertsOn]);
+
   return (
     <div className="arb">
       <div className="sub-tabs">
         <button className={tab === "schedule" ? "active" : ""} onClick={() => setTab("schedule")}>Schedule</button>
         <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>Run history</button>
       </div>
-      {tab === "schedule" ? <Schedule {...props} /> : <ArbitrationHistory clockFormat={props.clockFormat} />}
+      {tab === "schedule" ? <Schedule {...props} permissionDenied={permissionDenied} onPermissionChange={setPermissionDenied} /> : <ArbitrationHistory clockFormat={props.clockFormat} />}
     </div>
   );
 }
@@ -52,8 +76,9 @@ function Schedule({
   favorites, onToggleFavorite, leadMins, onLeadChange, permissionDenied, onPermissionChange,
   tierFilter, onTierFilterChange, alertTiers, onAlertTiersChange, scheduleDays, onScheduleDaysChange,
   clockFormat,
-}: Props) {
+}: ScheduleProps) {
   const { schedule, error, refresh: fetchSchedule } = useArbitrationSchedule(true, scheduleDays);
+  const alertsOn = favorites.length > 0 || alertTiers.length > 0;
   const [now, setNow] = useState(() => Date.now());
   const [leadDraft, setLeadDraft] = useState(String(leadMins));
 
@@ -63,26 +88,6 @@ function Schedule({
   }, []);
 
   useEffect(() => setLeadDraft(String(leadMins)), [leadMins]);
-
-  // The alert rule arrives from settings after mount, so this waits for it
-  // rather than reading the empty state the first render sees.
-  const alertsOn = favorites.length > 0 || alertTiers.length > 0;
-  const askedRef = useRef(false);
-  useEffect(() => {
-    if (!alertsOn || askedRef.current) return;
-    askedRef.current = true;
-    void ensurePermission().then(granted => onPermissionChange(!granted));
-  }, [alertsOn]);
-
-  // Permission is granted in system settings, so the app hears about it by
-  // getting the window back, not by anything happening inside it. Read-only:
-  // a dialog raised by a focus event is one the user did nothing to invite.
-  useEffect(() => {
-    if (!alertsOn) return;
-    const recheck = () => void permissionGranted().then(granted => onPermissionChange(!granted));
-    window.addEventListener("focus", recheck);
-    return () => window.removeEventListener("focus", recheck);
-  }, [alertsOn, onPermissionChange]);
 
   // Committed on blur rather than per keystroke: clamping while the field is
   // half-typed rewrites what the user is in the middle of entering.
