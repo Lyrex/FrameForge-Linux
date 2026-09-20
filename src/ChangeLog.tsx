@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import ItemImg from "./ItemImg";
+import { ResizeHandle } from "./shared/ResizeHandle";
 import SearchBar from "./shared/SearchBar";
 import { useContextMenu, CtxMenu } from "./shared/CtxMenu";
 import { openWiki, copyWikiLink } from "./lib/wiki";
@@ -130,57 +131,6 @@ function ChangeLogHeader({
   );
 }
 
-function ChangeLogResizeHandle({ height, onHeightChange }: { height: number; onHeightChange: (height: number) => void }) {
-  const resizeFrameRef = useRef<number | null>(null);
-  const resizeHeightRef = useRef(height);
-  const resizeCleanupRef = useRef<(() => void) | null>(null);
-  useEffect(() => () => resizeCleanupRef.current?.(), []);
-  return (
-    <div
-      className="log-resize-edge"
-      onMouseDown={event => {
-        event.preventDefault();
-        event.stopPropagation();
-        resizeCleanupRef.current?.();
-        resizeHeightRef.current = height;
-        const startY = event.clientY;
-        const startHeight = height;
-        const scale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--ff-scale")) || 1;
-        document.body.style.userSelect = "none";
-        const onMove = (moveEvent: MouseEvent) => {
-          const nextHeight = clampLogHeight(startHeight + (startY - moveEvent.clientY) / scale);
-          resizeHeightRef.current = nextHeight;
-          if (resizeFrameRef.current === null) {
-            resizeFrameRef.current = window.requestAnimationFrame(() => {
-              onHeightChange(resizeHeightRef.current);
-              resizeFrameRef.current = null;
-            });
-          }
-        };
-        const onUp = () => {
-          onHeightChange(resizeHeightRef.current);
-          cleanup();
-        };
-        const cleanup = () => {
-          window.removeEventListener("mousemove", onMove);
-          window.removeEventListener("mouseup", onUp);
-          window.removeEventListener("blur", onUp);
-          if (resizeFrameRef.current !== null) {
-            window.cancelAnimationFrame(resizeFrameRef.current);
-            resizeFrameRef.current = null;
-          }
-          document.body.style.userSelect = "";
-          resizeCleanupRef.current = null;
-        };
-        window.addEventListener("mousemove", onMove);
-        window.addEventListener("mouseup", onUp);
-        window.addEventListener("blur", onUp);
-        resizeCleanupRef.current = cleanup;
-      }}
-    />
-  );
-}
-
 export default function ChangeLog({
   changes, catalog, clockFormat,
   arrivalToken, lastScanAt, onItemClick, onChangeLogClick, onCategoryClick,
@@ -296,7 +246,7 @@ export default function ChangeLog({
 
       {expanded && (
         <div className="log-expanded-body">
-          <ChangeLogResizeHandle height={height} onHeightChange={onHeightChange} />
+          <ResizeHandle className="log-resize-edge" value={height} axis="y" direction={-1} clamp={clampLogHeight} onValueChange={onHeightChange} />
           <div className="log-search">
             <label className="log-search-label" htmlFor="change-log-search">Search changes</label>
             <SearchBar id="change-log-search" value={search} onChange={setSearch} placeholder="Search changes..." />

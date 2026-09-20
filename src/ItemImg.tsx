@@ -28,7 +28,7 @@ interface Props {
 const toUrl = (n?: string) => n?.startsWith("http") || n?.startsWith("/") ? n : cdnUrl(n);
 
 export default function ItemImg({ imageName, category = "?", size, className = "img", style, fallback }: Props) {
-  const { src, onError } = useImgLadder((Array.isArray(imageName) ? imageName : [imageName]).map(toUrl));
+  const { src, key, onError } = useImgLadder((Array.isArray(imageName) ? imageName : [imageName]).map(toUrl));
   const ref = useRef<HTMLImageElement>(null);
   const box = size === undefined ? style : { width: size, height: size, flexShrink: 0 as const, ...style };
 
@@ -41,9 +41,8 @@ export default function ItemImg({ imageName, category = "?", size, className = "
     if (category === "Blueprints") return <BlueprintIcon />;
     return <span className="img-fallback" style={{ ...box, fontSize: size && size * 0.35 }}>{category[0].toUpperCase()}</span>;
   }
-  // key remounts the element per candidate so a broken-image icon never lingers.
   return (
-    <img key={src} ref={ref} className={className} style={box} src={src} alt="" loading="lazy"
+    <img key={key} ref={ref} className={className} style={box} src={src} alt="" loading="lazy"
       onError={onError} onLoad={() => ref.current?.classList.add("img-loaded")} />
   );
 }

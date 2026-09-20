@@ -490,7 +490,7 @@ mod inventory_quantity_tests {
 
         let filler = "x".repeat(60_000);
         let raw = format!(
-            r#"{{"SubscribedToEmails":0,"RegularCredits":0,"FusionPoints":0,"MiscItems":[],"Suits":[{{"ItemType":"{VOIDRIG}","XP":0,"Polarized":5}}],"XPInfo":[{{"ItemType":"{NUKOR}","XP":129043438}},{{"ItemType":"{DRAKGOON}","XP":450000}},{{"ItemType":"{VOIDRIG}","XP":3527278}}],"Filler":"{filler}","DeathSquadable":false}}"#
+            r#"{{"SubscribedToEmails":0,"RegularCredits":0,"FusionPoints":0,"PlayerLevel":0,"RawUpgrades":[],"MiscItems":[],"Suits":[{{"ItemType":"{VOIDRIG}","XP":0,"Polarized":5}}],"XPInfo":[{{"ItemType":"{NUKOR}","XP":129043438}},{{"ItemType":"{DRAKGOON}","XP":450000}},{{"ItemType":"{VOIDRIG}","XP":3527278}}],"Filler":"{filler}","DeathSquadable":false}}"#
         );
         let blob = memory_scanner::parse_full_account_blob(raw.as_bytes()).expect("complete account");
         // WFCD carries 40 for Kuva weapons and null for Necramechs.
@@ -523,7 +523,7 @@ mod inventory_quantity_tests {
         let path = KUVA;
         let filler = "x".repeat(60_000);
         let raw = format!(
-            r#"{{"SubscribedToEmails":0,"RegularCredits":0,"FusionPoints":0,"MiscItems":[],"Suits":[{{"ItemType":"/Lotus/Powersuits/Mag/Mag","XP":0}}],"XPInfo":[{{"ItemType":"{path}","XP":612500}}],"Filler":"{filler}","DeathSquadable":false}}"#
+            r#"{{"SubscribedToEmails":0,"RegularCredits":0,"FusionPoints":0,"PlayerLevel":0,"RawUpgrades":[],"MiscItems":[],"Suits":[{{"ItemType":"/Lotus/Powersuits/Mag/Mag","XP":0}}],"XPInfo":[{{"ItemType":"{path}","XP":612500}}],"Filler":"{filler}","DeathSquadable":false}}"#
         );
         let blob = memory_scanner::parse_full_account_blob(raw.as_bytes()).expect("complete account");
         let live = cache(&blob);
@@ -631,7 +631,7 @@ mod inventory_quantity_tests {
         // The parser rejects a blob under 50 KB.
         let filler = "x".repeat(60_000);
         let raw = format!(
-            r#"{{"SubscribedToEmails":0,"RegularCredits":0,"FusionPoints":0,"MiscItems":[],"Suits":[{{"ItemType":"/Lotus/Powersuits/Mag/Mag","XP":0}}],
+            r#"{{"SubscribedToEmails":0,"RegularCredits":0,"FusionPoints":0,"PlayerLevel":0,"RawUpgrades":[],"MiscItems":[],"Suits":[{{"ItemType":"/Lotus/Powersuits/Mag/Mag","XP":0}}],
                 "Hoverboards":[{{"ItemType":"{BOARD}","ModularParts":["{DECK}","{JET}"],"XP":400000}}],
                 "MoaPets":[{{"ItemType":"{HOUND}","ModularParts":["{HOUND_BODY}","{HOUND_HEAD}"],"XP":900000}},
                            {{"ItemType":"{MOA}","ModularParts":["{MOA_ENGINE}","{MOA_HEAD}"],"XP":0}}],

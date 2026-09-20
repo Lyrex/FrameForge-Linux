@@ -1,8 +1,8 @@
-use tauri::{Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use crate::app_state::AppState;
 use crate::cache;
 use crate::rivens::WfmScanSlot;
-use crate::wfm::{to_wfm_slug, Wfm, WfmTopItem};
+use crate::wfm::{sanitize_display_name, to_wfm_slug, Wfm, WfmTopItem};
 
 // ── Top WFM items by 7-day trade volume ───────────────────────────────────────
 
@@ -12,11 +12,37 @@ const WFM_TOP_TTL: std::time::Duration = std::time::Duration::from_secs(3 * 3600
 /// Arcane name, WFM slug and image, as handed to a scan.
 type ArcaneCandidate = (String, String, Option<String>);
 
+#[derive(serde::Serialize, Clone)]
+struct WfmTopProgress {
+    completed: usize,
+    total: usize,
+    refreshing: bool,
+}
+
+fn arcane_candidates(state: &AppState) -> Result<Vec<ArcaneCandidate>, String> {
+    let items = state.wfcd_items.lock().map_err(|e| e.to_string())?;
+    Ok(items.iter()
+        .filter(|i| i.category == "Arcanes")
+        .map(|i| (sanitize_display_name(&i.name), to_wfm_slug(&i.name), i.image_name.clone()))
+        .collect())
+}
+
+fn spawn_wfm_top_scan(app: AppHandle, slot: WfmScanSlot, arcane_candidates: Vec<ArcaneCandidate>, refreshing: bool) {
+    let wfm = app.state::<AppState>().wfm.clone();
+    std::thread::spawn(move || {
+        let _slot = slot;
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let results = scan_wfm_top_items(&wfm, &arcane_candidates, &app, refreshing);
+            finish_wfm_top_scan(&wfm, results, &app);
+        }));
+    });
+}
+
 /// Return the top 10 most-traded items on warframe.market by 7-day total value.
 /// Queries Prime Sets and Arcanes from the local WFCD catalog (already loaded).
 /// Results are cached for 3 hours so repeated tab opens are instant.
 #[tauri::command]
-pub(crate) async fn get_wfm_top_items(state: State<'_, AppState>) -> Result<Vec<WfmTopItem>, String> {
+pub(crate) async fn get_wfm_top_items(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<WfmTopItem>, String> {
     // In-memory cache, fresh within the TTL — the client owns it.
     if let Some(items) = state.wfm.cached_top_items(WFM_TOP_TTL) {
         return Ok(items);
@@ -41,13 +67,7 @@ pub(crate) async fn get_wfm_top_items(state: State<'_, AppState>) -> Result<Vec<
     // Collect arcane candidates from WFCD without holding the lock across await points.
     // Prime Sets come from WFM's own item list (fetched inside the scan) so that we get
     // canonical slugs — WFCD doesn't have set-level entries.
-    let arcane_candidates: Vec<ArcaneCandidate> = {
-        let items = state.wfcd_items.lock().map_err(|e| e.to_string())?;
-        items.iter()
-            .filter(|i| i.category == "Arcanes")
-            .map(|i| (i.name.clone(), to_wfm_slug(&i.name), i.image_name.clone()))
-            .collect()
-    };
+    let arcane_candidates = arcane_candidates(&state)?;
 
     // Only one scan at a time: a second one would compete for the same rate-limiter
     // budget and take twice as long for both.
@@ -57,13 +77,7 @@ pub(crate) async fn get_wfm_top_items(state: State<'_, AppState>) -> Result<Vec<
     // so hand it over and rescan behind it.
     if let Some(cached) = disk {
         if let Some(slot) = scan_slot {
-            let wfm = state.wfm.clone();
-            std::thread::spawn(move || {
-                let _slot = slot;
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    finish_wfm_top_scan(&wfm, scan_wfm_top_items(&wfm, &arcane_candidates));
-                }));
-            });
+            spawn_wfm_top_scan(app, slot, arcane_candidates, true);
         }
         cache::set_status(WFM_TOP_CACHE, cache::CacheStatus {
             source:       cache::Source::Refreshing,
@@ -86,11 +100,12 @@ pub(crate) async fn get_wfm_top_items(state: State<'_, AppState>) -> Result<Vec<
 
     // Run blocking ureq calls on the thread pool — keeps the async runtime free
     let wfm = state.wfm.clone();
+    let scan_app = app.clone();
     let scan_result =
-        tokio::task::spawn_blocking(move || scan_wfm_top_items(&wfm, &arcane_candidates)).await;
+        tokio::task::spawn_blocking(move || scan_wfm_top_items(&wfm, &arcane_candidates, &scan_app, false)).await;
 
     let results = scan_result.map_err(|e| e.to_string())?;
-    finish_wfm_top_scan(&state.wfm, results.clone());
+    finish_wfm_top_scan(&state.wfm, results.clone(), &app);
     Ok(results)
 }
 
@@ -116,26 +131,21 @@ pub(crate) fn refresh_wfm_top(app: &tauri::AppHandle, force: bool) -> Result<(),
     let Some(slot) = WfmScanSlot::claim() else {
         return Ok(());
     };
-    let arcane_candidates: Vec<ArcaneCandidate> = {
-        let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner());
-        items.iter()
-            .filter(|i| i.category == "Arcanes")
-            .map(|i| (i.name.clone(), to_wfm_slug(&i.name), i.image_name.clone()))
-            .collect()
-    };
-    let wfm = state.wfm.clone();
-    std::thread::spawn(move || {
-        let _slot = slot;
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            finish_wfm_top_scan(&wfm, scan_wfm_top_items(&wfm, &arcane_candidates));
-        }));
-    });
+    let refreshing = state.wfm.top_items().is_some();
+    let arcane_candidates = arcane_candidates(&state)?;
+    spawn_wfm_top_scan(app.clone(), slot, arcane_candidates, refreshing);
     Ok(())
 }
 
-fn scan_wfm_top_items(wfm: &Wfm, arcane_candidates: &[ArcaneCandidate]) -> Vec<WfmTopItem> {
+fn scan_wfm_top_items(wfm: &Wfm, arcane_candidates: &[ArcaneCandidate], app: &AppHandle, refreshing: bool) -> Vec<WfmTopItem> {
     let prime_sets = wfm.prime_sets();
     let mut out: Vec<WfmTopItem> = Vec::new();
+    let total = prime_sets.len() + arcane_candidates.len();
+    let mut completed = 0;
+    let report_progress = |completed| {
+        let _ = app.emit("wfm-top-progress", WfmTopProgress { completed, total, refreshing });
+    };
+    report_progress(completed);
 
     for (name, url_name) in &prime_sets {
         if let Some((price, daily_vol)) = wfm.stats_7day(url_name) {
@@ -148,6 +158,8 @@ fn scan_wfm_top_items(wfm: &Wfm, arcane_candidates: &[ArcaneCandidate]) -> Vec<W
                 total_value_7d: (price as f64 * daily_vol * 7.0) as u64,
             });
         }
+        completed += 1;
+        report_progress(completed);
     }
 
     for (name, slug, image_name) in arcane_candidates {
@@ -161,6 +173,8 @@ fn scan_wfm_top_items(wfm: &Wfm, arcane_candidates: &[ArcaneCandidate]) -> Vec<W
                 total_value_7d: (price as f64 * daily_vol * 7.0) as u64,
             });
         }
+        completed += 1;
+        report_progress(completed);
     }
 
     out.sort_by_key(|e| std::cmp::Reverse(e.total_value_7d));
@@ -168,7 +182,7 @@ fn scan_wfm_top_items(wfm: &Wfm, arcane_candidates: &[ArcaneCandidate]) -> Vec<W
     out
 }
 
-fn finish_wfm_top_scan(wfm: &Wfm, results: Vec<WfmTopItem>) {
+fn finish_wfm_top_scan(wfm: &Wfm, results: Vec<WfmTopItem>, app: &AppHandle) {
     // A scan that priced nothing means warframe.market was unreachable, not that
     // nothing trades. Both readers skip an empty list anyway, so storing one only
     // throws away the copy that still has items in it.
@@ -178,6 +192,8 @@ fn finish_wfm_top_scan(wfm: &Wfm, results: Vec<WfmTopItem>) {
             last_updated: cache::load::<Vec<WfmTopItem>>(WFM_TOP_CACHE).map(|c| c.retrieved_at_unix),
             warning:      Some("warframe.market top items: scan returned nothing".into()),
         });
+        // Closes the progress bar in Reports without replacing the ranking on screen.
+        let _ = app.emit("wfm-top-updated", wfm.top_items().unwrap_or_default());
         return;
     }
     if let Err(e) = cache::store(WFM_TOP_CACHE, None, &results) {
@@ -188,5 +204,6 @@ fn finish_wfm_top_scan(wfm: &Wfm, results: Vec<WfmTopItem>) {
         last_updated: Some(cache::now_unix()),
         warning:      None,
     });
-    wfm.set_top_items(results);
+    wfm.set_top_items(results.clone());
+    let _ = app.emit("wfm-top-updated", results);
 }

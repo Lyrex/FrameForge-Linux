@@ -1,72 +1,22 @@
-﻿import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { mark } from "./startupMark";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { applyScale, overlayScale } from "./lib/uiScale";
+import { applyScale } from "./lib/uiScale";
 import { useContextMenu, CtxMenu } from "./shared/CtxMenu";
 import { extractItemName } from "./lib/itemContext";
 import { matchesSearchTerms, splitSearchTerms } from "./lib/search";
 import { openWiki, copyWikiLink } from "./lib/wiki";
+import { useModularWindow } from "./hooks/useModularWindow";
+import { useSettings } from "./hooks/useSettings";
+import { useInventoryData } from "./hooks/useInventoryData";
+import { useOverlays } from "./hooks/useOverlays";
+import { useTimerPreferences } from "./hooks/useTimerPreferences";
+import { useFissureNotifications } from "./hooks/useFissureNotifications";
+import { CATEGORIES } from "./constants/categories";
 
-// ── Riven overlay — module-level window management ────────────────────────────
-// Stored OUTSIDE React so StrictMode remounts don't destroy/recreate the window.
-let _rivenWin: WebviewWindow | null = null;
-let _rivenRollCount = 0;
-let _rivenLastTriggerMs = 0;
-let _rivenManualTrigger: (() => void) | null = null;
-export function checkRivenNow() { _rivenManualTrigger?.(); }
-
-async function resizeRivenForScale() {
-  const win = _rivenWin;
-  if (!win) return;
-  try {
-    const factor = await win.scaleFactor();
-    const cur = (await win.innerSize()).toLogical(factor);
-    await win.setSize(new LogicalSize(Math.round(300 * overlayScale()), cur.height));
-  } catch {}
-}
-
-function rivenWinHide(reason = "rivenWinHide") {
-  const win = _rivenWin;
-  if (!win) { return; }
-  invoke("ocr_riven_log_error", { error: `[HIDE] ${reason}` }).catch(() => {});
-  _rivenWin = null;
-  win.close().catch(() => {});
-}
-
-async function ensureRivenWindow(wx: number, wy: number, wh: number): Promise<{ win: WebviewWindow; fresh: boolean } | null> {
-  // 1. Existing valid handle
-  if (_rivenWin) return { win: _rivenWin, fresh: false };
-
-  // 2. Window exists but JS lost reference (HMR, page reload)
-  const existing = await WebviewWindow.getByLabel("riven-overlay").catch(() => null);
-  if (existing) {
-    _rivenWin = existing;
-    _rivenWin.once("tauri://destroyed", () => { _rivenWin = null; });
-    return { win: _rivenWin, fresh: false };
-  }
-
-  // 3. Create fresh at correct position — shows immediately
-  try {
-    _rivenWin = new WebviewWindow("riven-overlay", {
-      url: `index.html#rivenoverlay`,
-      title: "FrameForge Riven",
-      transparent: true, decorations: false,
-      alwaysOnTop: true, skipTaskbar: true,
-      resizable: false, focus: false,
-      x: wx + 10, y: wy + Math.round(wh * 0.20),
-      width: Math.round(300 * overlayScale()), height: Math.round(wh * 0.60),
-    });
-    _rivenWin.once("tauri://destroyed", () => { _rivenWin = null; });
-    return { win: _rivenWin, fresh: true };
-  } catch {
-    _rivenWin = null;
-    return null;
-  }
-}
-import { getCurrentWindow, availableMonitors, LogicalSize } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { ImgCacheDirContext } from "./ImgCacheDir";
 import Foundry from "./Foundry";
@@ -79,12 +29,9 @@ import RelicPickOverlay from "./relic-overlay/RelicPickOverlay";
 import ArbitrationOverlay from "./arbitration/ArbitrationOverlay";
 import Arbitrations from "./arbitration/Arbitrations";
 import TimerHelper, { fmtMs } from "./TimerHelper";
-import { useWorldState } from "./worldstate";
 import { notify } from "./lib/notify";
-import { collectNewMatches } from "./fissureAlerts";
-import { clampLead, runAlertPass, DEFAULT_LEAD_MINS, EVAL_INTERVAL_MS, type AlertRule, type ScheduleEntry } from "./arbitration/arbitrationAlerts";
-import { sanitizeTierKeys, TIER_KEYS, type TierKey } from "./arbitration/arbitrationTiers";
-import { clampScheduleDays, DEFAULT_SCHEDULE_DAYS, useArbitrationSchedule } from "./arbitration/arbitrationSchedule";
+import { runAlertPass, DEFAULT_LEAD_MINS, EVAL_INTERVAL_MS, type AlertRule, type ScheduleEntry } from "./arbitration/arbitrationAlerts";
+import { useArbitrationSchedule } from "./arbitration/arbitrationSchedule";
 import UpdateDialog from "./update/UpdateDialog";
 import { onUpdateAvailable, pendingUpdate, type UpdateAvailable } from "./update/updater";
 import Statistics from "./statistics/Statistics";
@@ -103,36 +50,16 @@ import HeaderActions from "./header/HeaderActions";
 import ErrorBoundary from "./shared/ErrorBoundary";
 import HeaderStatusBadges from "./header/HeaderStatusBadges";
 import ConnectionStatusChip from "./header/ConnectionStatusChip";
+import KeepMountedWhenHidden from "./KeepMountedWhenHidden";
 import { FOUNDRY_FILTERS_DEFAULT, INVENTORY_FILTERS_DEFAULT, MARKET_FILTERS_DEFAULT, RELIC_FILTERS_DEFAULT } from "./constants/filters";
 import { PREFERENCE_KEYS } from "./constants/preferences";
-import {
-  CLOCK_FORMAT_OPTIONS,
-  DEFAULT_CLOCK_FORMAT,
-  DEFAULT_FOUNDRY_PAGE_SIZE,
-  DEFAULT_MASTERY_EXCLUDE,
-  DEFAULT_RELIC_OVERLAY_PRIORITY,
-  DEFAULT_RELIC_PICK_LINES,
-  DEFAULT_RELIC_PICK_PRIORITY,
-  DEFAULT_RELIC_PICK_REFINEMENT,
-  FOUNDRY_PAGE_SIZE_OPTIONS,
-  MASTERY_EXCLUDE_OPTIONS,
-  MODULAR_SECTION_ORDER_DEFAULT,
-  RELIC_PICK_LINES_OPTIONS,
-  RELIC_PICK_PRIORITY_OPTIONS,
-  RELIC_PICK_REFINEMENT_OPTIONS,
-} from "./constants/settings";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import type { FoundryFilters, InventoryFilters, MarketFilters, RelicFilters } from "./types/filters";
-import { parseFilterPresetSettings, type FilterPresetModule, type FilterPresetSettings } from "./types/filterPresets";
+import { type FilterPresetModule } from "./types/filterPresets";
 import type { ViewMode } from "./types/ui";
-import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, QuantityMap } from "./types/items";
-import type { ChangeLogEntry, InventoryUpdate, ModCopy } from "./types/inventory";
-import type { RivenAnalysis, RivenAnalysisUpdate } from "./types/rivens";
-import type { ClockFormat } from "./lib/clockFormat";
-import type { FissureWatch, FoundryPageSize, MasteryExclude, RelicOverlayPriority, RelicPickLines, RelicPickPriority, RelicRefinement, SettingsSnapshot } from "./types/settings";
-import type { SeenFissures } from "./types/worldstate";
-import type { TradeCompletedEvent } from "./types/trades";
-import type { AddTradeArgs, AnalyzeRivenArgs, BlobStatusPayload, InventoryRewardPayload, ItemListStatus, OcrRivenScreenResult, OverlayWindowBounds, RelicRewardsPayload, SettingsFile, SettingsPatch, WarframeWindowRect, WfmCredentials, WfmSession } from "./types/tauri";
+import type { CatalogItem, CraftingJob, InventoryItem } from "./types/items";
+import type { ChangeLogEntry, ModCopy } from "./types/inventory";
+import type { BlobStatusPayload, SettingsFile, SettingsPatch, WfmCredentials, WfmSession } from "./types/tauri";
 import "./App.css";
 import "./images.css";
 
@@ -152,30 +79,6 @@ const IS_ANY_OVERLAY = IS_OVERLAY || IS_MODULAR || IS_RIVEN_OVERLAY || IS_RELIC_
 // out applying the scale from an effect.
 applyScale(IS_ANY_OVERLAY);
 listen(TAURI_EVENTS.SETTINGS_UPDATED, () => applyScale(IS_ANY_OVERLAY));
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const CATEGORIES = [
-  { id: "all",        label: "All Owned" },
-  { id: "Resources",  label: "Resources" },
-  { id: "Mods",       label: "Mods" },
-  { id: "Relics",     label: "Relics" },
-  { id: "Arcanes",    label: "Arcanes" },
-  { id: "Warframes",  label: "Warframes" },
-  { id: "Primary",    label: "Primary" },
-  { id: "Secondary",  label: "Secondary" },
-  { id: "Melee",      label: "Melee" },
-  { id: "Companions",       label: "Companions" },
-  { id: "Archwing",         label: "Archwing" },
-  { id: "Operator Weapons", label: "Operator Weapons" },
-  { id: "Parts",            label: "Parts" },
-  { id: "Blueprints", label: "Blueprints" },
-  { id: "Miscellaneous", label: "Miscellaneous" },
-  { id: "Sigils",     label: "Sigils" },
-  { id: "Glyphs",     label: "Glyphs" },
-  { id: "Skins",      label: "Skins" },
-  { id: "Railjack",   label: "Railjack" },
-];
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 
@@ -202,46 +105,82 @@ export default function App() {
   if (IS_MODULAR) return <ModularWindowPage />;
 
   const [activeModule, setActiveModule] = useState<Module>("inventory");
+  const [visitedModules, setVisitedModules] = useState<Set<Module>>(() => new Set(["inventory"]));
+  const activateModule = useCallback((module: Module) => {
+    setVisitedModules(previous => previous.has(module) ? previous : new Set([...previous, module]));
+    setActiveModule(module);
+  }, []);
   const { ctxMenu, open: openCtx, close: closeCtx } = useContextMenu();
 
-  const [catalog, setCatalog] = useState<CatalogItem[]>([]);
-  const [quantities, setQuantities] = useState<Record<string, number>>({});
-  const [scannerMods, setScannerMods] = useState<Record<string, { total: number; by_rank: Record<string, number> }>>({});
-  const [crafting, setCrafting] = useState<CraftingJob[]>([]);
-  const [masteryRank, setMasteryRank] = useState<number | null>(null);
-  const [masteryData, setMasteryData] = useState<Record<string, number>>({});
-  const [ownedLevels, setOwnedLevels] = useState<Record<string, number[]>>({});
-  const [playerName, setPlayerName] = useState<string | null>(null);
+  // ── Custom hooks ──────────────────────────────────────────────────────────
+  const inv = useInventoryData();
+  const settings = useSettings(inv.setMonitoring);
+  const modular = useModularWindow();
+  const timerPreferences = useTimerPreferences();
+
+  const {
+    memoryScannerEnabled, setMemoryScannerEnabled,
+    blobLogEnabled, setBlobLogEnabled,
+    autoDiagEnabled, setAutoDiagEnabled,
+    overlayEnabled, setOverlayEnabled,
+    overlayPriority, setOverlayPriority,
+    textScale, setTextScale,
+    colorblindMode, setColorblindMode,
+    clockFormat, setClockFormat,
+    foundryPageSize, setFoundryPageSize,
+    relicPickEnabled, setRelicPickEnabled,
+    memTriggerEnabled, setMemTriggerEnabled,
+    relicPickPriority, setRelicPickPriority,
+    relicPickRefinement,
+    relicPickLines, setRelicPickLines,
+    masteryExclude, setMasteryExclude,
+    wfmInvisibleOnStart, setWfmInvisibleOnStart,
+    wfmInvisibleOnClose, setWfmInvisibleOnClose,
+    wfmAutoInvisible, setWfmAutoInvisible,
+    wfmAutoInvisibleMins, setWfmAutoInvisibleMins,
+    arbFavorites, setArbFavorites,
+    arbLeadMins, setArbLeadMins,
+    arbTierFilter, setArbTierFilter,
+    arbAlertTiers, setArbAlertTiers,
+    arbScheduleDays, setArbScheduleDays,
+    arbOverlayEnabled, setArbOverlayEnabled,
+    filterPresets, setFilterPresets,
+    settingsLoadedRef, settingsRef,
+    wfmInvisibleOnStartRef, wfmInvisibleOnCloseRef, arbFiredRef,
+    saveAllSettings, loadSettings,
+  } = settings;
+
+  const { tracked, favorites, modularWidth, modularSectionOrder, modularPopout, toggleTracked, toggleFavorite, applySettings: applyModularSettings, setTracked, setFavorites, setModularWidth, setModularSectionOrder, setModularPopout } = modular;
+  const { timerFavorites, fissureWatches, fissureNotifications, applySettings: applyTimerSettings, setTimerFavorites, setFissureWatches, setFissureNotifications } = timerPreferences;
+  useFissureNotifications(fissureWatches, fissureNotifications);
+
+  const {
+    catalog, quantities, scannerMods,
+    crafting, masteryRank, masteryData, ownedLevels, playerName,
+    subsummedWarframes, archonShards, formaData,
+    inventoryReady, lastInventoryScanAt, changeLog, changeLogArrivalToken,
+    lastChanged, monitoring, warframeRunning, itemCount, recipeCount,
+    fetching, fetchMsg, imgCacheDir, itemsRefreshKey,
+    handleFetch,
+    setQuantities,
+    setScannerMods, setMasteryData, setArchonShards,
+    setFormaData, setChangeLog, setLastChanged,
+    setItemsRefreshKey,
+  } = inv;
+
+  const overlays = useOverlays(setQuantities);
+  const { overlayStatus } = overlays;
+
+  // ── Remaining local state (not in any hook) ──────────────────────────────
   const [poking, setPoking] = useState(false);
-  const [autoDiagEnabled, setAutoDiagEnabled] = useState(false);
-  const [memoryScannerEnabled, setMemoryScannerEnabled] = useState(false);
-const [blobLogEnabled, setBlobLogEnabled] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState<UpdateAvailable | null>(null);
+  const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [wfmLoggedIn, setWfmLoggedIn] = useState(false);
-  const [wfmInvisibleOnStart,   setWfmInvisibleOnStart]   = useState(false);
-  const [wfmInvisibleOnClose,   setWfmInvisibleOnClose]   = useState(false);
-  const [wfmAutoInvisible,      setWfmAutoInvisible]      = useState(false);
-  const [wfmAutoInvisibleMins,  setWfmAutoInvisibleMins]  = useState(30);
-  const [overlayStatus, setOverlayStatus] = useState("");
-  // Without OCR the overlay can never trigger, so treat it as off for this run.
-  // The stored preference is deliberately left untouched: the same settings file
-  // is used on Windows, where the overlay does work.
-  const [subsummedWarframes, setSubsummedWarframes] = useState<Set<string>>(new Set());
-  const [archonShards, setArchonShards] = useState<Record<string, ArchonShard[]>>({});
-  const [formaData, setFormaData] = useState<Record<string, number>>({});
-  const wfmInvisibleOnStartRef  = useRef(false);
-  const wfmInvisibleOnCloseRef  = useRef(false);
-  const wfmLoggedInRef          = useRef(false);
-  const catalogRef = useRef<CatalogItem[]>([]);
-  const [changeLog, setChangeLog] = useState<ChangeLogEntry[]>([]);
-  const [changeLogArrivalToken, setChangeLogArrivalToken] = useState(0);
-  const [lastInventoryScanAt, setLastInventoryScanAt] = useState<number | null>(null);
-  const [inventoryReady, setInventoryReady] = useState(false);
-  const inventoryReadyRef = useRef(false);
+  const wfmLoggedInRef = useRef(false);
   const [inventoryFilters, setInventoryFilters] = useState<InventoryFilters>(INVENTORY_FILTERS_DEFAULT);
   const [foundryFilters, setFoundryFilters] = useState<FoundryFilters>(FOUNDRY_FILTERS_DEFAULT);
   const [marketFilters, setMarketFilters] = useState<MarketFilters>(MARKET_FILTERS_DEFAULT);
   const [relicFilters, setRelicFilters] = useState<RelicFilters>(RELIC_FILTERS_DEFAULT);
-  const [filterPresets, setFilterPresets] = useState<FilterPresetSettings>(() => parseFilterPresetSettings(undefined));
   const { category, search, filterOwned, filterRecent, filterPrime, filterVaulted, filterUnvaulted, filterRank, sortMode } = inventoryFilters;
   const prevSortRef = useRef(sortMode);
   useEffect(() => { if (sortMode !== "recent") prevSortRef.current = sortMode; }, [sortMode]);
@@ -256,15 +195,6 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     setInventoryView(view);
     localStorage.setItem(PREFERENCE_KEYS.INVENTORY_VIEW, view);
   }, []);
-
-  // ── Per-tab persisted filter state ────────────────────────────────────────
-  const [lastChanged, setLastChanged] = useState<Record<string, number>>({});
-  const [monitoring, setMonitoring] = useState(false);
-  const [warframeRunning, setWarframeRunning] = useState(false);
-  const [itemCount, setItemCount] = useState(0);
-  const [recipeCount, setRecipeCount] = useState(0);
-  const [fetching, setFetching] = useState(false);
-  const [fetchMsg, setFetchMsg] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'general' | 'overlays' | 'market' | 'filters' | 'accessibility' | 'data' | 'debugging'>('general');
   const [settingsFilterModule, setSettingsFilterModule] = useState<FilterPresetModule>("inventory");
@@ -273,112 +203,19 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     setSettingsTab("filters");
     setShowSettings(true);
   }, []);
-  const [foundryPageSize, setFoundryPageSize] = useState<FoundryPageSize>(DEFAULT_FOUNDRY_PAGE_SIZE);
-  const [overlayEnabledSetting, setOverlayEnabled] = useState<boolean>(
-    () => localStorage.getItem(PREFERENCE_KEYS.OVERLAY_ENABLED) !== "false"
-  );
-  const overlayEnabled = overlayEnabledSetting;
-  const [overlayPriority, setOverlayPriority] = useState<RelicOverlayPriority>(
-    () => (localStorage.getItem(PREFERENCE_KEYS.OVERLAY_PRIORITY) ?? DEFAULT_RELIC_OVERLAY_PRIORITY) as RelicOverlayPriority
-  );
-  const [relicPickEnabled,    setRelicPickEnabled]    = useState<boolean>(true);
-  const [memTriggerEnabled,   setMemTriggerEnabled]   = useState<boolean>(false);
-  const [arbOverlayEnabled,   setArbOverlayEnabled]   = useState<boolean>(false);
-  const [relicPickPriority,   setRelicPickPriority]   = useState<RelicPickPriority>(DEFAULT_RELIC_PICK_PRIORITY);
-  const [relicPickRefinement, setRelicPickRefinement] = useState<RelicRefinement>(DEFAULT_RELIC_PICK_REFINEMENT);
-  const [relicPickLines,      setRelicPickLines]      = useState<RelicPickLines>(DEFAULT_RELIC_PICK_LINES);
-  const [masteryExclude,      setMasteryExclude]      = useState<MasteryExclude>(DEFAULT_MASTERY_EXCLUDE);
   const [appVersion, setAppVersion] = useState("");
-  const [updateAvailable, setUpdateAvailable] = useState<UpdateAvailable | null>(null);
-  const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [showInventoryBatchPreview, setShowInventoryBatchPreview] = useState(false);
   // "scanning" while blob capture is running, "done" briefly after it finishes
   const [blobStage, setBlobStage] = useState<"scanning" | "done" | null>(null);
   const blobDoneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [textScale, setTextScale] = useState(() => {
-    const s = parseFloat(localStorage.getItem(PREFERENCE_KEYS.TEXT_SCALE) ?? "1");
-    document.documentElement.style.setProperty("--ff-scale", s.toString());
-    return s;
-  });
-  const [colorblindMode, setColorblindMode] = useState(() =>
-    localStorage.getItem(PREFERENCE_KEYS.COLORBLIND_MODE) === "true"
-  );
-  const [clockFormat, setClockFormat] = useState<ClockFormat>(DEFAULT_CLOCK_FORMAT);
-  const [itemsRefreshKey, setItemsRefreshKey] = useState(0);
-  const [imgCacheDir, setImgCacheDir] = useState("");
-
-  // ── Modular Window state ───────────────────────────────────────────────────
-  const [tracked, setTracked] = useState<string[]>([]);
-  const [favorites, setFavorites] = useState<string[]>([]);
-  const [timerFavorites, setTimerFavorites] = useState<string[]>([]);
-  const [fissureWatches, setFissureWatches] = useState<FissureWatch[]>([]);
-  const [fissureNotifications, setFissureNotifications] = useState(true);
-  const [arbFavorites, setArbFavorites] = useState<string[]>([]);
-  const [arbLeadMins, setArbLeadMins] = useState(DEFAULT_LEAD_MINS);
-  // The filter starts wide and the alert rule starts empty: showing every hour
-  // is what a browser is for, while alerting is opt-in.
-  const [arbTierFilter, setArbTierFilter] = useState<TierKey[]>([...TIER_KEYS]);
-  const [arbAlertTiers, setArbAlertTiers] = useState<TierKey[]>([]);
-  const [arbScheduleDays, setArbScheduleDays] = useState(DEFAULT_SCHEDULE_DAYS);
-  const [modularWidth, setModularWidth] = useState(240);
-  const [modularSectionOrder, setModularSectionOrder] = useState<string[]>([...MODULAR_SECTION_ORDER_DEFAULT]);
-  const [modularPopout, setModularPopout] = useState(false);
-  const modularWinRef = useRef<WebviewWindow | null>(null);
-  const modularWinGeomRef = useRef<{ x?: number; y?: number; w?: number; h?: number }>({});
 
   const handleWfmLoginChange = useCallback((loggedIn: boolean) => {
     setWfmLoggedIn(loggedIn);
     wfmLoggedInRef.current = loggedIn;
   }, []);
 
-  // ── Settings helpers ──────────────────────────────────────────────────────
-  // Refs so we can read the latest state in the save callback without stale closures
-  const settingsLoadedRef = useRef(false);
-  const settingsRef = useRef<SettingsSnapshot>({
-    overlayEnabled: true, overlayPriority: DEFAULT_RELIC_OVERLAY_PRIORITY, textScale: 1, colorblindMode: false, clockFormat: DEFAULT_CLOCK_FORMAT, memoryScannerEnabled: false, blobLogEnabled: false, autoDiagEnabled: false,
-    tracked: [] as string[], favorites: [] as string[], timerFavorites: [] as string[], fissureWatches: [] as FissureWatch[], fissureNotifications: true, modularWidth: 240,
-    arbitrationFavorites: [] as string[], arbitrationLeadMins: DEFAULT_LEAD_MINS, arbitrationOverlayEnabled: false,
-    arbitrationTierFilter: [...TIER_KEYS] as TierKey[], arbitrationAlertTiers: [] as TierKey[],
-    arbitrationScheduleDays: DEFAULT_SCHEDULE_DAYS,
-    modularSectionOrder: ["tracking", "favorites", "timers"] as string[], modularPopout: false,
-    wfmInvisibleOnStart: false, wfmInvisibleOnClose: false, wfmAutoInvisible: false, wfmAutoInvisibleMins: 30,
-    relicPickEnabled: true, relicPickPriority: DEFAULT_RELIC_PICK_PRIORITY, relicPickRefinement: DEFAULT_RELIC_PICK_REFINEMENT, relicPickLines: DEFAULT_RELIC_PICK_LINES,
-    foundryPageSize: DEFAULT_FOUNDRY_PAGE_SIZE,
-    memTriggerEnabled: false,
-    masteryExclude: DEFAULT_MASTERY_EXCLUDE,
-    filterPresets: parseFilterPresetSettings(undefined),
-  });
-  settingsRef.current = { overlayEnabled: overlayEnabledSetting, overlayPriority, textScale, colorblindMode, clockFormat, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, arbitrationOverlayEnabled: arbOverlayEnabled, arbitrationTierFilter: arbTierFilter, arbitrationAlertTiers: arbAlertTiers, arbitrationScheduleDays: arbScheduleDays, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled, masteryExclude, filterPresets };
+  settingsRef.current = { overlayEnabled, overlayPriority, textScale, colorblindMode, clockFormat, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, arbitrationOverlayEnabled: arbOverlayEnabled, arbitrationTierFilter: arbTierFilter, arbitrationAlertTiers: arbAlertTiers, arbitrationScheduleDays: arbScheduleDays, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled, masteryExclude, filterPresets };
 
-  const saveAllSettings = useCallback(() => {
-    // Until the on-disk settings have been applied, settingsRef still holds
-    // the defaults (tracked/favorites empty). Saving the full object at that
-    // point would overwrite the user's file with those defaults, so refuse.
-    if (!settingsLoadedRef.current) {
-      console.error("save_settings skipped: settings not loaded yet, saving now would clobber the file");
-      return;
-    }
-    const settings: SettingsPatch = { ...settingsRef.current };
-    invoke(TAURI_COMMANDS.SAVE_SETTINGS, { json: JSON.stringify(settings) }).catch((e) => {
-      console.error("save_settings failed:", e);
-    });
-  }, []); // eslint-disable-line
-
-  // ── Memory scanner toggle ─────────────────────────────────────────────────
-  useEffect(() => {
-    if (memoryScannerEnabled) {
-      invoke("start_monitor").then(() => setMonitoring(true)).catch(() => {});
-    } else {
-      invoke("stop_monitor").then(() => setMonitoring(false)).catch(() => {});
-    }
-  }, [memoryScannerEnabled]); // eslint-disable-line
-
-  // ── Blob log toggle ───────────────────────────────────────────────────────
-  useEffect(() => {
-    invoke("set_blob_log", { enabled: blobLogEnabled }).catch(() => {});
-  }, [blobLogEnabled]); // eslint-disable-line
-
-  // ── Debug data sizes — reload when the Debugging settings tab opens ─────────
   // ── Log watcher — always start regardless of memory scanner toggle ─────────
   // EE.log is plain file I/O (not memory reading) — handles riven detection,
   // trade completion, and WFM whisper detection unconditionally.
@@ -407,8 +244,6 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
     })();
     // Fire-and-forget: populates WFM_TOP_CACHE so the Statistics tab is instant
     invoke(TAURI_COMMANDS.GET_WFM_TOP_ITEMS).catch(() => {});
-    invoke<string>("get_img_cache_dir").then(setImgCacheDir).catch(() => {});
-    invoke("prewarm_image_cache").catch(() => {});
   }, []); // eslint-disable-line
 
   // ── WFM: intercept window close to go invisible first ─────────────────────
@@ -441,226 +276,29 @@ const [blobLogEnabled, setBlobLogEnabled] = useState(false);
   // ── Bootstrap ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    invoke<string[]>("get_saved_consumed_suits")
-      .then(suits => { if (suits.length > 0) setSubsummedWarframes(new Set(suits)); })
-      .catch(() => {});
-
-    // Load user settings from file — survives reinstalls unlike localStorage
-    invoke<string>(TAURI_COMMANDS.LOAD_SETTINGS).then(json => {
-      // A missing file is a first launch: nothing to clobber, saving is safe.
-      if (!json) { settingsLoadedRef.current = true; return; }
-      try {
-        const s = JSON.parse(json) as SettingsFile;
-        if (typeof s.memoryScannerEnabled === "boolean") setMemoryScannerEnabled(s.memoryScannerEnabled);
-        if (typeof s.blobLogEnabled === "boolean") setBlobLogEnabled(s.blobLogEnabled);
-if (typeof s.autoDiagEnabled === "boolean") {
-          setAutoDiagEnabled(s.autoDiagEnabled);
-          localStorage.setItem(PREFERENCE_KEYS.AUTO_DIAGNOSTICS, String(s.autoDiagEnabled));
-        }
-        if (typeof s.overlayEnabled === "boolean") {
-          setOverlayEnabled(s.overlayEnabled);
-          localStorage.setItem(PREFERENCE_KEYS.OVERLAY_ENABLED, String(s.overlayEnabled));
-        }
-        if (typeof s.overlayPriority === "string") {
-          setOverlayPriority(s.overlayPriority as RelicOverlayPriority);
-          localStorage.setItem(PREFERENCE_KEYS.OVERLAY_PRIORITY, s.overlayPriority);
-        }
-        if (typeof s.textScale === "number") {
-          setTextScale(s.textScale);
-          document.documentElement.style.setProperty("--ff-scale", s.textScale.toString());
-          localStorage.setItem(PREFERENCE_KEYS.TEXT_SCALE, s.textScale.toString());
-        }
-        if (typeof s.colorblindMode === "boolean") {
-          setColorblindMode(s.colorblindMode);
-          localStorage.setItem(PREFERENCE_KEYS.COLORBLIND_MODE, String(s.colorblindMode));
-        }
-        if (typeof s.clockFormat === "string" && CLOCK_FORMAT_OPTIONS.includes(s.clockFormat)) {
-          setClockFormat(s.clockFormat as ClockFormat);
-        }
-        if (Array.isArray(s.tracked)) setTracked(s.tracked);
-        if (Array.isArray(s.favorites)) setFavorites(s.favorites);
-        if (Array.isArray(s.timerFavorites)) setTimerFavorites(s.timerFavorites);
-        if (Array.isArray(s.fissureWatches)) {
-          setFissureWatches(s.fissureWatches);
-          restoredWatchIdsRef.current = new Set((s.fissureWatches as FissureWatch[]).map(w => w.id));
-        }
-        if (typeof s.fissureNotifications === "boolean") setFissureNotifications(s.fissureNotifications);
-        if (Array.isArray(s.arbitrationFavorites)) setArbFavorites(s.arbitrationFavorites.filter((x: unknown) => typeof x === "string"));
-        if (typeof s.arbitrationLeadMins === "number") setArbLeadMins(clampLead(s.arbitrationLeadMins));
-        const storedFilter = sanitizeTierKeys(s.arbitrationTierFilter);
-        if (storedFilter) setArbTierFilter(storedFilter);
-        const storedAlertTiers = sanitizeTierKeys(s.arbitrationAlertTiers);
-        if (storedAlertTiers) setArbAlertTiers(storedAlertTiers);
-        if (typeof s.arbitrationScheduleDays === "number") setArbScheduleDays(clampScheduleDays(s.arbitrationScheduleDays));
-        if (typeof s.arbitrationOverlayEnabled === "boolean") { setArbOverlayEnabled(s.arbitrationOverlayEnabled); invoke("set_arbitration_overlay_enabled", { enabled: s.arbitrationOverlayEnabled }); }
-        if (Array.isArray(s.arbitrationAlertsFired)) arbFiredRef.current = s.arbitrationAlertsFired.filter((x: unknown) => typeof x === "string");
-        if (typeof s.modularWidth === "number") setModularWidth(s.modularWidth);
-        if (Array.isArray(s.modularSectionOrder)) {
-          const order: string[] = s.modularSectionOrder;
-          if (!order.includes("timers"))   order.push("timers");
-          if (!order.includes("fissures")) order.push("fissures");
-          setModularSectionOrder(order);
-        }
-        if (typeof s.modularPopout === "boolean") setModularPopout(s.modularPopout);
-        if (typeof s.modularWinX === "number") modularWinGeomRef.current.x = s.modularWinX;
-        if (typeof s.modularWinY === "number") modularWinGeomRef.current.y = s.modularWinY;
-        if (typeof s.modularWinWidth === "number") modularWinGeomRef.current.w = s.modularWinWidth;
-        if (typeof s.modularWinHeight === "number") modularWinGeomRef.current.h = s.modularWinHeight;
-        if (typeof s.wfmInvisibleOnStart === "boolean") { setWfmInvisibleOnStart(s.wfmInvisibleOnStart); wfmInvisibleOnStartRef.current = s.wfmInvisibleOnStart; }
-        if (typeof s.wfmInvisibleOnClose === "boolean") { setWfmInvisibleOnClose(s.wfmInvisibleOnClose); wfmInvisibleOnCloseRef.current = s.wfmInvisibleOnClose; }
-        if (typeof s.wfmAutoInvisible    === "boolean") setWfmAutoInvisible(s.wfmAutoInvisible);
-        if (typeof s.wfmAutoInvisibleMins === "number") setWfmAutoInvisibleMins(s.wfmAutoInvisibleMins);
-        if (typeof s.relicPickEnabled    === "boolean") { setRelicPickEnabled(s.relicPickEnabled); invoke(TAURI_COMMANDS.SET_RELIC_PICK_ENABLED, { enabled: s.relicPickEnabled }); }
-        if (typeof s.memTriggerEnabled   === "boolean") { setMemTriggerEnabled(s.memTriggerEnabled); invoke(TAURI_COMMANDS.SET_MEM_TRIGGER_ENABLED, { enabled: s.memTriggerEnabled }); }
-        if (RELIC_PICK_PRIORITY_OPTIONS.includes(s.relicPickPriority)) setRelicPickPriority(s.relicPickPriority);
-        if (RELIC_PICK_REFINEMENT_OPTIONS.includes(s.relicPickRefinement)) setRelicPickRefinement(s.relicPickRefinement);
-        if (RELIC_PICK_LINES_OPTIONS.includes(s.relicPickLines)) setRelicPickLines(s.relicPickLines);
-        if (FOUNDRY_PAGE_SIZE_OPTIONS.includes(s.foundryPageSize)) setFoundryPageSize(s.foundryPageSize);
-        if (typeof s.masteryExclude === "object" && s.masteryExclude != null) {
-          const stored = s.masteryExclude as Partial<MasteryExclude>;
-          setMasteryExclude(Object.fromEntries(MASTERY_EXCLUDE_OPTIONS.map(o =>
-            [o.key, typeof stored[o.key] === "boolean" ? stored[o.key] : DEFAULT_MASTERY_EXCLUDE[o.key]])) as MasteryExclude);
-        }
-        setFilterPresets(parseFilterPresetSettings(s.filterPresets));
-      } catch {}
-      // Unblock saving even if the file failed to parse, since the backend
-      // refuses to overwrite a settings.json that is not a valid JSON object.
-      settingsLoadedRef.current = true;
-    }).catch(() => {});
-
-    invoke<string | null>("get_player_name").then(name => { if (name) setPlayerName(name); }).catch(() => {});
-    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS).then(items => { setCatalog(items); catalogRef.current = items; });
-    invoke<QuantityMap>(TAURI_COMMANDS.GET_CURRENT_QUANTITIES)
-      .then(setQuantities)
-      .catch(() => {})
-      .finally(() => {
-        if (!inventoryReadyRef.current) {
-          inventoryReadyRef.current = true;
-          setInventoryReady(true);
-        }
-      });
-    invoke<ChangeLogEntry[]>("get_change_log", { limit: 200 }).then(log => {
-      setChangeLog(log);
-      const lc: Record<string, number> = {};
-      for (const c of log) lc[c.unique_name] = Math.max(lc[c.unique_name] ?? 0, c.timestamp);
-      setLastChanged(lc);
-    });
-    invoke<ItemListStatus>("get_item_list_status").then(s => {
-      setItemCount(s.count);
-      setRecipeCount(s.recipe_count);
-    });
-
-    getVersion().then(setAppVersion).catch(() => {});
-
-    // Auto-start monitor on launch — only if memory scanner is explicitly enabled
-    invoke<boolean>("get_monitor_status").then(active => {
-      if (!active) {
-        // memoryScannerEnabled not yet loaded from settings at this point;
-        // the effect below handles delayed auto-start after settings load.
-      } else {
-        setMonitoring(true);
+    loadSettings().then(settings => {
+      if (settings) {
+        applyModularSettings(settings);
+        applyTimerSettings(settings);
+        settingsLoadedRef.current = true;
       }
     });
-  }, []);
-
-  // Refresh diagnostics folder size every minute so the Clear button stays current.
-  // ── Inventory update events ────────────────────────────────────────────────
+    getVersion().then(setAppVersion).catch(() => {});
+  }, [loadSettings, applyModularSettings, applyTimerSettings]);
 
   useEffect(() => {
-    const unlisten = listen<InventoryUpdate>(TAURI_EVENTS.INVENTORY_UPDATE, (e) => {
-      const p = e.payload;
-      setLastInventoryScanAt(p.scanned_at);
-      if (!inventoryReadyRef.current) {
-        inventoryReadyRef.current = true;
-        setInventoryReady(true);
-      }
-      // Only replace quantities if the content actually changed.
-      // The monitor loop re-emits cached state periodically; without this guard
-      // every emit triggers a full 17k-item useMemo rebuild cascade.
-      setQuantities(prev => {
-        const next = p.quantities;
-        const prevKeys = Object.keys(prev);
-        const nextKeys = Object.keys(next);
-        if (prevKeys.length !== nextKeys.length) return next;
-        for (const k of nextKeys) { if (next[k] !== prev[k]) return next; }
-        return prev;
-      });
-      if (p.crafting) setCrafting(p.crafting);
-      if (p.mastery_rank != null) setMasteryRank(p.mastery_rank);
-      if (p.player_name) setPlayerName(p.player_name);
-      if (p.mastery_data && (p.is_full_pass || Object.keys(p.mastery_data).length > 0))
-        setMasteryData(p.mastery_data);
-      if (p.owned_levels && (p.is_full_pass || Object.keys(p.owned_levels).length > 0))
-        setOwnedLevels(p.owned_levels);
-      setWarframeRunning(p.warframe_running);
-      if (p.consumed_suits && p.consumed_suits.length > 0) {
-        setSubsummedWarframes(prev => {
-          const next = new Set(prev);
-          for (const s of p.consumed_suits!) next.add(s);
-          return next;
-        });
-      }
-      if (p.mods && Object.keys(p.mods).length > 0) {
-        setScannerMods(p.mods);
-      }
-      if (p.socketed_shards) {
-        // In-memory color values use ACC_RED/BLUE/YELLOW/GREEN/PURPLE.
-        // Tauforged variants include "TAU" in the string (e.g. ACC_TAU_RED).
-        const SHARD_COLORS: { prefix: string; type: string; colorHex: string; tauHex: string }[] = [
-          { prefix: "ACC_RED",    type: "Crimson",  colorHex: "#e04040", tauHex: "#ff7070" },
-          { prefix: "ACC_BLUE",   type: "Azure",    colorHex: "#4488ff", tauHex: "#77aaff" },
-          { prefix: "ACC_GREEN",  type: "Viridian", colorHex: "#44cc66", tauHex: "#66ff99" },
-          { prefix: "ACC_YELLOW", type: "Amber",    colorHex: "#ffaa00", tauHex: "#ffcc44" },
-          { prefix: "ACC_PURPLE", type: "Violet",   colorHex: "#9944ff", tauHex: "#bb77ff" },
-        ];
-        const INT_TO_ACC = ["ACC_RED","ACC_BLUE","ACC_GREEN","ACC_YELLOW","ACC_PURPLE"];
-        const parsed: Record<string, { type: string; tauforged: boolean; color: string; boost?: string }[]> = {};
-        for (const [wfPath, shards] of Object.entries(p.socketed_shards)) {
-          parsed[wfPath] = shards.map(s => {
-            let raw = s.color.toUpperCase();
-            // If it's a pure integer, normalise to ACC_ string
-            if (/^\d+$/.test(raw)) {
-              const n = parseInt(raw);
-              raw = INT_TO_ACC[n % 5] ?? raw;  // %5 so tau-forged (5-9) maps to base color
-            }
-            // In memory: tauforged shards use the suffix "_MYTHIC" (e.g. "ACC_RED_MYTHIC").
-            const tauforged = raw.includes("MYTHIC") || raw.includes("TAU") || parseInt(s.color) >= 5;
-            const entry = SHARD_COLORS.find(e => raw.startsWith(e.prefix));
-            const colorInfo = entry ?? { type: "Unknown", colorHex: "#b0b0b0", tauHex: "#d0d0d0" };
-            const seg = s.upgrade_type.split("/").pop() ?? "";
-            const boostRaw = seg.replace(/^ArchonCrystalUpgrade(?:Warframe|Companion)?/, "");
-            const boost = boostRaw.replace(/([A-Z])/g, " $1").trim() || undefined;
-            // Tauforged shards use a brighter colour so they stand out from normal shards.
-            const color = tauforged ? colorInfo.tauHex : colorInfo.colorHex;
-            return { type: colorInfo.type, tauforged, color, boost };
-          });
-        }
-        if (p.is_full_pass) {
-          // Full pass = authoritative complete state; replace so removed shards don't linger.
-          setArchonShards(parsed);
-        } else if (Object.keys(parsed).length > 0) {
-          setArchonShards(prev => ({ ...prev, ...parsed }));
-        }
-      }
-      if (p.forma_counts) {
-        if (p.is_full_pass) {
-          setFormaData(p.forma_counts);
-        } else if (Object.keys(p.forma_counts).length > 0) {
-          setFormaData(prev => ({ ...prev, ...p.forma_counts }));
-        }
-      }
-      if (p.changes.length > 0) {
-        setChangeLog(prev => [...p.changes, ...prev].slice(0, 200));
-        setChangeLogArrivalToken(token => token + 1);
-        setLastChanged(prev => {
-          const next = { ...prev };
-          for (const c of p.changes) next[c.unique_name] = c.timestamp;
-          return next;
-        });
-      }
+    const unlisten = listen(TAURI_EVENTS.SETTINGS_UPDATED, () => {
+      invoke<string>(TAURI_COMMANDS.LOAD_SETTINGS).then(json => {
+        if (!json) return;
+        try {
+          const updated = JSON.parse(json) as SettingsFile;
+          applyModularSettings(updated);
+          applyTimerSettings(updated);
+        } catch {}
+      }).catch(() => {});
     });
     return () => { unlisten.then(fn => fn()); };
-  }, []);
+  }, [applyModularSettings, applyTimerSettings]);
 
   // ── Blob processing status ────────────────────────────────────────────────
   useEffect(() => {
@@ -676,52 +314,6 @@ if (typeof s.autoDiagEnabled === "boolean") {
     });
     return () => { unlisten.then(fn => fn()); };
   }, []);
-
-  // The launch check fires at most once, so opening the dialog here cannot nag:
-  // dismissing it leaves only the header badge until the next launch or a
-  // manual check.
-  useEffect(() => {
-    const show = (u: UpdateAvailable) => {
-      setUpdateAvailable(u);
-      setShowUpdateDialog(true);
-    };
-    const unlisten = onUpdateAvailable(show);
-    pendingUpdate().then(u => { if (u) show(u); }).catch(() => {});
-    return () => { unlisten.then(fn => fn()); };
-  }, []);
-
-  // ── Player name (immediate, from EE.log "Logged in NAME") ───────────────
-  useEffect(() => {
-    const unlisten = listen<string>("player-name", e => {
-      setPlayerName(e.payload);
-    });
-    return () => { unlisten.then(fn => fn()); };
-  }, []);
-
-  // ── Sync modular state from pop-out window ────────────────────────────────
-  // When the pop-out saves (unstar, reorder), Rust emits settings-updated.
-  // Compare before setting to avoid a save → emit → re-read → save loop.
-  useEffect(() => {
-    const unlisten = listen(TAURI_EVENTS.SETTINGS_UPDATED, () => {
-      invoke<string>(TAURI_COMMANDS.LOAD_SETTINGS).then(json => {
-        if (!json) return;
-        try {
-          const s = JSON.parse(json) as SettingsFile;
-          const cur = settingsRef.current;
-          if (Array.isArray(s.favorites) && JSON.stringify(s.favorites) !== JSON.stringify(cur.favorites))
-            setFavorites(s.favorites);
-          if (Array.isArray(s.tracked) && JSON.stringify(s.tracked) !== JSON.stringify(cur.tracked))
-            setTracked(s.tracked);
-          if (Array.isArray(s.modularSectionOrder) && JSON.stringify(s.modularSectionOrder) !== JSON.stringify(cur.modularSectionOrder))
-            setModularSectionOrder(s.modularSectionOrder);
-        } catch {}
-      }).catch(() => {});
-      // The app creates the riven window once and caches it, so a scale change
-      // must resize it in place. Its height follows the game window, not the scale.
-      resizeRivenForScale();
-    });
-    return () => { unlisten.then(fn => fn()); };
-  }, []); // eslint-disable-line
 
   // ── Persist main window geometry on move/resize ───────────────────────────
   useEffect(() => {
@@ -748,135 +340,28 @@ if (typeof s.autoDiagEnabled === "boolean") {
     };
   }, []); // eslint-disable-line
 
-  const toggleTracked = useCallback((id: string) => {
-    setTracked(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
-  }, []);
-
-  const toggleFavorite = useCallback((id: string) => {
-    setFavorites(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
-  }, []);
-
-  // ── Fetch item list ────────────────────────────────────────────────────────
-
-  const handleFetch = async () => {
-    setFetching(true);
-    setFetchMsg("Fetching…");
-    // Stop monitor during refresh so it restarts with the new item list
-    const wasMonitoring = monitoring;
-    if (wasMonitoring) {
-      await invoke("stop_monitor");
-      setMonitoring(false);
-    }
-    try {
-      const count = await invoke<number>("fetch_item_list", { force: true });
-      setItemCount(count);
-      const items = await invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS);
-      setCatalog(items);
-      catalogRef.current = items;
-      const status = await invoke<ItemListStatus>("get_item_list_status");
-      setRecipeCount(status.recipe_count);
-      setFetchMsg(`Loaded ${count.toLocaleString()} items, ${status.recipe_count.toLocaleString()} recipes`);
-      setItemsRefreshKey(k => k + 1);
-      invoke("prewarm_image_cache").catch(() => {});
-    } catch (e) {
-      setFetchMsg(`Error: ${e}`);
-    } finally {
-      setFetching(false);
-      if (wasMonitoring) {
-        await invoke("start_monitor");
-        setMonitoring(true);
-      }
-    }
-  };
-
-  // The catalogue the backend loaded from disk is already on screen; revalidate
-  // it behind the UI so a launch never waits on the network, and leave the
-  // monitor running since the refresh is a no-op while the cache is fresh.
+  // The launch check fires at most once, so opening the dialog here cannot nag:
+  // dismissing it leaves only the header badge until the next launch or a
+  // manual check.
   useEffect(() => {
-    mark("catalogue revalidate start");
-    invoke<number>("fetch_item_list").then(async count => {
-      setItemCount(count);
-      const items = await invoke<CatalogItem[]>("get_all_items");
-      setCatalog(items);
-      catalogRef.current = items;
-      mark("catalog state set");
-      const status = await invoke<{ count: number; recipe_count: number }>("get_item_list_status");
-      setRecipeCount(status.recipe_count);
-      setItemsRefreshKey(k => k + 1);
-      invoke("prewarm_image_cache").catch(() => {});
-    }).catch(e => setFetchMsg(`Error: ${e}`));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const show = (u: UpdateAvailable) => {
+      setUpdateAvailable(u);
+      setShowUpdateDialog(true);
+    };
+    const unlisten = onUpdateAvailable(show);
+    pendingUpdate().then(u => { if (u) show(u); }).catch(() => {});
+    return () => { unlisten.then(fn => fn()); };
   }, []);
 
   useEffect(() => {
     if (settingsLoadedRef.current) saveAllSettings();
-  }, [tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbFavorites, arbLeadMins, arbTierFilter, arbAlertTiers, arbScheduleDays, modularWidth, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, modularSectionOrder, modularPopout, filterPresets]); // eslint-disable-line
-
-  // ── Watched fissure notifications ──────────────────────────────────────────
-  //
-  // Lives here rather than in TimerHelper because TimerHelper only mounts while
-  // its tab is open, and the whole point is to hear about a fissure while
-  // looking at something else. The pop-out window deliberately does not run
-  // this — two windows would otherwise notify twice for the same fissure.
-
-  const { worldState } = useWorldState();
-
-  const seenFissuresRef = useRef<SeenFissures>(new Map());
-  // Watch IDs that should not fire on the first poll they're seen —
-  // populated from saved settings on load, and extended whenever the user
-  // adds a new watch mid-session (so adding a watch doesn't immediately
-  // announce every currently-live fissure that matches it).
-  const restoredWatchIdsRef = useRef<Set<string>>(new Set());
-  const knownWatchIdsRef    = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    if (!worldState) return;
-
-    // Any watch added since the last render is treated as "restored" so it
-    // doesn't immediately alert for fissures that are already live.
-    for (const w of fissureWatches) {
-      if (!knownWatchIdsRef.current.has(w.id)) {
-        restoredWatchIdsRef.current.add(w.id);
-        knownWatchIdsRef.current.add(w.id);
-      }
-    }
-
-    const { fresh, live } = collectNewMatches(worldState, fissureWatches, seenFissuresRef.current, restoredWatchIdsRef.current);
-    // Tracked even while notifications are off, so switching them back on does
-    // not announce everything that rotated in during the quiet period.
-    seenFissuresRef.current = live;
-    if (!fissureNotifications || fresh.length === 0) return;
-
-    const suffix = (variant: string, sep: string) =>
-      variant === "hard" ? `${sep}Steel Path` : variant === "storm" ? `${sep}Void Storm` : "";
-
-    if (fresh.length === 1) {
-      const { f, variant } = fresh[0];
-      // fmtMs renders a dash once the clock runs out, which would read as
-      // "Tessera (Void) — — left" for a fissure that expired mid-poll.
-      const remaining = new Date(f.expiry).getTime() - Date.now();
-      void notify(
-        `${f.tier} ${f.missionType}${suffix(variant, " · ")}`,
-        remaining > 0 ? `${f.node} — ${fmtMs(remaining)} left` : f.node,
-      );
-    } else {
-      // A rotation can bring up a dozen matches at once, and a toast each is
-      // enough to make anyone turn the feature off.
-      const shown = fresh.slice(0, 5).map(({ f, variant }) =>
-        `${f.tier} ${f.missionType}${suffix(variant, " ")} — ${f.node}`);
-      if (fresh.length > shown.length) shown.push(`+${fresh.length - shown.length} more`);
-      void notify(`${fresh.length} new fissures`, shown.join("\n"));
-    }
-  }, [worldState, fissureWatches, fissureNotifications]);
+  }, [tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbFavorites, arbLeadMins, arbTierFilter, arbAlertTiers, arbScheduleDays, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, modularSectionOrder, modularPopout, filterPresets]); // eslint-disable-line
 
   // ── Arbitration alerts ─────────────────────────────────────────────────────
   //
   // Here rather than in Arbitrations, for the same reason the fissure alerts
-  // are: that module is unmounted whenever another one is on screen.
+  // are: that module is not mounted until the user first opens it.
 
-  // Persisted, so a restart inside the lead window does not alert a second
-  // time for the same hour.
-  const arbFiredRef = useRef<string[]>([]);
   const arbAlertsOn = arbFavorites.length > 0 || arbAlertTiers.length > 0;
 
   const { schedule: arbSchedule, error: arbScheduleError } = useArbitrationSchedule(arbAlertsOn);
@@ -898,8 +383,8 @@ if (typeof s.autoDiagEnabled === "boolean") {
   // passes reading the same fired state would raise one occurrence twice.
   const arbCheckingRef = useRef(false);
 
-  // Held here so a denial survives Arbitrations' unmount, but written only by
-  // that module: it raises the prompt on a gesture and shows the warning.
+  // TODO: move into Arbitrations. Only that module reads or writes it, and the
+  // module stays mounted once visited, so nothing here needs to hold it.
   const [arbPermissionDenied, setArbPermissionDenied] = useState(false);
 
   useEffect(() => {
@@ -941,272 +426,11 @@ if (typeof s.autoDiagEnabled === "boolean") {
     if (!arbAlertsOn) return;
     const poll = setInterval(check, EVAL_INTERVAL_MS);
     return () => clearInterval(poll);
-  }, [arbAlertsOn]);
+  }, [arbAlertsOn]); // eslint-disable-line
 
-  // ── Modular pop-out window ─────────────────────────────────────────────────
-  useEffect(() => {
-    if (modularPopout) {
-      if (modularWinRef.current) return;
-      const g = modularWinGeomRef.current;
-
-      // Only restore saved position if it lands on a currently connected monitor.
-      // Guards against secondary monitor being unplugged since last session.
-      const createWin = (usePos: boolean) => new WebviewWindow("modular-popout", {
-        url: "index.html#modular",
-        title: "FrameForge — Modular Window",
-        width: g.w ?? modularWidth,
-        height: g.h ?? 700,
-        ...(usePos && g.x !== undefined ? { x: g.x } : {}),
-        ...(usePos && g.y !== undefined ? { y: g.y } : {}),
-        minWidth: 180,
-        minHeight: 300,
-        resizable: true,
-        decorations: true,
-        alwaysOnTop: false,
-      });
-
-      let win: WebviewWindow;
-      if (g.x !== undefined && g.y !== undefined) {
-        availableMonitors().then(monitors => {
-          const onScreen = monitors.some(m => {
-            const mp = m.position; const ms = m.size;
-            return g.x! >= mp.x && g.x! < mp.x + ms.width &&
-                   g.y! >= mp.y && g.y! < mp.y + ms.height;
-          });
-          win = createWin(onScreen);
-          modularWinRef.current = win;
-          win.once("tauri://destroyed", () => { modularWinRef.current = null; setModularPopout(false); });
-        }).catch(() => {
-          win = createWin(false);
-          modularWinRef.current = win;
-          win.once("tauri://destroyed", () => { modularWinRef.current = null; setModularPopout(false); });
-        });
-        return;
-      }
-      win = createWin(false);
-      modularWinRef.current = win;
-      win.once("tauri://destroyed", () => {
-        modularWinRef.current = null;
-        setModularPopout(false);
-      });
-    } else {
-      modularWinRef.current?.close().catch(() => {});
-      modularWinRef.current = null;
-    }
-  }, [modularPopout]); // eslint-disable-line
-
-  // ── Riven overlay ─────────────────────────────────────────────────────────
-  // Window state lives in module-level _rivenWin (above) — unaffected by StrictMode.
-  // No pre-creation: show() silently fails on visible:false windows with this config.
-  // Fresh window created on trigger (shows correctly); existing visible window reused for cycling.
-  useEffect(() => {
-    // Core OCR + overlay display. Called manually via button or (future) auto-detection.
-    const runRivenCheck = async () => {
-      _rivenLastTriggerMs = Date.now();
-      _rivenRollCount++;
-      const { emit } = await import("@tauri-apps/api/event");
-
-      let rect: WarframeWindowRect = [0, 0, 0, 800];
-      try { rect = await invoke<WarframeWindowRect>("get_warframe_window_rect"); } catch {}
-      const [wx, wy, , wh] = rect;
-      const result = await ensureRivenWindow(wx, wy, wh);
-      let pendingPayload: RivenAnalysisUpdate | null = null;
-      let windowReady = false;
-
-      if (result && !result.fresh) {
-        // Existing window — reset overlay state
-        await emit(TAURI_EVENTS.RIVEN_SCANNING_START, {}).catch(() => {});
-        windowReady = true;
-      } else if (result?.fresh) {
-        // Fresh window — send data once its listener signals ready
-        const unsubReady = await listen(TAURI_EVENTS.RIVEN_WINDOW_READY, async () => {
-          unsubReady();
-          windowReady = true;
-          if (pendingPayload) { await emit(TAURI_EVENTS.RIVEN_ANALYSIS_UPDATE, pendingPayload).catch(() => {}); pendingPayload = null; }
-        });
-      }
-
-      try {
-        const ocrResult = await invoke<OcrRivenScreenResult>("ocr_riven_screen");
-        const analysis: RivenAnalysis | null = (ocrResult.weapon || ocrResult.positives.length > 0)
-          ? await invoke<RivenAnalysis | null>(TAURI_COMMANDS.ANALYZE_RIVEN, { weapon: ocrResult.weapon, positives: ocrResult.positives, negatives: ocrResult.negatives } satisfies AnalyzeRivenArgs).catch(() => null)
-          : null;
-        const payload: RivenAnalysisUpdate = { analysis, ocrRaw: ocrResult.raw, weapon: ocrResult.weapon, positives: ocrResult.positives, negatives: ocrResult.negatives, rolledStats: ocrResult.rolled_stats, isComparison: ocrResult.is_comparison, originalStats: ocrResult.original_rolled_stats, rollCount: _rivenRollCount };
-        if (windowReady) { await emit(TAURI_EVENTS.RIVEN_ANALYSIS_UPDATE, payload).catch(() => {}); }
-        else              { pendingPayload = payload; }
-      } catch (e) {
-        await invoke("ocr_riven_log_error", { error: String(e) }).catch(() => {});
-        const payload: RivenAnalysisUpdate = { analysis: null, ocrRaw: `OCR ERROR: ${e}`, weapon: "", positives: [], negatives: [], rolledStats: [], isComparison: false, originalStats: [], rollCount: _rivenRollCount };
-        if (windowReady) { await emit(TAURI_EVENTS.RIVEN_ANALYSIS_UPDATE, payload).catch(() => {}); }
-        else              { pendingPayload = payload; }
-      }
-    };
-
-    // Wire module-level trigger so "Check Riven" button and "Start Comparison" can call it
-    _rivenManualTrigger = () => { runRivenCheck().catch(() => {}); };
-
-    // overlay "Start Comparison" button emits this event
-    const unsubManual = listen(TAURI_EVENTS.RIVEN_MANUAL_CHECK, () => runRivenCheck().catch(() => {}));
-
-    // Open trigger: EE.log watcher fires "riven-screen-open" via FindFirstChangeNotificationW
-    // (instant file-write notification — no polling delay).
-    // 4 s cooldown prevents double-fires from the same log buffer flush.
-    const triggerOpen = () => {
-      const now = Date.now();
-      if (now - _rivenLastTriggerMs < 4000) return;
-      runRivenCheck().catch(() => {});
-    };
-    const unsubAutoDetect = listen("riven-screen-open", () => triggerOpen());
-
-    // Close triggers: EE.log (DiegeticArtifactCards HudVis 0) + manual dismiss.
-    const unsubClose   = listen("riven-screen-close",   () => rivenWinHide("screen-close"));
-    const unsubHideReq = listen<{ reason?: string }>(TAURI_EVENTS.RIVEN_OVERLAY_HIDE, e => rivenWinHide(e.payload?.reason ?? "overlay-hide"));
-
-    return () => {
-      unsubManual.then(fn => fn());
-      unsubAutoDetect.then(fn => fn());
-      unsubClose.then(fn => fn());
-      unsubHideReq.then(fn => fn());
-      _rivenManualTrigger = null;
-    };
-  }, []); // eslint-disable-line
-
-  // ── Relic reward overlay ──────────────────────────────────────────────────
-  // The overlay window is pre-declared in tauri.conf.json (y=-3000, off-screen).
-  // We never create/destroy it — just reposition it on-screen and back off-screen.
-  // This avoids a Windows deadlock: WebviewWindowBuilder::build() called dynamically
-  // (from tokio threads, run_on_main_thread, or JS new WebviewWindow) all hang because
-  // the Win32 event loop cannot process messages while our code is executing.
-  useEffect(() => {
-    let overlayVisible = false;
-
-    const closeOverlay = async () => {
-      overlayVisible = false;
-      await invoke(TAURI_COMMANDS.MOVE_OVERLAY_OFFSCREEN).catch(() => {});
-    };
-
-    const unsubStatus = listen<string>("ff-status", (e) => {
-      setOverlayStatus(e.payload);
-      setTimeout(() => setOverlayStatus(""), 4000);
-    });
-
-    const openOverlay = async (
-      wx: number, wy: number, ww: number, wh: number,
-      yFrac: number, hFrac: number,
-    ): Promise<boolean> => {
-      // The strip's top edge aligns with the reward row in the game, so the scale
-      // may only extend the strip downwards. Moving that edge would break the
-      // alignment. The space below it is the limit, and past that the content is
-      // clipped.
-      const offsetY = Math.round(wh * yFrac);
-      const stripH  = Math.min(Math.round(wh * hFrac * overlayScale()), wh - offsetY);
-      const stripY  = wy + offsetY;
-      try {
-        const bounds: OverlayWindowBounds = { x: wx, y: stripY, w: ww, h: stripH };
-        await invoke("show_overlay_window", bounds);
-        overlayVisible = true;
-        return true;
-      } catch { return false; }
-    };
-
-    const unsubTrigger = listen<null>(TAURI_EVENTS.RELIC_TRIGGER, async () => {
-      const enabled = localStorage.getItem(PREFERENCE_KEYS.OVERLAY_ENABLED) !== "false";
-      if (!enabled) return;
-      try {
-        const [wx, wy, ww, wh] = await invoke<WarframeWindowRect>("get_warframe_window_rect");
-        invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[APP] relic-trigger: wf(${wx},${wy} ${ww}×${wh})` }).catch(() => {});
-        await openOverlay(wx, wy, ww, wh, 0.60, 0.30);
-      } catch (e) {
-        // get_warframe_window_rect failed (Warframe may be in a different state).
-        // Fall back to screen dimensions so the overlay still moves on-screen and
-        // WebView2 un-freezes its JS before relic-rewards arrives.
-        invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[APP] relic-trigger: wf-rect failed (${e}), falling back to screen dims` }).catch(() => {});
-        const sw = window.screen.width, sh = window.screen.height;
-        await openOverlay(0, 0, sw, sh, 0.60, 0.30);
-      }
-    });
-
-    const unsubRelic = listen<boolean>(TAURI_EVENTS.RELIC_SCREEN, () => { closeOverlay(); });
-
-    const unsub = listen<RelicRewardsPayload | null>(TAURI_EVENTS.RELIC_REWARDS, async (e) => {
-      const rewards = e.payload;
-      if (!rewards || rewards.items.length === 0) { closeOverlay(); return; }
-      const enabled = localStorage.getItem(PREFERENCE_KEYS.OVERLAY_ENABLED) !== "false";
-      if (!enabled) return;
-      invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[APP] relic-rewards: ${rewards.items.length} items, overlayVisible=${overlayVisible}` }).catch(() => {});
-      // Overlay.tsx already receives this event directly from Rust's global emit.
-      // We only need to ensure the overlay window is on-screen; no forwarding needed
-      // (forwarding via emitTo caused an infinite feedback loop in Tauri 2).
-      if (!overlayVisible) {
-        try {
-          const [wx, wy, ww, wh] = await invoke<WarframeWindowRect>("get_warframe_window_rect");
-          invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[APP] relic-rewards fallback: wf(${wx},${wy} ${ww}×${wh})` }).catch(() => {});
-          await openOverlay(wx, wy, ww, wh, 0.54, 0.28);
-        } catch (err) {
-          invoke(TAURI_COMMANDS.LOG_RELIC_FE, { msg: `[APP] relic-rewards fallback: wf-rect failed (${err}), using screen dims` }).catch(() => {});
-          const sw = window.screen.width, sh = window.screen.height;
-          await openOverlay(0, 0, sw, sh, 0.54, 0.28);
-        }
-      }
-    });
-
-    const unsubReward = listen<InventoryRewardPayload>("inventory-reward", (e) => {
-      const { path, qty } = e.payload;
-      setQuantities(prev => ({ ...prev, [path]: qty }));
-    });
-
-    return () => {
-      unsub.then(fn => fn());
-      unsubRelic.then(fn => fn());
-      unsubTrigger.then(fn => fn());
-      unsubStatus.then(fn => fn());
-      unsubReward.then(fn => fn());
-      invoke(TAURI_COMMANDS.MOVE_OVERLAY_OFFSCREEN).catch(() => {});
-    };
-  }, []);
-
-  // ── In-game trade detection ───────────────────────────────────────────────
-  // Rust emits "trade-completed" when "The trade was successful!" is detected in
-  // EE.log. One event covers ALL items from both sides of the trade session.
-  useEffect(() => {
-    const unlisten = listen<TradeCompletedEvent>(TAURI_EVENTS.TRADE_COMPLETED, async (e) => {
-      const p = e.payload;
-      const save = (dir: string, name: string, qty: number, plat: number) => {
-        const args: AddTradeArgs = {
-          withPlayer: p.withPlayer,
-          direction:  dir,
-          itemName:   name,
-          itemUrl:    "",
-          quantity:   qty,
-          platinum:   plat,
-          source:     "in-game",
-          notes:      "",
-          sessionId:  p.sessionId,
-          tradeType:  p.tradeType,
-          timestamp:  p.timestamp,
-        };
-        return invoke(TAURI_COMMANDS.ADD_TRADE, args).catch(() => {});
-      };
-
-      if (p.tradeType === "sale") {
-        // Gave items, received platinum — put plat on the first row only
-        for (let i = 0; i < p.offeredItems.length; i++) {
-          const item = p.offeredItems[i];
-          await save("sold", item.name, item.qty, i === 0 ? p.receivedPlat : 0);
-        }
-      } else if (p.tradeType === "purchase") {
-        // Gave platinum, received items — put plat on the first row only
-        for (let i = 0; i < p.receivedItems.length; i++) {
-          const item = p.receivedItems[i];
-          await save("bought", item.name, item.qty, i === 0 ? p.offeredPlat : 0);
-        }
-      } else {
-        // Item-for-item trade
-        for (const item of p.offeredItems)  await save("traded-out", item.name, item.qty, 0);
-        for (const item of p.receivedItems) await save("traded-in",  item.name, item.qty, 0);
-      }
-    });
-    return () => { unlisten.then(fn => fn()); };
+  const commitModularWidth = useCallback((width: number) => {
+    const patch: SettingsPatch = { modularWidth: width };
+    invoke(TAURI_COMMANDS.SAVE_SETTINGS, { json: JSON.stringify(patch) }).catch(() => {});
   }, []);
 
   // ── Derived data ───────────────────────────────────────────────────────────
@@ -1375,7 +599,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
     searchTerm?: string;
     categoryId?: string;
   }) => {
-    setActiveModule("inventory");
+    activateModule("inventory");
     setInventoryFilters(previous => ({
       ...INVENTORY_FILTERS_DEFAULT,
       category: categoryId,
@@ -1389,7 +613,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
   // leaving any existing inventory filters in place (chip filters the user set should survive).
   const openChangeLogItem = (uniqueName: string) => {
     const item = catalog.find(candidate => candidate.unique_name === uniqueName);
-    setActiveModule("inventory");
+    activateModule("inventory");
     setInventoryFilters(previous => ({ ...previous, search: item?.name ?? "" }));
   };
 
@@ -1442,6 +666,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
               : poking              ? "Checking…"
               : "No Game";
 
+
             // WFM chip
             const wfmState: "online"|"offline" = wfmLoggedIn ? "online" : "offline";
             const wfmDetail = wfmLoggedIn ? "Online" : "Not logged in";
@@ -1467,7 +692,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
                   state={wfmState}
                   detail={wfmDetail}
                   title={wfmLoggedIn ? "Logged in to warframe.market" : "Not logged in to warframe.market — open the Market tab to log in"}
-                  onClick={!wfmLoggedIn ? () => setActiveModule("market") : undefined}
+                  onClick={!wfmLoggedIn ? () => activateModule("market") : undefined}
                 />
                 {overlayStatus && (
                   <span className="conn-chip conn-overlay">
@@ -1498,12 +723,13 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
       <div className="body">
 
-        <AppNavigation activeModule={activeModule} onModuleChange={setActiveModule} />
+        <AppNavigation activeModule={activeModule} onModuleChange={activateModule} />
 
         <div className="app-content">
         <div className="module-content">
         {/* ── Inventory module ── */}
-        {activeModule === "inventory" && (
+        {visitedModules.has("inventory") && (
+        <KeepMountedWhenHidden active={activeModule === "inventory"}>
           <>
             <InventorySidebar
               categories={CATEGORIES}
@@ -1556,42 +782,50 @@ if (typeof s.autoDiagEnabled === "boolean") {
 
             </div>
           </>
+        </KeepMountedWhenHidden>
         )}
 
         {ctxMenu && <CtxMenu state={ctxMenu} onClose={closeCtx} />}
 
         {/* ── Foundry module ── */}
-        {activeModule === "foundry" && (
+        {visitedModules.has("foundry") && (
+        <KeepMountedWhenHidden active={activeModule === "foundry"}>
           <ErrorBoundary>
             <Foundry inventory={inventory} refreshKey={itemsRefreshKey} crafting={crafting} filters={foundryFilters} onFiltersChange={setFoundryFilters} filterPresets={filterPresets} onFilterPresetsChange={setFilterPresets} onOpenSettings={openFilterSettings} colorblindMode={colorblindMode} subsummedWarframes={subsummedWarframes} tracked={tracked} onTrackToggle={toggleTracked} pageSize={foundryPageSize} />
           </ErrorBoundary>
+        </KeepMountedWhenHidden>
         )}
 
         {/* ── Market Helper module ── */}
         {/* Keep mounted at all times so WfmTrading's trade-completed listener
             (auto listing update) fires regardless of which tab is active. */}
-        <div style={{ display: activeModule === "market" ? "contents" : "none" }}>
+        <KeepMountedWhenHidden active={activeModule === "market"}>
           <MarketHelper inventory={inventory} refreshKey={itemsRefreshKey} crafting={crafting} filters={marketFilters} onFiltersChange={setMarketFilters} filterPresets={filterPresets} onFilterPresetsChange={setFilterPresets} onOpenSettings={openFilterSettings} onWfmLoginChange={handleWfmLoginChange} modCopiesMap={modCopiesMap} />
-        </div>
+        </KeepMountedWhenHidden>
 
         {/* ── Relics module ── */}
-        {activeModule === "relics" && (
+        {visitedModules.has("relics") && (
+        <KeepMountedWhenHidden active={activeModule === "relics"}>
           <ErrorBoundary>
-            <RelicHelper inventory={inventory} refreshKey={itemsRefreshKey} filters={relicFilters} onFiltersChange={setRelicFilters} filterPresets={filterPresets} onFilterPresetsChange={setFilterPresets} onOpenSettings={openFilterSettings} colorblindMode={colorblindMode} />
+            <RelicHelper inventory={inventory} filters={relicFilters} onFiltersChange={setRelicFilters} filterPresets={filterPresets} onFilterPresetsChange={setFilterPresets} onOpenSettings={openFilterSettings} colorblindMode={colorblindMode} />
           </ErrorBoundary>
+        </KeepMountedWhenHidden>
         )}
 
         {/* ── Rivens module ── */}
-        {activeModule === "rivens" && (
+        {visitedModules.has("rivens") && (
+        <KeepMountedWhenHidden active={activeModule === "rivens"}>
           <ErrorBoundary>
             <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-              <RivenAnalyzer />
+              <RivenAnalyzer wfmLoggedIn={wfmLoggedIn} />
             </div>
           </ErrorBoundary>
+        </KeepMountedWhenHidden>
         )}
 
         {/* ── Arbitrations module ── */}
-        {activeModule === "arbitrations" && (
+        {visitedModules.has("arbitrations") && (
+        <KeepMountedWhenHidden active={activeModule === "arbitrations"}>
           <ErrorBoundary>
             <Arbitrations
               favorites={arbFavorites}
@@ -1611,12 +845,15 @@ if (typeof s.autoDiagEnabled === "boolean") {
               clockFormat={clockFormat}
             />
           </ErrorBoundary>
+        </KeepMountedWhenHidden>
         )}
 
         {/* ── Timers module ── */}
-        {activeModule === "timers" && (
+        {visitedModules.has("timers") && (
+        <KeepMountedWhenHidden active={activeModule === "timers"}>
           <ErrorBoundary>
             <TimerHelper
+              active={activeModule === "timers"}
               favorites={timerFavorites}
               onFavoriteToggle={id => setTimerFavorites(prev =>
                 prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
@@ -1629,20 +866,25 @@ if (typeof s.autoDiagEnabled === "boolean") {
               inventory={inventory}
             />
           </ErrorBoundary>
+        </KeepMountedWhenHidden>
         )}
 
         {/* ── Statistics module ── */}
-        {activeModule === "statistics" && (
+        {visitedModules.has("statistics") && (
+        <KeepMountedWhenHidden active={activeModule === "statistics"}>
           <ErrorBoundary>
             <Statistics clockFormat={clockFormat} />
           </ErrorBoundary>
+        </KeepMountedWhenHidden>
         )}
 
         {/* ── Completionist module ── */}
-        {activeModule === "completionist" && (
+        {visitedModules.has("completionist") && (
+        <KeepMountedWhenHidden active={activeModule === "completionist"}>
           <ErrorBoundary>
             <CompletionistTabs inventory={inventory} refreshKey={itemsRefreshKey} clockFormat={clockFormat} tracked={tracked} onTrackToggle={toggleTracked} />
           </ErrorBoundary>
+        </KeepMountedWhenHidden>
         )}
 
         </div>
@@ -1675,6 +917,7 @@ if (typeof s.autoDiagEnabled === "boolean") {
           catalog={catalog}
           width={modularWidth}
           onWidthChange={setModularWidth}
+          onWidthCommit={commitModularWidth}
           sectionOrder={modularSectionOrder}
           onSectionOrderChange={setModularSectionOrder}
         />}

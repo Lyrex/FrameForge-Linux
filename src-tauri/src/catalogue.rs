@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::collections::HashMap;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use crate::app_state::AppState;
 use crate::cache::atomic_write;
 use crate::inventory_state::{load_inventory_state_cache, CachedItem};
@@ -649,7 +649,9 @@ pub(crate) fn refresh_catalogue(app: &tauri::AppHandle, force: bool) -> Result<(
         // by whichever refresh stored it), so only new data is worth applying.
         Some(_) if warning.is_none() && source == cache::Source::Fresh => Ok(()),
         Some(result) if warning.is_none() => {
-            apply_catalogue(&app.state::<AppState>(), result);
+            let count = apply_catalogue(&app.state::<AppState>(), result);
+            tracing::info!(items = count, "catalogue refreshed in background");
+            let _ = app.emit("catalogue-updated", count);
             Ok(())
         }
         _ => Err(warning.unwrap_or_else(|| "catalogue unavailable".into())),
@@ -858,12 +860,14 @@ pub(crate) fn get_relic_drops(state: State<AppState>) -> HashMap<String, Vec<Str
 /// name prepended. These overrides replace the bad names with the correct ones.
 pub(crate) fn sanitize_chat_item_name(s: &str) -> String {
     // Warframe's chat item links embed rank pips and other glyphs as Private Use Area
-    // codepoints (U+E000–U+F8FF). These render as boxes in any standard font.
-    s.chars()
+    // codepoints (U+E000–U+F8FF). Preserve their count as the item's visible rank.
+    let rank = s.chars().filter(|&c| ('\u{E000}'..='\u{F8FF}').contains(&c)).count();
+    let clean = s.chars()
         .filter(|&c| !('\u{E000}'..='\u{F8FF}').contains(&c) && !c.is_control())
         .collect::<String>()
         .trim()
-        .to_string()
+        .to_string();
+    if rank > 0 { format!("{clean} (R{rank})") } else { clean }
 }
 
 fn patch_item_name(unique_name: &str, name: &str) -> String {
