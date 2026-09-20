@@ -6,8 +6,6 @@
 //! passes both to the engine.
 
 use memchr::memmem;
-use std::fs::File;
-use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
@@ -56,18 +54,18 @@ impl LinuxRegion {
 
 struct LinuxProcess {
     pid: u32,
-    // Fallback for the process_vm_readv EFAULT case in `read` below. Not used
-    // on the fast path.
-    memory: File,
 }
 
 impl LinuxProcess {
+    /// Fails with the ptrace_scope guidance when `process_vm_readv` would
+    /// return EPERM for every mapping, which the walk would otherwise report
+    /// as a missing blob.
     fn open(pid: u32) -> Result<Self, String> {
-        open_linux_process_memory(pid).map(|memory| Self { pid, memory })
+        check_linux_process_memory_access(pid).map(|()| Self { pid })
     }
 
     fn read(&self, address: usize, buffer: &mut [u8]) -> std::io::Result<usize> {
-        read_linux_process_memory(self.pid, &self.memory, address, buffer)
+        read_linux_process_memory(self.pid, address, buffer)
     }
 }
 
@@ -113,23 +111,22 @@ fn linux_process_regions(pid: u32) -> Result<Vec<LinuxRegion>, String> {
         })
 }
 
-fn open_linux_process_memory(pid: u32) -> Result<File, String> {
+/// Opening `/proc/pid/mem` runs the same `PTRACE_MODE_ATTACH` check as
+/// `process_vm_readv`.
+fn check_linux_process_memory_access(pid: u32) -> Result<(), String> {
     let path = format!("/proc/{pid}/mem");
-    File::open(&path).map_err(|error| {
+    std::fs::File::open(&path).map(drop).map_err(|error| {
         format!(
             "Failed to open {path}: {error}. Ensure kernel.yama.ptrace_scope permits same-user process access"
         )
     })
 }
 
-/// `/proc/pid/mem` copies every byte through a kernel scratch buffer.
-/// `process_vm_readv` pins the remote pages and copies straight into `buffer`
-/// (measured 3.55s vs 0.44s reading the same 754 regions). Same privilege
-/// check as the procfs path (`PTRACE_MODE_ATTACH_REALCREDS`), so the
-/// ptrace_scope guidance above stays accurate.
+/// Do not retry an EFAULT through `/proc/pid/mem`. It reads the game's GPU
+/// buffers through the driver's aperture while holding locks the render
+/// thread needs, and every mapping that can hold the blob is readable here.
 fn read_linux_process_memory(
     pid: u32,
-    memory: &File,
     address: usize,
     buffer: &mut [u8],
 ) -> std::io::Result<usize> {
@@ -151,19 +148,7 @@ fn read_linux_process_memory(
     if written >= 0 {
         return Ok(written as usize);
     }
-
-    let error = std::io::Error::last_os_error();
-    // A hole partway through the range comes back as a short read (handled
-    // above), same as `read_at`. EFAULT means not even the first page was
-    // readable, which is the one case where the two readers walk the mapping
-    // differently enough to be worth double-checking, so retry through procfs
-    // and let its answer stand — it reports the same case as EIO, and callers
-    // were written against that. Any other errno (ESRCH once the process has
-    // exited) propagates, and every caller already skips the region on Err.
-    if error.raw_os_error() == Some(libc::EFAULT) {
-        return memory.read_at(buffer, address as u64);
-    }
-    Err(error)
+    Err(std::io::Error::last_os_error())
 }
 
 fn is_warframe_command(command: &str) -> bool {
@@ -547,8 +532,8 @@ fn linux_newest_sync_timestamp(process: &LinuxProcess, regions: &[LinuxRegion]) 
 /// first. Callers differ in what they want — inventory data, code, or both —
 /// so the filter is theirs to supply rather than a flag this has to interpret.
 ///
-/// Takes an already-open process and an already-discovered region list so a
-/// caller that already holds both is not forced to reopen `/proc/pid/mem` and
+/// Takes an already-checked process and an already-discovered region list so
+/// a caller that holds both is not forced to repeat the access check and
 /// re-read `/proc/pid/maps` just to get at the read loop.
 fn walk_regions(
     process: &LinuxProcess,
@@ -775,16 +760,13 @@ mod tests {
     }
 
     #[test]
-    fn linux_reader_skips_rather_than_panics_when_the_first_page_is_unmapped() {
+    fn linux_reader_reports_efault_for_an_unmapped_first_page() {
         let process = this_process();
         let mut buffer = vec![0u8; 4096];
         // Below mmap_min_addr on every normal Linux config, so nothing is ever
-        // mapped here. process_vm_readv reports this as EFAULT, which read()
-        // retries through /proc/pid/mem. Either shape must reach the caller
-        // as a skip rather than a panic.
-        if let Ok(read) = process.read(0x1000, &mut buffer) {
-            assert_eq!(read, 0, "no bytes can come from an unmapped page");
-        }
+        // mapped here.
+        let error = process.read(0x1000, &mut buffer).expect_err("nothing is mapped at 0x1000");
+        assert_eq!(error.raw_os_error(), Some(libc::EFAULT));
     }
 
     #[test]

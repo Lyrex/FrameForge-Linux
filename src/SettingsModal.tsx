@@ -192,7 +192,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                     </span>
                   </div>
                   <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8, lineHeight: 1.5 }}>
-                    Reads live inventory, crafting jobs, and mod ranks from Warframe's process memory via <code style={{ fontSize: 10 }}>/proc/&lt;pid&gt;/mem</code>. DE has historically tolerated read-only tools, but has not given explicit permission. Enable at your own risk.
+                    Reads live inventory, crafting jobs, and mod ranks from Warframe's process memory via <code style={{ fontSize: 10 }}>process_vm_readv</code>. DE has historically tolerated read-only tools, but has not given explicit permission. Enable at your own risk.
                   </div>
                   <div className="settings-row">
                     <div>

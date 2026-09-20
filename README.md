@@ -207,8 +207,9 @@ it aborts the bundle rather than skipping the library. Building only `deb` and
 `rpm` (`--bundles deb,rpm`) does not need it.
 
 Warframe must be running through Steam Proton — `EE.log` is read from the
-Proton prefix, and memory scanning reads `/proc/<pid>/mem`, which requires
-`kernel.yama.ptrace_scope` to permit same-user process access. Persistent
+Proton prefix, and memory scanning reads the game process with
+`process_vm_readv`, which requires `kernel.yama.ptrace_scope` to permit
+same-user process access. Persistent
 warframe.market sessions are unavailable, and the "remember me" control is
 hidden rather than offered.
 
