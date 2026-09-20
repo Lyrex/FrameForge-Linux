@@ -10,6 +10,7 @@ use crate::diagnostics::write_bmp;
 use crate::inventory_state::{load_inventory_state_cache, build_inventory_from_blob, inventory_path_aliases, persist_complete_inventory, compare_inventory_quantities, BlobBuildParams};
 use crate::mastery::MasteryProvenance;
 use crate::mastery_rules;
+use crate::platform::{Platform, ProcessAccess};
 use crate::relic_pick::park_overlay_offscreen;
 use crate::worldstate::store_to_unique;
 use crate::{db, log_parser, memory_scanner, memory_scanner_linux, ocr};
@@ -316,7 +317,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
         // Emit an immediate status before the first scan so the UI shows cached
         // inventory data without waiting for the scan to finish.
         {
-            let game_found = memory_scanner_linux::find_warframe_pid().is_some();
+            let game_found = Platform::find_warframe_pid().is_some();
             let now_pre = chrono::Utc::now().timestamp();
             let mut initial_qty = known.clone();
             for (k, &amount) in &unique_quantities { initial_qty.entry(k.clone()).or_insert(amount); }
@@ -717,13 +718,13 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                 }
             }
 
-            // Re-enumerate processes at most every 5 s (CreateToolhelp32Snapshot overhead).
+            // A /proc sweep every tick costs more than a 5 s stale PID does.
             // force_pid_check bypasses the cooldown (set by the poke_scan command).
             let forced = force_pid_check.swap(false, Ordering::SeqCst);
             let needs_pid_check = forced || last_pid_check
                 .is_none_or(|t: std::time::Instant| t.elapsed().as_secs() >= 5);
             if needs_pid_check {
-                let current_pid = memory_scanner_linux::find_warframe_pid();
+                let current_pid = Platform::find_warframe_pid();
                 cached_game_running = current_pid.is_some();
                 if current_pid != last_pid {
                     if current_pid.is_some() {
@@ -736,6 +737,50 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                 last_pid_check = Some(std::time::Instant::now());
             }
             let game_running = cached_game_running;
+
+            // The status the UI shows comes from the PID. A game that has
+            // started but has not been scanned yet used to keep reading as
+            // "not running" until the first blob parse succeeded.
+            // While it is not running the payload repeats at most every 30 s.
+            // Without that throttle the loop emits identical data every 2 s
+            // and triggers a full React render cascade (17 k-item useMemo
+            // rebuild).
+            let status_changed = game_running != prev_game_running;
+            let heartbeat_due = !game_running
+                && last_not_running_emit
+                    .is_none_or(|t: std::time::Instant| t.elapsed() >= std::time::Duration::from_secs(30));
+            if status_changed || heartbeat_due {
+                let mut emit_qty = known.clone();
+                for (k, &amount) in &unique_quantities { emit_qty.entry(k.clone()).or_insert(amount); }
+                for (p, mc) in &known_mods { emit_qty.entry(p.clone()).or_insert(mc.total); }
+                let crafting: Vec<CraftingJob> = current_recipes.iter().map(|r| {
+                    let name = display_names.iter().zip(unique_names.iter())
+                        .find(|(_, u)| *u == &r.unique_name)
+                        .map(|(d, _)| d.clone())
+                        .unwrap_or_else(|| r.unique_name.split('/').next_back().unwrap_or("?").to_string());
+                    CraftingJob { unique_name: r.unique_name.clone(), item_name: name, completion_ms: r.completion_ms }
+                }).collect();
+                // Skip mastery_data on heartbeats — it hasn't changed and spreading 17k
+                // entries into React state on every tick is expensive.
+                let send_mastery = status_changed;
+                let _ = app.emit("inventory-update", InventoryUpdate {
+                    quantities: emit_qty, crafting,
+                    mastery_rank: current_mastery_rank,
+                    mastery_data: if send_mastery { current_mastery_data.clone() } else { HashMap::new() },
+                    owned_levels: if send_mastery { current_owned_levels.clone() } else { HashMap::new() },
+                    changes: vec![], warframe_running: game_running, scanned_at: now,
+                    consumed_suits: current_consumed_suits.clone(),
+                    mods: known_mods.clone(),
+                    socketed_shards: current_socketed_shards.clone(),
+                    forma_counts: current_forma_counts.clone(),
+                    is_full_pass: false,
+                    player_name: app.state::<AppState>().local_player_name
+                        .lock().ok().and_then(|g| g.clone()),
+                });
+                if !game_running { last_not_running_emit = Some(std::time::Instant::now()); }
+            }
+            prev_game_running = game_running;
+
             if game_running {
                 // ── Blob capture: cheap probe, rate-limited walk ──────────────
                 // The probe runs at PROBE_INTERVAL; re-reading the blob itself is
@@ -816,45 +861,6 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                         debug!(files_saved = count, save_flag = save, ts = %ts, "blob capture finished");
                     });
                 }
-                prev_game_running = true;
-            } else {
-                // Game not running — throttle emits: only on status-change and every 30 s heartbeat.
-                // Without this guard the loop emits every 2 s with identical data, triggering a
-                // full React render cascade (17 k-item useMemo rebuild) 30 times per minute.
-                let status_changed = prev_game_running;
-                let heartbeat_due  = last_not_running_emit
-                    .is_none_or(|t: std::time::Instant| t.elapsed() >= std::time::Duration::from_secs(30));
-                if status_changed || heartbeat_due {
-                    let mut emit_qty = known.clone();
-                    for (k, &amount) in &unique_quantities { emit_qty.entry(k.clone()).or_insert(amount); }
-                    for (p, mc) in &known_mods { emit_qty.entry(p.clone()).or_insert(mc.total); }
-                    let crafting: Vec<CraftingJob> = current_recipes.iter().map(|r| {
-                        let name = display_names.iter().zip(unique_names.iter())
-                            .find(|(_, u)| *u == &r.unique_name)
-                            .map(|(d, _)| d.clone())
-                            .unwrap_or_else(|| r.unique_name.split('/').next_back().unwrap_or("?").to_string());
-                        CraftingJob { unique_name: r.unique_name.clone(), item_name: name, completion_ms: r.completion_ms }
-                    }).collect();
-                    // Skip mastery_data on heartbeats — it hasn't changed and spreading 17k
-                    // entries into React state on every tick is expensive.
-                    let send_mastery = status_changed;
-                    let _ = app.emit("inventory-update", InventoryUpdate {
-                        quantities: emit_qty, crafting,
-                        mastery_rank: current_mastery_rank,
-                        mastery_data: if send_mastery { current_mastery_data.clone() } else { HashMap::new() },
-                        owned_levels: if send_mastery { current_owned_levels.clone() } else { HashMap::new() },
-                        changes: vec![], warframe_running: false, scanned_at: now,
-                        consumed_suits: current_consumed_suits.clone(),
-                        mods: known_mods.clone(),
-                        socketed_shards: current_socketed_shards.clone(),
-                        forma_counts: current_forma_counts.clone(),
-                        is_full_pass: false,
-                        player_name: app.state::<AppState>().local_player_name
-                            .lock().ok().and_then(|g| g.clone()),
-                    });
-                    last_not_running_emit = Some(std::time::Instant::now());
-                }
-                prev_game_running = false;
             }
 
             std::thread::sleep(std::time::Duration::from_secs(2));
@@ -2047,7 +2053,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     }
                 }
 
-                let pid = match memory_scanner_linux::find_warframe_pid() {
+                let pid = match Platform::find_warframe_pid() {
                     Some(p) => p,
                     None    => { was_open = false; open_at = None; cached_bare = None; last_pid = 0; continue; }
                 };

@@ -305,5 +305,5 @@ pub(crate) async fn capture_diagnostics(state: State<'_, AppState>) -> Result<St
 #[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
 pub(crate) fn get_warframe_window_rect() -> Result<[i32; 4], String> {
-    ocr::warframe_window_rect()
+    <crate::platform::Platform as crate::platform::WindowManager>::get_warframe_window_rect()
 }

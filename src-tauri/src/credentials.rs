@@ -11,6 +11,8 @@
 // they take to answer, and Tauri runs a sync command on the main thread, so a
 // sync version would freeze the window behind the very prompt it raised.
 
+use crate::platform::{CredentialStore, Platform};
+
 const WFM_SECRET_SERVICE: &str = "FrameForge_WFM";
 const WFM_SECRET_ACCOUNT: &str = "wfm-session";
 const WFM_SECRET_LABEL: &str = "FrameForge: warframe.market session";
@@ -120,27 +122,38 @@ fn wfm_secret_error(error: SecretStoreError) -> String {
     }
 }
 
+// ─── Sync API behind `platform::CredentialStore` ──────────────────────────────
+
+pub(crate) fn secret_save(service: &str, email: &str, token: &str) -> Result<(), String> {
+    wfm_secret_save(service, email, token).map_err(wfm_secret_error)
+}
+
+pub(crate) fn secret_load(service: &str) -> Result<Option<(String, String)>, String> {
+    wfm_secret_load(service).map_err(wfm_secret_error)
+}
+
+pub(crate) fn secret_delete(service: &str) -> Result<(), String> {
+    wfm_secret_delete(service).map_err(wfm_secret_error)
+}
+
 #[tauri::command]
 pub(crate) async fn wfm_save_credentials(email: String, token: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || wfm_secret_save(WFM_SECRET_SERVICE, &email, &token))
+    tauri::async_runtime::spawn_blocking(move || Platform::save_credentials(WFM_SECRET_SERVICE, &email, &token))
         .await
         .map_err(|e| e.to_string())?
-        .map_err(wfm_secret_error)
 }
 
 #[tauri::command]
 pub(crate) async fn wfm_load_credentials() -> Result<Option<(String, String)>, String> {
-    tauri::async_runtime::spawn_blocking(move || wfm_secret_load(WFM_SECRET_SERVICE))
+    tauri::async_runtime::spawn_blocking(move || Platform::load_credentials(WFM_SECRET_SERVICE))
         .await
         .map_err(|e| e.to_string())?
-        .map_err(wfm_secret_error)
 }
 
 pub(crate) async fn wfm_delete_credentials() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || wfm_secret_delete(WFM_SECRET_SERVICE))
+    tauri::async_runtime::spawn_blocking(move || Platform::delete_credentials(WFM_SECRET_SERVICE))
         .await
         .map_err(|e| e.to_string())?
-        .map_err(wfm_secret_error)
 }
 
 /// Whether this machine can persist a session at all.
