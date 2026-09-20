@@ -419,7 +419,7 @@ pub fn capture_all_blobs(
     // walks at all.
     let saved = scan_inventory_regions(&process, regions, blob_dir, ts, blob_tx, save);
     if saved.is_none() {
-        warn!(target: "frameforge::blob_capture", "no FULL_ACCOUNT blob found (open Arsenal or Inventory and try again)");
+        warn!(target: "frameforge::blob_capture", "no FULL_ACCOUNT blob found (game in mission, on login screen, or Arsenal not open?)");
     }
     saved.unwrap_or(0)
 }

@@ -1238,9 +1238,6 @@ pub(crate) fn stitch_blobs(
         search_ms = t_search.as_secs_f64() * 1000.0,
         "capture done"
     );
-    if starts_found == 0 {
-        warn!(target: "frameforge::blob_capture", "no start-marker found — FULL_ACCOUNT not in memory (game in mission, on login screen, or Arsenal not open?)");
-    }
     found_blob.then_some(saved)
 }
 
