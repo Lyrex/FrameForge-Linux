@@ -858,6 +858,13 @@ async fn fetch_item_list(state: State<'_, AppState>, force: Option<bool>) -> Res
         }
     };
 
+    apply_catalogue(&state, result)
+}
+
+/// Persist a freshly built catalogue to the disk caches and swap it into `AppState`.
+/// Shared by the manual "Refresh item list" command and the background refresh so
+/// both leave the app in the same state.
+fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> Result<usize, String> {
     let count = result.items.len();
 
     // Persist items cache
@@ -4250,6 +4257,7 @@ fn clear_cache(state: State<AppState>) -> Result<(), String> {
     // Delete cache and hint files so nothing reloads on next start
     let _ = std::fs::remove_file(&state.quantities_cache_path);
     let _ = std::fs::remove_file(&state.inventory_state_cache_path);
+    let _ = std::fs::remove_file(state.inventory_state_cache_path.with_file_name("section_baseline.json"));
     let _ = std::fs::remove_file(state.log_path.with_file_name("inventory_hints.json"));
     let _ = std::fs::remove_file(state.log_path.with_file_name("mod_hints.json"));
 
@@ -4651,6 +4659,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     let flag = state.monitor_active.clone();
     let db_path = state.db_path.clone();
     let inventory_state_cache_path = state.inventory_state_cache_path.clone();
+    let section_baseline_path = inventory_state_cache_path.with_file_name("section_baseline.json");
     let shared_quantities    = state.current_quantities.clone();
     let shared_unique        = state.unique_quantities.clone();
     let shared_mods          = state.current_mods.clone();
@@ -4672,6 +4681,17 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
             Err(e) => { error!(error = %e, "monitor DB open failed"); return; }
         };
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL;");
+
+        // Sections seen in the last accepted blob; persisted so the first capture
+        // after a restart is already checked for truncation.
+        let mut section_baseline = memory_scanner::SectionBaseline::from_keys(
+            std::fs::read(&section_baseline_path).ok()
+                .and_then(|b| serde_json::from_slice::<Vec<String>>(&b).ok())
+                .unwrap_or_default(),
+        );
+
+        // Content hash of the last blob actually applied; identical re-captures are skipped.
+        let mut last_applied_hash: Option<u64> = None;
 
         // Start from whatever quantities were last known (survives restarts).
         let mut known: HashMap<String, i64> =
@@ -4827,6 +4847,8 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     unique_stable.clear();
                     confirmed_unique.clear();
                     known_mods.clear();
+                    last_applied_hash = None;
+                    section_baseline = memory_scanner::SectionBaseline::default();
                 }
             }
 
@@ -4834,6 +4856,33 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
 
             // Process any incoming blob (non-blocking)
             while let Ok(blob) = blob_rx.try_recv() {
+                // Truncation guard: reject a blob that lost a section the previous
+                // accepted blob had. Must run before anything is written, since an
+                // accepted blob fully replaces the inventory.
+                match section_baseline.evaluate(&blob.sections) {
+                    Err(missing) => {
+                        warn!(?missing, "blob rejected: sections present in last good blob are missing — truncated capture");
+                        continue;
+                    }
+                    Ok(true) => {
+                        if let Ok(json) = serde_json::to_string(&section_baseline.keys()) {
+                            let _ = atomic_write(&section_baseline_path, json.as_bytes());
+                        }
+                    }
+                    Ok(false) => {}
+                }
+
+                // Identical to what is already applied — nothing to do. Still report
+                // "done" so the UI doesn't sit on "scanning".
+                if blob.content_hash != 0 && Some(blob.content_hash) == last_applied_hash {
+                    debug!("blob unchanged since last apply — skipping");
+                    let _ = app.emit("blob-status", BlobStatusPayload {
+                        stage: "done".into(),
+                        detail: "No changes".into(),
+                    });
+                    continue;
+                }
+
                 let existing_wfm: HashMap<String, u32> =
                     load_inventory_state_cache(&inventory_state_cache_path)
                         .items.into_iter()
@@ -5146,6 +5195,7 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                     blob.unique_items.len(), blob.stackable_items.len(),
                     blob.mods.len(), blob.flavour_items.len()
                 );
+                last_applied_hash = Some(blob.content_hash);
                 info!(detail = %detail, "blob applied");
                 let _ = app.emit("blob-status", BlobStatusPayload {
                     stage: "done".into(),
@@ -9105,32 +9155,19 @@ pub fn refresh_bulk_prices_task(app: &tauri::AppHandle, _force: bool) -> Result<
 }
 
 pub fn refresh_catalogue(app: &tauri::AppHandle, force: bool) -> Result<(), String> {
-    let fetched = wfcd::fetch_items(None, force)?;
+    let state = app.state::<AppState>();
+    // "Not modified" only means the sources match the stored ETags. If the item cache
+    // on disk is gone (e.g. wiped on a version upgrade) the app is running on the tiny
+    // fallback list, so the ETags must be ignored and the catalogue rebuilt.
+    let cache_missing = !state.items_cache_path.exists();
+    let fetched = wfcd::fetch_items(None, force || cache_missing)?;
     let result = match fetched {
         cache::Fetched::New(r, _) => r,
         cache::Fetched::NotModified => return Ok(()),
     };
-    let state = app.state::<AppState>();
-    let patched: Vec<wfcd::WfcdItem> = result.items.into_iter().map(|mut i| {
-        i.name = patch_item_name(&i.unique_name, &i.name);
-        i.category = patch_item_category(&i.name, &i.category, &i.unique_name);
-        i
-    }).collect();
-    let deduped = dedup_known_aliases(patched);
-    *state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()) = deduped;
-    *state.recipes.lock().unwrap_or_else(|e| e.into_inner()) = result.recipes;
-    *state.relic_drops.lock().unwrap_or_else(|e| e.into_inner()) = result.relic_drops;
-    *state.relic_rewards.lock().unwrap_or_else(|e| e.into_inner()) = result.relic_rewards;
-    *state.blueprint_to_result.lock().unwrap_or_else(|e| e.into_inner()) = result.blueprint_names;
-    if !result.weapon_dispositions.is_empty() {
-        *state.weapon_dispositions.lock().unwrap_or_else(|e| e.into_inner()) = result.weapon_dispositions;
-    }
-    if !result.wiki_reward_names.is_empty() {
-        *state.wiki_reward_names.lock().unwrap_or_else(|e| e.into_inner()) = result.wiki_reward_names;
-    }
-    if !result.syndicate_catalog.is_empty() {
-        *state.syndicate_catalog.lock().unwrap_or_else(|e| e.into_inner()) = result.syndicate_catalog;
-    }
+    let count = apply_catalogue(&state, result)?;
+    info!(items = count, "catalogue refreshed in background");
+    let _ = app.emit("catalogue-updated", count);
     Ok(())
 }
 
