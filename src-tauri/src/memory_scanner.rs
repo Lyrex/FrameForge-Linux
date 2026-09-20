@@ -125,6 +125,31 @@ pub struct BlobInventory {
     pub consumed_suits:  Vec<String>,
     /// All owned riven mods (veiled and revealed).
     pub rivens:          Vec<BlobRivenEntry>,
+    /// Top-level JSON keys present in the blob — used to detect front-truncated captures.
+    #[serde(default)]
+    pub sections:        Vec<String>,
+    /// Hash of the parsed inventory content (0 = unknown). Lets the monitor skip a
+    /// blob identical to the one it already applied.
+    #[serde(default)]
+    pub content_hash:    u64,
+}
+
+impl BlobInventory {
+    /// Deterministic hash of everything except `content_hash` itself. Goes through
+    /// `serde_json::Value` (sorted maps) so HashMap iteration order can't change it.
+    /// Returns 0 if serialization fails, which callers treat as "never equal".
+    pub fn compute_content_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut copy = self.clone();
+        copy.content_hash = 0;
+        let bytes = match serde_json::to_value(&copy).and_then(|v| serde_json::to_vec(&v)) {
+            Ok(b) => b,
+            Err(_) => return 0,
+        };
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut h);
+        h.finish().max(1)
+    }
 }
 
 /// One owned unique item (warframe, weapon, companion, archwing, amp, mech).
@@ -399,20 +424,26 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
         return None;
     }
 
-    // Section completeness check: a partial/mid-write blob may pass all marker
-    // checks (SubscribedToEmails present, DeathSquadable present, size OK) yet be
-    // missing MiscItems, RegularCredits, and other top-level sections entirely.
-    // Reject such blobs before the expensive JSON parse — they would wipe the
-    // displayed inventory even though prior state was valid.
-    const REQUIRED_SECTIONS: &[&[u8]] = &[
-        b"\"MiscItems\":",
+    // Section completeness check: field order varies per account, so the true
+    // outer `{` of the blob can sit in a memory region the stitcher never
+    // recovered — the resulting seed still parses as valid JSON, just starting
+    // mid-object (e.g. right at SubscribedToEmails) and silently missing every
+    // top-level section that came before it.
+    //
+    // Which optional sections exist differs per account, so this is only a
+    // small universal core that every real account has. The per-account check
+    // ("a section the last good blob had is now gone") lives in `SectionBaseline`,
+    // applied by the monitor loop using `BlobInventory::sections`.
+    const CORE_SECTIONS: &[&[u8]] = &[
         b"\"RegularCredits\":",
-        b"\"Suits\":",
+        b"\"PlayerLevel\":",
         b"\"XPInfo\":",
-        b"\"FusionPoints\":",
+        b"\"Suits\":",
+        b"\"MiscItems\":",
+        b"\"RawUpgrades\":",
     ];
     let search_range = &raw[..end_pos.min(raw.len())];
-    for required in REQUIRED_SECTIONS {
+    for required in CORE_SECTIONS {
         if memchr::memmem::find(search_range, required).is_none() {
             debug!(
                 target: "frameforge::blob_parse",
@@ -666,12 +697,72 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
         return None;
     }
 
-    Some(BlobInventory {
+    let sections: Vec<String> = json.as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default();
+
+    let mut inv = BlobInventory {
         credits, endo, platinum, free_platinum, mastery_level,
         unique_items, stackable_items, mods,
         flavour_items, weapon_skins, mastery_xp, player_skills, missions, affiliations, pending_recipes, consumed_suits,
-        rivens,
-    })
+        rivens, sections, content_hash: 0,
+    };
+    inv.content_hash = inv.compute_content_hash();
+    Some(inv)
+}
+
+/// Consecutive rejected blobs after which a missing section is accepted as
+/// genuinely gone (~2 min at the 10 s scan interval).
+pub const MAX_MISSING_STREAK: u32 = 12;
+
+/// Per-account memory of which top-level sections a complete blob contains.
+///
+/// The monitor applies each accepted blob as a full replacement, so a blob that
+/// lost its front (sections before `SubscribedToEmails`) would wipe those items
+/// and the next full capture would restore them — visible flicker. Instead of a
+/// fixed section list (which rejects accounts that never had an optional
+/// section), a blob is rejected only if it lacks a section the previous accepted
+/// blob had. Gaining sections is always fine.
+#[derive(Debug, Default, Clone)]
+pub struct SectionBaseline {
+    known: std::collections::BTreeSet<String>,
+    missing_streak: u32,
+}
+
+impl SectionBaseline {
+    pub fn from_keys<I: IntoIterator<Item = String>>(keys: I) -> Self {
+        Self { known: keys.into_iter().collect(), missing_streak: 0 }
+    }
+
+    pub fn keys(&self) -> Vec<String> {
+        self.known.iter().cloned().collect()
+    }
+
+    /// `Ok(changed)` — blob accepted; `changed` is true when the baseline was updated
+    /// and should be persisted. `Err(missing)` — blob rejected as truncated.
+    pub fn evaluate(&mut self, sections: &[String]) -> Result<bool, Vec<String>> {
+        let current: std::collections::BTreeSet<&str> = sections.iter().map(String::as_str).collect();
+        let missing: Vec<String> = self.known.iter()
+            .filter(|k| !current.contains(k.as_str()))
+            .cloned()
+            .collect();
+
+        if !missing.is_empty() {
+            self.missing_streak += 1;
+            if self.missing_streak < MAX_MISSING_STREAK {
+                return Err(missing);
+            }
+            // Persistently absent: the account really dropped these sections.
+        }
+
+        self.missing_streak = 0;
+        let changed = self.known.len() != current.len()
+            || self.known.iter().any(|k| !current.contains(k.as_str()));
+        if changed {
+            self.known = sections.iter().cloned().collect();
+        }
+        Ok(changed)
+    }
 }
 
 /// Duplicate ItemTypes dominate every map the blob parse builds, so the lookup
@@ -1773,16 +1864,26 @@ mod stitch_engine_tests {
     use super::{blob_digest_test_guard, parse_full_account_blob, stitch_blobs, BlobAffiliation, BlobInventory, BlobMission};
     use crate::mem_regions::RecordedRegions;
 
-    /// The parser rejects a blob under 50 KB, and one with no owned Warframe in
-    /// it, so a fixture has to carry both before the engine is reached at all.
+    /// Carries every section `parse_full_account_blob`'s completeness checks
+    /// require (`CORE_SECTIONS`, 50 KB of padding, one owned Warframe), or the
+    /// engine is never reached at all. `fields` is interpolated last so a test's
+    /// override (e.g. `"RegularCredits":42`) wins over the section's default,
+    /// because a JSON object with a duplicate key keeps the last occurrence's value.
     fn make_blob(fields: &str) -> Vec<u8> {
         make_blob_with_xp_info(fields, "[]")
     }
 
     fn make_blob_with_xp_info(fields: &str, xp_info: &str) -> Vec<u8> {
-        let filler = "x".repeat(60_000);
+        let padding = "x".repeat(60_000);
         format!(
-            r#"{{"SubscribedToEmails":0,{fields},"XPInfo":{xp_info},"FusionPoints":0,"MiscItems":[],"Suits":[{{"ItemType":"/Lotus/Powersuits/Mag/Mag","XP":0}}],"LongGuns":[],"Melee":[],"Pistols":[],"Filler":"{filler}","DeathSquadable":false}}"#
+            r#"{{"SubscribedToEmails":0,
+"RegularCredits":0,"FusionPoints":0,"PremiumCredits":0,"PremiumCreditsFree":0,"PlayerLevel":0,
+"FlavourItems":[],"InfestedFoundry":{{}},"PendingRecipes":[],"RawUpgrades":[],"Upgrades":[],"WeaponSkins":[],"XPInfo":{xp_info},
+"Suits":[{{"ItemType":"/Lotus/Powersuits/Mag/Mag","XP":0}}],"LongGuns":[],"Pistols":[],"Melee":[],"SpaceSuits":[],"SpaceMelee":[],"SpaceGuns":[],"Sentinels":[],"SentinelWeapons":[],"KubrowPets":[],"OperatorAmps":[],"MechSuits":[],
+"MiscItems":[],"Recipes":[],"FusionTreasures":[],"CrewShipRawSalvage":[],"ShipDecorations":[],
+"_pad":"{padding}",
+{fields},
+"DeathSquadable":false}}"#
         )
         .into_bytes()
     }
@@ -1909,3 +2010,94 @@ mod stitch_engine_tests {
     }
 }
 
+#[cfg(test)]
+mod section_baseline_tests {
+    use super::{parse_full_account_blob, SectionBaseline, MAX_MISSING_STREAK};
+
+    /// Account with only the core sections — no Sentinels, KubrowPets, MechSuits etc.
+    fn minimal_account_blob() -> Vec<u8> {
+        let padding = "x".repeat(60_000);
+        format!(
+            r#"{{"SubscribedToEmails":0,"RegularCredits":5,"PlayerLevel":3,"XPInfo":[],
+"Suits":[{{"ItemType":"/Lotus/Powersuits/Test/Test"}}],"MiscItems":[],"RawUpgrades":[],
+"_pad":"{padding}","DeathSquadable":false}}"#
+        )
+        .into_bytes()
+    }
+
+    fn keys(v: &[&str]) -> Vec<String> { v.iter().map(|s| s.to_string()).collect() }
+
+    #[test]
+    fn account_without_optional_sections_is_accepted() {
+        let inv = parse_full_account_blob(&minimal_account_blob()).expect("core-only account must parse");
+        assert_eq!(inv.credits, 5);
+        assert!(inv.sections.iter().any(|s| s == "Suits"));
+        assert!(!inv.sections.iter().any(|s| s == "Sentinels"));
+    }
+
+    #[test]
+    fn identical_blobs_hash_equal_and_changed_content_differs() {
+        let a = parse_full_account_blob(&minimal_account_blob()).unwrap();
+        let b = parse_full_account_blob(&minimal_account_blob()).unwrap();
+        assert_ne!(a.content_hash, 0);
+        assert_eq!(a.content_hash, b.content_hash);
+
+        let changed = String::from_utf8(minimal_account_blob()).unwrap()
+            .replace("\"RegularCredits\":5", "\"RegularCredits\":6");
+        let c = parse_full_account_blob(changed.as_bytes()).unwrap();
+        assert_ne!(a.content_hash, c.content_hash);
+    }
+
+    #[test]
+    fn blob_missing_a_core_section_is_rejected() {
+        let s = String::from_utf8(minimal_account_blob()).unwrap().replace("\"MiscItems\":[],", "");
+        assert!(parse_full_account_blob(s.as_bytes()).is_none());
+    }
+
+    #[test]
+    fn first_blob_is_accepted_and_sets_baseline() {
+        let mut b = SectionBaseline::default();
+        assert_eq!(b.evaluate(&keys(&["A", "B"])), Ok(true));
+        assert_eq!(b.keys(), vec!["A", "B"]);
+    }
+
+    #[test]
+    fn identical_blob_does_not_change_baseline() {
+        let mut b = SectionBaseline::from_keys(keys(&["A", "B"]));
+        assert_eq!(b.evaluate(&keys(&["B", "A"])), Ok(false));
+    }
+
+    #[test]
+    fn gaining_a_section_is_accepted() {
+        let mut b = SectionBaseline::from_keys(keys(&["A", "B"]));
+        assert_eq!(b.evaluate(&keys(&["A", "B", "C"])), Ok(true));
+        assert_eq!(b.keys(), vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn truncated_blob_after_good_blob_is_rejected() {
+        let mut b = SectionBaseline::from_keys(keys(&["A", "B", "C"]));
+        assert_eq!(b.evaluate(&keys(&["B", "C"])), Err(keys(&["A"])));
+        // Baseline untouched: the next complete blob is still accepted unchanged.
+        assert_eq!(b.evaluate(&keys(&["A", "B", "C"])), Ok(false));
+    }
+
+    #[test]
+    fn interleaved_good_blobs_reset_the_streak() {
+        let mut b = SectionBaseline::from_keys(keys(&["A", "B"]));
+        for _ in 0..(MAX_MISSING_STREAK * 3) {
+            assert!(b.evaluate(&keys(&["B"])).is_err());
+            assert_eq!(b.evaluate(&keys(&["A", "B"])), Ok(false));
+        }
+    }
+
+    #[test]
+    fn persistently_missing_section_is_eventually_accepted() {
+        let mut b = SectionBaseline::from_keys(keys(&["A", "B"]));
+        for _ in 0..(MAX_MISSING_STREAK - 1) {
+            assert!(b.evaluate(&keys(&["B"])).is_err());
+        }
+        assert_eq!(b.evaluate(&keys(&["B"])), Ok(true));
+        assert_eq!(b.keys(), vec!["B"]);
+    }
+}

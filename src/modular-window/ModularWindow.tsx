@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { ResizeHandle } from "../shared/ResizeHandle";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import { TIMER_LABELS } from "../constants/timers";
 import "./ModularWindow.css";
@@ -28,6 +29,7 @@ interface Props {
   catalog: CatalogItem[];
   width?: number;
   onWidthChange?: (w: number) => void;
+  onWidthCommit?: (w: number) => void;
   sectionOrder: string[];
   onSectionOrderChange: (order: string[]) => void;
 }
@@ -37,7 +39,7 @@ export default function ModularWindow({
   favorites, onFavoritesChange, onUnfavorite,
   timerFavorites, onTimerFavoritesChange, onTimerUnfavorite,
   fissureWatches,
-  inventory, catalog, width, onWidthChange,
+  inventory, catalog, width, onWidthChange, onWidthCommit,
   sectionOrder, onSectionOrderChange,
 }: Props) {
   const [craftable, setCraftable] = useState<CatalogItem[]>([]);
@@ -56,11 +58,6 @@ export default function ModularWindow({
       return next;
     });
   }, []);
-
-  // resize state
-  const isResizingRef = useRef(false);
-  const resizeStartXRef = useRef(0);
-  const resizeStartWRef = useRef(0);
 
   useEffect(() => {
     invoke<CatalogItem[]>(TAURI_COMMANDS.GET_CRAFTABLE_ITEMS).then(setCraftable).catch(() => {});
@@ -89,26 +86,6 @@ export default function ModularWindow({
     const iv = setInterval(() => setTimerNow(Date.now()), 1000);
     return () => clearInterval(iv);
   }, []);
-
-  const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
-    if (!onWidthChange) return;
-    e.preventDefault();
-    isResizingRef.current = true;
-    resizeStartXRef.current = e.clientX;
-    resizeStartWRef.current = width ?? 240;
-    const onMove = (me: MouseEvent) => {
-      if (!isResizingRef.current) return;
-      const dx = resizeStartXRef.current - me.clientX;
-      onWidthChange(Math.max(160, Math.min(500, resizeStartWRef.current + dx)));
-    };
-    const onUp = () => {
-      isResizingRef.current = false;
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }, [width, onWidthChange]);
 
   const moveTracked = useCallback((idx: number, dir: -1 | 1) => {
     const next = [...tracked];
@@ -350,7 +327,7 @@ export default function ModularWindow({
       style={width !== undefined ? { width } : { flex: 1 }}
     >
       {onWidthChange && (
-        <div className="modular-resize-handle" onMouseDown={handleResizeMouseDown} />
+        <ResizeHandle className="modular-resize-handle" value={width ?? 240} axis="x" direction={-1} clamp={value => Math.max(160, Math.min(500, value))} onValueChange={onWidthChange} onValueCommit={onWidthCommit} />
       )}
 
       <div className="modular-inner">

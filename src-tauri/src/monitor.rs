@@ -229,6 +229,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
     let flag = state.monitor_active.clone();
     let db_path = state.db_path.clone();
     let inventory_state_cache_path = state.inventory_state_cache_path.clone();
+    let section_baseline_path = inventory_state_cache_path.with_file_name("section_baseline.json");
     let mastery_progress     = state.mastery_progress.clone();
     let shared_quantities    = state.current_quantities.clone();
     let shared_unique        = state.unique_quantities.clone();
@@ -252,6 +253,17 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
             Err(e) => { error!(error = %e, "monitor DB open failed"); return; }
         };
         let _ = conn.execute_batch("PRAGMA journal_mode=WAL;");
+
+        // Sections seen in the last accepted blob; persisted so the first capture
+        // after a restart is already checked for truncation.
+        let mut section_baseline = memory_scanner::SectionBaseline::from_keys(
+            std::fs::read(&section_baseline_path).ok()
+                .and_then(|b| serde_json::from_slice::<Vec<String>>(&b).ok())
+                .unwrap_or_default(),
+        );
+
+        // Content hash of the last blob actually applied; identical re-captures are skipped.
+        let mut last_applied_hash: Option<u64> = None;
 
         // Start from whatever quantities were last known (survives restarts).
         let mut known: HashMap<String, i64> =
@@ -369,6 +381,8 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     known.clear();
                     unique_quantities.clear();
                     known_mods.clear();
+                    last_applied_hash = None;
+                    section_baseline = memory_scanner::SectionBaseline::default();
                 }
             }
 
@@ -376,6 +390,42 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
 
             // Process any incoming blob (non-blocking)
             while let Ok(blob) = blob_rx.try_recv() {
+                // Truncation guard: reject a blob that lost a section the previous
+                // accepted blob had. Must run before anything is written, since an
+                // accepted blob fully replaces the inventory.
+                match section_baseline.evaluate(&blob.sections) {
+                    Err(missing) => {
+                        warn!(?missing, "blob rejected: sections present in last good blob are missing — truncated capture");
+                        mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).discard_blob();
+                        continue;
+                    }
+                    Ok(true) => {
+                        if let Ok(json) = serde_json::to_string(&section_baseline.keys()) {
+                            let _ = crate::cache::atomic_write(&section_baseline_path, json.as_bytes());
+                        }
+                    }
+                    Ok(false) => {}
+                }
+
+                // Identical to what is already applied — nothing to do. Still report
+                // "done" so the UI doesn't sit on "scanning". The same data seen
+                // again is a re-observation of the last confirmed progress.
+                if blob.content_hash != 0 && Some(blob.content_hash) == last_applied_hash {
+                    debug!("blob unchanged since last apply — skipping");
+                    let provenance = {
+                        let mut progress = mastery_progress.lock().unwrap_or_else(|e| e.into_inner());
+                        progress.reobserve(now).then(|| MasteryProvenance::from(progress.record()))
+                    };
+                    if let Some(provenance) = provenance {
+                        let _ = app.emit("mastery-observed", provenance);
+                    }
+                    let _ = app.emit("blob-status", BlobStatusPayload {
+                        stage: "done".into(),
+                        detail: "No changes".into(),
+                    });
+                    continue;
+                }
+
                 let existing_wfm: HashMap<String, u32> =
                     load_inventory_state_cache(&inventory_state_cache_path)
                         .items.into_iter()
@@ -642,6 +692,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     blob.unique_items.len(), blob.stackable_items.len(),
                     blob.mods.len(), blob.flavour_items.len()
                 );
+                last_applied_hash = Some(blob.content_hash);
                 info!(detail = %detail, "blob applied");
                 let _ = app.emit("blob-status", BlobStatusPayload {
                     stage: "done".into(),

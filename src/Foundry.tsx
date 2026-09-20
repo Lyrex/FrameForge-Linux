@@ -8,6 +8,7 @@ import { PREFERENCE_KEYS } from "./constants/preferences";
 import { matchesSearchTerms, splitSearchTerms } from "./lib/search";
 import { WARFRAME_WIKI_BASE } from "./constants/urls";
 import { TAURI_COMMANDS } from "./constants/tauri";
+import { useCatalog } from "./hooks/useCatalog";
 import type { ArchonShard, CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeMap, RelicDropMap } from "./types/items";
 import type { CraftPlan } from "./types/mastery";
 import { componentStatus, craftableNow, craftRows, distinct, type CraftRow } from "./lib/craftPlan";
@@ -470,11 +471,10 @@ const CRAFT_CATEGORIES = [
 ];
 
 export default function Foundry({ inventory, refreshKey, crafting, subsummedWarframes = new Set(), tracked, onTrackToggle, pageSize = 30, filters, onFiltersChange, filterPresets, onFilterPresetsChange, onOpenSettings }: Props) {
+  const { catalog, relicDropMap } = useCatalog();
   const [craftable, setCraftable] = useState<CatalogItem[]>([]);
   const [recipes, setRecipes]     = useState<Map<string, RecipeComponent[]>>(new Map());
   const [blueprintResults, setBlueprintResults] = useState<Record<string, string>>({});
-  const [relicDrops, setRelicDrops] = useState<RelicDropMap>({});
-  const [relicNames, setRelicNames] = useState<Record<string, string>>({});
   const [modalItem, setModalItem] = useState<CatalogItem | null>(null);
   const [inputSearch, setInputSearch] = useState(filters.search);
   const [page, setPage] = useState(0);
@@ -506,16 +506,22 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
   const set = <K extends keyof FoundryFilters>(k: K, v: FoundryFilters[K]) => onFiltersChange({ ...filters, [k]: v });
 
   useEffect(() => {
-    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_CRAFTABLE_ITEMS).then(setCraftable).catch(() => setCraftable([]));
-    invoke<RelicDropMap>("get_relic_drops").then(setRelicDrops).catch(() => {});
-    invoke<Record<string, string>>(TAURI_COMMANDS.GET_BLUEPRINT_RESULTS).then(setBlueprintResults).catch(() => {});
-    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS)
-      .then(items => {
-        const map: Record<string, string> = {};
-        for (const i of items) if (i.category === "Relics") map[i.unique_name] = i.name;
-        setRelicNames(map);
-      }).catch(() => {});
+    let cancelled = false;
+    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_CRAFTABLE_ITEMS)
+      .then(items => { if (!cancelled) setCraftable(items); })
+      .catch(() => { if (!cancelled) setCraftable([]); });
+    invoke<Record<string, string>>(TAURI_COMMANDS.GET_BLUEPRINT_RESULTS)
+      .then(results => { if (!cancelled) setBlueprintResults(results); })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, [refreshKey]);
+
+  const relicDrops = relicDropMap;
+  const relicNames = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const i of catalog) if (i.category === "Relics") map[i.unique_name] = i.name;
+    return map;
+  }, [catalog]);
 
   // A Foundry job carries the blueprint path, so it is resolved to the item it builds before matching catalog items.
   const building = useMemo(() =>
@@ -574,9 +580,10 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
   const pageCount = Math.ceil(visible.length / PAGE_SIZE);
   const pagedItems = useMemo(() => pageOf(visible), [visible, pageOf]);
 
-  // Load recipes for visible items — one bulk IPC call instead of N concurrent calls
+  // Only fetch recipes for cards on the current page; the previous full-catalog
+  // request retained every recipe while this page was hidden.
   useEffect(() => {
-    const toLoad = visible.filter(i => !recipes.has(i.unique_name));
+    const toLoad = pagedItems.filter(i => !recipes.has(i.unique_name));
     if (toLoad.length === 0) return;
     let cancelled = false;
     invoke<RecipeMap>(TAURI_COMMANDS.GET_RECIPES_BULK, {
@@ -594,7 +601,7 @@ export default function Foundry({ inventory, refreshKey, crafting, subsummedWarf
       });
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [visible]);
+  }, [pagedItems, recipes]);
 
   // Load recipe for modal item
   useEffect(() => {

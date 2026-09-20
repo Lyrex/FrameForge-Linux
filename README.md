@@ -1,4 +1,4 @@
-# FrameForge `v4.3.2`
+# FrameForge `v4.4.0`
 
 A desktop companion for Warframe — live inventory, market prices, trading, timers, relic overlay, and riven analysis. Read-only, no game modification.
 
@@ -26,6 +26,8 @@ Upstream releases are merged in, tag by tag ([docs/UPSTREAM-SYNC.md](docs/UPSTRE
 Reads your inventory directly from Warframe's process memory (read-only, same API as Overwolf). Instead of scanning for individual item patterns, FrameForge locates and captures the full account JSON blob that the game client holds in memory — the same authoritative data the game itself uses.
 
 This gives complete coverage: resources, mods, arcanes, relics, weapons, Warframes, companions, blueprints, cosmetics (glyphs, palettes, emotes, titles, ship skins), sigils, pending Foundry jobs, credits, and more. Items that leave your inventory (traded, consumed, or expired) are correctly detected as dropped to zero. Inventory is persisted to disk and restored instantly on next launch — no login required.
+
+**Truncation-safe captures** — the game sometimes leaves only part of the account blob in memory. FrameForge learns which sections your account normally contains and rejects any capture that has lost one of them, so a half-read blob never makes items flicker out and back in. Captures identical to the one already applied are skipped, so the changelog only moves when something actually changed.
 
 **View modes** — Cards (icon + text), Icon grid, Text cards, List with icon, or Compact list (text-only, maximum density). Persisted per tab.
 
@@ -105,6 +107,9 @@ The item catalog used for OCR matching is built exclusively from known relic rew
 
 ### Modular Window
 Customisable sidebar with reorderable sections: tracked crafting items, favourite inventory items, pinned timers, and watched fissures.
+
+### Item Catalogue
+The item database (items, recipes, relic drops) is fetched and rebuilt in the background on launch, and every open screen reloads on its own when it finishes — no manual **Refresh item list** needed, even right after an update. Source ETags are persisted to disk, so unchanged data is never re-downloaded. Tabs stay mounted while hidden, so switching between modules keeps your scroll position and filters.
 
 ### Settings
 Tabbed sidebar layout: **General** (Foundry page size, Mastery exclusions for Founders, retired event and removed-node sources, scanner, API, account info, pop-out), **Overlays** (Relic Overlay and Relic Pick Overlay settings), **Market** (WFM status automation), **Filters** (filter preset management per module), **Accessibility** (colorblind mode, text size up to 200%), **Data** (item database, cache), and **Debugging** (loggers, diagnostic tools with folder access and one-click clear).

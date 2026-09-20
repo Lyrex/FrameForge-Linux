@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, type Dispatch, type SetStateAction } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, type Dispatch, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { HelpTip } from "./shared/HelpTip";
 import FilterPresets from "./shared/FilterPresets";
@@ -8,6 +8,7 @@ import { RELIC_DROP_RATES, RELIC_REFINEMENT_LABELS, RELIC_REFINEMENT_ORDER } fro
 import ItemImg from "./ItemImg";
 import { toggle, normalizeForWfm } from "./utils";
 import { TAURI_COMMANDS } from "./constants/tauri";
+import { useCatalog } from "./hooks/useCatalog";
 import type { CatalogItem, InventoryItem } from "./types/items";
 import type { RelicFilters } from "./types/filters";
 import type { FilterPresetModule, FilterPresetSettings } from "./types/filterPresets";
@@ -18,7 +19,6 @@ import { ViewToggle } from "./shared/ViewToggle";
 
 interface Props {
   inventory: Record<string, InventoryItem>;
-  refreshKey: number;
   colorblindMode?: boolean;
   filters: RelicFilters;
   onFiltersChange: Dispatch<SetStateAction<RelicFilters>>;
@@ -417,22 +417,24 @@ function PlannerTab({
   // WFM url_name → price map (keyed by url_name slug)
   const [platPrices, setPlatPrices] = useState<Map<string, number>>(new Map());
 
-  // Load WFM items to build name→slug lookup, then fetch cached prices
   useEffect(() => {
+    let cancelled = false;
     invoke<WfmItem[]>(TAURI_COMMANDS.FETCH_WFM_ITEMS)
       .then(items => {
+        if (cancelled) return null;
         const lookup = new Map<string, string>();
         for (const w of items) lookup.set(normalizeForWfm(w.item_name), w.url_name);
         return lookup;
       })
       .then(lookup => {
+        if (!lookup || cancelled) return;
         invoke<WfmCachedPrices>("wfm_get_cached_prices")
           .then(raw => {
+            if (cancelled) return;
             const m = new Map<string, number>();
             for (const [slug, price] of Object.entries(raw)) {
               if (price != null) m.set(slug, price);
             }
-            // Also index by normalized item name for direct lookup
             for (const [norm, slug] of lookup) {
               const p = m.get(slug);
               if (p != null) m.set(norm, p);
@@ -442,6 +444,7 @@ function PlannerTab({
           .catch(() => {});
       })
       .catch(() => {});
+    return () => { cancelled = true; };
   }, []);
 
   const getOwnedByTier = useCallback((drop: RelicDrop) => {
@@ -637,52 +640,52 @@ function PlannerTab({
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function RelicHelper({ inventory, refreshKey, colorblindMode = false, filters, onFiltersChange, filterPresets, onFilterPresetsChange, onOpenSettings }: Props) {
+export default function RelicHelper({ inventory, colorblindMode = false, filters, onFiltersChange, filterPresets, onFilterPresetsChange, onOpenSettings }: Props) {
+  const { catalog } = useCatalog();
   const [plannerActive, setPlannerActive] = useState(false);
   const [relicView, setRelicView] = useState<ViewMode>(() =>
     (localStorage.getItem(PREFERENCE_KEYS.RELIC_VIEW) as ViewMode | null) ?? "cards"
   );
-  const [allItems,    setAllItems]    = useState<CatalogItem[]>([]);
   const [drops,       setDrops]       = useState<RelicDrop[]>([]);
   const [dropLoading, setDropLoading] = useState(false);
   const [dropError,   setDropError]   = useState(false);
   const [page,        setPage]        = useState(0);
+  const dropRequestRef = useRef(0);
   const PAGE_SIZE = 30;
 
   const { search, tiers, ownership, vault, completion, sortMode, ignoreFormaKuva } = filters;
   const set = <K extends keyof RelicFilters>(k: K, v: RelicFilters[K]) => onFiltersChange({ ...filters, [k]: v });
 
   const loadDrops = useCallback((force = false) => {
+    const request = ++dropRequestRef.current;
     setDropLoading(true);
     setDropError(false);
     invoke<unknown>("get_drop_data", { force })
       .then(d => {
+        if (request !== dropRequestRef.current) return;
         const result = parseDropData(d);
         setDrops(result);
       })
-      .catch(() => setDropError(true))
-      .finally(() => setDropLoading(false));
+      .catch(() => { if (request === dropRequestRef.current) setDropError(true); })
+      .finally(() => { if (request === dropRequestRef.current) setDropLoading(false); });
   }, []);
 
   useEffect(() => {
-    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS).then(setAllItems).catch(() => {});
-  }, [refreshKey]);
-
-  useEffect(() => {
     loadDrops();
+    return () => { dropRequestRef.current++; };
   }, [loadDrops]);
 
   const nameMap = useMemo(() => {
     const m = new Map<string, CatalogItem>();
-    for (const i of allItems) m.set(i.name.toLowerCase(), i);
+    for (const i of catalog) m.set(i.name.toLowerCase(), i);
     return m;
-  }, [allItems]);
+  }, [catalog]);
 
   const catalogRelicByName = useMemo(() => {
     const m = new Map<string, CatalogItem>();
-    for (const i of allItems) if (i.category === "Relics") m.set(i.name.toLowerCase(), i);
+    for (const i of catalog) if (i.category === "Relics") m.set(i.name.toLowerCase(), i);
     return m;
-  }, [allItems]);
+  }, [catalog]);
 
 
   const ownedPrimeNames = useMemo(() => {

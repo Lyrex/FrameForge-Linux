@@ -22,6 +22,12 @@ interface ItemStat {
   total_plat: number;
 }
 
+interface WfmTopProgress {
+  completed: number;
+  total: number;
+  refreshing: boolean;
+}
+
 const CATEGORY_COLORS: Record<string, string> = {
   Prime:   "#c4a44a",
   Riven:   "#9b59b6",
@@ -41,6 +47,12 @@ function inferCategory(name: string): string {
   if (/ set$/.test(n))      return "Set";
   if (/\bmod\b/.test(n))    return "Mod";
   return "Other";
+}
+
+function displayItemName(name: string): string {
+  const rank = [...name].filter(char => /[\uE000-\uF8FF]/u.test(char)).length;
+  const clean = name.replace(/[\uE000-\uF8FF\p{Cc}]/gu, "").trim();
+  return rank > 0 ? `${clean} (R${rank})` : clean;
 }
 
 function groupBySessions(trades: Trade[]): TradeSession[] {
@@ -245,26 +257,40 @@ interface Props {
 export default function Reports({ dateRange, onDateRangeChange, clockFormat }: Props) {
   const [trades, setTrades]         = useState<Trade[]>([]);
   const [loading, setLoading]       = useState(true);
+  const [tradesError, setTradesError] = useState<string | null>(null);
   const [topItems, setTopItems]     = useState<WfmTopItem[]>([]);
   const [topLoading, setTopLoading] = useState(true);
+  const [topError, setTopError]     = useState<string | null>(null);
+  const [topProgress, setTopProgress] = useState<WfmTopProgress | null>(null);
   const [view, setView]             = useState<"analytics" | "log">("analytics");
 
   useEffect(() => {
     const loadTrades = () => invoke<Trade[]>("get_trades")
-      .then(t => { setTrades(t); setLoading(false); })
-      .catch(() => setLoading(false));
+      .then(t => { setTrades(t.map(trade => ({ ...trade, item_name: displayItemName(trade.item_name) }))); setLoading(false); })
+      .catch((e) => { console.error("[Reports] get_trades failed:", e); setTradesError(String(e)); setLoading(false); });
     loadTrades();
 
     // Stays mounted through in-game trades and imports.
     const unlisten = listen("stats-changed", () => { loadTrades(); });
 
-    // Fetch top WFM items in background — first load takes ~15s (rate-limited),
-    // subsequent opens within 3 hours are instant from cache.
+    const unlistenProgress = listen<WfmTopProgress>("wfm-top-progress", ({ payload }) => {
+      setTopProgress(payload);
+    });
+    const unlistenUpdated = listen<WfmTopItem[]>("wfm-top-updated", ({ payload }) => {
+      setTopItems(payload);
+      setTopLoading(false);
+      setTopError(null);
+      setTopProgress(null);
+    });
+
     invoke<WfmTopItem[]>(TAURI_COMMANDS.GET_WFM_TOP_ITEMS)
       .then(items => { setTopItems(items); setTopLoading(false); })
-      .catch(() => setTopLoading(false));
-
-    return () => { unlisten.then(fn => fn()); };
+      .catch((e) => { console.error("[Reports] get_wfm_top_items failed:", e); setTopError(String(e)); setTopLoading(false); });
+    return () => {
+      unlisten.then(fn => fn());
+      unlistenProgress.then(fn => fn());
+      unlistenUpdated.then(fn => fn());
+    };
   }, []);
 
   const filtered = useMemo(() => {
@@ -273,8 +299,8 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat }: P
     return trades.filter(t => new Date(t.timestamp).getTime() >= cutoff);
   }, [trades, dateRange]);
 
-  const totalRevenue  = useMemo(() => filtered.filter(t => t.direction === "sold").reduce((s, t) => s + t.platinum * t.quantity, 0), [filtered]);
-  const totalExpenses = useMemo(() => filtered.filter(t => t.direction === "bought").reduce((s, t) => s + t.platinum * t.quantity, 0), [filtered]);
+  const totalRevenue  = useMemo(() => filtered.filter(t => t.direction === "sold" || t.direction === "traded-out").reduce((s, t) => s + t.platinum * t.quantity, 0), [filtered]);
+  const totalExpenses = useMemo(() => filtered.filter(t => t.direction === "bought" || t.direction === "traded-in").reduce((s, t) => s + t.platinum * t.quantity, 0), [filtered]);
   const profit        = totalRevenue - totalExpenses;
 
   const byCategory = useMemo((): CategoryStat[] => {
@@ -283,8 +309,8 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat }: P
       const cat = inferCategory(t.item_name);
       if (!map[cat]) map[cat] = { revenue: 0, expenses: 0 };
       const val = t.platinum * t.quantity;
-      if (t.direction === "sold")   map[cat].revenue  += val;
-      else                          map[cat].expenses += val;
+      if (t.direction === "sold" || t.direction === "traded-out") map[cat].revenue  += val;
+      else                                                        map[cat].expenses += val;
     }
     return Object.entries(map)
       .map(([category, { revenue, expenses }]) => ({
@@ -297,7 +323,7 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat }: P
 
   const topSold = useMemo((): ItemStat[] => {
     const map: Record<string, ItemStat> = {};
-    for (const t of filtered.filter(t => t.direction === "sold")) {
+    for (const t of filtered.filter(t => t.direction === "sold" || t.direction === "traded-out")) {
       if (!map[t.item_name]) map[t.item_name] = { item_name: t.item_name, quantity: 0, total_plat: 0 };
       map[t.item_name].quantity   += t.quantity;
       map[t.item_name].total_plat += t.platinum * t.quantity;
@@ -307,7 +333,7 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat }: P
 
   const topBought = useMemo((): ItemStat[] => {
     const map: Record<string, ItemStat> = {};
-    for (const t of filtered.filter(t => t.direction === "bought")) {
+    for (const t of filtered.filter(t => t.direction === "bought" || t.direction === "traded-in")) {
       if (!map[t.item_name]) map[t.item_name] = { item_name: t.item_name, quantity: 0, total_plat: 0 };
       map[t.item_name].quantity   += t.quantity;
       map[t.item_name].total_plat += t.platinum * t.quantity;
@@ -322,21 +348,25 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat }: P
   [byCategory]);
 
   const topTradedItems = useMemo(() => {
-    const map: Record<string, number> = {};
+    const map: Record<string, { total_plat: number; quantity: number }> = {};
     for (const t of filtered) {
-      map[t.item_name] = (map[t.item_name] ?? 0) + t.platinum * t.quantity;
+      if (!map[t.item_name]) map[t.item_name] = { total_plat: 0, quantity: 0 };
+      map[t.item_name].total_plat += t.platinum * t.quantity;
+      map[t.item_name].quantity   += t.quantity;
     }
-    return Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 7)
-      .map(([item_name, total_plat]) => ({ item_name, total_plat }));
+    return Object.entries(map)
+      .sort((a, b) => b[1].total_plat - a[1].total_plat || b[1].quantity - a[1].quantity)
+      .slice(0, 7)
+      .map(([item_name, v]) => ({ item_name, total_plat: v.total_plat, quantity: v.quantity }));
   }, [filtered]);
 
   const topItemsChartData = useMemo(() =>
     topTradedItems.map((item, i) => ({
       label: item.item_name,
-      value: item.total_plat,
+      value: item.total_plat > 0 ? item.total_plat : item.quantity,
       color: Object.values(CATEGORY_COLORS)[i % Object.values(CATEGORY_COLORS).length],
     })),
-  [topItems]);
+  [topTradedItems]);
 
   const sessions = useMemo(() => groupBySessions(filtered), [filtered]);
 
@@ -352,6 +382,9 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat }: P
     value: item.total_value_7d,
     color: Object.values(CATEGORY_COLORS)[i % Object.values(CATEGORY_COLORS).length],
   }));
+  const topProgressPercent = topProgress && topProgress.total > 0
+    ? Math.round((topProgress.completed / topProgress.total) * 100)
+    : 0;
 
   if (loading) return <div className="rpt-root"><div className="rpt-loading">Loading…</div></div>;
 
@@ -365,11 +398,31 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat }: P
           {topLoading ? (
             <div className="rpt-top-loading">
               <span className="rpt-top-spinner" />
-              Fetching market data… (first load takes ~15s, then cached for 3h)
+              <div>
+                <div>Downloading 7-day statistics from Warframe.Market…</div>
+                <div className="rpt-top-source">The first complete ranking can take a few minutes; it refreshes automatically every 3 hours.</div>
+                {topProgress && (
+                  <div className="rpt-top-progress" aria-label="Market ranking progress">
+                    <span style={{ width: `${topProgressPercent}%` }} />
+                    <em>{topProgress.completed}/{topProgress.total} items</em>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : topError ? (
+            <div className="rpt-top-loading" style={{ color: "var(--red)" }}>
+              Failed to load market data<br />
+              <span style={{ fontSize: 11, color: "var(--muted)" }}>{topError}</span>
             </div>
           ) : topItems.length === 0 ? (
             <div className="rpt-top-loading" style={{ color: "var(--muted)" }}>No market data available</div>
           ) : (
+            <>
+            {topProgress?.refreshing && (
+              <div className="rpt-top-refreshing">
+                Updating from Warframe.Market: {topProgress.completed}/{topProgress.total} items ({topProgressPercent}%). Showing the previous ranking until the scan finishes.
+              </div>
+            )}
             <div className="rpt-top-wrap">
               <table className="rpt-table">
                 <thead>
@@ -397,6 +450,7 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat }: P
                 <Legend items={topItemsChartForWfm} />
               </div>
             </div>
+            </>
           )}
         </div>
 
@@ -421,7 +475,12 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat }: P
           <span className="rpt-trade-count">{filtered.length} trade{filtered.length !== 1 ? "s" : ""}</span>
         </div>
 
-        {trades.length === 0 ? (
+        {tradesError ? (
+          <div className="rpt-empty">
+            <div className="rpt-empty-title" style={{ color: "var(--red)" }}>Failed to load trades</div>
+            <div className="rpt-empty-desc">{tradesError}</div>
+          </div>
+        ) : trades.length === 0 ? (
           <div className="rpt-empty">
             <div className="rpt-empty-icon">📊</div>
             <div className="rpt-empty-title">No trade history yet</div>
@@ -479,7 +538,7 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat }: P
                       <span className="rpt-dot" style={{ background: topItemsChartData[i]?.color }} />
                       {item.item_name}
                     </td>
-                    <td className="rpt-num">{fmtK(item.total_plat)} <PlatIcon /></td>
+                    <td className="rpt-num">{item.total_plat > 0 ? <>{fmtK(item.total_plat)} <PlatIcon /></> : <>{item.quantity.toLocaleString()}×</>}</td>
                   </tr>
                 ))}
               </tbody>

@@ -91,6 +91,7 @@ pub(crate) fn clear_cache(state: State<AppState>) -> Result<(), String> {
     // Delete cache and hint files so nothing reloads on next start
     let _ = std::fs::remove_file(&state.quantities_cache_path);
     let _ = std::fs::remove_file(&state.inventory_state_cache_path);
+    let _ = std::fs::remove_file(state.inventory_state_cache_path.with_file_name("section_baseline.json"));
     let _ = std::fs::remove_file(state.log_path.with_file_name("inventory_hints.json"));
     let _ = std::fs::remove_file(state.log_path.with_file_name("mod_hints.json"));
 

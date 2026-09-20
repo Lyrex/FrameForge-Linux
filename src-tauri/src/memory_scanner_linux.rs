@@ -717,7 +717,7 @@ mod tests {
     /// fixture has to carry both before the scan is reached at all.
     fn blob_head(credits: u32) -> Vec<u8> {
         let mut head = format!(
-            r#"{{"SubscribedToEmails":true,"RegularCredits":{credits},"MiscItems":[],"XPInfo":[],"FusionPoints":0,"Suits":[{{"ItemType":"/Lotus/Powersuits/Mag/Mag"}}],"#
+            r#"{{"SubscribedToEmails":true,"RegularCredits":{credits},"MiscItems":[],"XPInfo":[],"FusionPoints":0,"PlayerLevel":0,"RawUpgrades":[],"Suits":[{{"ItemType":"/Lotus/Powersuits/Mag/Mag"}}],"#
         )
         .into_bytes();
         head.resize(64_000, b' ');
@@ -1156,7 +1156,7 @@ mod tests {
         let mut prefix = br#"{"Mods":garbage/Lotus/Weapons/Tenno/Rifle "#.to_vec();
         prefix.resize(64_000, b' ');
         let mut blob =
-            br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[{"ItemType":"/Lotus/Types/Items/x"}],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#
+            br#"{"SubscribedToEmails":true,"RegularCredits":42,"MiscItems":[{"ItemType":"/Lotus/Types/Items/x"}],"XPInfo":[],"FusionPoints":0,"PlayerLevel":0,"RawUpgrades":[],"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#
                 .to_vec();
         blob.resize(64_000, b' ');
         blob.extend_from_slice(BLOB_TAIL);
@@ -1308,7 +1308,7 @@ mod tests {
     fn linux_inventory_scan_recovers_fields_before_start_marker() {
         let _digest_guard = blob_digest_test_guard();
         let prefix =
-            br#"{"RegularCredits":42,"MiscItems":[{"ItemType":"/Lotus/Test","ItemCount":1}],"XPInfo":[],"FusionPoints":0,"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#;
+            br#"{"RegularCredits":42,"MiscItems":[{"ItemType":"/Lotus/Test","ItemCount":1}],"XPInfo":[],"FusionPoints":0,"PlayerLevel":0,"RawUpgrades":[],"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#;
         let suffix = br#""SubscribedToEmails":true,"DeathSquadable":false}"#;
         let mut mapping = vec![b' '; 128_000];
         mapping[..prefix.len()].copy_from_slice(prefix);

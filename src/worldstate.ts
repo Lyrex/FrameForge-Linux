@@ -44,7 +44,11 @@ function subscribe(notify: () => void) {
   };
 }
 
-export function useWorldState(): Snapshot & { refresh: () => void } {
-  const snapshot = useSyncExternalStore(subscribe, () => current);
+// A consumer that only wants the data while some condition holds (fissure
+// alerts with no watches set) must not keep the poll alive on its own.
+const subscribeNothing = () => () => {};
+
+export function useWorldState(enabled = true): Snapshot & { refresh: () => void } {
+  const snapshot = useSyncExternalStore(enabled ? subscribe : subscribeNothing, () => current);
   return { ...snapshot, refresh: fetchOnce };
 }

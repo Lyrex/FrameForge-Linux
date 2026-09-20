@@ -11,11 +11,13 @@ import WfmTrading from "./WfmTrading";
 import ItemMarketPopup from "./ItemMarketPopup";
 import { matchesSearchTerms, splitSearchTerms } from "../lib/search";
 import { TAURI_COMMANDS } from "../constants/tauri";
+import { useCatalog } from "../hooks/useCatalog";
+import { useMarketData } from "../hooks/useMarketData";
 import type { CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeMap } from "../types/items";
 import type { MarketFilters } from "../types/filters";
 import type { FilterPresetModule, FilterPresetSettings } from "../types/filterPresets";
 import type { ModCopy } from "../types/inventory";
-import type { BlobRivenEntry, BlobRivenStat, WfmCachedPrices, WfmItem, WfmItemInfo, WfmPrice, WfmPriceUpdate, WfmRivenAttribute } from "../types/market";
+import type { BlobRivenEntry, BlobRivenStat, WfmItemInfo, WfmPrice, WfmPriceUpdate, WfmRivenAttribute } from "../types/market";
 import type { WfmCreateOrderArgs, WfmCreateRivenAuctionArgs, WfmSession } from "../types/tauri";
 import { verdictColor } from "../riven/rivenTypes";
 import type { GradedRiven } from "../riven/rivenTypes";
@@ -156,10 +158,8 @@ function SetCard({ setKey, parts, parentItem, setPrice, setPriceLoading, pricesF
 // ─── Market Helper ────────────────────────────────────────────────────────────
 
 export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLoginChange, modCopiesMap = {}, filters, onFiltersChange, filterPresets, onFilterPresetsChange, onOpenSettings }: Props) {
-  const [allItems, setAllItems]           = useState<CatalogItem[]>([]);
-  const [wfmItems, setWfmItems]           = useState<WfmItem[]>([]);
-  const [wfmLoading, setWfmLoading]       = useState(false);
-  const [wfmError, setWfmError]           = useState(false);
+  const { catalog } = useCatalog();
+  const { wfmItems, wfmPrices: sharedPrices } = useMarketData();
   const [prices, setPrices]               = useState<Map<string, WfmPrice>>(new Map());
   const [wfmBadge, setWfmBadge]           = useState(0);
   const [wfmUsername, setWfmUsername]     = useState<string | null>(null);
@@ -170,9 +170,19 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
   const { search, ownership, conditions, vault, sortMode, activeMarketTab } = filters;
   const set = <K extends keyof MarketFilters>(k: K, v: MarketFilters[K]) => onFiltersChange({ ...filters, [k]: v });
 
+  // Seed live prices map from shared cached prices on first load
+  const seededRef = useRef(false);
   useEffect(() => {
-    invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS).then(setAllItems).catch(() => {});
-  }, [refreshKey]);
+    if (!sharedPrices.size || seededRef.current) return;
+    seededRef.current = true;
+    setPrices(prev => {
+      const m = new Map(prev);
+      for (const [slug, price] of sharedPrices) {
+        m.set(slug, { url_name: slug, sell_median: price });
+      }
+      return m;
+    });
+  }, [sharedPrices]);
 
   // Reflect WFM login state immediately — App.tsx loads the JWT into Rust on startup,
   // so wfm_get_session succeeds even before the Trading tab has been opened.
@@ -198,23 +208,6 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
       invoke<BlobRivenEntry[]>("get_rivens").then(setRivens).catch(() => {});
     }
   }, [activeMarketTab, refreshKey]);
-
-  // Load prices already cached in inventory_state_cache (survive restarts).
-  useEffect(() => {
-    invoke<WfmCachedPrices>("wfm_get_cached_prices")
-      .then(cached => {
-        if (!cached) return;
-        setPrices(prev => {
-          const m = new Map(prev);
-          for (const [urlName, price] of Object.entries(cached)) {
-            m.set(urlName, { url_name: urlName, sell_median: price ?? undefined });
-          }
-          return m;
-        });
-      })
-      .catch(() => {});
-  }, []); // eslint-disable-line
-
 
   // Listen for prices arriving from the Rust queue drain thread.
   // Batch updates with rAF so bursts of events don't cause a re-render per price.
@@ -242,37 +235,24 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
     return () => { unlisten.then(fn => fn()); };
   }, []); // eslint-disable-line
 
-  // Fetch WFM item list (used to build the name→slug lookup).
-  useEffect(() => {
-    setWfmLoading(true);
-    setWfmError(false);
-    invoke<WfmItem[]>(TAURI_COMMANDS.FETCH_WFM_ITEMS)
-      .then(items => {
-        setWfmItems(items);
-        if (!items.length) setWfmError(true);
-      })
-      .catch(() => { setWfmError(true); })
-      .finally(() => setWfmLoading(false));
-  }, []);
-
   const wfmLookup = useMemo(() => wfmSlugLookup(wfmItems), [wfmItems]);
 
   const primeItems = useMemo(() =>
-    allItems.filter(i =>
+    catalog.filter(i =>
       i.name.includes("Prime") &&
       // Include items with known ducat value OR any blueprint (even if ducats not yet catalogued)
       (i.ducats != null || i.name.endsWith("Blueprint"))
     ),
-  [allItems]);
+  [catalog]);
 
   const parentItems = useMemo(() => {
     const map = new Map<string, CatalogItem>();
-    for (const i of allItems) {
+    for (const i of catalog) {
       if (i.name.includes("Prime") && ["Warframes","Primary","Secondary","Melee","Companions","Archwing","Operator Weapons"].includes(i.category))
         map.set(i.name, i);
     }
     return map;
-  }, [allItems]);
+  }, [catalog]);
 
 
   // Load recipe trees for all prime set parents so we know the required count per component.
@@ -292,16 +272,16 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
   // item name (lowercase) → image_name — used by the Trading tab edit popup
   const imageMap = useMemo(() => {
     const m = new Map<string, string>();
-    for (const i of allItems) if (i.image_name) m.set(i.name.toLowerCase(), i.image_name);
+    for (const i of catalog) if (i.image_name) m.set(i.name.toLowerCase(), i.image_name);
     return m;
-  }, [allItems]);
+  }, [catalog]);
 
   // ducats lookup by name for fallback (e.g. "Chassis" → 15 so "Chassis Blueprint" also gets 15)
   const ducatsByName = useMemo(() => {
     const m = new Map<string, number>();
-    for (const i of allItems) if (i.ducats != null) m.set(i.name, i.ducats);
+    for (const i of catalog) if (i.ducats != null) m.set(i.name, i.ducats);
     return m;
-  }, [allItems]);
+  }, [catalog]);
 
   const sets = useMemo(() => {
     const map = new Map<string, CatalogItem[]>();
@@ -355,7 +335,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
       map.set(key, finalParts);
     }
     return map;
-  }, [primeItems, allItems, ducatsByName]);
+  }, [primeItems, catalog, ducatsByName]);
 
   const totalDucats = useMemo(() =>
     primeItems.reduce((s, i) => s + (i.ducats ?? 0) * (inventory[i.unique_name]?.quantity ?? 0), 0),
@@ -493,7 +473,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
 
       {activeMarketTab === "mods" && (
         <ModsTab
-          allItems={allItems}
+          catalog={catalog}
           inventory={inventory}
           wfmLookup={wfmLookup}
           prices={prices}
@@ -505,7 +485,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
       )}
 
       {activeMarketTab === "rivens" && (
-        <RivensTab rivens={rivens} allItems={allItems} wfmUsername={wfmUsername} onAuctionPosted={() => setAuctionRefreshKey(k => k + 1)} />
+        <RivensTab rivens={rivens} catalog={catalog} wfmUsername={wfmUsername} onAuctionPosted={() => setAuctionRefreshKey(k => k + 1)} />
       )}
 
       {activeMarketTab === "sisters" && (
@@ -553,9 +533,8 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
         <span className="fbar-sep"/>
         <DucatIcon size={13} />
         <span><strong style={{ color: "#f0c040" }}>{fmt(dupeDucats)}</strong> from dupes</span>
-        {wfmLoading && <span style={{ color: "var(--muted)", fontSize: 11 }}>· Connecting to warframe.market…</span>}
-        {wfmError && <span style={{ color: "var(--red)", fontSize: 11 }}>· warframe.market unavailable</span>}
-        {!wfmLoading && !wfmError && wfmItems.length > 0 && <span style={{ color: "var(--green)", fontSize: 11 }}>· {wfmItems.length.toLocaleString()} items from warframe.market</span>}
+        {wfmItems.length === 0 && <span style={{ color: "var(--muted)", fontSize: 11 }}>· Connecting to warframe.market…</span>}
+        {wfmItems.length > 0 && <span style={{ color: "var(--green)", fontSize: 11 }}>· {wfmItems.length.toLocaleString()} items from warframe.market</span>}
       </div>
 
       <div className="market-grid">
@@ -616,8 +595,8 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
 
 const MODS_PAGE_SIZE = 60;
 
-function ModsTab({ allItems, inventory, wfmLookup, prices, modCopiesMap, onOpenPopup }: {
-  allItems: CatalogItem[];
+function ModsTab({ catalog: allCatalog, inventory, wfmLookup, prices, modCopiesMap, onOpenPopup }: {
+  catalog: CatalogItem[];
   inventory: Record<string, InventoryItem>;
   wfmLookup: Map<string, string>;
   prices: Map<string, WfmPrice>;
@@ -631,8 +610,8 @@ function ModsTab({ allItems, inventory, wfmLookup, prices, modCopiesMap, onOpenP
   const [page, setPage]           = useState(0);
 
   const catalog = useMemo(() =>
-    allItems.filter(i => i.category === "Mods" || i.category === "Arcanes"),
-  [allItems]);
+    allCatalog.filter(i => i.category === "Mods" || i.category === "Arcanes"),
+  [allCatalog]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -1402,9 +1381,9 @@ function VeiledSellModal({ category, count, onClose, onSuccess }: VeiledSellModa
 }
 
 
-const RivensTab = memo(function RivensTab({ rivens, allItems, wfmUsername, onAuctionPosted }: {
+const RivensTab = memo(function RivensTab({ rivens, catalog, wfmUsername, onAuctionPosted }: {
   rivens: BlobRivenEntry[];
-  allItems: CatalogItem[];
+  catalog: CatalogItem[];
   wfmUsername: string | null;
   onAuctionPosted?: () => void;
 }) {
@@ -1437,9 +1416,9 @@ const RivensTab = memo(function RivensTab({ rivens, allItems, wfmUsername, onAuc
 
   const pathToName = useMemo(() => {
     const m: Record<string, string> = {};
-    for (const it of allItems) m[it.unique_name] = it.name;
+    for (const it of catalog) m[it.unique_name] = it.name;
     return m;
-  }, [allItems]);
+  }, [catalog]);
 
   if (rivens.length === 0) {
     return (
