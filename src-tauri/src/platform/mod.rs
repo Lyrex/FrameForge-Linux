@@ -17,6 +17,10 @@ mod linux;
 // ─── Credential Store ─────────────────────────────────────────────────────────
 
 /// Encrypted credential storage (OS keychain / credential manager).
+///
+/// Implementations may block on user interaction. A locked keychain prompts,
+/// and the prompt is answered at human speed (or never). Call these from a
+/// blocking context, not from a sync command handler.
 pub trait CredentialStore {
     fn save_credentials(target: &str, email: &str, token: &str) -> Result<(), String>;
     fn load_credentials(target: &str) -> Result<Option<(String, String)>, String>;
@@ -57,10 +61,22 @@ pub trait ProcessHandle {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegionBacking {
     /// Private memory: the heap, the stack, plain anonymous mappings.
+    /// On Windows this also covers `MEM_MAPPED` data files (not PE images),
+    /// since they are first-tier candidates for heap scans.
     Anonymous,
-    /// Backed by a file on disk. On Windows a PE image or a mapped data file.
+    /// Backed by a file on disk. On Windows a PE image (`MEM_IMAGE`).
+    /// `MEM_MAPPED` data files intentionally fall into `Anonymous` so they
+    /// are not skipped during the heap scan — the Wine heap being anonymous
+    /// is an implementation detail, not a guarantee.
     File,
-    /// Kernel-provided pages that can never hold heap data.
+    /// Pages the kernel provides that can never hold application data.
+    ///
+    /// On **Linux**: committed, readable pages like `[vvar]` and `[vsyscall]`.
+    /// They are readable but cannot hold a heap allocation.
+    ///
+    /// On **Windows**: not reached in practice. Free/reserved address space
+    /// is already filtered by `is_committed == false` before this arm is
+    /// checked. Kept for completeness.
     Kernel,
 }
 
