@@ -31,17 +31,37 @@ pub trait ProcessAccess {
     fn find_warframe_pid() -> Option<u32>;
 
     /// Open a process handle for reading memory.
-    fn open_process(pid: u32) -> Option<Box<dyn ProcessHandle>>;
+    fn open_process(pid: u32) -> Result<Box<dyn ProcessHandle>, String>;
 }
 
 /// An open handle to a process, allowing efficient repeated memory operations.
 pub trait ProcessHandle {
-    /// Read memory from the process at the given address.
-    /// Returns (next_address, bytes_read).
-    fn read_memory(&self, addr: usize, len: usize) -> Option<(usize, Vec<u8>)>;
+    /// Reads into `buf` and returns how many bytes landed there. A short read
+    /// is what a faulted page inside an otherwise readable region looks like,
+    /// so the count is the whole answer: there is no "try again for the rest".
+    fn read_into(&self, addr: usize, buf: &mut [u8]) -> usize;
 
-    /// Enumerate all committed readable memory regions starting from an address.
-    fn enumerate_regions_from(&self, start_addr: usize) -> Vec<MemoryRegionInfo>;
+    /// Reads `len` bytes, allocating a fresh buffer. Prefer `read_into` in
+    /// hot loops; this is a convenience wrapper for one-off reads.
+    fn read(&self, addr: usize, len: usize) -> Option<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        let n = self.read_into(addr, &mut buf);
+        (n > 0).then(|| { buf.truncate(n); buf })
+    }
+
+    /// Maps regions at or after `from`, in ascending address order.
+    /// Yields one region per step, as the OS queries it.
+    fn regions_from(&self, from: usize) -> Box<dyn Iterator<Item = MemoryRegionInfo> + '_>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegionBacking {
+    /// Private memory: the heap, the stack, plain anonymous mappings.
+    Anonymous,
+    /// Backed by a file on disk. On Windows a PE image or a mapped data file.
+    File,
+    /// Kernel-provided pages that can never hold heap data.
+    Kernel,
 }
 
 #[derive(Debug, Clone)]
@@ -52,7 +72,7 @@ pub struct MemoryRegionInfo {
     pub is_readable: bool,
     pub is_writable: bool,
     pub is_executable: bool,
-    pub is_image: bool,
+    pub backing: RegionBacking,
 }
 
 // ─── Locale ───────────────────────────────────────────────────────────────────
@@ -105,7 +125,7 @@ impl ProcessAccess for Platform {
     fn find_warframe_pid() -> Option<u32> {
         windows::find_warframe_pid()
     }
-    fn open_process(pid: u32) -> Option<Box<dyn ProcessHandle>> {
+    fn open_process(pid: u32) -> Result<Box<dyn ProcessHandle>, String> {
         windows::open_process(pid)
     }
 }
@@ -157,13 +177,8 @@ impl ProcessAccess for Platform {
     fn find_warframe_pid() -> Option<u32> {
         linux::find_warframe_pid()
     }
-    fn open_process(_pid: u32) -> Option<Box<dyn ProcessHandle>> {
-        // `ProcessHandle::read_memory` hands back an owned `Vec` per read.
-        // The walk reads in 64 MiB chunks and keeps only what it splices, so
-        // that allocates and zeroes gigabytes per pass. The scanner uses
-        // `memory_scanner_linux::LinuxRegionSource`, which lends one reused
-        // buffer.
-        None
+    fn open_process(pid: u32) -> Result<Box<dyn ProcessHandle>, String> {
+        linux::open_process(pid)
     }
 }
 

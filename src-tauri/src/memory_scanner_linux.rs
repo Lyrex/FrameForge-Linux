@@ -1,9 +1,9 @@
 //! Reading Warframe's memory under Proton.
 //!
-//! The blob, the markers and the stitch engine live in `memory_scanner`;
-//! this module only reads another process: `/proc/pid/maps` for the
-//! mappings, `process_vm_readv` for the bytes, and a [`RegionSource`] that
-//! passes both to the engine.
+//! The blob, the markers and the stitch engine live in `memory_scanner`, and
+//! [`ProcessHandle`] does the reading. This module decides which mappings to
+//! offer and in what order, and wraps them in a [`RegionSource`] the engine
+//! can walk.
 
 use memchr::memmem;
 use std::path::Path;
@@ -19,156 +19,7 @@ use crate::memory_scanner::{
     BlobInventory, ScanOutcome, LAST_LOG_REGION, LOG_LINE_MARKER,
     LOG_SEARCH_BACKOFF, LOG_SEARCH_BACKOFF_PROBES, MAX_LOG_REGION, MAX_SCAN,
 };
-
-// ==============================================================================
-// Process and mappings
-// ==============================================================================
-
-#[derive(Debug, PartialEq, Eq, Default)]
-struct LinuxRegion {
-    start: usize,
-    len: usize,
-    executable: bool,
-    // `/proc/pid/maps`'s 6th field: absent for anonymous mappings, a real
-    // path for file-backed ones, or a kernel pseudo-path like `[heap]`,
-    // `[stack]`, `[vvar]`, `[vsyscall]`.
-    path: Option<Box<str>>,
-}
-
-impl LinuxRegion {
-    /// `[heap]` and `[stack]` are anonymous in spirit — kernel-labeled
-    /// untagged memory, not a mapped file — and a 105 MB `[heap]` mapping is
-    /// exactly the shape a multi-megabyte JSON blob lives in, so both stay
-    /// first-pass candidates alongside true anonymous mappings. Other
-    /// bracketed pseudo-paths (`[vvar]`, `[vsyscall]`, ...) are kernel data
-    /// pages that can never hold heap JSON, so they are excluded from both
-    /// passes rather than falling through to the file-backed tier.
-    fn is_anonymous(&self) -> bool {
-        matches!(self.path.as_deref(), None | Some("[heap]") | Some("[stack]"))
-    }
-
-    fn is_file_backed(&self) -> bool {
-        matches!(self.path.as_deref(), Some(path) if !path.starts_with('['))
-    }
-}
-
-struct LinuxProcess {
-    pid: u32,
-}
-
-impl LinuxProcess {
-    /// Fails with the ptrace_scope guidance when `process_vm_readv` would
-    /// return EPERM for every mapping, which the walk would otherwise report
-    /// as a missing blob.
-    fn open(pid: u32) -> Result<Self, String> {
-        check_linux_process_memory_access(pid).map(|()| Self { pid })
-    }
-
-    fn read(&self, address: usize, buffer: &mut [u8]) -> std::io::Result<usize> {
-        read_linux_process_memory(self.pid, address, buffer)
-    }
-}
-
-fn parse_linux_maps(maps: &str) -> Vec<LinuxRegion> {
-    maps.lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let (start, end) = fields.next()?.split_once('-')?;
-            let permissions = fields.next()?;
-            if !permissions.starts_with('r') {
-                return None;
-            }
-            let start = usize::from_str_radix(start, 16).ok()?;
-            let end = usize::from_str_radix(end, 16).ok()?;
-            // nth(3) skips offset, dev, inode to land on the pathname, which
-            // unlike every earlier field may contain spaces, so it is taken as
-            // the rest of the line rather than as a single token. The kernel's
-            // " (deleted)" suffix — how a Wine prefix updated under a running
-            // game shows up — is not part of the path.
-            let path = fields.nth(3).map(|name| {
-                let offset = name.as_ptr() as usize - line.as_ptr() as usize;
-                let path = line[offset..].trim_end();
-                Box::from(path.strip_suffix(" (deleted)").unwrap_or(path))
-            });
-            Some(LinuxRegion {
-                start,
-                len: end.checked_sub(start)?,
-                executable: permissions.as_bytes().get(2) == Some(&b'x'),
-                path,
-            })
-        })
-        .collect()
-}
-
-fn linux_process_regions(pid: u32) -> Result<Vec<LinuxRegion>, String> {
-    let path = format!("/proc/{pid}/maps");
-    std::fs::read_to_string(&path)
-        .map(|maps| parse_linux_maps(&maps))
-        .map_err(|error| {
-            format!(
-                "Failed to read {path}: {error}. Ensure kernel.yama.ptrace_scope permits same-user process access"
-            )
-        })
-}
-
-/// Opening `/proc/pid/mem` runs the same `PTRACE_MODE_ATTACH` check as
-/// `process_vm_readv`.
-fn check_linux_process_memory_access(pid: u32) -> Result<(), String> {
-    let path = format!("/proc/{pid}/mem");
-    std::fs::File::open(&path).map(drop).map_err(|error| {
-        format!(
-            "Failed to open {path}: {error}. Ensure kernel.yama.ptrace_scope permits same-user process access"
-        )
-    })
-}
-
-/// Do not retry an EFAULT through `/proc/pid/mem`. It reads the game's GPU
-/// buffers through the driver's aperture while holding locks the render
-/// thread needs, and every mapping that can hold the blob is readable here.
-fn read_linux_process_memory(
-    pid: u32,
-    address: usize,
-    buffer: &mut [u8],
-) -> std::io::Result<usize> {
-    let local_iov = libc::iovec {
-        iov_base: buffer.as_mut_ptr().cast(),
-        iov_len: buffer.len(),
-    };
-    let remote_iov = libc::iovec {
-        iov_base: address as *mut std::ffi::c_void,
-        iov_len: buffer.len(),
-    };
-
-    // SAFETY: local_iov/iov_base points at `buffer`, which the caller keeps
-    // alive and exclusively borrowed for `buffer.len()` bytes across this
-    // call. remote_iov's base is only ever dereferenced by the kernel inside
-    // the target process, never in this address space. The return value is
-    // checked before `buffer` is trusted.
-    let written = unsafe { libc::process_vm_readv(pid as libc::pid_t, &local_iov, 1, &remote_iov, 1, 0) };
-    if written >= 0 {
-        return Ok(written as usize);
-    }
-    Err(std::io::Error::last_os_error())
-}
-
-fn is_warframe_command(command: &str) -> bool {
-    let command = command.to_ascii_lowercase();
-    command.contains("warframe.x64.exe")
-        && !command.contains("launcher.exe")
-        && !command.contains("warframe-companion")
-}
-
-/// The game's PID, or `None` while it is not running.
-pub fn find_warframe_pid() -> Option<u32> {
-    std::fs::read_dir("/proc")
-        .ok()?
-        .filter_map(Result::ok)
-        .find_map(|entry| {
-            let pid = entry.file_name().to_str()?.parse().ok()?;
-            let command = std::fs::read(entry.path().join("cmdline")).ok()?;
-            is_warframe_command(&String::from_utf8_lossy(&command)).then_some(pid)
-        })
-}
+use crate::platform::{MemoryRegionInfo, Platform, ProcessAccess, ProcessHandle, RegionBacking};
 
 // ==============================================================================
 // Region source for the stitch engine
@@ -190,8 +41,8 @@ const WALK_CHUNK: usize = 64 * 1024 * 1024;
 /// that window fails at the read, which ends the stitch the same as a mapping
 /// missing from the list.
 struct LinuxRegionSource<'a> {
-    process: &'a LinuxProcess,
-    regions: Vec<LinuxRegion>,
+    process: &'a dyn ProcessHandle,
+    regions: Vec<MemoryRegionInfo>,
     /// Mapping `next_region` resumes at, and how far into it the walk has read.
     next: usize,
     offset: usize,
@@ -212,19 +63,23 @@ impl<'a> LinuxRegionSource<'a> {
     /// treated as a failed one.
     const MIN_USEFUL: usize = 8;
 
-    fn walking(process: &'a LinuxProcess, regions: Vec<LinuxRegion>, deadline: Instant) -> Self {
+    fn walking(
+        process: &'a dyn ProcessHandle,
+        regions: Vec<MemoryRegionInfo>,
+        deadline: Instant,
+    ) -> Self {
         Self::new(process, regions, WALK_CHUNK, Some(deadline))
     }
 
     /// The stitch the probe feeds is capped at `MAX_SCAN` in total, so no
     /// single read into it can usefully be larger.
-    fn probing(process: &'a LinuxProcess, regions: Vec<LinuxRegion>) -> Self {
+    fn probing(process: &'a dyn ProcessHandle, regions: Vec<MemoryRegionInfo>) -> Self {
         Self::new(process, regions, MAX_SCAN, None)
     }
 
     fn new(
-        process: &'a LinuxProcess,
-        regions: Vec<LinuxRegion>,
+        process: &'a dyn ProcessHandle,
+        regions: Vec<MemoryRegionInfo>,
         read_cap: usize,
         deadline: Option<Instant>,
     ) -> Self {
@@ -252,7 +107,7 @@ impl RegionSource for LinuxRegionSource<'_> {
         loop {
             let (start, len) = {
                 let region = self.regions.get(self.next)?;
-                (region.start, region.len)
+                (region.base_address, region.region_size)
             };
             if self.offset >= len {
                 self.next += 1;
@@ -274,14 +129,11 @@ impl RegionSource for LinuxRegionSource<'_> {
             if self.buffer.len() < size {
                 self.buffer.resize(size, 0);
             }
-            let read = self.process.read(address, &mut self.buffer[..size]);
+            let read = self.process.read_into(address, &mut self.buffer[..size]);
             self.read_time += started.elapsed();
-            match read {
-                Ok(read) if read >= Self::MIN_USEFUL => {
-                    self.bytes_read += read as u64;
-                    return Some((address, &self.buffer[..read]));
-                }
-                Ok(_) | Err(_) => continue,
+            if read >= Self::MIN_USEFUL {
+                self.bytes_read += read as u64;
+                return Some((address, &self.buffer[..read]));
             }
         }
     }
@@ -293,21 +145,20 @@ impl RegionSource for LinuxRegionSource<'_> {
         // mapping's bytes as if they lived at `addr` and splice unrelated
         // memory into the blob. That includes a seed flush against a
         // mapping's end — an exclusive bound, so not mapped either.
-        let region = self
-            .regions
-            .iter()
-            .find(|region| (region.start..region.start + region.len).contains(&addr))?;
-        let end = region.start + region.len;
+        let region = self.regions.iter().find(|region| {
+            (region.base_address..region.base_address + region.region_size).contains(&addr)
+        })?;
+        let end = region.base_address + region.region_size;
         // Executable mappings hold code. File-backed ones hold mapped
         // PE/data files whose string constants false-trigger the anchor
         // checks. Empty bytes end the stitch. A blob the tier-2 walk found in
         // a file-backed mapping loses the fast path this way and re-walks per
         // sync.
-        if region.executable || region.is_file_backed() {
+        if region.is_executable || region.backing == RegionBacking::File {
             return Some((end, Vec::new()));
         }
         let mut buffer = vec![0u8; (end - addr).min(self.read_cap).min(max_len)];
-        let read = self.process.read(addr, &mut buffer).ok()?;
+        let read = self.process.read_into(addr, &mut buffer);
         if read == 0 {
             return Some((end, Vec::new()));
         }
@@ -334,8 +185,8 @@ impl RegionSource for LinuxRegionSource<'_> {
 /// the second tier stays rather than rejecting file-backed mappings outright.
 /// Worst case, both passes run and read everything.
 fn scan_inventory_regions(
-    process: &LinuxProcess,
-    regions: Vec<LinuxRegion>,
+    process: &dyn ProcessHandle,
+    regions: Vec<MemoryRegionInfo>,
     blob_dir: &Path,
     ts: &str,
     blob_tx: Sender<BlobInventory>,
@@ -347,14 +198,14 @@ fn scan_inventory_regions(
     // the reason a scan ends.
     const TIMEOUT: u64 = 600;
 
-    let (anonymous, file_backed): (Vec<LinuxRegion>, Vec<LinuxRegion>) = regions
+    let (anonymous, file_backed): (Vec<MemoryRegionInfo>, Vec<MemoryRegionInfo>) = regions
         .into_iter()
         .filter(|region| {
-            !region.executable
-                && region.len >= MIN_REGION
-                && (region.is_anonymous() || region.is_file_backed())
+            !region.is_executable
+                && region.region_size >= MIN_REGION
+                && region.backing != RegionBacking::Kernel
         })
-        .partition(LinuxRegion::is_anonymous);
+        .partition(|region| region.backing == RegionBacking::Anonymous);
 
     let started = Instant::now();
     let deadline = started + Duration::from_secs(TIMEOUT);
@@ -393,31 +244,25 @@ pub fn capture_all_blobs(
     blob_tx: Sender<BlobInventory>,
     save: bool,
 ) -> usize {
-    let Some(pid) = find_warframe_pid() else {
+    let Some(pid) = Platform::find_warframe_pid() else {
         warn!(target: "frameforge::blob_capture", "Warframe is not running");
         return 0;
     };
-    let process = match LinuxProcess::open(pid) {
+    let process = match Platform::open_process(pid) {
         Ok(process) => process,
         Err(error) => {
             error!(target: "frameforge::blob_capture", %error, "failed to open Warframe process");
             return 0;
         }
     };
-    let regions = match linux_process_regions(pid) {
-        Ok(regions) => regions,
-        Err(error) => {
-            error!(target: "frameforge::blob_capture", %error, "failed to enumerate Warframe process regions");
-            return 0;
-        }
-    };
+    let regions: Vec<MemoryRegionInfo> = process.regions_from(0).collect();
 
     // No fast path here on purpose. The only caller is the monitor, which
     // reaches this after `probe_tick` already ran that scan and decided the
     // answer was worth a walk. Re-running it returns the same verdict and skips
     // the walk just asked for, so the `Unchanged`-plus-sync escalation never
     // walks at all.
-    let saved = scan_inventory_regions(&process, regions, blob_dir, ts, blob_tx, save);
+    let saved = scan_inventory_regions(process.as_ref(), regions, blob_dir, ts, blob_tx, save);
     if saved.is_none() {
         warn!(target: "frameforge::blob_capture", "no FULL_ACCOUNT blob found (game in mission, on login screen, or Arsenal not open?)");
     }
@@ -442,31 +287,32 @@ pub fn probe_tick(
     blob_tx: Sender<BlobInventory>,
     force: bool,
 ) -> (Option<ScanOutcome>, bool) {
-    let Ok(process) = LinuxProcess::open(pid) else { return (None, false) };
-    let Ok(regions) = linux_process_regions(pid) else { return (None, false) };
-    let sync = sync_marker_is_new(linux_newest_sync_timestamp(&process, &regions));
+    let Ok(process) = Platform::open_process(pid) else { return (None, false) };
+    let regions: Vec<MemoryRegionInfo> = process.regions_from(0).collect();
+    let sync = sync_marker_is_new(linux_newest_sync_timestamp(process.as_ref(), &regions));
     if !(force || sync) {
         return (None, sync);
     }
-    let source = LinuxRegionSource::probing(&process, regions);
+    let source = LinuxRegionSource::probing(process.as_ref(), regions);
     (Some(probe_outcome(scan_cached_blob(&source), &blob_tx)), sync)
 }
 
 /// Newest sync-marker timestamp currently in the game's log buffers, probing
 /// the remembered mapping first and searching for it again when that fails.
-fn linux_newest_sync_timestamp(process: &LinuxProcess, regions: &[LinuxRegion]) -> Option<f64> {
+fn linux_newest_sync_timestamp(
+    process: &dyn ProcessHandle,
+    regions: &[MemoryRegionInfo],
+) -> Option<f64> {
     let mut buffer = Vec::new();
-    let read_region = |region: &LinuxRegion, buffer: &mut Vec<u8>| -> Option<usize> {
-        buffer.resize(region.len.min(MAX_LOG_REGION), 0);
-        match process.read(region.start, buffer) {
-            Ok(read) if read > LOG_LINE_MARKER.len() => Some(read),
-            Ok(_) | Err(_) => None,
-        }
+    let read_region = |region: &MemoryRegionInfo, buffer: &mut Vec<u8>| -> Option<usize> {
+        buffer.resize(region.region_size.min(MAX_LOG_REGION), 0);
+        let read = process.read_into(region.base_address, buffer);
+        (read > LOG_LINE_MARKER.len()).then_some(read)
     };
 
     let cached = LAST_LOG_REGION.load(Ordering::Relaxed) as usize;
     if cached != 0 {
-        if let Some(region) = regions.iter().find(|region| region.start == cached) {
+        if let Some(region) = regions.iter().find(|region| region.base_address == cached) {
             if let Some(read) = read_region(region, &mut buffer) {
                 if looks_like_log_buffer(&buffer[..read]) {
                     return newest_sync_timestamp(&buffer[..read]);
@@ -489,7 +335,7 @@ fn linux_newest_sync_timestamp(process: &LinuxProcess, regions: &[LinuxRegion]) 
     let mut newest: Option<f64> = None;
     let mut found = 0;
     for region in regions {
-        if region.executable || region.len > MAX_LOG_REGION {
+        if region.is_executable || region.region_size > MAX_LOG_REGION {
             continue;
         }
         let Some(read) = read_region(region, &mut buffer) else { continue };
@@ -498,8 +344,8 @@ fn linux_newest_sync_timestamp(process: &LinuxProcess, regions: &[LinuxRegion]) 
             continue;
         }
         if found == 0 {
-            debug!(addr = format_args!("0x{:012x}", region.start), kb = read / 1000, "sync-marker buffer");
-            LAST_LOG_REGION.store(region.start as u64, Ordering::Relaxed);
+            debug!(addr = format_args!("0x{:012x}", region.base_address), kb = read / 1000, "sync-marker buffer");
+            LAST_LOG_REGION.store(region.base_address as u64, Ordering::Relaxed);
         }
         if let Some(stamp) = newest_sync_timestamp(chunk) {
             newest = Some(newest.map_or(stamp, |best: f64| best.max(stamp)));
@@ -536,9 +382,9 @@ fn linux_newest_sync_timestamp(process: &LinuxProcess, regions: &[LinuxRegion]) 
 /// a caller that holds both is not forced to repeat the access check and
 /// re-read `/proc/pid/maps` just to get at the read loop.
 fn walk_regions(
-    process: &LinuxProcess,
-    regions: impl IntoIterator<Item = LinuxRegion>,
-    accept: impl Fn(&LinuxRegion) -> bool,
+    process: &dyn ProcessHandle,
+    regions: impl IntoIterator<Item = MemoryRegionInfo>,
+    accept: impl Fn(&MemoryRegionInfo) -> bool,
     deadline: Instant,
     mut visit: impl FnMut(usize, &[u8]) -> bool,
 ) -> Result<(), String> {
@@ -550,19 +396,19 @@ fn walk_regions(
             continue;
         }
         let mut offset = 0;
-        while offset < region.len {
+        while offset < region.region_size {
             if Instant::now() >= deadline {
                 return Ok(());
             }
-            let size = WALK_CHUNK.min(region.len - offset);
-            let address = region.start + offset;
+            let size = WALK_CHUNK.min(region.region_size - offset);
+            let address = region.base_address + offset;
             offset += size;
 
             buffer.resize(size, 0);
-            let read = match process.read(address, &mut buffer[..size]) {
-                Ok(read) if read >= MIN_USEFUL => read,
-                Ok(_) | Err(_) => continue,
-            };
+            let read = process.read_into(address, &mut buffer[..size]);
+            if read < MIN_USEFUL {
+                continue;
+            }
             if !visit(address, &buffer[..read]) {
                 return Ok(());
             }
@@ -573,17 +419,17 @@ fn walk_regions(
 
 /// Open the process and discover its regions, then delegate to
 /// [`walk_regions`]. The one-shot diagnostic tools below only ever walk once,
-/// so they keep this single-call shape rather than plumbing a `LinuxProcess`
-/// and `Vec<LinuxRegion>` through themselves.
+/// so they keep this single-call shape rather than plumbing a process handle
+/// and a region list through themselves.
 fn walk_linux_regions(
     pid: u32,
-    accept: impl Fn(&LinuxRegion) -> bool,
+    accept: impl Fn(&MemoryRegionInfo) -> bool,
     deadline: Instant,
     visit: impl FnMut(usize, &[u8]) -> bool,
 ) -> Result<(), String> {
-    let process = LinuxProcess::open(pid)?;
-    let regions = linux_process_regions(pid)?;
-    walk_regions(&process, regions, accept, deadline, visit)
+    let process = Platform::open_process(pid)?;
+    let regions: Vec<MemoryRegionInfo> = process.regions_from(0).collect();
+    walk_regions(process.as_ref(), regions, accept, deadline, visit)
 }
 
 /// Raw text context around every occurrence of a set of known strings, capped
@@ -601,13 +447,13 @@ pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
     ];
     const HITS_PER_NEEDLE: usize = 3;
 
-    let Some(pid) = find_warframe_pid() else {
+    let Some(pid) = Platform::find_warframe_pid() else {
         return vec!["Warframe is not running".to_string()];
     };
 
     let mut results: Vec<String> = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(30);
-    let walk = walk_linux_regions(pid, |region| !region.executable, deadline, |address, data| {
+    let walk = walk_linux_regions(pid, |region| !region.is_executable, deadline, |address, data| {
         // Stop the walk as soon as the cap is reached rather than searching
         // every remaining region for a hit we would only discard.
         if results.len() >= max_hits {
@@ -649,7 +495,7 @@ pub fn raw_scan_pass(out: &mut impl std::io::Write) -> Result<usize, String> {
     const MIN_LEN: usize = 8;
     const TIMEOUT: u64 = 600; // 10 minutes — full coverage over a full scan
 
-    let pid = find_warframe_pid().ok_or("Warframe not running")?;
+    let pid = Platform::find_warframe_pid().ok_or("Warframe not running")?;
     let deadline = Instant::now() + Duration::from_secs(TIMEOUT);
     let mut count = 0usize;
 
@@ -698,18 +544,25 @@ mod tests {
 
     const BLOB_TAIL: &[u8] = br#""DeathSquadable":false}"#;
 
-    fn this_process() -> LinuxProcess {
-        LinuxProcess::open(std::process::id()).expect("current process is readable")
+    fn this_process() -> Box<dyn ProcessHandle> {
+        Platform::open_process(std::process::id()).expect("current process is readable")
     }
 
-    /// A readable data mapping over the test process's own bytes.
-    fn region(data: &[u8]) -> LinuxRegion {
-        LinuxRegion {
-            start: data.as_ptr() as usize,
-            len: data.len(),
-            executable: false,
-            ..Default::default()
+    fn mapping(start: usize, len: usize) -> MemoryRegionInfo {
+        MemoryRegionInfo {
+            base_address: start,
+            region_size: len,
+            is_committed: true,
+            is_readable: true,
+            is_writable: true,
+            is_executable: false,
+            backing: RegionBacking::Anonymous,
         }
+    }
+
+    /// A mapping over the test process's own bytes, so the reads are real.
+    fn region(data: &[u8]) -> MemoryRegionInfo {
+        mapping(data.as_ptr() as usize, data.len())
     }
 
     /// Opening of a FULL_ACCOUNT blob, padded out to 64 000 bytes. The parser
@@ -734,8 +587,8 @@ mod tests {
 
     /// The two-tier walk the monitor runs, minus the process discovery.
     fn walk(
-        process: &LinuxProcess,
-        regions: Vec<LinuxRegion>,
+        process: &dyn ProcessHandle,
+        regions: Vec<MemoryRegionInfo>,
     ) -> (Option<usize>, Receiver<BlobInventory>) {
         let (blob_tx, blob_rx) = std::sync::mpsc::channel();
         let saved =
@@ -743,74 +596,12 @@ mod tests {
         (saved, blob_rx)
     }
 
-    fn probe(process: &LinuxProcess, regions: Vec<LinuxRegion>) -> Option<CachedBlobScan> {
+    fn probe(process: &dyn ProcessHandle, regions: Vec<MemoryRegionInfo>) -> Option<CachedBlobScan> {
         scan_cached_blob(&LinuxRegionSource::probing(process, regions))
     }
 
-    #[test]
-    fn linux_reader_reads_its_own_mapping() {
-        let marker = b"frameforge-linux-reader";
-        let process = this_process();
-        let mut actual = vec![0; marker.len()];
-        let read = process
-            .read(marker.as_ptr() as usize, &mut actual)
-            .expect("marker address is mapped");
-        assert_eq!(read, marker.len());
-        assert_eq!(actual, marker);
-    }
 
-    #[test]
-    fn linux_reader_reports_efault_for_an_unmapped_first_page() {
-        let process = this_process();
-        let mut buffer = vec![0u8; 4096];
-        // Below mmap_min_addr on every normal Linux config, so nothing is ever
-        // mapped here.
-        let error = process.read(0x1000, &mut buffer).expect_err("nothing is mapped at 0x1000");
-        assert_eq!(error.raw_os_error(), Some(libc::EFAULT));
-    }
 
-    #[test]
-    fn linux_reader_returns_leading_bytes_when_the_read_crosses_into_a_hole() {
-
-        let page = 4096;
-        // Two adjacent anonymous pages, then revoke access to the second: the
-        // read below spans a readable page followed by an unreadable one,
-        // exactly the shape process_vm_readv reports as a short read rather
-        // than an error. PROT_NONE rather than munmap because tests run in
-        // parallel and a genuine hole is an address another test's allocation
-        // could land in, which would turn this into a flake.
-        let mapped = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                page * 2,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        };
-        assert_ne!(mapped, libc::MAP_FAILED, "test needs two throwaway pages");
-        unsafe {
-            std::ptr::write_bytes(mapped as *mut u8, 0xAB, page);
-            assert_eq!(
-                libc::mprotect(mapped.add(page), page, libc::PROT_NONE),
-                0,
-                "second page must become unreadable"
-            );
-        }
-
-        let process = this_process();
-        let mut buffer = vec![0u8; page * 2];
-        let read = process
-            .read(mapped as usize, &mut buffer)
-            .expect("the first page is mapped, so this must not error");
-        assert_eq!(read, page, "read must stop exactly at the hole");
-        assert!(buffer[..page].iter().all(|&byte| byte == 0xAB));
-
-        unsafe {
-            libc::munmap(mapped, page * 2);
-        }
-    }
 
     /// The probe answers without walking memory, so what matters is that each
     /// cached-region result maps onto the outcome the caller's escalation
@@ -826,11 +617,11 @@ mod tests {
         reset_last_blob_region();
         LAST_BLOB_REGION.store(data.as_ptr() as u64, Ordering::Relaxed);
 
-        let outcome = probe_outcome(probe(&process, vec![region(&data)]), &blob_tx);
+        let outcome = probe_outcome(probe(process.as_ref(), vec![region(&data)]), &blob_tx);
         assert_eq!(outcome, ScanOutcome::Updated);
         assert_eq!(blob_rx.try_recv().expect("a fresh blob is sent on").credits, 42);
 
-        let outcome = probe_outcome(probe(&process, vec![region(&data)]), &blob_tx);
+        let outcome = probe_outcome(probe(process.as_ref(), vec![region(&data)]), &blob_tx);
         assert_eq!(outcome, ScanOutcome::Unchanged);
         assert!(blob_rx.try_recv().is_err(), "unchanged bytes must not re-send the inventory");
 
@@ -840,11 +631,11 @@ mod tests {
         delta.resize(64_000, b' ');
         delta.extend_from_slice(BLOB_TAIL);
         LAST_BLOB_REGION.store(delta.as_ptr() as u64, Ordering::Relaxed);
-        let outcome = probe_outcome(probe(&process, vec![region(&delta)]), &blob_tx);
+        let outcome = probe_outcome(probe(process.as_ref(), vec![region(&delta)]), &blob_tx);
         assert_eq!(outcome, ScanOutcome::CacheMiss);
 
         LAST_BLOB_REGION.store(data.as_ptr() as u64 + 8, Ordering::Relaxed);
-        let outcome = probe_outcome(probe(&process, vec![region(&data)]), &blob_tx);
+        let outcome = probe_outcome(probe(process.as_ref(), vec![region(&data)]), &blob_tx);
         assert_eq!(outcome, ScanOutcome::CacheMiss);
         assert!(blob_rx.try_recv().is_err(), "a miss must not send anything");
 
@@ -858,7 +649,7 @@ mod tests {
         let process = this_process();
 
         LAST_BLOB_REGION.store(data.as_ptr() as u64, Ordering::Relaxed);
-        match probe(&process, vec![region(&data)]).expect("cached blob is re-read") {
+        match probe(process.as_ref(), vec![region(&data)]).expect("cached blob is re-read") {
             CachedBlobScan::Fresh(_, inventory) => assert_eq!(inventory.credits, 42),
             CachedBlobScan::Unchanged => panic!("first sighting of this blob must parse"),
         }
@@ -866,7 +657,7 @@ mod tests {
         // An address that no longer starts a blob must fall back to the walk
         // rather than reporting whatever happens to live there now.
         LAST_BLOB_REGION.store(data.as_ptr() as u64 + 8, Ordering::Relaxed);
-        assert!(probe(&process, vec![region(&data)]).is_none());
+        assert!(probe(process.as_ref(), vec![region(&data)]).is_none());
 
         reset_last_blob_region();
     }
@@ -891,12 +682,12 @@ mod tests {
         arena.extend_from_slice(&second);
         let base = arena.as_ptr() as usize;
         let regions = vec![
-            LinuxRegion { start: base, len: first.len(), ..Default::default() },
-            LinuxRegion { start: base + first.len(), len: second.len(), ..Default::default() },
+            mapping(base, first.len()),
+            mapping(base + first.len(), second.len()),
         ];
         let process = this_process();
         LAST_BLOB_REGION.store(base as u64, Ordering::Relaxed);
-        match probe(&process, regions).expect("split marker is still found") {
+        match probe(process.as_ref(), regions).expect("split marker is still found") {
             CachedBlobScan::Fresh(_, inventory) => assert_eq!(inventory.credits, 42),
             CachedBlobScan::Unchanged => panic!("first sighting of this blob must parse"),
         }
@@ -921,12 +712,12 @@ mod tests {
         arena.extend_from_slice(&second);
         let base = arena.as_ptr() as usize;
         let regions = vec![
-            LinuxRegion { start: base, len: first.len(), ..Default::default() },
-            LinuxRegion { start: base + first.len(), len: second.len(), ..Default::default() },
+            mapping(base, first.len()),
+            mapping(base + first.len(), second.len()),
         ];
         let process = this_process();
         LAST_BLOB_REGION.store(base as u64, Ordering::Relaxed);
-        match probe(&process, regions).expect("blob completed by the next mapping") {
+        match probe(process.as_ref(), regions).expect("blob completed by the next mapping") {
             CachedBlobScan::Fresh(_, inventory) => assert_eq!(inventory.credits, 42),
             CachedBlobScan::Unchanged => panic!("first sighting of this blob must parse"),
         }
@@ -953,23 +744,17 @@ mod tests {
         arena.extend_from_slice(&tail);
         let base = arena.as_ptr() as usize;
         let regions = vec![
-            LinuxRegion { start: base, len: head.len(), ..Default::default() },
-            LinuxRegion {
-                start: base + head.len(),
-                len: code.len(),
-                executable: true,
-                ..Default::default()
+            mapping(base, head.len()),
+            MemoryRegionInfo {
+                is_executable: true,
+                ..mapping(base + head.len(), code.len())
             },
-            LinuxRegion {
-                start: base + head.len() + code.len(),
-                len: tail.len(),
-                ..Default::default()
-            },
+            mapping(base + head.len() + code.len(), tail.len()),
         ];
         let process = this_process();
         LAST_BLOB_REGION.store(base as u64, Ordering::Relaxed);
         assert!(
-            probe(&process, regions).is_none(),
+            probe(process.as_ref(), regions).is_none(),
             "a code mapping cutting the blob must miss, not splice around it"
         );
 
@@ -990,12 +775,12 @@ mod tests {
         let base = arena.as_ptr() as usize;
         // Only the filler is mapped. The blob above it lives in a hole, with
         // the stale seed exactly on the boundary between the two.
-        let regions = vec![LinuxRegion { start: base, len: filler.len(), ..Default::default() }];
+        let regions = vec![mapping(base, filler.len())];
 
         let process = this_process();
         LAST_BLOB_REGION.store((base + filler.len()) as u64, Ordering::Relaxed);
         assert!(
-            probe(&process, regions).is_none(),
+            probe(process.as_ref(), regions).is_none(),
             "a seed on a mapping's end bound is unmapped and must miss"
         );
 
@@ -1014,16 +799,12 @@ mod tests {
         let mut arena = hole.clone();
         arena.extend_from_slice(&blob(7));
         let base = arena.as_ptr() as usize;
-        let regions = vec![LinuxRegion {
-            start: base + hole.len(),
-            len: arena.len() - hole.len(),
-            ..Default::default()
-        }];
+        let regions = vec![mapping(base + hole.len(), arena.len() - hole.len())];
 
         let process = this_process();
         LAST_BLOB_REGION.store(base as u64, Ordering::Relaxed);
         assert!(
-            probe(&process, regions).is_none(),
+            probe(process.as_ref(), regions).is_none(),
             "an unmapped seed must miss, not adopt the next mapping's blob"
         );
 
@@ -1038,19 +819,19 @@ mod tests {
 
         reset_last_blob_region();
         LAST_BLOB_REGION.store(data.as_ptr() as u64, Ordering::Relaxed);
-        match probe(&process, vec![region(&data)]).expect("first scan parses the blob") {
+        match probe(process.as_ref(), vec![region(&data)]).expect("first scan parses the blob") {
             CachedBlobScan::Fresh(_, inventory) => assert_eq!(inventory.credits, 99),
             CachedBlobScan::Unchanged => panic!("first sighting of this blob must parse"),
         }
 
-        match probe(&process, vec![region(&data)]).expect("second scan still finds the region") {
+        match probe(process.as_ref(), vec![region(&data)]).expect("second scan still finds the region") {
             CachedBlobScan::Unchanged => {}
             CachedBlobScan::Fresh(..) => panic!("identical bytes must not be reparsed"),
         }
 
         reset_last_blob_region();
         LAST_BLOB_REGION.store(data.as_ptr() as u64, Ordering::Relaxed);
-        match probe(&process, vec![region(&data)]).expect("scan after reset parses again") {
+        match probe(process.as_ref(), vec![region(&data)]).expect("scan after reset parses again") {
             CachedBlobScan::Fresh(_, inventory) => assert_eq!(inventory.credits, 99),
             CachedBlobScan::Unchanged => panic!("reset must force a reparse"),
         }
@@ -1061,14 +842,14 @@ mod tests {
     #[test]
     fn linux_inventory_scan_reports_unchanged_instead_of_reparsing() {
         let _digest_guard = blob_digest_test_guard();
-        let mapping = blob(7);
+        let arena = blob(7);
         let process = this_process();
 
-        let (found, blobs) = walk(&process, vec![region(&mapping)]);
+        let (found, blobs) = walk(process.as_ref(), vec![region(&arena)]);
         assert!(found.is_some(), "the first walk has no baseline to match");
         assert_eq!(blobs.try_recv().expect("inventory blob is found").credits, 7);
 
-        let (found, blobs) = walk(&process, vec![region(&mapping)]);
+        let (found, blobs) = walk(process.as_ref(), vec![region(&arena)]);
         assert!(found.is_some(), "the second walk must still find the blob");
         assert!(blobs.try_recv().is_err(), "identical bytes must not be reparsed");
 
@@ -1082,14 +863,14 @@ mod tests {
     #[test]
     fn linux_inventory_scan_finds_blob_via_file_backed_fallback() {
         let _digest_guard = blob_digest_test_guard();
-        let mapping = blob(42);
-        let regions = vec![LinuxRegion {
-            path: Some("/usr/lib/warframe/data.pak".into()),
-            ..region(&mapping)
+        let file_mapping = blob(42);
+        let regions = vec![MemoryRegionInfo {
+            backing: RegionBacking::File,
+            ..region(&file_mapping)
         }];
         let process = this_process();
 
-        let (_, blobs) = walk(&process, regions);
+        let (_, blobs) = walk(process.as_ref(), regions);
 
         assert_eq!(
             blobs
@@ -1111,14 +892,14 @@ mod tests {
         let file_backed = blob(2);
         let regions = vec![
             region(&anonymous),
-            LinuxRegion {
-                path: Some("/usr/lib/warframe/data.pak".into()),
+            MemoryRegionInfo {
+                backing: RegionBacking::File,
                 ..region(&file_backed)
             },
         ];
         let process = this_process();
 
-        let (_, blobs) = walk(&process, regions);
+        let (_, blobs) = walk(process.as_ref(), regions);
 
         assert_eq!(
             blobs.try_iter().map(|inventory| inventory.credits).collect::<Vec<_>>(),
@@ -1137,7 +918,7 @@ mod tests {
         second.resize(64_000, 0);
         let process = this_process();
 
-        let (_, blobs) = walk(&process, vec![region(&first), region(&second)]);
+        let (_, blobs) = walk(process.as_ref(), vec![region(&first), region(&second)]);
 
         assert_eq!(blobs.try_recv().expect("inventory blob is found").credits, 42);
         reset_last_blob_region();
@@ -1168,12 +949,12 @@ mod tests {
         arena.extend_from_slice(&blob);
         let base = arena.as_ptr() as usize;
         let regions = vec![
-            LinuxRegion { start: base, len: prefix.len(), ..Default::default() },
-            LinuxRegion { start: base + prefix.len(), len: blob.len(), ..Default::default() },
+            mapping(base, prefix.len()),
+            mapping(base + prefix.len(), blob.len()),
         ];
         let process = this_process();
 
-        let (_, blobs) = walk(&process, regions);
+        let (_, blobs) = walk(process.as_ref(), regions);
 
         assert_eq!(blobs.try_recv().expect("inventory blob is found").credits, 42);
         reset_last_blob_region();
@@ -1190,7 +971,7 @@ mod tests {
         mission.resize(128_000, b' ');
         let process = this_process();
 
-        let (found, blobs) = walk(&process, vec![region(&mission)]);
+        let (found, blobs) = walk(process.as_ref(), vec![region(&mission)]);
 
         assert!(found.is_none(), "a mission delta with no start marker must never parse as an inventory blob");
         assert!(blobs.try_recv().is_err());
@@ -1222,22 +1003,14 @@ mod tests {
         arena.extend_from_slice(&closing);
         let base = arena.as_ptr() as usize;
         let regions = vec![
-            LinuxRegion { start: base, len: opening.len(), ..Default::default() },
-            LinuxRegion { start: base + opening.len(), len: marker_flush.len(), ..Default::default() },
-            LinuxRegion {
-                start: base + opening.len() + marker_flush.len(),
-                len: filler.len(),
-                ..Default::default()
-            },
-            LinuxRegion {
-                start: base + opening.len() + marker_flush.len() + filler.len(),
-                len: closing.len(),
-                ..Default::default()
-            },
+            mapping(base, opening.len()),
+            mapping(base + opening.len(), marker_flush.len()),
+            mapping(base + opening.len() + marker_flush.len(), filler.len()),
+            mapping(base + opening.len() + marker_flush.len() + filler.len(), closing.len()),
         ];
         let process = this_process();
 
-        let (_, blobs) = walk(&process, regions);
+        let (_, blobs) = walk(process.as_ref(), regions);
 
         assert_eq!(blobs.try_recv().expect("blob completed once brace lands").credits, 42);
         reset_last_blob_region();
@@ -1254,7 +1027,7 @@ mod tests {
         second[..BLOB_TAIL.len()].copy_from_slice(BLOB_TAIL);
         let process = this_process();
 
-        let (_, blobs) = walk(&process, vec![region(&first), region(&second)]);
+        let (_, blobs) = walk(process.as_ref(), vec![region(&first), region(&second)]);
 
         assert_eq!(blobs.try_recv().expect("inventory blob is found").credits, 42);
         reset_last_blob_region();
@@ -1264,13 +1037,13 @@ mod tests {
     fn linux_inventory_scan_finds_blob_past_first_chunk_boundary() {
         let _digest_guard = blob_digest_test_guard();
 
-        let mapping = blob(42);
+        let blob_bytes = blob(42);
         let blob_offset = WALK_CHUNK + 1024;
-        let mut arena = vec![0u8; blob_offset + mapping.len()];
-        arena[blob_offset..blob_offset + mapping.len()].copy_from_slice(&mapping);
+        let mut arena = vec![0u8; blob_offset + blob_bytes.len()];
+        arena[blob_offset..blob_offset + blob_bytes.len()].copy_from_slice(&blob_bytes);
         let process = this_process();
 
-        let (_, blobs) = walk(&process, vec![region(&arena)]);
+        let (_, blobs) = walk(process.as_ref(), vec![region(&arena)]);
 
         assert_eq!(
             blobs.try_recv().expect("blob past the first 64 MiB chunk must still be found").credits,
@@ -1287,15 +1060,15 @@ mod tests {
     fn linux_inventory_scan_finds_blob_straddling_chunk_boundary() {
         let _digest_guard = blob_digest_test_guard();
 
-        let mapping = blob(42);
+        let blob_bytes = blob(42);
         // Start marker a few KiB before the seam, end marker (~offset 64 000)
         // well past it, so the blob body crosses the A/B boundary.
         let blob_offset = WALK_CHUNK - 8192;
-        let mut arena = vec![0u8; blob_offset + mapping.len()];
-        arena[blob_offset..blob_offset + mapping.len()].copy_from_slice(&mapping);
+        let mut arena = vec![0u8; blob_offset + blob_bytes.len()];
+        arena[blob_offset..blob_offset + blob_bytes.len()].copy_from_slice(&blob_bytes);
         let process = this_process();
 
-        let (_, blobs) = walk(&process, vec![region(&arena)]);
+        let (_, blobs) = walk(process.as_ref(), vec![region(&arena)]);
 
         assert_eq!(
             blobs.try_recv().expect("blob straddling the 64 MiB seam must be stitched and found").credits,
@@ -1310,106 +1083,21 @@ mod tests {
         let prefix =
             br#"{"RegularCredits":42,"MiscItems":[{"ItemType":"/Lotus/Test","ItemCount":1}],"XPInfo":[],"FusionPoints":0,"PlayerLevel":0,"RawUpgrades":[],"Suits":[{"ItemType":"/Lotus/Powersuits/Mag/Mag"}],"#;
         let suffix = br#""SubscribedToEmails":true,"DeathSquadable":false}"#;
-        let mut mapping = vec![b' '; 128_000];
-        mapping[..prefix.len()].copy_from_slice(prefix);
-        mapping[64_000..64_000 + suffix.len()].copy_from_slice(suffix);
-        let base = mapping.as_ptr() as usize;
+        let mut arena = vec![b' '; 128_000];
+        arena[..prefix.len()].copy_from_slice(prefix);
+        arena[64_000..64_000 + suffix.len()].copy_from_slice(suffix);
+        let base = arena.as_ptr() as usize;
         let regions = vec![
-            LinuxRegion { start: base, len: 64_000, ..Default::default() },
-            LinuxRegion { start: base + 64_000, len: 64_000, ..Default::default() },
+            mapping(base, 64_000),
+            mapping(base + 64_000, 64_000),
         ];
         let process = this_process();
 
-        let (_, blobs) = walk(&process, regions);
+        let (_, blobs) = walk(process.as_ref(), regions);
 
         let inventory = blobs.try_recv().expect("inventory blob is found");
         assert_eq!(inventory.credits, 42);
         assert_eq!(inventory.stackable_items.len(), 1);
         reset_last_blob_region();
-    }
-
-    #[test]
-    fn parses_only_readable_linux_mappings() {
-        let maps = "1000-2000 r--p 0 00:00 0\n2000-2800 --xp 0 00:00 0\n3000-5000 rw-p 0 00:00 0\n";
-        assert_eq!(
-            parse_linux_maps(maps),
-            vec![
-                LinuxRegion {
-                    start: 0x1000,
-                    len: 0x1000,
-                    executable: false,
-                    ..Default::default()
-                },
-                LinuxRegion {
-                    start: 0x3000,
-                    len: 0x2000,
-                    executable: false,
-                    ..Default::default()
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn classifies_pathnames_and_pseudo_paths() {
-        let maps = "\
-1000-2000 rw-p 0 00:00 0 \n\
-2000-3000 rw-p 0 00:00 0 [heap]\n\
-3000-4000 rw-p 0 00:00 0 [stack]\n\
-4000-5000 r--p 0 00:00 0 [vvar]\n\
-5000-6000 r--p 0 00:00 0 [vsyscall]\n\
-6000-7000 r--p 0 08:01 123 /usr/lib/warframe/Warframe.x64.exe\n";
-        let regions = parse_linux_maps(maps);
-
-        assert_eq!(regions[0].path, None);
-        assert!(regions[0].is_anonymous() && !regions[0].is_file_backed());
-
-        assert_eq!(regions[1].path.as_deref(), Some("[heap]"));
-        assert!(regions[1].is_anonymous() && !regions[1].is_file_backed());
-
-        assert_eq!(regions[2].path.as_deref(), Some("[stack]"));
-        assert!(regions[2].is_anonymous() && !regions[2].is_file_backed());
-
-        assert_eq!(regions[3].path.as_deref(), Some("[vvar]"));
-        assert!(!regions[3].is_anonymous() && !regions[3].is_file_backed());
-
-        assert_eq!(regions[4].path.as_deref(), Some("[vsyscall]"));
-        assert!(!regions[4].is_anonymous() && !regions[4].is_file_backed());
-
-        assert_eq!(
-            regions[5].path.as_deref(),
-            Some("/usr/lib/warframe/Warframe.x64.exe")
-        );
-        assert!(!regions[5].is_anonymous() && regions[5].is_file_backed());
-    }
-
-    /// A Steam library folder with a space in its name, plus the " (deleted)"
-    /// suffix an in-place game update leaves behind, are both shapes the game
-    /// image really appears in, and either one mangles the path if the
-    /// pathname is read as a single whitespace token.
-    #[test]
-    fn maps_pathnames_keep_spaces_and_drop_deleted_suffix() {
-        let maps = "\
-1000-2000 r--p 0 08:01 1 /mnt/Games Drive/steamapps/common/Warframe/Warframe.x64.exe\n\
-2000-5000 r-xp 1000 08:01 1 /mnt/Games Drive/steamapps/common/Warframe/Warframe.x64.exe (deleted)\n\
-9000-a000 rw-p 0 00:00 0 [heap]\n";
-        let regions = parse_linux_maps(maps);
-
-        assert_eq!(
-            regions[0].path.as_deref(),
-            Some("/mnt/Games Drive/steamapps/common/Warframe/Warframe.x64.exe")
-        );
-        assert_eq!(regions[1].path.as_deref(), regions[0].path.as_deref());
-    }
-
-    #[test]
-    fn recognizes_warframe_but_not_launcher_processes() {
-        assert!(is_warframe_command(
-            "Z:\\Warframe\\Warframe.x64.exe -cluster:public"
-        ));
-        assert!(!is_warframe_command(
-            "Z:\\Warframe\\Tools\\Launcher.exe"
-        ));
-        assert!(!is_warframe_command("warframe-companion"));
     }
 }

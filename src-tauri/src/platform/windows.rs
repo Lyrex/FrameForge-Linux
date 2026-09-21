@@ -148,28 +148,37 @@ impl Drop for WindowsProcessHandle {
 }
 
 impl ProcessHandle for WindowsProcessHandle {
-    fn read_memory(&self, addr: usize, len: usize) -> Option<(usize, Vec<u8>)> {
+    fn read_into(&self, addr: usize, buf: &mut [u8]) -> usize {
         use std::ffi::c_void;
         use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 
         unsafe {
-            let mut buf = vec![0u8; len];
             let mut n = 0usize;
             let ok = ReadProcessMemory(
                 self.handle,
                 addr as *const c_void,
                 buf.as_mut_ptr() as *mut c_void,
-                len,
+                buf.len(),
                 &mut n,
             );
-
-            if ok == 0 || n == 0 { return None; }
-            buf.truncate(n);
-            Some((addr + n, buf))
+            if ok == 0 { 0 } else { n }
         }
     }
 
-    fn enumerate_regions_from(&self, start_addr: usize) -> Vec<MemoryRegionInfo> {
+    fn regions_from(&self, from: usize) -> Box<dyn Iterator<Item = MemoryRegionInfo> + '_> {
+        Box::new(RegionIter { handle: self, addr: from })
+    }
+}
+
+struct RegionIter<'a> {
+    handle: &'a WindowsProcessHandle,
+    addr: usize,
+}
+
+impl Iterator for RegionIter<'_> {
+    type Item = MemoryRegionInfo;
+
+    fn next(&mut self) -> Option<MemoryRegionInfo> {
         use std::ffi::c_void;
         use std::mem;
         use windows_sys::Win32::System::Memory::{
@@ -177,48 +186,54 @@ impl ProcessHandle for WindowsProcessHandle {
         };
 
         unsafe {
-            let mut regions = Vec::new();
-            let mut addr = start_addr;
-            let mbi_size = mem::size_of::<MEMORY_BASIC_INFORMATION>();
-
-            loop {
-                let mut mbi: MEMORY_BASIC_INFORMATION = mem::zeroed();
-                if VirtualQueryEx(self.handle, addr as *const c_void, &mut mbi, mbi_size) == 0 {
-                    break;
-                }
-
-                let region_end = (mbi.BaseAddress as usize).saturating_add(mbi.RegionSize);
-                if region_end <= addr { break; }
-                addr = region_end;
-
-                let protect = mbi.Protect;
-                regions.push(MemoryRegionInfo {
-                    base_address: mbi.BaseAddress as usize,
-                    region_size: mbi.RegionSize,
-                    is_committed: mbi.State == MEM_COMMIT,
-                    is_readable: mbi.State == MEM_COMMIT
-                        && (protect & 0x02 != 0 || protect & 0x04 != 0 || protect & 0x08 != 0
-                            || protect & 0x20 != 0 || protect & 0x40 != 0 || protect & 0x80 != 0),
-                    is_writable: mbi.State == MEM_COMMIT
-                        && (protect & 0x04 != 0 || protect & 0x08 != 0
-                            || protect & 0x40 != 0 || protect & 0x80 != 0),
-                    is_executable: protect & 0x10 != 0 || protect & 0x20 != 0 || protect & 0x40 != 0,
-                    is_image: mbi.Type == 0x1000000,
-                });
+            let mut mbi: MEMORY_BASIC_INFORMATION = mem::zeroed();
+            if VirtualQueryEx(
+                self.handle.handle,
+                self.addr as *const c_void,
+                &mut mbi,
+                mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+            ) == 0 {
+                return None;
             }
 
-            regions
+            let region_end = (mbi.BaseAddress as usize).saturating_add(mbi.RegionSize);
+            if region_end <= self.addr { return None; }
+            self.addr = region_end;
+
+            let protect = mbi.Protect;
+            Some(MemoryRegionInfo {
+                base_address: mbi.BaseAddress as usize,
+                region_size: mbi.RegionSize,
+                is_committed: mbi.State == MEM_COMMIT,
+                is_readable: mbi.State == MEM_COMMIT
+                    && (protect & 0x02 != 0 || protect & 0x04 != 0 || protect & 0x08 != 0
+                        || protect & 0x20 != 0 || protect & 0x40 != 0 || protect & 0x80 != 0),
+                is_writable: mbi.State == MEM_COMMIT
+                    && (protect & 0x04 != 0 || protect & 0x08 != 0
+                        || protect & 0x40 != 0 || protect & 0x80 != 0),
+                is_executable: protect & 0x10 != 0 || protect & 0x20 != 0 || protect & 0x40 != 0,
+                backing: if mbi.Type == 0x1000000 {
+                    RegionBacking::File
+                } else if mbi.State != MEM_COMMIT {
+                    RegionBacking::Kernel
+                } else {
+                    RegionBacking::Anonymous
+                },
+            })
         }
     }
 }
 
-pub fn open_process(pid: u32) -> Option<Box<dyn ProcessHandle>> {
+pub fn open_process(pid: u32) -> Result<Box<dyn ProcessHandle>, String> {
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
 
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
-        if handle == 0 { return None; }
-        Some(Box::new(WindowsProcessHandle { handle }))
+        if handle == 0 {
+            let err = windows_sys::Win32::Foundation::GetLastError();
+            return Err(format!("OpenProcess failed (error {})", err));
+        }
+        Ok(Box::new(WindowsProcessHandle { handle }))
     }
 }
 
