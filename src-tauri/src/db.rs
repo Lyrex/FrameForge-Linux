@@ -335,3 +335,84 @@ pub fn get_quantity_changes(conn: &Connection, limit: i64) -> Result<Vec<Quantit
         .collect();
     Ok(rows)
 }
+
+// ── Change detection helpers ──────────────────────────────────────────────────
+
+pub fn detect_quantity_changes(
+    conn: &Connection,
+    prev_all: &std::collections::HashMap<String, i64>,
+    emit_qty: &std::collections::HashMap<String, i64>,
+    ignored_paths: &std::collections::HashSet<String>,
+    path_to_name: &std::collections::HashMap<String, String>,
+) -> Vec<QuantityChange> {
+    let mut changes = Vec::new();
+    if prev_all.is_empty() { return changes; }
+    let ts = chrono::Utc::now().timestamp();
+    let all_keys: std::collections::HashSet<&String> =
+        prev_all.keys().chain(emit_qty.keys()).collect();
+    for key in all_keys {
+        if ignored_paths.contains(key.as_str()) { continue; }
+        let old_qty = *prev_all.get(key).unwrap_or(&0);
+        let new_qty = *emit_qty.get(key).unwrap_or(&0);
+        if old_qty == new_qty { continue; }
+        let item_name = path_to_name.get(key.as_str())
+            .cloned()
+            .unwrap_or_else(|| key.split('/').next_back().unwrap_or("?").to_string());
+        let _ = add_quantity_change(conn, key, &item_name, old_qty, new_qty, None);
+        changes.push(QuantityChange {
+            id: 0,
+            unique_name: key.clone(),
+            item_name,
+            old_qty,
+            new_qty,
+            delta: new_qty - old_qty,
+            timestamp: ts,
+            rank: None,
+        });
+    }
+    changes
+}
+
+pub fn detect_mod_rank_changes(
+    conn: &Connection,
+    prev_mods: &std::collections::HashMap<String, crate::memory_scanner::ModCount>,
+    known_mods: &std::collections::HashMap<String, crate::memory_scanner::ModCount>,
+    ignored_paths: &std::collections::HashSet<String>,
+    path_to_name: &std::collections::HashMap<String, String>,
+) -> Vec<QuantityChange> {
+    let mut changes = Vec::new();
+    if prev_mods.is_empty() { return changes; }
+    let ts = chrono::Utc::now().timestamp();
+    let all_paths: std::collections::HashSet<&String> =
+        prev_mods.keys().chain(known_mods.keys()).collect();
+    for path in all_paths {
+        if ignored_paths.contains(path.as_str()) { continue; }
+        let prev = prev_mods.get(path);
+        let current = known_mods.get(path);
+        let all_ranks: std::collections::HashSet<u8> = prev.into_iter()
+            .flat_map(|mods| mods.by_rank.keys())
+            .chain(current.into_iter().flat_map(|mods| mods.by_rank.keys()))
+            .cloned()
+            .collect();
+        for rank in all_ranks {
+            let old_count = prev.map(|p| *p.by_rank.get(&rank).unwrap_or(&0)).unwrap_or(0);
+            let new_count = current.map(|mods| *mods.by_rank.get(&rank).unwrap_or(&0)).unwrap_or(0);
+            if old_count == new_count { continue; }
+            let item_name = path_to_name.get(path.as_str())
+                .cloned()
+                .unwrap_or_else(|| path.split('/').last().unwrap_or("?").to_string());
+            let _ = add_quantity_change(conn, path, &item_name, old_count, new_count, Some(rank));
+            changes.push(QuantityChange {
+                id: 0,
+                unique_name: path.clone(),
+                item_name,
+                old_qty: old_count,
+                new_qty: new_count,
+                delta: new_count - old_count,
+                timestamp: ts,
+                rank: Some(rank),
+            });
+        }
+    }
+    changes
+}

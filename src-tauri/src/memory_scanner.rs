@@ -275,11 +275,10 @@ pub fn scan_steam_id(data: &[u8]) -> Option<String> {
 
 // ─── Public helpers ──────────────────────────────────────────────────────────
 
-#[cfg(target_os = "windows")]
-pub fn find_warframe_pid_pub() -> Option<u32> { find_warframe_pid() }
-
-#[cfg(not(target_os = "windows"))]
-pub fn find_warframe_pid_pub() -> Option<u32> { None }
+pub fn find_warframe_pid_pub() -> Option<u32> {
+    use crate::platform::{ProcessAccess, Platform};
+    Platform::find_warframe_pid()
+}
 
 // ─── Raw memory format probe ──────────────────────────────────────────────────
 //
@@ -287,19 +286,9 @@ pub fn find_warframe_pid_pub() -> Option<u32> { None }
 // of a set of known strings.  Capped at max_hits total.  Used to reverse-engineer
 // the actual JSON format for inventory items without any parsing assumptions.
 
-#[cfg(target_os = "windows")]
 #[tracing::instrument(level = "info", skip_all, fields(max_hits = max_hits))]
 pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
-    use std::ffi::c_void;
-    use std::mem;
-    use windows_sys::Win32::{
-        Foundation::CloseHandle,
-        System::{
-            Diagnostics::Debug::ReadProcessMemory,
-            Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS},
-            Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
-        },
-    };
+    use crate::platform::{Platform, ProcessAccess};
 
     // Patterns to search for — ordered by diagnostic value.
     // "MiscItems":[{ marks the beginning of the actual inventory JSON array from DE's API
@@ -318,99 +307,92 @@ pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
         None => return vec!["Warframe not running".to_string()],
     };
 
-    let process = unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, 0, pid) };
-    if process == 0 { return vec!["OpenProcess failed".to_string()]; }
+    let handle = match Platform::open_process(pid) {
+        Ok(h) => h,
+        Err(e) => return vec![format!("OpenProcess failed: {}", e)],
+    };
 
     let mut results: Vec<String> = Vec::new();
     let mut addr: usize = 0x10000;
-    let mbi_size = mem::size_of::<MEMORY_BASIC_INFORMATION>();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
 
+    const MAX_REGION: usize = 256 * 1024 * 1024;
+    const CHUNK_SIZE: usize = 64 * 1024 * 1024;
+
     'outer: while std::time::Instant::now() < deadline && results.len() < max_hits {
-        let mut mbi: MEMORY_BASIC_INFORMATION = unsafe { mem::zeroed() };
-        if unsafe { VirtualQueryEx(process, addr as *const c_void, &mut mbi, mbi_size) } == 0 { break; }
-        let region_end = (mbi.BaseAddress as usize).saturating_add(mbi.RegionSize);
-        if region_end <= addr { break; }
-        addr = region_end;
+        let regions: Vec<_> = handle.regions_from(addr).collect();
+        if regions.is_empty() { break; }
 
-        if mbi.State != MEM_COMMIT { continue; }
-        let p = mbi.Protect;
-        if p & PAGE_NOACCESS != 0 || p & PAGE_GUARD != 0 { continue; }
-        if p == 0x10 || p == 0x20 { continue; }    // skip executable (code) pages
-        // Skip tiny or enormous regions; read large regions in 64 MB chunks
-        const MAX_REGION: usize = 256 * 1024 * 1024;
-        const CHUNK_SIZE: usize =  64 * 1024 * 1024;
-        if mbi.RegionSize < 4096 || mbi.RegionSize > MAX_REGION { continue; }
-
-        let chunks = if mbi.RegionSize > CHUNK_SIZE {
-            mbi.RegionSize.div_ceil(CHUNK_SIZE)
-        } else { 1 };
-
-        'chunk: for chunk_idx in 0..chunks {
+        for region in &regions {
             if results.len() >= max_hits { break 'outer; }
             if std::time::Instant::now() >= deadline { break 'outer; }
 
-            let chunk_offset = chunk_idx * CHUNK_SIZE;
-            let read_size    = CHUNK_SIZE.min(mbi.RegionSize - chunk_offset);
-            let chunk_addr   = mbi.BaseAddress as usize + chunk_offset;
+            addr = region.base_address + region.region_size;
+            if !region.is_committed || !region.is_readable || region.is_executable { continue; }
+            if region.region_size < 4096 || region.region_size > MAX_REGION { continue; }
 
-            let mut buf = vec![0u8; read_size];
-            let mut bytes_read = 0usize;
-            let ok = unsafe {
-                ReadProcessMemory(process, chunk_addr as *const c_void,
-                    buf.as_mut_ptr() as *mut c_void, read_size, &mut bytes_read)
-            };
-            if ok == 0 || bytes_read < 8 { continue 'chunk; }
-            let data = &buf[..bytes_read];
+            let chunks = if region.region_size > CHUNK_SIZE {
+                region.region_size.div_ceil(CHUNK_SIZE)
+            } else { 1 };
 
-        for needle in NEEDLES {
-            if results.len() >= max_hits { break 'outer; }
-            if let Some(pos) = data.windows(needle.len()).position(|w| w == *needle) {
-                let ctx_start = pos.saturating_sub(80);
-                let ctx_end   = data.len().min(pos + 200);
-                let snip: String = data[ctx_start..ctx_end].iter()
-                    .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '·' })
-                    .collect();
-                results.push(format!(
-                    "0x{:012x}  needle=\"{}\"  ctx: {}",
-                    chunk_addr + ctx_start,
-                    String::from_utf8_lossy(needle),
-                    snip
-                ));
-                // Also grab up to 2 more occurrences of the same needle in this chunk
-                let mut search = pos + needle.len();
-                let mut extra = 0;
-                while extra < 2 && search + needle.len() <= data.len() {
-                    if let Some(rel) = data[search..].windows(needle.len()).position(|w| w == *needle) {
-                        let p2 = search + rel;
-                        let s2 = p2.saturating_sub(80);
-                        let e2 = data.len().min(p2 + 200);
-                        let snip2: String = data[s2..e2].iter()
+            'chunk: for chunk_idx in 0..chunks {
+                if results.len() >= max_hits { break 'outer; }
+                if std::time::Instant::now() >= deadline { break 'outer; }
+
+                let chunk_offset = chunk_idx * CHUNK_SIZE;
+                let read_size    = CHUNK_SIZE.min(region.region_size - chunk_offset);
+                let chunk_addr   = region.base_address + chunk_offset;
+
+                let buf = match handle.read(chunk_addr, read_size) {
+                    Some(r) => r,
+                    None => continue 'chunk,
+                };
+                if buf.len() < 8 { continue 'chunk; }
+                let data = &buf;
+
+                for needle in NEEDLES {
+                    if results.len() >= max_hits { break 'outer; }
+                    if let Some(pos) = data.windows(needle.len()).position(|w| w == *needle) {
+                        let ctx_start = pos.saturating_sub(80);
+                        let ctx_end   = data.len().min(pos + 200);
+                        let snip: String = data[ctx_start..ctx_end].iter()
                             .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '·' })
                             .collect();
                         results.push(format!(
                             "0x{:012x}  needle=\"{}\"  ctx: {}",
-                            chunk_addr + s2,
+                            chunk_addr + ctx_start,
                             String::from_utf8_lossy(needle),
-                            snip2
+                            snip
                         ));
-                        search = p2 + needle.len();
-                        extra += 1;
-                    } else { break; }
+                        // Also grab up to 2 more occurrences of the same needle in this chunk
+                        let mut search = pos + needle.len();
+                        let mut extra = 0;
+                        while extra < 2 && search + needle.len() <= data.len() {
+                            if let Some(rel) = data[search..].windows(needle.len()).position(|w| w == *needle) {
+                                let p2 = search + rel;
+                                let s2 = p2.saturating_sub(80);
+                                let e2 = data.len().min(p2 + 200);
+                                let snip2: String = data[s2..e2].iter()
+                                    .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '·' })
+                                    .collect();
+                                results.push(format!(
+                                    "0x{:012x}  needle=\"{}\"  ctx: {}",
+                                    chunk_addr + s2,
+                                    String::from_utf8_lossy(needle),
+                                    snip2
+                                ));
+                                search = p2 + needle.len();
+                                extra += 1;
+                            } else { break; }
+                        }
+                    }
                 }
-            }
+            } // end 'chunk loop
         }
-        } // end 'chunk loop
     }
 
-    unsafe { CloseHandle(process); }
     if results.is_empty() { results.push("No matches found".to_string()); }
     results
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn dump_inventory_regions(_max_hits: usize) -> Vec<String> {
-    vec!["Only supported on Windows".to_string()]
 }
 
 // Scan all Warframe process memory and save every relevant blob found into `blob_dir`.
@@ -901,6 +883,13 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
 /// genuinely gone (~2 min at the 10 s scan interval).
 pub const MAX_MISSING_STREAK: u32 = 12;
 
+/// Top-level JSON sections that appear and disappear from memory depending on
+/// game state (e.g. after a vendor interaction or inventory sync). These should
+/// never trigger a truncated-capture rejection because their absence is normal.
+const VOLATILE_SECTIONS: &[&str] = &[
+    "RecentVendorPurchases",
+];
+
 /// Per-account memory of which top-level sections a complete blob contains.
 ///
 /// The monitor applies each accepted blob as a full replacement, so a blob that
@@ -930,6 +919,7 @@ impl SectionBaseline {
         let current: std::collections::BTreeSet<&str> = sections.iter().map(String::as_str).collect();
         let missing: Vec<String> = self.known.iter()
             .filter(|k| !current.contains(k.as_str()))
+            .filter(|k| !VOLATILE_SECTIONS.contains(&k.as_str()))
             .cloned()
             .collect();
 
@@ -942,10 +932,14 @@ impl SectionBaseline {
         }
 
         self.missing_streak = 0;
-        let changed = self.known.len() != current.len()
-            || self.known.iter().any(|k| !current.contains(k.as_str()));
+        // Filter volatile sections from the baseline so they are never tracked.
+        let new_known: std::collections::BTreeSet<String> = sections.iter()
+            .filter(|k| !VOLATILE_SECTIONS.contains(&k.as_str()))
+            .cloned()
+            .collect();
+        let changed = self.known != new_known;
         if changed {
-            self.known = sections.iter().cloned().collect();
+            self.known = new_known;
         }
         Ok(changed)
     }
@@ -1016,29 +1010,41 @@ const ANCHORS: &[&[u8]] = &[
 ///
 /// When `save=true` also writes the raw text to `blob_dir` for debugging.
 /// Returns the number of files written (always 0 when `save=false`).
-#[cfg(target_os = "windows")]
 #[tracing::instrument(level = "debug", skip_all, fields(save = save))]
 pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::sync::mpsc::Sender<BlobInventory>, save: bool) -> usize {
+    use crate::mem_regions;
     const MIN_REGION: usize = 64_000;
 
     let pid = match find_warframe_pid_pub() { Some(p) => p, None => return 0 };
-    let mut src = match crate::mem_regions::WindowsRegionSource::open(pid, MIN_REGION, MAX_READ) {
+    let mut src = match mem_regions::open_region_source(
+        pid,
+        MIN_REGION,
+        MAX_READ,
+        MAX_SCAN,
+        None, // no deadline — one-shot caller
+        Some(Box::new(|r| {
+            // Skip executable pages (code, JIT) and file-backed mappings
+            // (PE image sections whose string constants false-trigger the
+            // anchor check). Only anonymous heap/stack memory is useful.
+            !r.is_executable && r.backing != crate::platform::RegionBacking::File
+        })),
+    ) {
         Some(s) => s,
         None => return 0,
     };
 
     let cached_addr = LAST_BLOB_REGION.load(std::sync::atomic::Ordering::Relaxed) as usize;
-    if !save && cached_addr != 0 && try_cached_blob(&src, cached_addr, &blob_tx) {
+    if !save && cached_addr != 0 && try_cached_blob(&*src, cached_addr, &blob_tx) {
         return 0;
     }
 
-    let saved = stitch_blobs(&mut src, blob_dir, ts, blob_tx, save);
-    let (regions_skipped, vquery_ms, read_ms) = src.stats();
+    let saved = stitch_blobs(&mut *src, blob_dir, ts, blob_tx, save);
+    let stats = src.stats();
     debug!(
         target: "frameforge::blob_capture",
-        regions_skipped,
-        vquery_ms,
-        read_ms,
+        regions_skipped = stats.regions_skipped,
+        vquery_ms = stats.enumerate_ms,
+        read_ms = stats.read_ms,
         "source stats"
     );
     saved
@@ -1046,17 +1052,25 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
 
 /// Fast path: re-read the cached address from the last successful scan.
 /// Returns true if a valid blob was found and sent, false if the fast path missed.
-#[cfg(target_os = "windows")]
 fn try_cached_blob(
-    src: &crate::mem_regions::WindowsRegionSource,
+    src: &dyn crate::mem_regions::RegionSource,
     cached_addr: usize,
     blob_tx: &std::sync::mpsc::Sender<BlobInventory>,
 ) -> bool {
-    use crate::mem_regions::RegionSource as _;
-    let (mut next_addr, first_bytes) = match src.read_at(cached_addr) {
+    // Quick check: is the cached address still mapped? Avoids a costly read_at
+    // on a region that has been unmapped since the last scan.
+    match src.region_at(cached_addr) {
+        Some(r) if r.is_committed && r.is_readable => {}
+        _ => {
+            debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path miss — region gone or unmapped");
+            return false;
+        }
+    }
+
+    let (mut next_addr, first_bytes) = match src.read_at(cached_addr, MAX_SCAN) {
         Some(r) => r,
         None => {
-            debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path miss — region gone");
+            debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path miss — read failed");
             return false;
         }
     };
@@ -1076,7 +1090,8 @@ fn try_cached_blob(
 
     let mut stitched = first_bytes;
     while stitched.len() < MAX_SCAN && find_blob_end(&stitched).is_none() {
-        match src.read_at(next_addr) {
+        let remaining = MAX_SCAN - stitched.len();
+        match src.read_at(next_addr, remaining) {
             Some((end, bytes)) => {
                 next_addr = end;
                 if bytes.is_empty() { break; }
@@ -1205,7 +1220,7 @@ fn stitch_blobs(
                         found_result = true;
                     }
                     None => {
-                        warn!(scan_id = scan.id, "end marker found but JSON parse failed — dropped");
+                        warn!(scan_id = scan.id, addr = format_args!("0x{:012x}", scan.seed_addr), "end marker found but JSON parse failed — dropped");
                     }
                 }
                 false // remove completed (or failed) scan
@@ -1322,7 +1337,7 @@ fn stitch_blobs(
                         found_result = true;
                     }
                     None => {
-                        warn!(scan_id = id, "immediate end found but parse failed — dropping");
+                        warn!(scan_id = id, addr = format_args!("0x{seed_addr:012x}"), "immediate end found but parse failed — dropped");
                     }
                 }
             } else {
@@ -1346,9 +1361,6 @@ fn stitch_blobs(
     saved
 }
 
-#[cfg(not(target_os = "windows"))]
-pub fn capture_all_blobs(_blob_dir: &std::path::Path, _ts: &str, _blob_tx: std::sync::mpsc::Sender<BlobInventory>, _save: bool) -> usize { 0 }
-
 
 // ─── Continuous raw memory string dump ───────────────────────────────────────
 //
@@ -1362,98 +1374,76 @@ pub fn capture_all_blobs(_blob_dir: &std::path::Path, _ts: &str, _blob_tx: std::
 // Large regions (>64 MB) are read in 64 MB chunks so the heap stays bounded.
 // The caller is responsible for not holding the file lock across sleeps.
 
-#[cfg(target_os = "windows")]
 pub fn raw_scan_pass(out: &mut impl std::io::Write) -> Result<usize, String> {
-    use std::ffi::c_void;
-    use std::mem;
-    use windows_sys::Win32::{
-        Foundation::CloseHandle,
-        System::{
-            Diagnostics::Debug::ReadProcessMemory,
-            Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS},
-            Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
-        },
-    };
+    use crate::platform::{Platform, ProcessAccess};
 
     const MIN_LEN:  usize = 8;
     const CHUNK:    usize = 64 * 1024 * 1024;
     const TIMEOUT:  u64   = 600; // 10 minutes — full coverage over full scan
 
     let pid = find_warframe_pid().ok_or("Warframe not running")?;
-    let process = unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, 0, pid) };
-    if process == 0 { return Err("OpenProcess failed".into()); }
+    let handle = Platform::open_process(pid)
+        .map_err(|e| format!("OpenProcess failed: {}", e))?;
 
     let mut addr: usize = 0x10000;
-    let mbi_size = mem::size_of::<MEMORY_BASIC_INFORMATION>();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TIMEOUT);
     let mut count = 0usize;
 
     while std::time::Instant::now() < deadline {
-        let mut mbi: MEMORY_BASIC_INFORMATION = unsafe { mem::zeroed() };
-        if unsafe { VirtualQueryEx(process, addr as *const c_void, &mut mbi, mbi_size) } == 0 { break; }
-        let region_end = (mbi.BaseAddress as usize).saturating_add(mbi.RegionSize);
-        if region_end <= addr { break; }
-        addr = region_end;
+        let regions: Vec<_> = handle.regions_from(addr).collect();
+        if regions.is_empty() { break; }
 
-        if mbi.State != MEM_COMMIT { continue; }
-        let p = mbi.Protect;
-        if p & PAGE_NOACCESS != 0 || p & PAGE_GUARD != 0 { continue; }
-        // Only skip pure-execute (no read bit) — PAGE_EXECUTE_READ (0x20) is kept
-        // because game DLL const-string sections use that protection.
-        if p == 0x10 { continue; }
-
-        let chunks = mbi.RegionSize.div_ceil(CHUNK);
-        for ci in 0..chunks {
+        for region in &regions {
             if std::time::Instant::now() >= deadline { break; }
-            let off        = ci * CHUNK;
-            let read_size  = CHUNK.min(mbi.RegionSize - off);
-            let chunk_base = mbi.BaseAddress as usize + off;
 
-            let mut buf = vec![0u8; read_size];
-            let mut bytes_read = 0usize;
-            let ok = unsafe {
-                ReadProcessMemory(process, chunk_base as *const c_void,
-                    buf.as_mut_ptr() as *mut c_void, read_size, &mut bytes_read)
-            };
-            if ok == 0 || bytes_read < MIN_LEN { continue; }
+            addr = region.base_address + region.region_size;
+            if !region.is_committed || !region.is_readable { continue; }
 
-            // Extract printable ASCII runs of MIN_LEN+
-            let data = &buf[..bytes_read];
-            let mut run_start: Option<usize> = None;
-            for (i, &b) in data.iter().enumerate() {
-                let printable = (0x20..0x7f).contains(&b);
-                if printable {
-                    if run_start.is_none() { run_start = Some(i); }
-                } else {
-                    if let Some(s) = run_start.take() {
-                        let len = i - s;
-                        if len >= MIN_LEN {
-                            let s_str = std::str::from_utf8(&data[s..i]).unwrap_or("?");
-                            let _ = writeln!(out, "0x{:012x}  {}", chunk_base + s, s_str);
-                            count += 1;
+            let chunks = region.region_size.div_ceil(CHUNK);
+            for ci in 0..chunks {
+                if std::time::Instant::now() >= deadline { break; }
+                let off        = ci * CHUNK;
+                let read_size  = CHUNK.min(region.region_size - off);
+                let chunk_base = region.base_address + off;
+
+                let buf = match handle.read(chunk_base, read_size) {
+                    Some(r) => r,
+                    None => continue,
+                };
+                if buf.len() < MIN_LEN { continue; }
+
+                // Extract printable ASCII runs of MIN_LEN+
+                let data = &buf;
+                let mut run_start: Option<usize> = None;
+                for (i, &b) in data.iter().enumerate() {
+                    let printable = (0x20..0x7f).contains(&b);
+                    if printable {
+                        if run_start.is_none() { run_start = Some(i); }
+                    } else {
+                        if let Some(s) = run_start.take() {
+                            let len = i - s;
+                            if len >= MIN_LEN {
+                                let s_str = std::str::from_utf8(&data[s..i]).unwrap_or("?");
+                                let _ = writeln!(out, "0x{:012x}  {}", chunk_base + s, s_str);
+                                count += 1;
+                            }
                         }
                     }
                 }
-            }
-            // flush any run that reaches end of chunk
-            if let Some(s) = run_start {
-                let len = bytes_read - s;
-                if len >= MIN_LEN {
-                    let s_str = std::str::from_utf8(&data[s..bytes_read]).unwrap_or("?");
-                    let _ = writeln!(out, "0x{:012x}  {}", chunk_base + s, s_str);
-                    count += 1;
+                // flush any run that reaches end of chunk
+                if let Some(s) = run_start {
+                    let len = data.len() - s;
+                    if len >= MIN_LEN {
+                        let s_str = std::str::from_utf8(&data[s..]).unwrap_or("?");
+                        let _ = writeln!(out, "0x{:012x}  {}", chunk_base + s, s_str);
+                        count += 1;
+                    }
                 }
             }
         }
     }
 
-    unsafe { CloseHandle(process); }
     Ok(count)
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn raw_scan_pass(_out: &mut impl std::io::Write) -> Result<usize, String> {
-    Err("Only supported on Windows".into())
 }
 
 // ─── Riven validity flag scanner ──────────────────────────────────────────────
@@ -1470,7 +1460,6 @@ pub fn raw_scan_pass(_out: &mut impl std::io::Write) -> Result<usize, String> {
 //   The CMP instruction is 7 bytes. RIP at execution = match_va + 7.
 //   flag_va = (match_va + 7) + i32::from_le_bytes(bytes[2..6])
 
-#[cfg(target_os = "windows")]
 fn find_pattern_d2(data: &[u8], base_va: usize) -> Option<usize> {
     let len = data.len();
     if len < 13 { return None; }
@@ -1491,98 +1480,46 @@ fn find_pattern_d2(data: &[u8], base_va: usize) -> Option<usize> {
 /// Scan Warframe's executable image sections for the riven screen validity flag VA.
 /// Returns the virtual address of the single byte: non-zero = screen open, 0 = closed.
 /// Scans once; caller should cache the result and re-scan only on PID change.
-#[cfg(target_os = "windows")]
 pub fn find_riven_validity_va(pid: u32) -> Option<usize> {
-    use std::ffi::c_void;
-    use std::mem;
-    use windows_sys::Win32::{
-        Foundation::CloseHandle,
-        System::{
-            Diagnostics::Debug::ReadProcessMemory,
-            Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT},
-            Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
-        },
-    };
+    use crate::platform::{Platform, ProcessAccess};
 
-    let process = unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, 0, pid) };
-    if process == 0 { return None; }
+    let handle = Platform::open_process(pid).ok()?;
 
     let mut result: Option<usize> = None;
     let mut addr: usize = 0x10000;
-    let mbi_size = mem::size_of::<MEMORY_BASIC_INFORMATION>();
     let start_time = std::time::Instant::now();
 
     while start_time.elapsed().as_secs() < 60 && result.is_none() {
-        let mut mbi: MEMORY_BASIC_INFORMATION = unsafe { mem::zeroed() };
-        if unsafe { VirtualQueryEx(process, addr as *const c_void, &mut mbi, mbi_size) } == 0 { break; }
-        let region_end = (mbi.BaseAddress as usize).saturating_add(mbi.RegionSize);
-        if region_end <= addr { break; }
-        addr = region_end;
+        let regions: Vec<_> = handle.regions_from(addr).collect();
+        if regions.is_empty() { break; }
 
-        // Only scan committed, executable, memory-mapped PE image regions (MEM_IMAGE = 0x1000000).
-        // 0x20 = PAGE_EXECUTE_READ (normal .text), 0x40 = PAGE_EXECUTE_READWRITE (patched pages).
-        let is_exec_image = mbi.State == MEM_COMMIT
-            && matches!(mbi.Protect, 0x20 | 0x40)
-            && mbi.Type == 0x1000000
-            && mbi.RegionSize >= 13
-            && mbi.RegionSize <= 64 * 1024 * 1024;
+        for region in &regions {
+            if result.is_some() { break; }
+            if start_time.elapsed().as_secs() >= 60 { break; }
 
-        if !is_exec_image { continue; }
+            addr = region.base_address + region.region_size;
 
-        let mut buf = vec![0u8; mbi.RegionSize];
-        let mut bytes_read = 0usize;
-        let ok = unsafe {
-            ReadProcessMemory(
-                process, mbi.BaseAddress as *const c_void,
-                buf.as_mut_ptr() as *mut c_void, mbi.RegionSize, &mut bytes_read,
-            )
-        };
-        if ok == 0 || bytes_read < 13 { continue; }
+            // Only scan committed, executable, memory-mapped PE image regions.
+            use crate::platform::RegionBacking;
+            if !region.is_committed || !region.is_executable || region.backing != RegionBacking::File { continue; }
+            if region.region_size < 13 || region.region_size > 64 * 1024 * 1024 { continue; }
 
-        result = find_pattern_d2(&buf[..bytes_read], mbi.BaseAddress as usize);
+            let buf = match handle.read(region.base_address, region.region_size) {
+                Some(r) => r,
+                None => continue,
+            };
+            if buf.len() < 13 { continue; }
+
+            result = find_pattern_d2(&buf, region.base_address);
+        }
     }
 
-    unsafe { CloseHandle(process); }
     result
 }
 
-#[cfg(not(target_os = "windows"))]
-pub fn find_riven_validity_va(_pid: u32) -> Option<usize> { None }
 
-#[cfg(target_os = "windows")]
 fn find_warframe_pid() -> Option<u32> {
-    use std::mem;
-    use windows_sys::Win32::{
-        Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
-        System::Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, Process32First, Process32Next,
-            PROCESSENTRY32, TH32CS_SNAPPROCESS,
-        },
-    };
-    // CreateToolhelp32Snapshot gives process names without needing OpenProcess,
-    // so EAC blocking read access on the game process doesn't prevent detection.
-    unsafe {
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snapshot == INVALID_HANDLE_VALUE { return None; }
-
-        let mut entry: PROCESSENTRY32 = mem::zeroed();
-        entry.dwSize = mem::size_of::<PROCESSENTRY32>() as u32;
-
-        let mut found = None;
-        if Process32First(snapshot, &mut entry) != 0 {
-            loop {
-                let name_len = entry.szExeFile.iter().position(|&b| b == 0).unwrap_or(260);
-                let name = String::from_utf8_lossy(&entry.szExeFile[..name_len]).to_lowercase();
-                if name.starts_with("warframe") && !name.contains("launcher") && !name.contains("companion") {
-                    found = Some(entry.th32ProcessID);
-                    break;
-                }
-                if Process32Next(snapshot, &mut entry) == 0 { break; }
-            }
-        }
-        CloseHandle(snapshot);
-        found
-    }
+    <crate::platform::Platform as crate::platform::ProcessAccess>::find_warframe_pid()
 }
 
 #[cfg(test)]
