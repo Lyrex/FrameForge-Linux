@@ -1128,6 +1128,15 @@ fn stitch_blobs(
     save: bool,
 ) -> usize {
     const MAX_BLOBS: usize = 25;
+    // Outside save mode: cap on how many distinct candidate seeds (start-marker
+    // occurrences) we'll open scans for, and how much further (in bytes read)
+    // we'll keep walking after the first candidate resolves, looking for a second,
+    // competing one. Bounded so the common case (exactly one blob in memory) still
+    // exits about as fast as before, while a stale-vs-live pair — which sits in the
+    // same general heap area, not scattered across the whole address space — still
+    // gets caught. See `candidate_at_bytes`/`completed` below for why this matters.
+    const MAX_CANDIDATE_SEEDS: usize = 6;
+    const EXTRA_SEED_BUDGET: u64 = 64 * 1024 * 1024;
 
     struct ActiveScan {
         data: Vec<u8>,
@@ -1159,11 +1168,31 @@ fn stitch_blobs(
     // Active scans already in progress are still stitched to completion (or dropped).
     // The loop exits as soon as all active scans are gone.
     let mut found_result = false;
+    // Multiple copies of the FULL_ACCOUNT blob can be readable in memory at once
+    // (e.g. a buffer from before a re-serialize, not yet reclaimed/overwritten —
+    // `blob_seed_offsets`'s `{"` check only catches a copy whose brace was already
+    // clobbered, not one that's merely stale but still fully intact). Taking
+    // whichever candidate happens to finish stitching first is a race that can pick
+    // that stale-but-intact copy over the live one, silently rolling the displayed
+    // inventory back. So outside `save` mode we don't commit to the first candidate:
+    // every scan already in flight is left to resolve (succeed or get dropped for
+    // growing too large) and the most complete one is chosen once none are left.
+    // `save` mode is unaffected — it's a diagnostic dump of every candidate found,
+    // not the live inventory feed, and keeps sending on each completion as before.
+    // `candidate_at_bytes` is set the moment the first candidate resolves and drives
+    // the EXTRA_SEED_BUDGET window below (see also MAX_CANDIDATE_SEEDS above).
+    let mut candidate_at_bytes: Option<u64> = None;
+    let mut completed: Vec<(usize, BlobInventory)> = Vec::new();
 
     loop {
         if saved >= MAX_BLOBS { break; }
-        // Early exit: we have a result and no active scans left to finish.
-        if found_result && scans.is_empty() && !save { break; }
+        let seed_budget_exhausted = candidate_at_bytes
+            .is_some_and(|b| bytes_read.saturating_sub(b) > EXTRA_SEED_BUDGET);
+        let no_more_seeds = found_result
+            || starts_found >= MAX_CANDIDATE_SEEDS
+            || (!save && seed_budget_exhausted);
+        // Early exit: we won't open any more candidate seeds and none are still in flight.
+        if no_more_seeds && scans.is_empty() { break; }
 
         let (region_addr, buf) = match src.next_region() {
             Some(r) => r,
@@ -1182,10 +1211,13 @@ fn stitch_blobs(
         // Longest marker length drives the overlap window for straddled-boundary detection.
         const END_MARKER_MAX_LEN: usize = 21; // len("\"HWIDProtectEnabled\":")
         scans.retain_mut(|scan| {
-            // A previous scan in this same retain_mut pass already succeeded.
-            // Drop this one immediately — applying a second blob overwrites correct data
-            // with a stale/parallel copy from a different memory region.
-            if found_result && !save { return false; }
+            // Every scan already in flight is left to run to its own completion (or
+            // get dropped below for growing too large) regardless of whether another
+            // scan already completed — in save mode that's always been true (each
+            // completion is its own diagnostic dump); outside save mode it's now true
+            // too, so the decision between multiple valid candidates (see
+            // `completed` above) is made once, after every in-flight scan has
+            // resolved, not by which one merely finishes stitching first.
             // Advance the search cursor before appending so the overlap catches split markers.
             let search_from = scan.search_from;
             scan.search_from = scan.data.len().saturating_sub(END_MARKER_MAX_LEN - 1);
@@ -1208,16 +1240,19 @@ fn stitch_blobs(
                             mods = inv.mods.len(),
                             "scan SUCCESS"
                         );
-                        LAST_BLOB_REGION.store(scan.seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                         if save {
+                            LAST_BLOB_REGION.store(scan.seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                             let name = format!("Actual_inventory_FULL_ACCOUNT_{}_{:02}.txt", ts, saved + 1);
                             let path = blob_dir.join(&name);
                             if let Some(json) = extract_blob_json(&scan.data) {
                                 if std::fs::write(&path, &json).is_ok() { saved += 1; }
                             }
+                            blob_tx.send(inv).ok();
+                            found_result = true;
+                        } else {
+                            if candidate_at_bytes.is_none() { candidate_at_bytes = Some(bytes_read); }
+                            completed.push((scan.seed_addr, inv));
                         }
-                        blob_tx.send(inv).ok();
-                        found_result = true;
                     }
                     None => {
                         warn!(scan_id = scan.id, addr = format_args!("0x{:012x}", scan.seed_addr), "end marker found but JSON parse failed — dropped");
@@ -1230,8 +1265,13 @@ fn stitch_blobs(
         });
 
         // ── Step 2: check if this chunk opens a new scan ──
-        // Don't open new scans once we already have a result — drain the active ones then exit.
-        if found_result { continue; }
+        // Reuses `no_more_seeds` computed at the top of the loop (found_result, the
+        // seed cap, or the post-first-candidate search budget). Deliberately *not*
+        // gated on merely having one candidate already — a single realized candidate
+        // must not stop us from also opening the one true live copy if it happens to
+        // sit at a later address than a stale-but-still-intact one, which is exactly
+        // the race this whole restructure exists to close.
+        if no_more_seeds { continue; }
 
         let t2 = std::time::Instant::now();
         let has_start     = memchr::memmem::find(chunk, START_MARKER).is_some();
@@ -1326,15 +1366,18 @@ fn stitch_blobs(
                             stackable = inv.stackable_items.len(),
                             "scan immediate SUCCESS"
                         );
-                        LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                         if save {
+                            LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                             let name = format!("Actual_inventory_FULL_ACCOUNT_{}_{:02}.txt", ts, saved + 1);
                             if let Some(json) = extract_blob_json(&seed) {
                                 if std::fs::write(blob_dir.join(&name), &json).is_ok() { saved += 1; }
                             }
+                            blob_tx.send(inv).ok();
+                            found_result = true;
+                        } else {
+                            if candidate_at_bytes.is_none() { candidate_at_bytes = Some(bytes_read); }
+                            completed.push((seed_addr, inv));
                         }
-                        blob_tx.send(inv).ok();
-                        found_result = true;
                     }
                     None => {
                         warn!(scan_id = id, addr = format_args!("0x{seed_addr:012x}"), "immediate end found but parse failed — dropped");
@@ -1346,11 +1389,35 @@ fn stitch_blobs(
         }
     }
 
+    // Among every candidate this pass resolved, keep the most complete one — a
+    // still-intact stale copy of the blob is a full, validly-parsing snapshot too,
+    // just an older one, so item/mod/riven count (which only grows in the very
+    // common case, since players rarely lose most of their account at once) is a
+    // far better signal of "current" than "which one finished stitching first".
+    // Ties (e.g. a single candidate) keep the last one, which is fine — it's the
+    // only one, or an arbitrary but deterministic pick among truly-identical data.
+    let candidates = completed.len();
+    if let Some((seed_addr, inv)) = completed.into_iter().max_by_key(|(_, inv)| {
+        inv.unique_items.len() + inv.stackable_items.len() + inv.mods.len()
+    }) {
+        LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
+        info!(
+            addr = format_args!("0x{seed_addr:012x}"),
+            candidates,
+            unique = inv.unique_items.len(),
+            stackable = inv.stackable_items.len(),
+            mods = inv.mods.len(),
+            "picked most-complete candidate of this capture pass"
+        );
+        blob_tx.send(inv).ok();
+    }
+
     debug!(
         target: "frameforge::blob_capture",
         regions_read,
         starts_found,
         saved,
+        candidates,
         bytes_mb = bytes_read / 1_000_000,
         search_ms = t_search.as_secs_f64() * 1000.0,
         "capture done"
@@ -1789,6 +1856,39 @@ mod stitch_engine_tests {
         let real = make_blob(r#""RegularCredits":42"#);
         let inv = run(vec![(0x1000, open), (0x9000_0000, real)]).expect("real blob should parse");
         assert_eq!(inv.credits, 42);
+    }
+
+    // Regression coverage for: two independently-valid, independently-complete
+    // copies of the FULL_ACCOUNT blob exist in memory at once (e.g. a buffer from
+    // before a re-serialize, still fully intact and not yet overwritten, alongside
+    // the live one). Taking whichever one finishes stitching first is a race that
+    // can silently apply the stale, smaller copy over the live one. The fix: every
+    // candidate this capture pass finds is left to resolve, and the most complete
+    // one (by item/mod count) is the one actually sent — regardless of which
+    // address it was found at or which one happened to finish first.
+
+    #[test]
+    fn stale_copy_at_a_lower_address_does_not_beat_the_live_one() {
+        let stale = make_blob(r#""RegularCredits":1"#); // 1 Suit, from the template default
+        let live = make_blob(
+            r#""RegularCredits":2,"Suits":[{"ItemType":"/Lotus/Powersuits/A/A"},{"ItemType":"/Lotus/Powersuits/B/B"},{"ItemType":"/Lotus/Powersuits/C/C"}]"#,
+        );
+        let inv = run(vec![(0x1000, stale), (0x9000, live)]).expect("should pick a candidate");
+        assert_eq!(inv.credits, 2, "the more-complete candidate should win even though the smaller one was found first");
+        assert_eq!(inv.unique_items.len(), 3);
+    }
+
+    #[test]
+    fn stale_copy_at_a_higher_address_does_not_beat_the_live_one() {
+        // Same scenario with addresses swapped — the outcome must not depend on
+        // which candidate the region walk happens to encounter first.
+        let live = make_blob(
+            r#""RegularCredits":2,"Suits":[{"ItemType":"/Lotus/Powersuits/A/A"},{"ItemType":"/Lotus/Powersuits/B/B"},{"ItemType":"/Lotus/Powersuits/C/C"}]"#,
+        );
+        let stale = make_blob(r#""RegularCredits":1"#);
+        let inv = run(vec![(0x1000, live), (0x9000, stale)]).expect("should pick a candidate");
+        assert_eq!(inv.credits, 2, "the more-complete candidate should win regardless of scan order");
+        assert_eq!(inv.unique_items.len(), 3);
     }
 }
 
