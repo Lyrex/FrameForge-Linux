@@ -894,10 +894,13 @@ fn build_recipe_node(
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().filter_map(|c| {
                 let cu = c["uniqueName"].as_str()?.trim().to_string();
-                let cn = display_names.get(&cu).cloned().unwrap_or_else(|| match c["name"].as_str() {
-                    Some(raw) => strip_tags(raw).to_string(),
-                    None => component_name_from_path(&name, &unique_name, &cu),
-                });
+                // Resolve by uniqueName against the catalog first — that's the
+                // canonical source. WFCD's own `name` text on components[] is
+                // gone as of the 2026 schema change and untrustworthy even if
+                // it returns, so it's not consulted; path-derivation is the
+                // only fallback.
+                let cn = display_names.get(&cu).cloned()
+                    .unwrap_or_else(|| component_name_from_path(&name, &unique_name, &cu));
                 let cc = c["itemCount"].as_u64().unwrap_or(1) as u32;
                 Some(build_recipe_node(cu, cn, cc, Some(c), display_names, export_recipes, depth + 1))
             }).collect())
@@ -1492,10 +1495,11 @@ fn fetch_from_wfcd(
         if let Some(comps) = item_json.get("components").and_then(|v| v.as_array()) {
             let tree: Vec<RecipeComponent> = comps.iter().filter_map(|c| {
                 let cu = c["uniqueName"].as_str()?.trim().to_string();
-                let cn = display_names.get(&cu).cloned().unwrap_or_else(|| match c["name"].as_str() {
-                    Some(raw) => strip_tags(raw).to_string(),
-                    None => component_name_from_path(&parent_name, parent_unique, &cu),
-                });
+                // Resolve by uniqueName against the catalog first (see the
+                // matching comment in build_recipe_node) — never trust raw
+                // JSON text over the canonical uniqueName-keyed lookup.
+                let cn = display_names.get(&cu).cloned()
+                    .unwrap_or_else(|| component_name_from_path(&parent_name, parent_unique, &cu));
                 let cc = c["itemCount"].as_u64().unwrap_or(1) as u32;
                 Some(build_recipe_node(
                     cu, cn, cc, Some(c), &display_names, &export_recipes, 0,
