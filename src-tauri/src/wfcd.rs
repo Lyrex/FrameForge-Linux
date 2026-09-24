@@ -546,6 +546,37 @@ fn strip_tags(s: &str) -> &str {
     }
 }
 
+/// WFCD's `components[]` entries stopped carrying a `name` field upstream —
+/// each object is now just `{ uniqueName, itemCount }`. Recover a short label
+/// ("Chassis", "Barrel", "Blueprint") from the component's own path relative
+/// to its parent's: take the last path segment, drop a trailing "Component",
+/// then strip the parent's own tail off the front
+/// (".../AshPrimeChassisComponent" under parent ".../AshPrime" -> "Chassis").
+/// Falls back to the untouched tail when nothing lines up (e.g. companion
+/// parts whose path doesn't share the parent's name).
+fn component_suffix_from_path(parent_unique: &str, comp_unique: &str) -> String {
+    let comp_tail = comp_unique.rsplit('/').next().unwrap_or(comp_unique);
+    let comp_tail = comp_tail.strip_suffix("Component").unwrap_or(comp_tail);
+    let parent_tail = parent_unique.rsplit('/').next().unwrap_or("");
+    comp_tail
+        .strip_prefix(parent_tail)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(comp_tail)
+        .to_string()
+}
+
+/// Full display name for a component whose WFCD JSON lacks a `name` field:
+/// the derived suffix, prefixed with the parent's own display name unless
+/// the suffix already includes it (mirrors the historical WFCD convention).
+fn component_name_from_path(parent_name: &str, parent_unique: &str, comp_unique: &str) -> String {
+    let suffix = component_suffix_from_path(parent_unique, comp_unique);
+    if parent_name.is_empty() || suffix.starts_with(parent_name) {
+        suffix
+    } else {
+        format!("{} {}", parent_name, suffix)
+    }
+}
+
 /// Fetch the LZMA-compressed Warframe public export index and return a map of
 /// endpoint filename → full URL (e.g. "ExportRecipes_en.json!HASH" → full URL).
 #[allow(dead_code)]
@@ -863,9 +894,10 @@ fn build_recipe_node(
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().filter_map(|c| {
                 let cu = c["uniqueName"].as_str()?.trim().to_string();
-                let raw = c["name"].as_str().unwrap_or("Unknown");
-                let cn = display_names.get(&cu).cloned()
-                    .unwrap_or_else(|| strip_tags(raw).to_string());
+                let cn = display_names.get(&cu).cloned().unwrap_or_else(|| match c["name"].as_str() {
+                    Some(raw) => strip_tags(raw).to_string(),
+                    None => component_name_from_path(&name, &unique_name, &cu),
+                });
                 let cc = c["itemCount"].as_u64().unwrap_or(1) as u32;
                 Some(build_recipe_node(cu, cn, cc, Some(c), display_names, export_recipes, depth + 1))
             }).collect())
@@ -1111,13 +1143,19 @@ fn fetch_from_wfcd(
             // Add component parts to catalog
             if let Some(comps) = item.get("components").and_then(|v| v.as_array()) {
                 for comp in comps {
-                    let cname = match comp.get("name").and_then(|v| v.as_str()) {
-                        Some(n) => n.trim(),
-                        None => continue,
-                    };
                     let cunique = match comp.get("uniqueName").and_then(|v| v.as_str()) {
                         Some(u) => u.trim().to_string(),
                         None => continue,
+                    };
+                    // WFCD's components[] stopped carrying a `name` field; derive a
+                    // short suffix ("Chassis", "Blueprint") from the path when absent.
+                    let derived_cname;
+                    let cname = match comp.get("name").and_then(|v| v.as_str()) {
+                        Some(n) => n.trim(),
+                        None => {
+                            derived_cname = component_suffix_from_path(&unique_name, &cunique);
+                            derived_cname.as_str()
+                        }
                     };
                     let is_part = cunique.starts_with("/Lotus/Types/Recipes/")
                         || cunique.starts_with("/Lotus/Powersuits/")
@@ -1450,12 +1488,14 @@ fn fetch_from_wfcd(
     // Build recipe trees
     let mut recipes: HashMap<String, Vec<RecipeComponent>> = HashMap::new();
     for (parent_unique, item_json) in &raw_craftable {
+        let parent_name = display_names.get(parent_unique).cloned().unwrap_or_default();
         if let Some(comps) = item_json.get("components").and_then(|v| v.as_array()) {
             let tree: Vec<RecipeComponent> = comps.iter().filter_map(|c| {
                 let cu = c["uniqueName"].as_str()?.trim().to_string();
-                let raw = c["name"].as_str().unwrap_or("Unknown");
-                let cn = display_names.get(&cu).cloned()
-                    .unwrap_or_else(|| strip_tags(raw).to_string());
+                let cn = display_names.get(&cu).cloned().unwrap_or_else(|| match c["name"].as_str() {
+                    Some(raw) => strip_tags(raw).to_string(),
+                    None => component_name_from_path(&parent_name, parent_unique, &cu),
+                });
                 let cc = c["itemCount"].as_u64().unwrap_or(1) as u32;
                 Some(build_recipe_node(
                     cu, cn, cc, Some(c), &display_names, &export_recipes, 0,
