@@ -67,7 +67,7 @@ pub struct DebugUnmatched {
 /// Split a PascalCase path segment into space-separated words.
 /// e.g. "GarudaSystemsBlueprint" → "Garuda Systems Blueprint"
 ///      "ChromaBeaconCComponent"  → "Chroma Beacon C Component"
-fn camel_to_words(s: &str) -> String {
+pub(crate) fn camel_to_words(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len() + 8);
     for (i, &c) in chars.iter().enumerate() {

@@ -546,31 +546,62 @@ fn strip_tags(s: &str) -> &str {
     }
 }
 
+/// Lowercased PascalCase words from a path segment, for order-independent
+/// comparison (e.g. "AkstilettoPrimeBarrel" -> ["akstiletto", "prime", "barrel"]).
+fn pascal_words(s: &str) -> Vec<String> {
+    crate::catalogue::camel_to_words(s)
+        .split_whitespace()
+        .map(|w| w.to_lowercase())
+        .collect()
+}
+
 /// WFCD's `components[]` entries stopped carrying a `name` field upstream —
 /// each object is now just `{ uniqueName, itemCount }`. Recover a short label
 /// ("Chassis", "Barrel", "Blueprint") from the component's own path relative
 /// to its parent's: take the last path segment, drop a trailing "Component",
-/// then strip the parent's own tail off the front
+/// split into words, and drop any word that also identifies the parent (from
+/// either the parent's own display name or its path tail).
+///
+/// Word-based and order-independent because the parent's own path tail and
+/// the component's path tail don't always use the same word order — e.g.
+/// parent tail "PrimeAkstiletto" vs. component tail "AkstilettoPrimeBarrel"
 /// (".../AshPrimeChassisComponent" under parent ".../AshPrime" -> "Chassis").
 /// Falls back to the untouched tail when nothing lines up (e.g. companion
 /// parts whose path doesn't share the parent's name).
-fn component_suffix_from_path(parent_unique: &str, comp_unique: &str) -> String {
+fn component_suffix_from_path(parent_name: &str, parent_unique: &str, comp_unique: &str) -> String {
     let comp_tail = comp_unique.rsplit('/').next().unwrap_or(comp_unique);
     let comp_tail = comp_tail.strip_suffix("Component").unwrap_or(comp_tail);
+
     let parent_tail = parent_unique.rsplit('/').next().unwrap_or("");
-    comp_tail
-        .strip_prefix(parent_tail)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(comp_tail)
-        .to_string()
+    let mut parent_words: std::collections::HashSet<String> = pascal_words(parent_tail).into_iter().collect();
+    parent_words.extend(parent_name.split_whitespace().map(|w| w.to_lowercase()));
+
+    let comp_words = pascal_words(comp_tail);
+    let remaining: Vec<&String> = comp_words.iter()
+        .filter(|w| !parent_words.contains(w.as_str()))
+        .collect();
+
+    if remaining.is_empty() {
+        return comp_tail.to_string();
+    }
+    remaining.iter()
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Full display name for a component whose WFCD JSON lacks a `name` field:
 /// the derived suffix, prefixed with the parent's own display name unless
 /// the suffix already includes it (mirrors the historical WFCD convention).
 fn component_name_from_path(parent_name: &str, parent_unique: &str, comp_unique: &str) -> String {
-    let suffix = component_suffix_from_path(parent_unique, comp_unique);
-    if parent_name.is_empty() || suffix.starts_with(parent_name) {
+    let suffix = component_suffix_from_path(parent_name, parent_unique, comp_unique);
+    if parent_name.is_empty() || suffix.to_lowercase().starts_with(&parent_name.to_lowercase()) {
         suffix
     } else {
         format!("{} {}", parent_name, suffix)
@@ -1156,7 +1187,7 @@ fn fetch_from_wfcd(
                     let cname = match comp.get("name").and_then(|v| v.as_str()) {
                         Some(n) => n.trim(),
                         None => {
-                            derived_cname = component_suffix_from_path(&unique_name, &cunique);
+                            derived_cname = component_suffix_from_path(&name, &unique_name, &cunique);
                             derived_cname.as_str()
                         }
                     };
@@ -1757,5 +1788,50 @@ mod tests {
 
         assert!(out.json.is_none());
         assert!(out.etag.is_none());
+    }
+
+    // ── component_suffix_from_path / component_name_from_path ──────────────
+
+    #[test]
+    fn suffix_handles_reversed_word_order() {
+        // Parent tail "PrimeAkstiletto" vs. component tail "AkstilettoPrimeBarrel" —
+        // the component repeats "Akstiletto" and "Prime" but in the opposite order.
+        let suffix = component_suffix_from_path(
+            "Akstiletto Prime",
+            "/Lotus/Weapons/Tenno/Pistols/PrimeAkstiletto/PrimeAkstiletto",
+            "/Lotus/Types/Recipes/Weapons/WeaponParts/AkstilettoPrimeBarrel",
+        );
+        assert_eq!(suffix, "Barrel");
+
+        let name = component_name_from_path(
+            "Akstiletto Prime",
+            "/Lotus/Weapons/Tenno/Pistols/PrimeAkstiletto/PrimeAkstiletto",
+            "/Lotus/Types/Recipes/Weapons/WeaponParts/AkstilettoPrimeBarrel",
+        );
+        assert_eq!(name, "Akstiletto Prime Barrel");
+    }
+
+    #[test]
+    fn suffix_handles_matching_prefix_order() {
+        // The original case this function was written for: component tail
+        // literally starts with the parent's own tail.
+        let suffix = component_suffix_from_path(
+            "Ash Prime",
+            "/Lotus/Powersuits/AshPrime/AshPrime",
+            "/Lotus/Powersuits/AshPrime/AshPrimeChassisComponent",
+        );
+        assert_eq!(suffix, "Chassis");
+    }
+
+    #[test]
+    fn suffix_falls_back_when_nothing_lines_up() {
+        // Companion parts whose path shares nothing with the parent's name —
+        // still word-split (nicer for display than the raw PascalCase run).
+        let suffix = component_suffix_from_path(
+            "Some Companion",
+            "/Lotus/Types/Game/CatbrowPet/CatbrowPetPowerSuit",
+            "/Lotus/Types/Recipes/Weapons/WeaponParts/UnrelatedPartName",
+        );
+        assert_eq!(suffix, "Unrelated Part Name");
     }
 }
