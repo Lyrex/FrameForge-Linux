@@ -180,6 +180,52 @@ fn fetch_wiki_reward_names() -> HashSet<String> {
     names
 }
 
+/// Hand-curated exceptions where a prime part's ducat value doesn't follow the
+/// standard drop-rarity formula (`ducat_value_from_rarities`). Mirrors the Warframe
+/// Wiki's `Module:Void/data` `DUCAT_EXCEPTIONS` table — fetched once and bundled here
+/// rather than queried live, so no per-user runtime dependency on the wiki is added.
+/// Keys are lowercased full item+part display names.
+const DUCAT_EXCEPTIONS_JSON: &str = include_str!("../resources/ducat_exceptions.json");
+
+fn load_ducat_exceptions() -> HashMap<String, u32> {
+    let parsed: serde_json::Value = match serde_json::from_str(DUCAT_EXCEPTIONS_JSON) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, "failed to parse bundled ducat_exceptions.json");
+            return HashMap::new();
+        }
+    };
+    parsed.get("exceptions")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_u64().map(|n| (k.to_lowercase(), n as u32)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Derive a prime part/blueprint's ducat value from the set of rarities it drops as
+/// across all relics that carry it. WFCD's `components[]` sub-objects stopped carrying
+/// a `ducats` field upstream (same schema change that dropped `name`/`imageName`), and
+/// unlike those two fields there is no parent-item fallback — ducat value genuinely
+/// isn't stored anywhere else in WFCD's data. The Warframe Wiki computes it the same
+/// way: it's a pure function of drop rarity, not an independently tracked number.
+/// "Bronze"/"Silver"/"Gold" = Common/Uncommon/Rare (this codebase's naming, matching
+/// `RelicReward::rarity`).
+fn ducat_value_from_rarities(rarities: &HashSet<&str>) -> Option<u32> {
+    let bronze = rarities.contains("Bronze");
+    let silver = rarities.contains("Silver");
+    let gold = rarities.contains("Gold");
+    if bronze && gold { return Some(25); }
+    if bronze && silver { return Some(25); }
+    if silver && gold { return Some(65); }
+    if gold { return Some(100); }
+    if silver { return Some(45); }
+    if bronze { return Some(15); }
+    None
+}
+
 // ==============================================================================
 // Upstream sources
 // ==============================================================================
@@ -1561,6 +1607,44 @@ fn fetch_from_wfcd(
     // Build relic_rewards from pre-fetched Relics.json.
     let relic_rewards = parse_relics_rewards(relics_json, &image_by_name);
 
+    // Backfill ducat values that WFCD's components[] no longer carries (the same
+    // upstream schema change that dropped `name`/`imageName` from every component
+    // sub-object also dropped `ducats`, but with no parent-item fallback available —
+    // see `ducat_value_from_rarities`). This must run before blueprint_names below,
+    // which reads item.ducats.
+    {
+        let ducat_exceptions = load_ducat_exceptions();
+        let mut rarities_by_unique: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut rarities_by_name: HashMap<String, HashSet<String>> = HashMap::new();
+        for rewards in relic_rewards.values() {
+            for r in rewards {
+                if !r.unique_name.is_empty() {
+                    rarities_by_unique.entry(r.unique_name.clone()).or_default().insert(r.rarity.clone());
+                }
+                rarities_by_name.entry(r.name.to_lowercase()).or_default().insert(r.rarity.clone());
+            }
+        }
+        let mut backfilled = 0u32;
+        for item in items.iter_mut() {
+            if item.ducats.is_some() { continue; }
+            if let Some(&v) = ducat_exceptions.get(&item.name.to_lowercase()) {
+                item.ducats = Some(v);
+                backfilled += 1;
+                continue;
+            }
+            let rarities = rarities_by_unique.get(&item.unique_name)
+                .or_else(|| rarities_by_name.get(&item.name.to_lowercase()));
+            if let Some(rarities) = rarities {
+                let set: HashSet<&str> = rarities.iter().map(|s| s.as_str()).collect();
+                if let Some(v) = ducat_value_from_rarities(&set) {
+                    item.ducats = Some(v);
+                    backfilled += 1;
+                }
+            }
+        }
+        info!(backfilled, "backfilled ducat values from relic drop rarity (WFCD components[] no longer carries them)");
+    }
+
     // Build blueprint_names: blueprint_path → (display_name, ducats)
     // Lets the frontend create virtual catalog entries for component blueprints that
     // are tracked by the API but may be absent from the WFCD catalog.
@@ -1833,5 +1917,41 @@ mod tests {
             "/Lotus/Types/Recipes/Weapons/WeaponParts/UnrelatedPartName",
         );
         assert_eq!(suffix, "Unrelated Part Name");
+    }
+
+    // ── ducat_value_from_rarities / load_ducat_exceptions ──────────────────
+    // WFCD's components[] entries stopped carrying a `ducats` field upstream, with
+    // no parent-item fallback available (unlike name/image). Ducat value is instead
+    // derived from drop rarity, matching the Warframe Wiki's own Module:Void/data
+    // formula, plus a small bundled exceptions table for parts that don't follow it.
+
+    #[test]
+    fn ducat_formula_matches_single_rarity_tiers() {
+        assert_eq!(ducat_value_from_rarities(&["Bronze"].into_iter().collect()), Some(15));
+        assert_eq!(ducat_value_from_rarities(&["Silver"].into_iter().collect()), Some(45));
+        assert_eq!(ducat_value_from_rarities(&["Gold"].into_iter().collect()), Some(100));
+    }
+
+    #[test]
+    fn ducat_formula_matches_mixed_rarity_tiers() {
+        assert_eq!(ducat_value_from_rarities(&["Bronze", "Gold"].into_iter().collect()), Some(25));
+        assert_eq!(ducat_value_from_rarities(&["Bronze", "Silver"].into_iter().collect()), Some(25));
+        assert_eq!(ducat_value_from_rarities(&["Silver", "Gold"].into_iter().collect()), Some(65));
+    }
+
+    #[test]
+    fn ducat_formula_none_for_empty_rarities() {
+        assert_eq!(ducat_value_from_rarities(&HashSet::new()), None);
+    }
+
+    #[test]
+    fn ducat_exceptions_load_and_contain_known_entries() {
+        let exceptions = load_ducat_exceptions();
+        assert!(!exceptions.is_empty(), "bundled ducat_exceptions.json should parse to a non-empty map");
+        // Sanity-check a couple of entries against the wiki's DUCAT_EXCEPTIONS table.
+        assert_eq!(exceptions.get("akstiletto prime receiver"), Some(&45));
+        assert_eq!(exceptions.get("forma blueprint"), Some(&0));
+        // The "_comment" key must never leak in as a fake exception entry.
+        assert!(!exceptions.contains_key("_comment"));
     }
 }
