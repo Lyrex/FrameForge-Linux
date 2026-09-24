@@ -78,6 +78,10 @@ pub trait RegionSource {
 
 /// Open a region source for the given process. Returns `None` on unsupported
 /// platforms or when the process cannot be opened.
+///
+/// The Linux scanner opens its sources from handles it already holds, so
+/// nothing on Linux calls this.
+#[allow(dead_code)]
 pub fn open_region_source(
     pid: u32,
     min_region: usize,
@@ -100,7 +104,10 @@ pub fn open_region_source(
 /// handed out, so no data is lost beyond `read_cap`.
 pub struct ProcessRegions {
     handle: Box<dyn ProcessHandle>,
-    addr: usize,
+    /// The walk reads the map once, on the first `next_region`. Linux
+    /// `regions_from` re-parses `/proc/pid/maps` on every call, and a Proton
+    /// game has thousands of mappings.
+    regions: Option<std::vec::IntoIter<MemoryRegionInfo>>,
     min_region: usize,
     read_cap: usize,
     chunk: usize,
@@ -125,7 +132,7 @@ impl ProcessRegions {
     ) -> Self {
         Self {
             handle,
-            addr: 0,
+            regions: None,
             min_region,
             read_cap,
             chunk,
@@ -143,19 +150,16 @@ impl ProcessRegions {
         self.deadline.map_or(false, |d| std::time::Instant::now() >= d)
     }
 
-    /// Query the next region from the handle, apply the caller-supplied
-    /// filter, and return it. The borrow on `self.handle` ends when
-    /// `regions_from().next()` returns, so `self.handle` is free for
-    /// `read_into` afterwards.
     fn next_passing_region(&mut self) -> Option<MemoryRegionInfo> {
-        let t = std::time::Instant::now();
+        if self.regions.is_none() {
+            let t = std::time::Instant::now();
+            let regions: Vec<_> = self.handle.regions_from(0).collect();
+            self.regions = Some(regions.into_iter());
+            self.stats.enumerate_ms.set(t.elapsed().as_secs_f64() * 1000.0);
+        }
         loop {
             if self.expired() { return None; }
-            let region = self.handle.regions_from(self.addr).next()?;
-            self.addr = region.base_address + region.region_size;
-            self.stats.enumerate_ms.set(
-                self.stats.enumerate_ms.get() + t.elapsed().as_secs_f64() * 1000.0,
-            );
+            let region = self.regions.as_mut()?.next()?;
 
             if !region.is_committed || !region.is_readable {
                 self.stats.regions_skipped.set(self.stats.regions_skipped.get() + 1);
@@ -189,31 +193,23 @@ impl RegionSource for ProcessRegions {
                     let len = self.chunk.min(self.read_cap).min(remaining);
 
                     let t = std::time::Instant::now();
-                    self.buf.resize(len, 0);
-                    let n = self.handle.read_into(base, &mut self.buf);
+                    // The buffer only grows. Resizing it down and back up
+                    // would zero up to `chunk` bytes again after every small
+                    // region.
+                    if self.buf.len() < len {
+                        self.buf.resize(len, 0);
+                    }
+                    let n = self.handle.read_into(base, &mut self.buf[..len]);
                     self.stats.read_ms.set(
                         self.stats.read_ms.get() + t.elapsed().as_secs_f64() * 1000.0,
                     );
 
                     self.offset += len;
 
-                    if n == 0 {
-                        // Unmapped hole — stop the stitch here.
-                        self.current = None;
-                        self.offset = 0;
-                        return Some((base, &[]));
-                    }
-                    if n < len {
-                        // Short read (faulted page) — return what we got
-                        // and end this region.
-                        self.buf.truncate(n);
-                        let result = (base, &self.buf[..n]);
-                        self.current = None;
-                        self.offset = 0;
-                        return Some(result);
-                    }
-                    self.buf.truncate(n);
-                    return Some((base, &self.buf));
+                    // A failed or short chunk does not end the region, because
+                    // pages past a fault can still be mapped and the blob may
+                    // sit in them.
+                    return Some((base, &self.buf[..n]));
                 }
                 // Region fully consumed.
                 self.current = None;
@@ -297,5 +293,49 @@ impl RegionSource for RecordedRegions {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::RegionBacking;
+
+    struct FaultInMiddle {
+        map_reads: std::rc::Rc<Cell<usize>>,
+    }
+
+    impl ProcessHandle for FaultInMiddle {
+        fn read_into(&self, addr: usize, buf: &mut [u8]) -> usize {
+            if addr == 0x1001 { return 0; }
+            buf[0] = addr as u8;
+            1
+        }
+
+        fn regions_from(&self, _from: usize) -> Box<dyn Iterator<Item = MemoryRegionInfo> + '_> {
+            self.map_reads.set(self.map_reads.get() + 1);
+            Box::new(std::iter::once(MemoryRegionInfo {
+                base_address: 0x1000,
+                region_size: 3,
+                is_committed: true,
+                is_readable: true,
+                is_writable: true,
+                is_executable: false,
+                backing: RegionBacking::Anonymous,
+            }))
+        }
+    }
+
+    #[test]
+    fn walk_reads_past_a_faulted_chunk_and_reads_the_map_once() {
+        let map_reads = std::rc::Rc::new(Cell::new(0));
+        let handle = FaultInMiddle { map_reads: map_reads.clone() };
+        let mut source = ProcessRegions::new(Box::new(handle), 0, 1, 1, None, None);
+        let mut chunks = Vec::new();
+        while let Some((addr, bytes)) = source.next_region() {
+            chunks.push((addr, bytes.to_vec()));
+        }
+        assert_eq!(chunks, vec![(0x1000, vec![0x00]), (0x1001, vec![]), (0x1002, vec![0x02])]);
+        assert_eq!(map_reads.get(), 1);
     }
 }
