@@ -888,6 +888,7 @@ pub const MAX_MISSING_STREAK: u32 = 12;
 /// never trigger a truncated-capture rejection because their absence is normal.
 const VOLATILE_SECTIONS: &[&str] = &[
     "RecentVendorPurchases",
+    "MiscAccountData",
 ];
 
 /// Per-account memory of which top-level sections a complete blob contains.
