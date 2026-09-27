@@ -261,13 +261,6 @@ export default function App() {
     if (showSettings && settingsTab === "debugging") reloadDebugSizes();
   }, [showSettings, settingsTab]); // eslint-disable-line
 
-  // ── Log watcher — always start regardless of memory scanner toggle ─────────
-  // EE.log is plain file I/O (not memory reading) — handles riven detection,
-  // trade completion, and WFM whisper detection unconditionally.
-  useEffect(() => {
-    invoke("start_log_watcher").catch(() => {});
-  }, []); // eslint-disable-line
-
   // ── WFM auto-login at app start ───────────────────────────────────────────
   // Restores the session into Rust's AppState so the Trading tab is instantly
   // ready when the user opens it — no need to visit the tab first.
@@ -358,7 +351,7 @@ export default function App() {
 
   // ── Blob processing status ────────────────────────────────────────────────
   useEffect(() => {
-    const unlisten = listen<BlobStatusPayload>("blob-status", e => {
+    const unlisten = listen<BlobStatusPayload>(TAURI_EVENTS.BLOB_STATUS, e => {
       const { stage } = e.payload;
       if (stage === "scanning") {
         if (blobDoneTimerRef.current) clearTimeout(blobDoneTimerRef.current);

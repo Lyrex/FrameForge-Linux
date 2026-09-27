@@ -1,11 +1,9 @@
 use std::collections::HashMap;
-use tauri::{Emitter, State};
+use tauri::State;
 use tracing::warn;
 
 use crate::app_state::AppState;
-use crate::{append_to_file, memory_scanner, ocr, truncate_chars};
-
-type RivenFlagVa = (u32, Option<usize>);
+use crate::{append_to_file, ocr, truncate_chars};
 
 // ─── Riven database ───────────────────────────────────────────────────────────
 
@@ -302,15 +300,6 @@ static RIVEN_DB: std::sync::OnceLock<std::sync::Mutex<HashMap<String, RivenEntry
 pub(crate) fn get_weapon_dispositions(state: State<AppState>) -> HashMap<String, f32> {
     state.weapon_dispositions.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
-
-/// Cache: (warframe_pid, Option<flag_va>). None inner = scanned this PID, pattern not found.
-/// Re-scanned only when PID changes (game restart). Prevents 200ms re-scan storm.
-static RIVEN_FLAG_VA: std::sync::OnceLock<std::sync::Mutex<Option<RivenFlagVa>>> =
-    std::sync::OnceLock::new();
-
-/// Guard: prevents spawning multiple watcher threads if start_riven_memory_watcher is called again.
-static RIVEN_WATCHER_RUNNING: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
 
 pub(crate) fn get_riven_db() -> &'static std::sync::Mutex<HashMap<String, RivenEntry>> {
     RIVEN_DB.get_or_init(|| {
@@ -873,106 +862,6 @@ pub(crate) fn riven_screen_visible() -> bool {
     ));
 
     fits_in_visible
-}
-
-/// Read the single validity-flag byte that Overwolf GEP uses to track the riven reroll screen.
-/// Non-zero = screen open; 0 = closed. Returns true on any error (fail-open avoids false closes).
-/// The VA is found once via Pattern D-2 and cached; re-scanned only when the game restarts.
-#[tauri::command]
-/// Read the riven validity flag byte. Returns None if Warframe is not running.
-/// Returns Some(true) = screen open, Some(false) = screen closed.
-/// Fails open (Some(true)) on read errors so the overlay is never falsely dismissed.
-fn read_riven_flag_byte() -> Option<bool> {
-    use crate::platform::{Platform, ProcessAccess};
-
-    let pid = memory_scanner::find_warframe_pid_pub()?;
-
-    let cache = RIVEN_FLAG_VA.get_or_init(|| std::sync::Mutex::new(None));
-    let mut cached = cache.lock().unwrap_or_else(|e| e.into_inner());
-    if cached.is_none_or(|(p, _)| p != pid) {
-        // Scan once per PID. Store (pid, None) if pattern not found so we don't re-scan every 200ms.
-        let va = memory_scanner::find_riven_validity_va(pid);
-        *cached = Some((pid, va));
-    }
-    let flag_va = match *cached {
-        Some((_, Some(va))) => va,
-        // Pattern not found for this PID — return None so the watcher ignores this tick.
-        // Do NOT fail-open here: that would fire a false open event on every app start.
-        Some((_, None)) | None => { return None; }
-    };
-    drop(cached);
-
-    let handle = match Platform::open_process(pid) {
-        Ok(h) => h,
-        Err(_) => return Some(true), // open failed — fail open
-    };
-
-    let buf = match handle.read(flag_va, 1) {
-        Some(r) => r,
-        None => return Some(true), // read failed — fail open
-    };
-
-    if buf.is_empty() { return Some(true); }
-    Some(buf[0] != 0)
-}
-
-/// Background thread: polls the riven validity flag every 200 ms and emits
-/// riven-screen-open-mem / riven-screen-close-mem on state transitions.
-/// Open fires on the first non-zero reading (fast). Close requires 2 consecutive
-/// zero readings (400 ms) to avoid false dismissals.
-#[tauri::command]
-pub(crate) fn start_riven_memory_watcher(app: tauri::AppHandle) {
-    use std::sync::atomic::Ordering;
-    if RIVEN_WATCHER_RUNNING.swap(true, Ordering::SeqCst) {
-        return; // already running — don't spawn a second thread
-    }
-    std::thread::spawn(move || {
-        let mut prev_open = false;
-        let mut close_streak: u8 = 0;
-        let mut warframe_was_running = false;
-
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-
-            let pid_found = memory_scanner::find_warframe_pid_pub().is_some();
-            if !pid_found {
-                // Warframe not running — reset state
-                if warframe_was_running {
-                    prev_open = false;
-                    close_streak = 0;
-                    warframe_was_running = false;
-                }
-                continue;
-            }
-            warframe_was_running = true;
-
-            match read_riven_flag_byte() {
-                None => {
-                    // Warframe running but pattern VA not found yet — don't change state,
-                    // just wait. This avoids a false open event on app start.
-                }
-                Some(true) => {
-                    close_streak = 0;
-                    if !prev_open {
-                        prev_open = true;
-                        let _ = app.emit("riven-screen-open-mem", ());
-                    }
-                }
-                Some(false) => {
-                    if prev_open {
-                        close_streak += 1;
-                        if close_streak >= 2 {
-                            prev_open = false;
-                            close_streak = 0;
-                            let _ = app.emit("riven-screen-close-mem", ());
-                        }
-                    } else {
-                        close_streak = 0;
-                    }
-                }
-            }
-        }
-    });
 }
 
 /// Write an error into the riven session log (called from TypeScript when OCR command fails).

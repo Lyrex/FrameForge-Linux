@@ -10,6 +10,7 @@ use crate::app_state::AppState;
 use crate::cache::atomic_write;
 use crate::catalogue;
 use crate::db;
+use crate::events;
 use crate::inventory_state::{build_inventory_from_blob, load_inventory_state_cache};
 use crate::memory_scanner;
 use crate::monitor::{
@@ -96,7 +97,7 @@ pub(crate) fn spawn_blob_capture_thread(
             let mut initial_qty = known.clone();
             for k in unique_stable.keys() { initial_qty.entry(k.clone()).or_insert(1); }
             for (path, mc) in &known_mods { initial_qty.entry(path.clone()).or_insert(mc.total); }
-            let _ = app.emit("inventory-update", InventoryUpdate {
+            let _ = app.emit(events::INVENTORY_UPDATE, InventoryUpdate {
                 quantities: initial_qty,
                 crafting: vec![],
                 mastery_rank: startup.current_mastery_rank,
@@ -238,7 +239,7 @@ pub(crate) fn spawn_blob_capture_thread(
                         .collect::<Vec<_>>(),
                     &display_names, &unique_names,
                 );
-                let _ = app.emit("inventory-update", InventoryUpdate {
+                let _ = app.emit(events::INVENTORY_UPDATE, InventoryUpdate {
                     quantities: emit_qty, crafting,
                     mastery_rank: current_mastery_rank,
                     mastery_data: HashMap::new(),
@@ -261,12 +262,13 @@ pub(crate) fn spawn_blob_capture_thread(
                 if should_capture && !already_running {
                     blob_scan_active.store(true, Ordering::SeqCst);
                     last_blob_time = Some(std::time::Instant::now());
-                    let ts     = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
+                    // UTC, suffixed "Z" so filenames aren't mistaken for local wall-clock time.
+                    let ts     = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
                     let dir    = blob_log_dir.clone();
                     let save   = blob_log_enabled.load(Ordering::SeqCst);
                     let active = blob_scan_active.clone();
                     let tx     = blob_tx.clone();
-                    let _ = app.emit("blob-status", BlobStatusPayload {
+                    let _ = app.emit(events::BLOB_STATUS, BlobStatusPayload {
                         stage:  "scanning".into(),
                         detail: "Reading Warframe memory\u{2026}".into(),
                     });
@@ -302,7 +304,7 @@ pub(crate) fn spawn_blob_capture_thread(
                     // Skip mastery_data on heartbeats — it hasn't changed and spreading 17k
                     // entries into React state on every tick is expensive.
                     let send_mastery = status_changed;
-                    let _ = app.emit("inventory-update", InventoryUpdate {
+                    let _ = app.emit(events::INVENTORY_UPDATE, InventoryUpdate {
                         quantities: emit_qty, crafting,
                         mastery_rank: current_mastery_rank,
                         mastery_data: if send_mastery { current_mastery_data.clone() } else { HashMap::new() },
@@ -464,7 +466,7 @@ fn process_blob(
         &[], // unique_names not needed here
     );
     *shared_crafting.lock().unwrap_or_else(|e| e.into_inner()) = crafting.clone();
-    let _ = app.emit("inventory-update", InventoryUpdate {
+    let _ = app.emit(events::INVENTORY_UPDATE, InventoryUpdate {
         quantities: emit_qty,
         crafting,
         mastery_rank: *current_mastery_rank,
@@ -487,7 +489,7 @@ fn process_blob(
         blob.mods.len(), blob.flavour_items.len()
     );
     info!(detail = %detail, "blob applied");
-    let _ = app.emit("blob-status", BlobStatusPayload {
+    let _ = app.emit(events::BLOB_STATUS, BlobStatusPayload {
         stage: "done".into(),
         detail,
     });

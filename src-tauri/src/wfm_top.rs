@@ -2,6 +2,7 @@ use tauri::{Emitter, Manager, State};
 use tracing::{info, warn};
 
 use crate::app_state::AppState;
+use crate::events;
 use crate::wfm::{sanitize_display_name, to_wfm_slug, WfmTopItem};
 
 // ── Top WFM items by 7-day trade volume ───────────────────────────────────────
@@ -56,7 +57,7 @@ pub(crate) fn start_wfm_top_scan(app: tauri::AppHandle) {
             let mut completed = 0;
             let mut out: Vec<WfmTopItem> = Vec::new();
             let report_progress = |completed| {
-                let _ = progress_app.emit("wfm-top-progress", WfmTopProgress { completed, total, refreshing });
+                let _ = progress_app.emit(events::WFM_TOP_PROGRESS, WfmTopProgress { completed, total, refreshing });
             };
             report_progress(completed);
 
@@ -111,7 +112,7 @@ pub(crate) fn start_wfm_top_scan(app: tauri::AppHandle) {
         }
         state.wfm.set_top_items(results.clone());
         info!(changed, "WFM top-items ranking refreshed");
-        let _ = app.emit("wfm-top-updated", results);
+        let _ = app.emit(events::WFM_TOP_UPDATED, results);
     });
 }
 

@@ -98,7 +98,7 @@ export default function RelicPickOverlay() {
   };
 
   useEffect(() => {
-    const unOpen = listen<RelicPickPayload>("relic-pick-open", async e => {
+    const unOpen = listen<RelicPickPayload>(TAURI_EVENTS.RELIC_PICK_OPEN, async e => {
       // Reload settings fresh on every show — the main window may have changed them
       // since this overlay was first mounted at app startup.
       try {

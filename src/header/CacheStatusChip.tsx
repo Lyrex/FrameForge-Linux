@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { TAURI_EVENTS } from "../constants/tauri";
 import type { CacheStatuses } from "../types/cache";
 
 function overall(statuses: CacheStatuses): "online" | "warn" | "offline" {
@@ -37,7 +38,7 @@ export default function CacheStatusChip() {
 
   useEffect(() => {
     invoke<CacheStatuses>("get_cache_statuses").then(setStatuses).catch(() => {});
-    const unsub = listen<CacheStatuses>("cache-status", (e) => setStatuses(e.payload));
+    const unsub = listen<CacheStatuses>(TAURI_EVENTS.CACHE_STATUS, (e) => setStatuses(e.payload));
     return () => { unsub.then((f) => f()); };
   }, []);
 

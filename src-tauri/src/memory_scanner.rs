@@ -1242,7 +1242,7 @@ fn stitch_blobs(
                         );
                         if save {
                             LAST_BLOB_REGION.store(scan.seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
-                            let name = format!("Actual_inventory_FULL_ACCOUNT_{}_{:02}.txt", ts, saved + 1);
+                            let name = format!("Actual_inventory_FULL_ACCOUNT_v{}_{}_{:02}.txt", env!("CARGO_PKG_VERSION"), ts, saved + 1);
                             let path = blob_dir.join(&name);
                             if let Some(json) = extract_blob_json(&scan.data) {
                                 if std::fs::write(&path, &json).is_ok() { saved += 1; }
@@ -1368,7 +1368,7 @@ fn stitch_blobs(
                         );
                         if save {
                             LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
-                            let name = format!("Actual_inventory_FULL_ACCOUNT_{}_{:02}.txt", ts, saved + 1);
+                            let name = format!("Actual_inventory_FULL_ACCOUNT_v{}_{}_{:02}.txt", env!("CARGO_PKG_VERSION"), ts, saved + 1);
                             if let Some(json) = extract_blob_json(&seed) {
                                 if std::fs::write(blob_dir.join(&name), &json).is_ok() { saved += 1; }
                             }
@@ -1512,78 +1512,6 @@ pub fn raw_scan_pass(out: &mut impl std::io::Write) -> Result<usize, String> {
 
     Ok(count)
 }
-
-// ─── Riven validity flag scanner ──────────────────────────────────────────────
-//
-// GEP (gep_warframeext.dll) uses Pattern D-2 to locate a single byte in
-// Warframe's .text section that acts as an open/closed flag for the riven
-// reroll UI. The byte is non-zero while the screen is shown, zero when closed.
-//
-// Pattern D-2 (13 bytes):
-//   80 3d ?? ?? ?? ?? 00  48 8b ?? ??  0f 85
-//   CMP byte ptr [RIP+disp32], 0   MOV ...   JNZ ...
-//
-// Resolving the flag VA:
-//   The CMP instruction is 7 bytes. RIP at execution = match_va + 7.
-//   flag_va = (match_va + 7) + i32::from_le_bytes(bytes[2..6])
-
-fn find_pattern_d2(data: &[u8], base_va: usize) -> Option<usize> {
-    let len = data.len();
-    if len < 13 { return None; }
-    for i in 0..len - 13 {
-        if data[i]    != 0x80 || data[i+1]  != 0x3d { continue; }
-        if data[i+6]  != 0x00 { continue; }
-        if data[i+7]  != 0x48 || data[i+8]  != 0x8b { continue; }
-        if data[i+11] != 0x0f || data[i+12] != 0x85 { continue; }
-        let disp = i32::from_le_bytes([data[i+2], data[i+3], data[i+4], data[i+5]]);
-        let flag_va = (base_va + i + 7) as i64 + disp as i64;
-        if flag_va > 0x10000 && flag_va < 0x7fff_ffff_ffff {
-            return Some(flag_va as usize);
-        }
-    }
-    None
-}
-
-/// Scan Warframe's executable image sections for the riven screen validity flag VA.
-/// Returns the virtual address of the single byte: non-zero = screen open, 0 = closed.
-/// Scans once; caller should cache the result and re-scan only on PID change.
-pub fn find_riven_validity_va(pid: u32) -> Option<usize> {
-    use crate::platform::{Platform, ProcessAccess};
-
-    let handle = Platform::open_process(pid).ok()?;
-
-    let mut result: Option<usize> = None;
-    let mut addr: usize = 0x10000;
-    let start_time = std::time::Instant::now();
-
-    while start_time.elapsed().as_secs() < 60 && result.is_none() {
-        let regions: Vec<_> = handle.regions_from(addr).collect();
-        if regions.is_empty() { break; }
-
-        for region in &regions {
-            if result.is_some() { break; }
-            if start_time.elapsed().as_secs() >= 60 { break; }
-
-            addr = region.base_address + region.region_size;
-
-            // Only scan committed, executable, memory-mapped PE image regions.
-            use crate::platform::RegionBacking;
-            if !region.is_committed || !region.is_executable || region.backing != RegionBacking::File { continue; }
-            if region.region_size < 13 || region.region_size > 64 * 1024 * 1024 { continue; }
-
-            let buf = match handle.read(region.base_address, region.region_size) {
-                Some(r) => r,
-                None => continue,
-            };
-            if buf.len() < 13 { continue; }
-
-            result = find_pattern_d2(&buf, region.base_address);
-        }
-    }
-
-    result
-}
-
 
 fn find_warframe_pid() -> Option<u32> {
     <crate::platform::Platform as crate::platform::ProcessAccess>::find_warframe_pid()

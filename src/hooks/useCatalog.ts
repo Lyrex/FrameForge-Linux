@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { TAURI_COMMANDS } from "../constants/tauri";
+import { listen } from "@tauri-apps/api/event";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import type { CatalogItem, RelicDropMap } from "../types/items";
 
 // ─── Singleton ────────────────────────────────────────────────────────────────
@@ -16,6 +17,7 @@ type Snapshot = {
 
 let current: Snapshot = { catalog: [], relicDropMap: {}, loaded: false };
 let inFlight: Promise<void> | null = null;
+let listenerStarted = false;
 const subscribers = new Set<(s: Snapshot) => void>();
 
 function publish(next: Snapshot) {
@@ -40,6 +42,23 @@ function fetchOnce(): Promise<void> {
   return inFlight;
 }
 
+// The Rust side rebuilds the catalogue asynchronously in the background (e.g. the
+// full re-fetch triggered by a fresh launch after Factory Reset / cache wipe, or the
+// daily refresh). Without this, a consumer that mounts and fetches before that rebuild
+// finishes is stuck on whatever it captured first (the tiny hardcoded `fallback_items()`
+// list, which has zero "Relics" entries) for the rest of the session — see App.tsx's
+// own catalog fetch (useInventoryData.ts), which listens for the same event.
+function ensureListener() {
+  if (listenerStarted) return;
+  listenerStarted = true;
+  listen(TAURI_EVENTS.CATALOGUE_UPDATED, () => {
+    inFlight = null;
+    fetchOnce();
+  }).catch(() => {
+    listenerStarted = false;
+  });
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export interface UseCatalogReturn {
@@ -55,6 +74,7 @@ export function useCatalog(): UseCatalogReturn {
   useEffect(() => {
     subscribers.add(setSnapshot);
     if (subscribers.size === 1) {
+      ensureListener();
       fetchOnce();
     } else {
       setSnapshot(current);

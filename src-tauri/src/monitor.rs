@@ -5,6 +5,7 @@ use tauri::{Emitter, Manager, State};
 
 use crate::app_state::AppState;
 use crate::db::QuantityChange;
+use crate::events;
 use crate::inventory_state::{is_unique_path, load_inventory_state_cache};
 use crate::memory_scanner;
 
@@ -238,8 +239,8 @@ pub(crate) fn start_memory_trigger(app: tauri::AppHandle) {
                         use std::io::Write;
                         writeln!(f, "[MEM TRIGGER] Open detected @ {}", ts)
                     });
-                let _ = app.emit("ff-status", "🔍 [MEM] Relic reward screen detected");
-                let _ = app.emit("relic-trigger", ());
+                let _ = app.emit(events::FF_STATUS, "🔍 [MEM] Relic reward screen detected");
+                let _ = app.emit(events::RELIC_TRIGGER, ());
             }
         }
     });

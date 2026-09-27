@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use tauri::Emitter;
 
+use crate::events;
 use crate::log_watcher;
 use crate::wfcd::RelicReward;
 use crate::append_to_file;
@@ -16,13 +17,18 @@ pub(crate) struct RewardWatcherDeps {
     pub auto_capture_dir: std::path::PathBuf,
 }
 
-/// Spawn the EE.log watcher thread that detects relic reward screens and triggers OCR.
+/// Spawn the single EE.log tailer thread, started once at app startup and running
+/// for the app's lifetime — independent of the memory scanner's on/off state.
 ///
 /// This thread:
 /// - Tails EE.log using FindFirstChangeNotificationW for instant wake-up
-/// - Detects "VoidProjections: GetVoidProjectionReward" triggers
+/// - Handles riven-screen open/close, relic-pick trigger/dismiss, trade completion,
+///   and WFM whisper detection unconditionally (plain file I/O, not memory reading)
+/// - Detects "VoidProjections: GetVoidProjectionReward" triggers and spawns async OCR
+///   tasks to capture and match reward items — but only while `deps.flag` (the memory
+///   scanner's `monitor_active` state) is true, matching the OCR feature's existing
+///   dependency on the memory scanner being enabled
 /// - Collects squad member names and session relics for OCR filtering
-/// - Spawns async OCR tasks that capture and match reward items
 /// - Handles dismiss events and diagnostic logging
 pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
     let RewardWatcherDeps { app, flag, relic_rewards, auto_capture_dir } = deps;
@@ -31,7 +37,6 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
     let catalog_pairs = build_relic_reward_catalog(&relic_rewards);
     let catalog_pairs = Arc::new(catalog_pairs);
 
-    let debug_path      = std::env::temp_dir().join("frameforge_reward_debug.txt");
     let last_found_path = std::env::temp_dir().join("frameforge_last_reward.txt");
 
     // EE.log path
@@ -77,6 +82,12 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
             let mut file_pos: u64 = std::fs::metadata(&log_path)
                 .map(|m| m.len()).unwrap_or(0);
             let mut active_since: Option<std::time::Instant> = None;
+            // Cooldown: don't fire riven-screen-open again within 4 seconds of the last fire.
+            let mut last_riven_fire: Option<std::time::Instant> = None;
+            // Cooldown: prevent spawning multiple relic-pick OCR threads if the trigger fires rapidly.
+            let mut last_relic_pick_trigger: Option<std::time::Instant> = None;
+            // Captured "You are offering" trade dialog text, held until "the trade was successful".
+            let mut pending_trade: Option<String> = None;
             use std::io::{Read, Seek, SeekFrom};
 
             log_watcher::seed_ee_log_names(&log_path, &shared_squad_names2, &ee_ocr_app);
@@ -111,7 +122,6 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
             let use_notify = change_handle != -1isize; // -1 = INVALID_HANDLE_VALUE
 
             loop {
-                if !flag.load(Ordering::SeqCst) { break; }
                 if use_notify {
                     use windows_sys::Win32::System::Threading::WaitForSingleObject;
                     use windows_sys::Win32::Storage::FileSystem::FindNextChangeNotification;
@@ -151,12 +161,13 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
                     log_watcher::parse_and_emit_wfm_whisper(&ee_ocr_app, &buf);
                 }
 
-                // Riven trigger and close events are handled exclusively by start_log_watcher
-                // (always-on) — do not duplicate them here.
+                log_watcher::handle_riven_events(&ee_ocr_app, &lower, &mut last_riven_fire);
+                log_watcher::handle_relic_pick_events(&ee_ocr_app, &lower, &mut last_relic_pick_trigger);
+                log_watcher::handle_trade_completion(&ee_ocr_app, &lower, &buf, &mut pending_trade);
 
                 // Unveil: riven challenge completion
                 if lower.contains("modreveal") || (lower.contains("riven") && lower.contains("unveiled")) {
-                    let _ = ee_ocr_app.emit("riven-unveiled", ());
+                    let _ = ee_ocr_app.emit(events::RIVEN_UNVEILED, ());
                 }
 
                 // Trigger: "VoidProjections: GetVoidProjectionReward[s]" fires when the
@@ -180,11 +191,13 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
                     &mut vp_state,
                 );
 
-                // ── Trigger: skip if dismiss in same batch, screen already active, or
-                //    within 60 s of last dismiss ───────────────────────────────────────
+                // ── Trigger: skip if dismiss in same batch, screen already active,
+                //    within 60 s of last dismiss, or the memory scanner is off (this
+                //    OCR feature has always been tied to `monitor_active`) ───────────
                 let trigger_allowed = !has_dismiss
                     && active_since.is_none()
-                    && last_dismiss_at.is_none_or(|t| t.elapsed().as_secs() >= 5);
+                    && last_dismiss_at.is_none_or(|t| t.elapsed().as_secs() >= 5)
+                    && flag.load(Ordering::SeqCst);
                 if has_trigger && trigger_allowed {
                     reward_screen_active2.store(true, Ordering::SeqCst);
                     active_since = Some(std::time::Instant::now());
@@ -225,10 +238,10 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
                         &ee_last_path,
                     );
 
-                    let _ = ee_ocr_app.emit("ff-status", "🔍 Relic reward screen detected");
+                    let _ = ee_ocr_app.emit(events::FF_STATUS, "🔍 Relic reward screen detected");
                     // Tell App.tsx to pre-create the overlay window NOW, before OCR finishes.
                     // Window creation takes 1-2 s; pre-creating shaves that off the visible delay.
-                    let _ = ee_ocr_app.emit("relic-trigger", ());
+                    let _ = ee_ocr_app.emit(events::RELIC_TRIGGER, ());
 
                     let app          = ee_ocr_app.clone();
                     let cat          = filtered_cat; // relic prefilter (was: Arc::clone(&ee_catalog))
@@ -269,7 +282,7 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
                                     cat = fallback;
                                 }
                             }
-                            let _ = app.emit("ff-status", "📷 OCR scanning...");
+                            let _ = app.emit(events::FF_STATUS, "📷 OCR scanning...");
                             let result = log_watcher::capture_reward_items(
                                 &app,
                                 Arc::clone(&cat),
@@ -282,7 +295,7 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
                             let ts = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
                             let sleep_ms = match &result {
                                 // ✅ 1+ items found (solo=1, duo=2, trio=3, full squad=4)
-                                Some((complete, _, ref items, ref positions, ref dbg)) if !items.is_empty() => {
+                                Some((complete, low_confidence, ref items, ref positions, ref dbg)) if !items.is_empty() => {
                                     no_match_streak = 0;
                                     let payload = Some(serde_json::json!({
                                         "items": items, "positions": positions
@@ -292,8 +305,13 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
                                         .is_some_and(|sa| (attempt as usize).saturating_sub(sa) >= 3);
                                     let hint_wants_more = hint_squad
                                         .is_some_and(|h| h > items.len());
+                                    // A "complete" set of cards can still contain a low-confidence
+                                    // pick (sparse OCR read let a coincidental score through) — give
+                                    // it the same few extra retries as the no-squad-hint case before
+                                    // accepting whatever the best read so far was.
                                     let confirm_ready = !hint_wants_more
-                                        && (hint_squad.is_some() || soft_retries_done);
+                                        && (hint_squad.is_some() || soft_retries_done)
+                                        && (!*low_confidence || soft_retries_done);
 
                                     // Save best result; only emit to overlay when confirmed (LOCK).
                                     let is_new_best = items.len() > best_item_count;
@@ -412,10 +430,6 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
             }
         });
     }
-
-    // Start legacy reward worker and memory trigger
-    monitor::start_memory_trigger(app.clone());
-    monitor::start_legacy_reward_worker(flag, debug_path, last_found_path);
 }
 
 /// Build the OCR catalog from relic rewards.
@@ -433,6 +447,3 @@ fn build_relic_reward_catalog(
     catalog_pairs.dedup_by(|a, b| !a.0.is_empty() && a.0 == b.0);
     catalog_pairs
 }
-
-// Re-export monitor module for start_memory_trigger and start_legacy_reward_worker
-use crate::monitor;

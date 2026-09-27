@@ -4,8 +4,7 @@ use std::sync::atomic::Ordering;
 use tauri::State;
 
 use crate::app_state::AppState;
-use crate::cache::atomic_write;
-use crate::inventory_state::{load_inventory_state_cache, CachedItem, InventoryStateCache};
+use crate::inventory_state::{load_inventory_state_cache, persist_inventory_state_cache, CachedItem};
 use crate::{memory_scanner, truncate_chars};
 
 // ─── Warframe companion API ───────────────────────────────────────────────────
@@ -126,18 +125,14 @@ pub(crate) fn save_mastery_data(
     data: HashMap<String, u32>,
 ) -> Result<(), String> {
     if data.is_empty() { return Ok(()); }
-    let path = state.inventory_state_cache_path.clone();
-    let mut cache: InventoryStateCache = std::fs::read_to_string(&path).ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-    for (k, v) in &data {
-        let entry = cache.items.entry(k.clone()).or_insert_with(|| CachedItem {
-            unique_name: k.clone(), ..Default::default()
-        });
-        if *v > entry.mastery_rank { entry.mastery_rank = *v; }
-    }
-    serde_json::to_string(&cache).map_err(|e| e.to_string())
-        .and_then(|json| atomic_write(&path, json.as_bytes()).map_err(|e| e.to_string()))
+    persist_inventory_state_cache(&state.inventory_state_cache_path, |cache| {
+        for (k, v) in &data {
+            let entry = cache.items.entry(k.clone()).or_insert_with(|| CachedItem {
+                unique_name: k.clone(), ..Default::default()
+            });
+            if *v > entry.mastery_rank { entry.mastery_rank = *v; }
+        }
+    })
 }
 
 /// Return statement for get_saved_inventory — camelCase so TypeScript receives it without conversion.
@@ -194,37 +189,47 @@ pub(crate) fn save_api_inventory(
     *state.api_quantities_cache.lock().unwrap_or_else(|e| e.into_inner()) = api_quantities.clone();
     *state.api_mod_copies_cache.lock().unwrap_or_else(|e| e.into_inner()) = api_mod_copies.clone();
 
-    let path = state.inventory_state_cache_path.clone();
-    let mut cache: InventoryStateCache = std::fs::read_to_string(&path).ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-    // API quantities: only write items not already present from the scanner.
-    // Scanner data is authoritative — API only fills gaps for items not yet scanned.
-    for (k, qty) in &api_quantities {
-        let entry = cache.items.entry(k.clone()).or_insert_with(|| CachedItem {
-            unique_name: k.clone(), ..Default::default()
-        });
-        if entry.amount == 0 { entry.amount = *qty; }
-    }
-    // API mod copies: same — only fill mods the scanner hasn't recorded.
-    for mc in &api_mod_copies {
-        let entry = cache.items.entry(mc.unique_name.clone()).or_insert_with(|| CachedItem {
-            unique_name: mc.unique_name.clone(), ..Default::default()
-        });
-        if entry.mod_ranks.is_none() {
-            let ranks = entry.mod_ranks.get_or_insert_with(HashMap::new);
-            let rank_key = mc.rank.map(|r| r.to_string()).unwrap_or_else(|| "0".to_string());
-            *ranks.entry(rank_key).or_insert(0) = mc.count;
-            entry.amount = ranks.values().sum();
+    persist_inventory_state_cache(&state.inventory_state_cache_path, |cache| {
+        // API quantities: only write items the scanner hasn't reported at all.
+        // Scanner data is authoritative — API only fills gaps for items not yet scanned.
+        // Checked against the live scanner map, not `entry.amount == 0`: the blob
+        // scanner rebuilds this whole cache from scratch every ~10s (build_inventory_from_blob),
+        // so a stale amount==0 on disk can't be told apart from "scanner genuinely
+        // says zero" — that ambiguity let a stale API number briefly clobber a real
+        // zero. current_quantities/current_mods answer "did the scanner ever see
+        // this key" directly.
+        {
+            let scanned = state.current_quantities.lock().unwrap_or_else(|e| e.into_inner());
+            for (k, qty) in &api_quantities {
+                if scanned.contains_key(k) { continue; }
+                let entry = cache.items.entry(k.clone()).or_insert_with(|| CachedItem {
+                    unique_name: k.clone(), ..Default::default()
+                });
+                entry.amount = *qty;
+            }
         }
-    }
-    for suit in consumed_suits {
-        cache.items.entry(suit.clone()).or_insert_with(|| CachedItem {
-            unique_name: suit.clone(), ..Default::default()
-        }).subsumed = true;
-    }
-    serde_json::to_string(&cache).map_err(|e| e.to_string())
-        .and_then(|json| atomic_write(&path, json.as_bytes()).map_err(|e| e.to_string()))
+        // API mod copies: same — only fill mods the scanner hasn't recorded.
+        {
+            let scanned_mods = state.current_mods.lock().unwrap_or_else(|e| e.into_inner());
+            for mc in &api_mod_copies {
+                if scanned_mods.contains_key(&mc.unique_name) { continue; }
+                let entry = cache.items.entry(mc.unique_name.clone()).or_insert_with(|| CachedItem {
+                    unique_name: mc.unique_name.clone(), ..Default::default()
+                });
+                if entry.mod_ranks.is_none() {
+                    let ranks = entry.mod_ranks.get_or_insert_with(HashMap::new);
+                    let rank_key = mc.rank.map(|r| r.to_string()).unwrap_or_else(|| "0".to_string());
+                    *ranks.entry(rank_key).or_insert(0) = mc.count;
+                    entry.amount = ranks.values().sum();
+                }
+            }
+        }
+        for suit in &consumed_suits {
+            cache.items.entry(suit.clone()).or_insert_with(|| CachedItem {
+                unique_name: suit.clone(), ..Default::default()
+            }).subsumed = true;
+        }
+    })
 }
 
 /// Login to Warframe API with email + password (same flow as mobile companion app).

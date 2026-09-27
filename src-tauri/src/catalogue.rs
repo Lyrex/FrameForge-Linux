@@ -4,8 +4,8 @@ use tauri::{Emitter, Manager, State};
 use tracing::info;
 
 use crate::app_state::AppState;
-use crate::cache::atomic_write;
-use crate::inventory_state::{load_inventory_state_cache, CachedItem};
+use crate::events;
+use crate::inventory_state::{persist_inventory_state_cache, CachedItem};
 use crate::memory_scanner;
 use crate::wfcd::{RecipeComponent, RelicReward, WfcdItem};
 use crate::{cache, wfcd};
@@ -657,8 +657,7 @@ fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> Result<usize,
 
     // Write mod_max_rank into inventory_state_cache.json for every mod/arcane so it is
     // available at startup without requiring wfcd_items to be loaded first.
-    {
-        let mut inv = load_inventory_state_cache(&state.inventory_state_cache_path);
+    let _ = persist_inventory_state_cache(&state.inventory_state_cache_path, |inv| {
         for item in deduped.iter().filter(|i| i.fusion_limit.is_some() || i.max_level_cap.is_some() || {
             let cat = fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name);
             matches!(cat.as_str(), "Warframes" | "Primary" | "Secondary" | "Melee"
@@ -681,10 +680,7 @@ fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> Result<usize,
             });
             if effective_cap.is_some() { entry.max_level_cap = effective_cap; }
         }
-        if let Ok(json) = serde_json::to_string(&inv) {
-            let _ = atomic_write(&state.inventory_state_cache_path, json.as_bytes());
-        }
-    }
+    });
 
     *state.wfcd_items.lock().map_err(|e| e.to_string())? = deduped;
     *state.recipes.lock().map_err(|e| e.to_string())? = result.recipes;
@@ -1008,7 +1004,7 @@ pub fn refresh_catalogue(app: &tauri::AppHandle, force: bool) -> Result<(), Stri
     };
     let count = apply_catalogue(&state, result)?;
     info!(items = count, "catalogue refreshed in background");
-    let _ = app.emit("catalogue-updated", count);
+    let _ = app.emit(events::CATALOGUE_UPDATED, count);
     Ok(())
 }
 

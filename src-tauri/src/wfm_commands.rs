@@ -1,4 +1,4 @@
-use tauri::{Emitter, Manager, State};
+use tauri::{Manager, State};
 
 use crate::app_state::AppState;
 use crate::cache::atomic_write;
@@ -46,20 +46,13 @@ pub(crate) struct ReceiveTokensParams {
 // persistence stay here at the Tauri boundary.
 
 /// Open warframe.market signin in an embedded WebView.
-/// Emits `wfm-login-window-closed` if the window is closed before auth completes.
 #[tauri::command]
 pub(crate) fn wfm_open_login_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("wfm-login") {
         let _ = existing.set_focus();
         return Ok(());
     }
-    let win = open_wfm_webview(&app, "https://warframe.market/auth/signin")?;
-    let app2 = app.clone();
-    win.on_window_event(move |event| {
-        if matches!(event, tauri::WindowEvent::Destroyed) {
-            let _ = app2.emit("wfm-login-window-closed", ());
-        }
-    });
+    open_wfm_webview(&app, "https://warframe.market/auth/signin")?;
     Ok(())
 }
 
@@ -294,12 +287,11 @@ pub(crate) fn wfm_receive_tokens(
     app: tauri::AppHandle, state: State<AppState>,
     params: ReceiveTokensParams,
 ) -> Result<(), String> {
-    let (username, _status) = state.wfm.adopt_tokens(
+    state.wfm.adopt_tokens(
         params.access_token, params.refresh_token, params.client_id, params.device_id,
         params.v1_jwt.unwrap_or_default(), params.csrf_token,
     )?;
     if let Some(win) = app.get_webview_window("wfm-login") { let _ = win.close(); }
-    let _ = app.emit("wfm-auth-complete", &username);
     Ok(())
 }
 

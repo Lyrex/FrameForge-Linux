@@ -16,6 +16,7 @@ use tauri::{AppHandle, Emitter};
 use tracing::warn;
 
 use crate::cache;
+use crate::events;
 
 /// Seconds to wait after the 1st, 2nd, 3rd and any later consecutive failure.
 const BACKOFF: [u64; 4] = [5, 30, 120, 300];
@@ -108,7 +109,7 @@ pub fn spawn(app: AppHandle) {
                     }
                 }
 
-                let _ = app.emit("cache-status", cache::statuses());
+                let _ = app.emit(events::CACHE_STATUS, cache::statuses());
             }
         }
     });

@@ -7,7 +7,7 @@ import FilterPresets from "../shared/FilterPresets";
 import WfmTrading from "./WfmTrading";
 import ItemMarketPopup from "./ItemMarketPopup";
 import { matchesSearchTerms, splitSearchTerms } from "../lib/search";
-import { TAURI_COMMANDS } from "../constants/tauri";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import { useCatalog } from "../hooks/useCatalog";
 import { useMarketData } from "../hooks/useMarketData";
 import type { CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeMap } from "../types/items";
@@ -222,7 +222,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
   const priceRafRef   = useRef<number | null>(null);
   useEffect(() => {
     const unlisten = listen<WfmPriceUpdate>(
-      "wfm-price-update",
+      TAURI_EVENTS.WFM_PRICE_UPDATE,
       ({ payload }) => {
         pendingPrices.current.set(payload.url_name, { url_name: payload.url_name, sell_median: payload.sell_median ?? undefined, tradeable: payload.tradeable });
         if (!priceRafRef.current) {

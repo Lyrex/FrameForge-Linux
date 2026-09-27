@@ -79,9 +79,9 @@ export function useOverlays(
       if (now - getRivenLastTriggerMs() < 4000) return;
       runRivenCheck().catch(() => {});
     };
-    const unsubAutoDetect = listen("riven-screen-open", () => triggerOpen());
+    const unsubAutoDetect = listen(TAURI_EVENTS.RIVEN_SCREEN_OPEN, () => triggerOpen());
 
-    const unsubClose   = listen("riven-screen-close",   () => rivenWinHide("screen-close"));
+    const unsubClose   = listen(TAURI_EVENTS.RIVEN_SCREEN_CLOSE,   () => rivenWinHide("screen-close"));
     const unsubHideReq = listen<{ reason?: string }>(TAURI_EVENTS.RIVEN_OVERLAY_HIDE, e => rivenWinHide(e.payload?.reason ?? "overlay-hide"));
     const unsubSettings = listen(TAURI_EVENTS.SETTINGS_UPDATED, () => { void resizeRivenForScale(); });
 
@@ -104,7 +104,7 @@ export function useOverlays(
       await invoke(TAURI_COMMANDS.MOVE_OVERLAY_OFFSCREEN).catch(() => {});
     };
 
-    const unsubStatus = listen<string>("ff-status", (e) => {
+    const unsubStatus = listen<string>(TAURI_EVENTS.FF_STATUS, (e) => {
       setOverlayStatus(e.payload);
       setTimeout(() => setOverlayStatus(""), 4000);
     });
@@ -159,7 +159,7 @@ export function useOverlays(
       }
     });
 
-    const unsubReward = listen<InventoryRewardPayload>("inventory-reward", (e) => {
+    const unsubReward = listen<InventoryRewardPayload>(TAURI_EVENTS.INVENTORY_REWARD, (e) => {
       const { path, qty } = e.payload;
       setQuantities(prev => ({ ...prev, [path]: qty }));
     });

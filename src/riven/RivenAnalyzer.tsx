@@ -212,17 +212,12 @@ export default function RivenAnalyzer() {
 
   // Listen for EE.log riven events
   useEffect(() => {
-    const unlistenReroll  = listen("riven-reroll-detected", () => {
-      setRollCount(c => c + 1);
-      if (selectedWeapon) runAnalysis();
-    });
-    const unlistenUnveil  = listen("riven-unveiled", () => {
+    const unlistenUnveil  = listen(TAURI_EVENTS.RIVEN_UNVEILED, () => {
       setRollCount(0);
       inputRef.current?.focus();
     });
     const unlistenSaved = listen(TAURI_EVENTS.RIVEN_ROLL_SAVED, () => loadSavedRivens());
     return () => {
-      unlistenReroll.then(fn => fn());
       unlistenUnveil.then(fn => fn());
       unlistenSaved.then(fn => fn());
     };

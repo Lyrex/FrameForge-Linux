@@ -28,6 +28,7 @@ mod console_login; // [console-login feature] remove this line to drop the featu
 mod credentials;
 mod db;
 mod diagnostics;
+mod events;
 mod image_cache;
 mod inventory_state;
 mod log_watcher;
@@ -271,6 +272,21 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
 
+    // Single EE.log tailer — started once, unconditionally, and runs for the app's
+    // lifetime. Handles riven-screen, relic-pick, trade-completion and WFM-whisper
+    // detection regardless of the memory scanner toggle (plain file I/O, not memory
+    // reading); the relic-reward OCR trigger inside it self-gates on `monitor_active`.
+    {
+        let state = app.state::<AppState>();
+        let relic_rewards_map = state.relic_rewards.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        reward_watcher::spawn_reward_watcher_thread(reward_watcher::RewardWatcherDeps {
+            app: app.handle().clone(),
+            flag: state.monitor_active.clone(),
+            relic_rewards: relic_rewards_map,
+            auto_capture_dir: state.auto_capture_dir.clone(),
+        });
+    }
+
     // Background: load relics.run prices.
     {
         let app_handle = app.handle().clone();
@@ -343,14 +359,13 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
         blob_tx,
     }, catalog);
 
-    let relic_rewards_map = state.relic_rewards.lock().unwrap_or_else(|e| e.into_inner()).clone();
-
-    reward_watcher::spawn_reward_watcher_thread(reward_watcher::RewardWatcherDeps {
-        app: app.clone(),
-        flag,
-        relic_rewards: relic_rewards_map,
-        auto_capture_dir: state.auto_capture_dir.clone(),
-    });
+    // The EE.log tailer itself runs unconditionally from app startup (see `setup_app`) —
+    // only the relic-reward OCR trigger and this scan-only legacy worker are tied to
+    // the memory scanner's on/off state.
+    let debug_path = std::env::temp_dir().join("frameforge_reward_debug.txt");
+    let last_found_path = std::env::temp_dir().join("frameforge_last_reward.txt");
+    monitor::start_memory_trigger(app.clone());
+    monitor::start_legacy_reward_worker(flag, debug_path, last_found_path);
 
     Ok(())
 }
@@ -565,9 +580,7 @@ pub fn run() {
             updater::install_update,
             settings::factory_reset,
             wfm_commands::wfm_set_status,
-            log_watcher::start_log_watcher,
             rivens::ocr_riven_log_error,
-            rivens::start_riven_memory_watcher,
             rivens::riven_screen_visible,
             rivens::riven_screen_status,
             rivens::save_riven_roll,

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ItemImg from "../ItemImg";
-import { TAURI_COMMANDS } from "../constants/tauri";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import type { WfmTopItem } from "../types/market";
 import type { Trade, TradeSession } from "../types/trades";
 import "./Reports.css";
@@ -271,10 +271,10 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat, sys
       .then(t => { setTrades(t.map(trade => ({ ...trade, item_name: displayItemName(trade.item_name) }))); setLoading(false); })
       .catch((e) => { console.error("[Reports] get_trades failed:", e); setTradesError(String(e)); setLoading(false); });
 
-    const unlistenProgress = listen<WfmTopProgress>("wfm-top-progress", ({ payload }) => {
+    const unlistenProgress = listen<WfmTopProgress>(TAURI_EVENTS.WFM_TOP_PROGRESS, ({ payload }) => {
       setTopProgress(payload);
     });
-    const unlistenUpdated = listen<WfmTopItem[]>("wfm-top-updated", ({ payload }) => {
+    const unlistenUpdated = listen<WfmTopItem[]>(TAURI_EVENTS.WFM_TOP_UPDATED, ({ payload }) => {
       setTopItems(payload);
       setTopLoading(false);
       setTopError(null);

@@ -616,7 +616,7 @@ function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
   }, []);
 
   useEffect(() => {
-    const unlisten = listen<WfmWhisper>("wfm-whisper", e => {
+    const unlisten = listen<WfmWhisper>(TAURI_EVENTS.WFM_WHISPER, e => {
       setWhispers(prev => [...prev, e.payload]);
     });
     return () => { unlisten.then(fn => fn()); };
@@ -967,7 +967,7 @@ export default function WfmTrading({ wfmLookup: _wfmLookup, wfmItems, imageMap, 
 
   // Listen for whispers to increment badge
   useEffect(() => {
-    const unlisten = listen("wfm-whisper", () => {
+    const unlisten = listen(TAURI_EVENTS.WFM_WHISPER, () => {
       if (tab !== "messages") {
         setUnread(n => n + 1);
         onNewWhisper();

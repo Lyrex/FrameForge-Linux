@@ -3,6 +3,7 @@ use tauri::{Emitter, State};
 
 use crate::app_state::AppState;
 use crate::cache::atomic_write;
+use crate::events;
 use crate::paths;
 
 /// Wipe all app data and restart — factory reset.
@@ -86,7 +87,7 @@ pub(crate) fn save_settings(app: tauri::AppHandle, state: State<AppState>, json:
             for (k, v) in new_map { existing.insert(k, v); }
         }
     })?;
-    app.emit("settings-updated", ()).ok();
+    app.emit(events::SETTINGS_UPDATED, ()).ok();
     Ok(())
 }
 

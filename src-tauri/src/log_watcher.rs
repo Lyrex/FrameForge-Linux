@@ -5,8 +5,9 @@ use tracing::{info, warn};
 
 use crate::app_state::AppState;
 use crate::diagnostics::{append_to_diag, write_bmp};
+use crate::events;
 use crate::relic_pick::{build_relic_pick_payload, relic_pick_hide, relic_pick_show};
-use crate::{append_to_file, ocr, sanitize_chat_item_name, OcrParams};
+use crate::{append_to_file, ocr, OcrParams};
 
 pub(crate) type RewardOcrResult = (bool, bool, Vec<String>, Vec<f32>, String);
 
@@ -115,197 +116,149 @@ fn parse_trade_dialog(raw: &str) -> Option<ParsedTrade> {
     })
 }
 
-/// Start a lightweight EE.log watcher for features that don't need the memory scanner:
-/// riven reroll detection, trade completion detection, WFM whisper detection.
-/// Called unconditionally at app startup — EE.log is plain file I/O, not memory reading.
-#[tauri::command]
-pub(crate) fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
-    let log_path = dirs::data_local_dir()
-        .map(|d| d.join("Warframe").join("EE.log"))
-        .ok_or("Cannot find LocalAppData")?;
+/// Detect riven reroll/unveil screen open and close from freshly-read EE.log text.
+/// `last_riven_fire` is the caller's cooldown/session state, carried across calls.
+/// Called from the single EE.log tailer thread in `reward_watcher.rs`.
+pub(crate) fn handle_riven_events(
+    app: &tauri::AppHandle,
+    lower: &str,
+    last_riven_fire: &mut Option<std::time::Instant>,
+) {
+    // ── Riven reroll / unveil ─────────────────────────────────────────
+    let riven_trigger =
+        lower.contains("omegarerollselection.swf") ||
+        lower.contains("samodeusdioramaloaded");
 
-    std::thread::spawn(move || {
-        use std::io::{Read, Seek, SeekFrom};
-        let mut file_pos: u64 = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
-        let mut pending_trade: Option<String> = None;
-        // Cooldown: don't fire riven-screen-open again within 4 seconds of the last fire.
-        // Guards against the same EE.log buffer being processed twice by React StrictMode listeners.
-        let mut last_riven_fire: Option<std::time::Instant> = None;
-        // Cooldown: prevent spawning multiple OCR threads if the trigger fires rapidly.
-        let mut last_relic_pick_trigger: Option<std::time::Instant> = None;
+    let cooldown_ok = last_riven_fire
+        .is_none_or(|t| t.elapsed().as_secs() >= 4);
 
-        // Use FindFirstChangeNotificationW so we wake up the instant EE.log is written,
-        // instead of sleeping and polling. This is how Overwolf achieves low latency.
-        let change_handle: isize = {
-            use windows_sys::Win32::Storage::FileSystem::{
-                FindFirstChangeNotificationW, FILE_NOTIFY_CHANGE_LAST_WRITE,
-            };
-            let dir = log_path.parent().unwrap_or(std::path::Path::new("."));
-            let dir_wide: Vec<u16> = dir.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
-            unsafe { FindFirstChangeNotificationW(dir_wide.as_ptr(), 0, FILE_NOTIFY_CHANGE_LAST_WRITE) }
-        };
-        let use_notify = change_handle != -1; // -1 = INVALID_HANDLE_VALUE
+    if riven_trigger && cooldown_ok {
+        *last_riven_fire = Some(std::time::Instant::now());
+        let _ = app.emit(events::RIVEN_SCREEN_OPEN, ());
+        let _ = app.emit(events::FF_STATUS, "🎲 Riven screen detected");
+    }
 
-        loop {
-            if use_notify {
-                use windows_sys::Win32::System::Threading::WaitForSingleObject;
-                use windows_sys::Win32::Storage::FileSystem::FindNextChangeNotification;
-                // Block until EE.log directory has a write — then process immediately
-                unsafe { WaitForSingleObject(change_handle, 500); } // 500ms safety timeout
-                unsafe { FindNextChangeNotification(change_handle); }
-            } else {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            let Ok(mut f) = std::fs::File::open(&log_path) else { continue };
-            let len = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
-            if len < file_pos { file_pos = 0; }
-            if len == file_pos { continue; } // nothing new since last read
-            if f.seek(SeekFrom::Start(file_pos)).is_err() { continue; }
-            let mut buf = String::new();
-            if f.read_to_string(&mut buf).is_err() { continue; }
-            file_pos = len;
-            if buf.is_empty() { continue; }
-            let lower = buf.to_lowercase();
+    // ── Riven screen close — card UI hidden (primary) ─────────────────
+    // DiegeticArtifactCards.lua: DBG: HudVis 0 fires when the mod card
+    // overlay is hidden — the most direct signal the riven screen closed.
+    // Guard: only fire ≥1 s after the open trigger (so open+close in the
+    // same EE.log buffer don't cancel each other out).
+    if lower.contains("digeticartifactcards.lua: dbg: hudvis 0") {
+        let riven_active = last_riven_fire.is_some_and(|t| {
+            let e = t.elapsed().as_secs();
+            (1..600).contains(&e)
+        });
+        if riven_active {
+            *last_riven_fire = None;
+            let riven_log = std::env::temp_dir().join("frameforge_riven_session.txt");
+            let ts = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            let _ = append_to_file(&riven_log, &format!(
+                "[STEP 4] CLOSE (DiegeticArtifactCards HudVis 0) — {}\n\n", ts
+            ));
+            let _ = app.emit(events::RIVEN_SCREEN_CLOSE, ());
+        }
+    }
 
-            // ── Riven reroll / unveil ─────────────────────────────────────────
-            let riven_trigger =
-                lower.contains("omegarerollselection.swf") ||
-                lower.contains("samodeusdioramaloaded");
+    // ── Riven screen close — orbiter scene reload (fallback) ──────────
+    // When the player exits the riven screen, the orbiter scene reloads
+    // and creates VolumetricFog render targets. Kept as a fallback in case
+    // the HudVis 0 trigger is missed.
+    if lower.contains("creating render target: /ee/materials/volumetricfog") {
+        let riven_active = last_riven_fire.is_some_and(|t| {
+            let e = t.elapsed().as_secs();
+            (3..600).contains(&e)
+        });
+        if riven_active {
+            *last_riven_fire = None;
+            let riven_log = std::env::temp_dir().join("frameforge_riven_session.txt");
+            let ts = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            let _ = append_to_file(&riven_log, &format!(
+                "[STEP 4] CLOSE (VolumetricFog render target = orbiter loaded) — {}\n\n", ts
+            ));
+            let _ = app.emit(events::RIVEN_SCREEN_CLOSE, ());
+        }
+    }
+}
 
-            let cooldown_ok = last_riven_fire
-                .is_none_or(|t| t.elapsed().as_secs() >= 4);
-
-            if riven_trigger && cooldown_ok {
-                last_riven_fire = Some(std::time::Instant::now());
-                let _ = app.emit("riven-screen-open", ());
-                let _ = app.emit("ff-status", "🎲 Riven screen detected");
-            }
-
-            // ── Riven screen close — card UI hidden (primary) ─────────────────
-            // DiegeticArtifactCards.lua: DBG: HudVis 0 fires when the mod card
-            // overlay is hidden — the most direct signal the riven screen closed.
-            // Guard: only fire ≥1 s after the open trigger (so open+close in the
-            // same EE.log buffer don't cancel each other out).
-            if lower.contains("digeticartifactcards.lua: dbg: hudvis 0") {
-                let riven_active = last_riven_fire.is_some_and(|t| {
-                    let e = t.elapsed().as_secs();
-                    (1..600).contains(&e)
-                });
-                if riven_active {
-                    last_riven_fire = None;
-                    let riven_log = std::env::temp_dir().join("frameforge_riven_session.txt");
-                    let ts = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                    let _ = append_to_file(&riven_log, &format!(
-                        "[STEP 4] CLOSE (DiegeticArtifactCards HudVis 0) — {}\n\n", ts
-                    ));
-                    let _ = app.emit("riven-screen-close", ());
+/// Detect the relic-pick screen trigger and its dismiss from freshly-read EE.log text.
+/// `last_relic_pick_trigger` is the caller's cooldown state, carried across calls.
+pub(crate) fn handle_relic_pick_events(
+    app: &tauri::AppHandle,
+    lower: &str,
+    last_relic_pick_trigger: &mut Option<std::time::Instant>,
+) {
+    // ── Relic selection screen ───────────────────────────────────────
+    // Trigger: relic grid fully loaded → OCR the era from top-left quarter.
+    if lower.contains("themedprojectionmanager.lua: populateinventorygrid") {
+        info!("relic-pick: PopulateInventoryGrid detected — spawning OCR thread");
+        let now = std::time::Instant::now();
+        let relic_pick_on = app.state::<AppState>().relic_pick_overlay_enabled.load(Ordering::SeqCst);
+        let should_trigger = relic_pick_on && last_relic_pick_trigger
+            .is_none_or(|t| now.duration_since(t).as_secs() >= 5);
+        if should_trigger {
+            *last_relic_pick_trigger = Some(now);
+            let app_clone = app.clone();
+            std::thread::spawn(move || {
+                // Brief delay for the screen to finish rendering before capture.
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                let era = crate::ocr::detect_fissure_era();
+                info!("relic-pick: OCR result = {:?}", era);
+                if let Some(era) = era {
+                    let payload = build_relic_pick_payload(&era, &app_clone);
+                    let relic_count = payload["relics"].as_array().map_or(0, |a| a.len());
+                    info!("relic-pick: emitting relic-pick-open era={} relics={}", era, relic_count);
+                    // Show the overlay window from Rust — more reliable than
+                    // calling win.show() from the WebView (avoids timing races).
+                    relic_pick_show(&app_clone);
+                    let _ = app_clone.emit(events::RELIC_PICK_OPEN, payload);
                 }
-            }
+            });
+        } else {
+            info!("relic-pick: trigger suppressed by 5-second cooldown");
+        }
+    }
+    // Dismiss: solar map regains input focus (player cancelled or mission started).
+    let mapredux_dismiss = lower.contains("subscribing for /lotus/interface/mapredux.swf")
+        && lower.contains("mapreduxinputfilter");
+    // Candidate: entitlement service completing signals the refinement screen closed.
+    let entitlement_dismiss = lower.contains("onentitlementservicecomplete false:");
+    if mapredux_dismiss || entitlement_dismiss {
+        let which = if entitlement_dismiss { "OnEntitlementServiceComplete" } else { "mapredux" };
+        info!("relic-pick: dismiss fired ({})", which);
+        relic_pick_hide(app);
+        let _ = app.emit(events::RELIC_PICK_CLOSE, ());
+    }
+}
 
-            // ── Riven screen close — orbiter scene reload (fallback) ──────────
-            // When the player exits the riven screen, the orbiter scene reloads
-            // and creates VolumetricFog render targets. Kept as a fallback in case
-            // the HudVis 0 trigger is missed.
-            if lower.contains("creating render target: /ee/materials/volumetricfog") {
-                let riven_active = last_riven_fire.is_some_and(|t| {
-                    let e = t.elapsed().as_secs();
-                    (3..600).contains(&e)
-                });
-                if riven_active {
-                    last_riven_fire = None;
-                    let riven_log = std::env::temp_dir().join("frameforge_riven_session.txt");
-                    let ts = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                    let _ = append_to_file(&riven_log, &format!(
-                        "[STEP 4] CLOSE (VolumetricFog render target = orbiter loaded) — {}\n\n", ts
-                    ));
-                    let _ = app.emit("riven-screen-close", ());
-                }
-            }
-
-            // ── WFM trade whisper ─────────────────────────────────────────────
-            if lower.contains("(warframe.market)") {
-                let raw = buf.as_str();
-                let from = raw.find("@From ").map(|i| &raw[i+6..])
-                    .and_then(|s| s.split(" :").next())
-                    .map(|s| s.trim().to_string()).unwrap_or_else(|| "Unknown".to_string());
-                let item = { let p="want to buy "; let s=" for ";
-                    raw.find(p).and_then(|i| { let r=&raw[i+p.len()..]; r.find(s).map(|j| sanitize_chat_item_name(&r[..j])) })
-                };
-                let price: Option<u64> = raw.find(" for ").and_then(|i| {
-                    let r=&raw[i+5..]; r.find(" platinum").and_then(|j| r[..j].trim().parse().ok())
-                });
-                let _ = app.emit("wfm-whisper", serde_json::json!({
-                    "from": from, "message": raw.trim(), "item": item, "price": price,
-                    "timestamp": chrono::Local::now().format("%H:%M:%S").to_string(),
+/// Detect an in-game trade offer dialog and its completion from EE.log text.
+/// `pending_trade` carries the captured offer dialog text across calls until
+/// "the trade was successful" arrives.
+pub(crate) fn handle_trade_completion(
+    app: &tauri::AppHandle,
+    lower: &str,
+    buf: &str,
+    pending_trade: &mut Option<String>,
+) {
+    if lower.contains("dialog::createokcancel") && lower.contains("you are offering") {
+        *pending_trade = Some(buf.to_string());
+    }
+    if lower.contains("the trade was successful") {
+        if let Some(trade_raw) = pending_trade.clone() {
+            if let Some(t) = parse_trade_dialog(&trade_raw) {
+                let _ = app.emit(events::TRADE_COMPLETED, serde_json::json!({
+                    "sessionId":     t.session_id,
+                    "withPlayer":    t.with_player,
+                    "tradeType":     t.trade_type,
+                    "offeredItems":  t.offered_items.iter().map(|(n, q)| serde_json::json!({"name": n, "qty": q})).collect::<Vec<_>>(),
+                    "offeredPlat":   t.offered_plat,
+                    "receivedItems": t.received_items.iter().map(|(n, q)| serde_json::json!({"name": n, "qty": q})).collect::<Vec<_>>(),
+                    "receivedPlat":  t.received_plat,
+                    "timestamp":     t.timestamp,
                 }));
             }
-
-            // ── Relic selection screen ───────────────────────────────────────
-            // Trigger: relic grid fully loaded → OCR the era from top-left quarter.
-            if lower.contains("themedprojectionmanager.lua: populateinventorygrid") {
-                info!("relic-pick: PopulateInventoryGrid detected — spawning OCR thread");
-                let now = std::time::Instant::now();
-                let relic_pick_on = app.state::<AppState>().relic_pick_overlay_enabled.load(Ordering::SeqCst);
-                let should_trigger = relic_pick_on && last_relic_pick_trigger
-                    .is_none_or(|t| now.duration_since(t).as_secs() >= 5);
-                if should_trigger {
-                    last_relic_pick_trigger = Some(now);
-                    let app_clone = app.clone();
-                    std::thread::spawn(move || {
-                        // Brief delay for the screen to finish rendering before capture.
-                        std::thread::sleep(std::time::Duration::from_millis(400));
-                        let era = crate::ocr::detect_fissure_era();
-                        info!("relic-pick: OCR result = {:?}", era);
-                        if let Some(era) = era {
-                            let payload = build_relic_pick_payload(&era, &app_clone);
-                            let relic_count = payload["relics"].as_array().map_or(0, |a| a.len());
-                            info!("relic-pick: emitting relic-pick-open era={} relics={}", era, relic_count);
-                            // Show the overlay window from Rust — more reliable than
-                            // calling win.show() from the WebView (avoids timing races).
-                            relic_pick_show(&app_clone);
-                            let _ = app_clone.emit("relic-pick-open", payload);
-                        }
-                    });
-                } else {
-                    info!("relic-pick: trigger suppressed by 5-second cooldown");
-                }
-            }
-            // Dismiss: solar map regains input focus (player cancelled or mission started).
-            let mapredux_dismiss = lower.contains("subscribing for /lotus/interface/mapredux.swf")
-                && lower.contains("mapreduxinputfilter");
-            // Candidate: entitlement service completing signals the refinement screen closed.
-            let entitlement_dismiss = lower.contains("onentitlementservicecomplete false:");
-            if mapredux_dismiss || entitlement_dismiss {
-                let which = if entitlement_dismiss { "OnEntitlementServiceComplete" } else { "mapredux" };
-                info!("relic-pick: dismiss fired ({})", which);
-                relic_pick_hide(&app);
-                let _ = app.emit("relic-pick-close", ());
-            }
-
-            // ── In-game trade completion ──────────────────────────────────────
-            if lower.contains("dialog::createokcancel") && lower.contains("you are offering") {
-                pending_trade = Some(buf.clone());
-            }
-            if lower.contains("the trade was successful") {
-                if let Some(ref trade_raw) = pending_trade.clone() {
-                    if let Some(t) = parse_trade_dialog(trade_raw) {
-                        let _ = app.emit("trade-completed", serde_json::json!({
-                            "sessionId":     t.session_id,
-                            "withPlayer":    t.with_player,
-                            "tradeType":     t.trade_type,
-                            "offeredItems":  t.offered_items.iter().map(|(n, q)| serde_json::json!({"name": n, "qty": q})).collect::<Vec<_>>(),
-                            "offeredPlat":   t.offered_plat,
-                            "receivedItems": t.received_items.iter().map(|(n, q)| serde_json::json!({"name": n, "qty": q})).collect::<Vec<_>>(),
-                            "receivedPlat":  t.received_plat,
-                            "timestamp":     t.timestamp,
-                        }));
-                    }
-                }
-                pending_trade = None;
-            }
         }
-    });
-    Ok(())
+        *pending_trade = None;
+    }
 }
 
 /// Extract the local player name from EE.log lines containing "Logged in NAME".
@@ -335,7 +288,7 @@ pub(crate) fn parse_logged_in_name(
             *n = Some(name.clone());
         }
         // Emit immediately so the header updates without waiting for the next scan tick.
-        let _ = app.emit("player-name", &name);
+        let _ = app.emit(events::PLAYER_NAME, &name);
         return;
     }
 }
@@ -540,7 +493,7 @@ pub(crate) fn apply_reward_inventory_update(
             timestamp, item_name, old_qty, new_qty
         );
     }
-    let _ = app.emit("inventory-reward", serde_json::json!({ "path": inv_path, "qty": new_qty }));
+    let _ = app.emit(events::INVENTORY_REWARD, serde_json::json!({ "path": inv_path, "qty": new_qty }));
     append_to_diag(
         session_log_path,
         &format!(
@@ -637,7 +590,7 @@ pub(crate) fn dismiss_relic_rewards(
         if let Ok(mut rewards) = dismiss_app.state::<AppState>().pending_relic_rewards.lock() {
             *rewards = None;
         }
-        let _ = dismiss_app.emit("relic-rewards", serde_json::Value::Null);
+        let _ = dismiss_app.emit(events::RELIC_REWARDS, serde_json::Value::Null);
     });
     true
 }
@@ -681,7 +634,7 @@ pub(crate) fn auto_dismiss_relic_rewards(
     if let Ok(mut rewards) = app.state::<AppState>().pending_relic_rewards.lock() {
         *rewards = None;
     }
-    let _ = app.emit("relic-rewards", serde_json::Value::Null);
+    let _ = app.emit(events::RELIC_REWARDS, serde_json::Value::Null);
 }
 
 /// Narrow the OCR catalog to rewards from relics seen in the current session.
@@ -921,7 +874,7 @@ pub(crate) fn schedule_reward_safety_cleanup(
         if let Ok(mut rewards) = app.state::<AppState>().pending_relic_rewards.lock() {
             *rewards = None;
         }
-        let _ = app.emit("relic-rewards", serde_json::Value::Null);
+        let _ = app.emit(events::RELIC_REWARDS, serde_json::Value::Null);
         if let Some(window) = app.get_webview_window("relic-overlay") {
             let _ = window.set_position(tauri::Position::Physical(
                 tauri::PhysicalPosition { x: 0, y: -3000 },
@@ -950,7 +903,7 @@ pub(crate) fn publish_relic_rewards(
             *pending = Some(payload.clone());
         }
     }
-    let _ = app.emit("relic-rewards", payload);
+    let _ = app.emit(events::RELIC_REWARDS, payload);
 }
 
 /// Emit the best partial result after OCR timed out, hide the overlay, and
@@ -1015,7 +968,7 @@ pub(crate) fn log_reward_dark_frame(
     );
     let _ = append_to_file(session_log_path, &entry);
     let _ = std::fs::write(last_path, format!("=== {} ===\n{} — retrying\n", ts, dbg));
-    let _ = app.emit("ff-status", format!("⬛ {}", dbg));
+    let _ = app.emit(events::FF_STATUS, format!("⬛ {}", dbg));
     100
 }
 
@@ -1037,7 +990,7 @@ pub(crate) fn log_reward_ocr_empty(
     );
     let _ = append_to_file(session_log_path, &entry);
     let _ = std::fs::write(last_path, format!("=== {} ===\n{} — retrying\n", ts, dbg));
-    let _ = app.emit("ff-status", format!("⬜ {}", dbg));
+    let _ = app.emit(events::FF_STATUS, format!("⬜ {}", dbg));
     300
 }
 
@@ -1057,7 +1010,7 @@ pub(crate) fn log_reward_capture_failed(
     );
     let _ = append_to_file(session_log_path, &entry);
     let _ = std::fs::write(last_path, format!("=== {} ===\nCapture failed (window not found?)\n", ts));
-    let _ = app.emit("ff-status", "⚠️ Capture failed");
+    let _ = app.emit(events::FF_STATUS, "⚠️ Capture failed");
     500
 }
 
@@ -1099,7 +1052,7 @@ pub(crate) fn log_reward_no_match(
         last_path,
         format!("=== {} ===\nno match (catalog={}): {:?}\n{}\n", ts, cur_cat_len, items, dbg),
     );
-    let _ = app.emit("ff-status", "❌ No catalog match, retrying...");
+    let _ = app.emit(events::FF_STATUS, "❌ No catalog match, retrying...");
     if attempt == 1 {
         let frame = app.state::<AppState>().last_ocr_frame.lock()
             .ok().and_then(|g| g.clone());
@@ -1193,7 +1146,7 @@ pub(crate) fn parse_and_emit_wfm_whisper(
         let rest = &raw[i+5..];
         rest.find(" platinum").and_then(|j| rest[..j].trim().parse().ok())
     });
-    let _ = app.emit("wfm-whisper", serde_json::json!({
+    let _ = app.emit(events::WFM_WHISPER, serde_json::json!({
         "from": from,
         "message": raw.trim(),
         "item": item,

@@ -691,6 +691,7 @@ pub fn match_reward_items(
     };
 
     let mut col_match_log: Vec<String> = Vec::new();
+    let mut any_low_confidence = false;
 
     for (col_idx, (col_texts, cx)) in columns.iter().enumerate() {
         if items.len() >= active_centers.len() { break; }
@@ -728,6 +729,7 @@ pub fn match_reward_items(
             .collect::<Vec<_>>().join(" · ");
 
         let mut icon_log = String::new();
+        let mut icon_accepted = false;
         if best_score < 0.67 && have_bars {
             let bar_y = _bar_y_frac;
             let half_w = if columns.len() > 1 { 0.56 / columns.len() as f32 / 2.0 } else { 0.10 };
@@ -780,6 +782,7 @@ pub fn match_reward_items(
                         icon_best_unique.as_ref().and_then(|u| catalog.iter().find(|(k,_)| k==u)).map(|(_,n)| n.as_str()).unwrap_or("?"));
                     best_score = icon_best_score;
                     best_unique = icon_best_unique;
+                    icon_accepted = true;
                 } else {
                     icon_log += "\n    Icon rejected (score < 0.40)";
                 }
@@ -815,6 +818,25 @@ pub fn match_reward_items(
             continue;
         }
         let unique = match best_unique { Some(u) => u, None => continue };
+
+        // A "confident" score can still come from a sparse read: if matched/n_ocr
+        // hit 1.0 off only 1-2 OCR words, base score alone can't tell two same-length
+        // catalog candidates apart (see the "Wisp Prime Neuroptics" vs "...Chassis"
+        // false positive this was written for). Only trust the score outright when
+        // every word of the matched display name was actually seen in OCR, or the
+        // icon classifier independently confirmed it — otherwise flag for a retry.
+        let full_word_match = catalog.iter().find(|(k, _)| *k == unique)
+            .map(|(_, dn)| {
+                let norm = normalise(dn);
+                let mut seen = std::collections::HashSet::new();
+                let iw: Vec<&str> = norm.split_whitespace().filter(|&w| seen.insert(w)).collect();
+                !iw.is_empty() && iw.iter().all(|&w| word_found_in_set(w, &words))
+            })
+            .unwrap_or(false);
+        if !icon_accepted && !full_word_match {
+            any_low_confidence = true;
+        }
+
         items.push(unique);
         positions.push(*cx);
         let _ = col_idx;
@@ -939,7 +961,7 @@ pub fn match_reward_items(
          ├─ Bars     : {}\n\
          ├─ Prime/Forma: {}p + {}f + {}x = {} cards\n\
          ├─ EE hint  : {}\n\
-         ├─ Expected : {} cards (from {}){}\n\
+         ├─ Expected : {} cards (from {}){}{}\n\
          ├─ Raw lines:\n{}\n\
          ├─ Match    : {} — {} formed\n\
          {}\n\
@@ -951,13 +973,14 @@ pub fn match_reward_items(
         ee_hint_str,
         estimated_cards, expected_src,
         if is_complete { " ✅ complete" } else { " ⚡ partial" },
+        if any_low_confidence { " ⚠ low-confidence card(s) — retrying" } else { "" },
         raw_ocr_log,
         col_mode, columns.len(),
         col_match_log.join("\n"),
         ff_items,
     );
 
-    (is_complete, false, items, positions, debug)
+    (is_complete, any_low_confidence, items, positions, debug)
 }
 
 /// Relic reward detection — the main entry point for OCR-based reward extraction.
