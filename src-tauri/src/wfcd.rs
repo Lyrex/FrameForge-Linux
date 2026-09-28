@@ -633,9 +633,21 @@ struct NameResolver {
     relic_names: HashMap<String, String>,
     /// Names WFCD itself gives top-level items.
     top_level: HashMap<String, String>,
+    /// ExportResources uniqueName → icon file name (last segment of DE's `icon` path).
+    icons: HashMap<String, String>,
 }
 
 impl NameResolver {
+    /// The icon file DE's data gives `unique`. A blueprint has no icon entry of
+    /// its own; it wears the icon of what it crafts, as it does in the game
+    /// ("Yareli Prime Neuroptics Blueprint" shows the Neuroptics icon).
+    fn icon(&self, unique: &str) -> Option<&str> {
+        self.icons
+            .get(unique)
+            .or_else(|| self.icons.get(self.blueprint_result.get(unique)?))
+            .map(|s| s.as_str())
+    }
+
     /// The display name DE's data gives `unique`, or `None` when no database
     /// knows it. Callers decide what an unnamed entry means.
     fn resolve(&self, unique: &str) -> Option<String> {
@@ -673,6 +685,22 @@ fn parse_name_db(
             (!text.is_empty()).then(|| (unique.clone(), text.to_string()))
         })
         .collect()
+}
+
+/// ExportResources: uniqueName → icon file name. The image host serves DE's icons
+/// under the bare file name of the `icon` path.
+fn parse_icon_db(resources: Option<&serde_json::Value>) -> HashMap<String, String> {
+    resources
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(unique, entry)| {
+                    let file = entry.get("icon")?.as_str()?.rsplit('/').next()?;
+                    (!file.is_empty()).then(|| (unique.clone(), file.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// ExportRecipes: blueprint path → crafted path, for every entry that has one.
@@ -1179,6 +1207,7 @@ fn fetch_from_wfcd(
         blueprint_result: parse_blueprint_results(recipes_json),
         relic_names: parse_relic_item_names(relics_json),
         top_level: HashMap::new(),
+        icons: parse_icon_db(resources_json),
     };
     for (_, arr) in &all_files {
         for item in arr.iter() {
@@ -1666,6 +1695,19 @@ fn fetch_from_wfcd(
         }
     }
 
+    // WFCD's components[] no longer carry an `imageName`, so every part and blueprint
+    // above inherited its parent's image (all of Yareli Prime's parts wore
+    // Yareli Prime's portrait). Give each the icon DE's data lists for its own
+    // uniqueName; entries DE has no icon for keep what they have. This runs before
+    // the name-based lookup below so relic rewards pick the right icons up too.
+    for item in items.iter_mut() {
+        if item.category == "Parts" || item.category == "Blueprints" {
+            if let Some(icon) = resolver.icon(&item.unique_name) {
+                item.image_name = Some(icon.to_string());
+            }
+        }
+    }
+
     // Name-based image lookup passed to fetch_relics_rewards for icon enrichment.
     let image_by_name: HashMap<String, String> = items.iter()
         .filter_map(|i| i.image_name.as_ref().map(|img| (i.name.to_lowercase(), img.clone())))
@@ -1957,7 +1999,8 @@ mod tests {
     fn resolver_fixture() -> NameResolver {
         let resources = serde_json::json!({
             "/Lotus/Types/Recipes/WarframeRecipes/YareliPrimeHelmetComponent": {
-                "name": "/Lotus/Language/Primes/CraftingComponent_YareliPrimeHelmetName"
+                "name": "/Lotus/Language/Primes/CraftingComponent_YareliPrimeHelmetName",
+                "icon": "/Lotus/Interface/Icons/StoreIcons/Resources/CraftingComponents/GenericWarframePrimeHelmet.png"
             },
             "/Lotus/Types/Recipes/Weapons/WeaponParts/AkstilettoPrimeBarrel": {
                 "name": "/Lotus/Language/Menu/CraftingComponent_AkstilettoPrimeBarrel"
@@ -1985,9 +2028,27 @@ mod tests {
             blueprint_result: parse_blueprint_results(Some(&recipes)),
             relic_names: parse_relic_item_names(Some(&relics)),
             top_level: HashMap::new(),
+            icons: parse_icon_db(Some(&resources)),
         };
         r.top_level.insert("/Lotus/Weapons/Corvas/Corvas".into(), "Corvas".into());
         r
+    }
+
+    #[test]
+    fn parts_and_their_blueprints_wear_the_part_icon_not_the_parents() {
+        let r = resolver_fixture();
+        assert_eq!(
+            r.icon("/Lotus/Types/Recipes/WarframeRecipes/YareliPrimeHelmetComponent"),
+            Some("GenericWarframePrimeHelmet.png")
+        );
+        // The blueprint has no icon entry; it shows what it crafts.
+        assert_eq!(
+            r.icon("/Lotus/Types/Recipes/WarframeRecipes/YareliPrimeHelmetBlueprint"),
+            Some("GenericWarframePrimeHelmet.png")
+        );
+        // Nothing known → no icon, so the caller keeps whatever image it already had.
+        assert_eq!(r.icon("/Lotus/Types/Recipes/Weapons/CorvasBlueprint"), None);
+        assert!(parse_icon_db(None).is_empty());
     }
 
     #[test]

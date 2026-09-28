@@ -72,17 +72,18 @@ fn extract_trade_items(section: &str) -> Vec<(String, i64)> {
 /// Parse the full trade confirmation dialog from EE.log.
 /// Returns None if the dialog doesn't contain the expected markers.
 fn parse_trade_dialog(raw: &str) -> Option<ParsedTrade> {
+    // Player names in this dialog are sometimes suffixed by a private-use-area
+    // glyph (e.g. U+E000, an in-game rank/status icon) with no preceding space —
+    // strip trailing PUA codepoints so `with_player` doesn't carry it along.
     let with_player = raw.find("will receive from ")
-        .and_then(|i| { let a = &raw[i + 18..]; a.find(" the following").map(|j| a[..j].trim().to_string()) })?;
+        .and_then(|i| { let a = &raw[i + 18..]; a.find(" the following").map(|j| {
+            a[..j].trim().trim_end_matches(|c: char| ('\u{E000}'..='\u{F8FF}').contains(&c)).trim().to_string()
+        }) })?;
     let offered_raw = raw.find("You are offering:")
         .and_then(|i| { let a = &raw[i + 17..]; a.find("and will receive from").map(|j| a[..j].trim().to_string()) })
         .unwrap_or_default();
-    let received_raw = raw.find("will receive from ")
-        .and_then(|i| { let a = &raw[i + 18..]; a.find(" the following:").map(|j| a[j + 15..].trim().to_string()) })
-        .unwrap_or_default();
-
-    let received_raw = received_raw.find("the following:")
-        .and_then(|i| { let a = &received_raw[i + 14..]; a.find(", title=").map(|j| a[..j].trim().to_string()) })
+    let received_raw = raw.find("the following:")
+        .and_then(|i| { let a = &raw[i + 14..]; a.find(", title=").map(|j| a[..j].trim().to_string()) })
         .unwrap_or_default();
 
     let parse_plat = |s: &str| -> i64 {
@@ -1153,4 +1154,53 @@ pub(crate) fn parse_and_emit_wfm_whisper(
         "price": price,
         "timestamp": chrono::Local::now().format("%H:%M:%S").to_string(),
     }));
+}
+
+#[cfg(test)]
+mod trade_dialog_tests {
+    use super::*;
+
+    /// Real (player-redacted) dialog text captured from EE.log for a trade where
+    /// the local player sold 4 Sevagoth Prime blueprints for 33 platinum. The
+    /// player name is followed by a private-use-area glyph (U+E000) with no
+    /// preceding space, and item lines are prefixed with a bare '\r'.
+    /// Regression coverage for the "trades not detected" report (2026-09-28):
+    /// the backend-modularization refactor (eaaaa42) accidentally turned the
+    /// single-stage `received_raw` extraction into a two-stage one that
+    /// re-searched the already-stripped substring for "the following:" — a
+    /// string that, by construction, could never be found there again, so
+    /// every trade's received side (items and/or platinum) silently vanished.
+    #[test]
+    fn trade_sale_for_platinum_extracts_received_plat_and_offered_items() {
+        let raw = "1037.335 Script [Info]: Dialog.lua: Dialog::CreateOkCancel(description=Are you sure you want to accept this trade? You are offering:\n\rSevagoth Prime Chassis Blueprint\n\rSevagoth Prime Neuroptics Blueprint\n\rSevagoth Prime Systems Blueprint\n\rSevagoth Prime Blueprint\r\n\r\nand will receive from Winter.Mine\u{E000} the following:\n\rPlatinum x 33, title= leftItem=/Menu/Confirm_Item_Ok, rightItem=/Menu/Confirm_Item_Cancel)\n";
+
+        let parsed = parse_trade_dialog(raw).expect("dialog should parse");
+        assert_eq!(parsed.with_player, "Winter.Mine", "trailing PUA glyph should be stripped from the player name");
+        assert_eq!(parsed.trade_type, "sale");
+        assert_eq!(parsed.received_plat, 33, "platinum received must survive the received_raw extraction");
+        assert_eq!(parsed.offered_plat, 0);
+        assert!(parsed.received_items.is_empty());
+        assert_eq!(
+            parsed.offered_items,
+            vec![
+                ("Sevagoth Prime Chassis Blueprint".to_string(), 1),
+                ("Sevagoth Prime Neuroptics Blueprint".to_string(), 1),
+                ("Sevagoth Prime Systems Blueprint".to_string(), 1),
+                ("Sevagoth Prime Blueprint".to_string(), 1),
+            ]
+        );
+    }
+
+    /// A purchase (offering platinum, receiving an item) must also keep its
+    /// received side — this was silently empty under the same bug, which meant
+    /// `useOverlays.ts`'s `tradeType === "purchase"` branch had nothing to log.
+    #[test]
+    fn trade_purchase_extracts_received_items() {
+        let raw = "Dialog::CreateOkCancel(description=Are you sure you want to accept this trade? You are offering:\r\nPlatinum x 20\r\n\r\nand will receive from Buyer123 the following:\r\nAyatan Anasa Sculpture, title= leftItem=/Menu/Confirm_Item_Ok, rightItem=/Menu/Confirm_Item_Cancel)";
+
+        let parsed = parse_trade_dialog(raw).expect("dialog should parse");
+        assert_eq!(parsed.trade_type, "purchase");
+        assert_eq!(parsed.offered_plat, 20);
+        assert_eq!(parsed.received_items, vec![("Ayatan Anasa Sculpture".to_string(), 1)]);
+    }
 }
