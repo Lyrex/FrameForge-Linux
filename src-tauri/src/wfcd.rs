@@ -264,6 +264,16 @@ const RECIPES_URLS: [&str; 2] = [
     "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/master/ExportRecipes.json",
     "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/HEAD/ExportRecipes.json",
 ];
+/// DE's own name table: `ExportResources.json` maps a uniqueName to a language
+/// key, and `dict.en.json` maps that key to the English display text.
+const RESOURCES_URLS: [&str; 2] = [
+    "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/master/ExportResources.json",
+    "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/HEAD/ExportResources.json",
+];
+const DICT_EN_URLS: [&str; 2] = [
+    "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/master/dict.en.json",
+    "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/HEAD/dict.en.json",
+];
 const SYNDICATES_URL: &str =
     "https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data/syndicates.json";
 
@@ -293,6 +303,16 @@ fn source_specs() -> Vec<SourceSpec> {
     specs.push(SourceSpec {
         name: "ExportRecipes".to_string(),
         urls: RECIPES_URLS.iter().map(|u| u.to_string()).collect(),
+        required: false,
+    });
+    specs.push(SourceSpec {
+        name: "ExportResources".to_string(),
+        urls: RESOURCES_URLS.iter().map(|u| u.to_string()).collect(),
+        required: false,
+    });
+    specs.push(SourceSpec {
+        name: "dict_en".to_string(),
+        urls: DICT_EN_URLS.iter().map(|u| u.to_string()).collect(),
         required: false,
     });
     specs.push(SourceSpec {
@@ -569,9 +589,13 @@ fn fetch_items_with(
     let relics_json = bodies.get("Relics");
     let recipes_json = bodies.get("ExportRecipes");
     let syndicates_json = bodies.get("syndicates");
+    let resources_json = bodies.get("ExportResources");
+    let dict_json = bodies.get("dict_en");
 
     info!(raw_items = all_items.len(), "catalogue sources assembled");
-    let result = fetch_from_wfcd(&all_items, recipes_json, syndicates_json, relics_json)?;
+    let result = fetch_from_wfcd(
+        &all_items, recipes_json, syndicates_json, relics_json, resources_json, dict_json,
+    )?;
     info!(
         items = result.items.len(),
         recipes = result.recipes.len(),
@@ -592,66 +616,93 @@ fn strip_tags(s: &str) -> &str {
     }
 }
 
-/// Lowercased PascalCase words from a path segment, for order-independent
-/// comparison (e.g. "AkstilettoPrimeBarrel" -> ["akstiletto", "prime", "barrel"]).
-fn pascal_words(s: &str) -> Vec<String> {
-    crate::catalogue::camel_to_words(s)
-        .split_whitespace()
-        .map(|w| w.to_lowercase())
+/// Every uniqueName → display name lookup the catalogue builder may use.
+///
+/// WFCD's `components[]` entries stopped carrying a `name`, and a component's
+/// path is not a name: DE's path token for a warframe's Neuroptics is
+/// `...HelmetComponent`. So a component is named by looking its uniqueName up
+/// in a database that holds the real text, never by reading the path.
+#[derive(Default)]
+struct NameResolver {
+    /// DE's ExportResources uniqueName → language key, through dict.en.json.
+    /// Covers built parts ("Yareli Prime Neuroptics", "Akstiletto Prime Barrel").
+    by_unique: HashMap<String, String>,
+    /// ExportRecipes blueprint path → the path it crafts.
+    blueprint_result: HashMap<String, String>,
+    /// Relics.json `rewards[].item`, keyed by the same uniqueName.
+    relic_names: HashMap<String, String>,
+    /// Names WFCD itself gives top-level items.
+    top_level: HashMap<String, String>,
+}
+
+impl NameResolver {
+    /// The display name DE's data gives `unique`, or `None` when no database
+    /// knows it. Callers decide what an unnamed entry means.
+    fn resolve(&self, unique: &str) -> Option<String> {
+        if let Some(n) = self.by_unique.get(unique) {
+            return Some(n.clone());
+        }
+        // A blueprint has no text of its own in ExportResources: it is named
+        // for what it crafts, as the game shows it ("Yareli Prime Neuroptics
+        // Blueprint").
+        if let Some(result) = self.blueprint_result.get(unique) {
+            let crafted = self.by_unique.get(result).or_else(|| self.top_level.get(result));
+            if let Some(n) = crafted {
+                return Some(if n.ends_with(" Blueprint") { n.clone() } else { format!("{n} Blueprint") });
+            }
+        }
+        self.relic_names.get(unique).or_else(|| self.top_level.get(unique)).cloned()
+    }
+}
+
+/// ExportResources × dict.en: uniqueName → English name.
+fn parse_name_db(
+    resources: Option<&serde_json::Value>,
+    dict: Option<&serde_json::Value>,
+) -> HashMap<String, String> {
+    let (Some(resources), Some(dict)) = (resources.and_then(|v| v.as_object()), dict.and_then(|v| v.as_object()))
+    else {
+        warn!("ExportResources/dict.en unavailable — component names will not resolve");
+        return HashMap::new();
+    };
+    resources
+        .iter()
+        .filter_map(|(unique, entry)| {
+            let key = entry.get("name")?.as_str()?;
+            let text = strip_tags(dict.get(key)?.as_str()?);
+            (!text.is_empty()).then(|| (unique.clone(), text.to_string()))
+        })
         .collect()
 }
 
-/// WFCD's `components[]` entries stopped carrying a `name` field upstream —
-/// each object is now just `{ uniqueName, itemCount }`. Recover a short label
-/// ("Chassis", "Barrel", "Blueprint") from the component's own path relative
-/// to its parent's: take the last path segment, drop a trailing "Component",
-/// split into words, and drop any word that also identifies the parent (from
-/// either the parent's own display name or its path tail).
-///
-/// Word-based and order-independent because the parent's own path tail and
-/// the component's path tail don't always use the same word order — e.g.
-/// parent tail "PrimeAkstiletto" vs. component tail "AkstilettoPrimeBarrel"
-/// (".../AshPrimeChassisComponent" under parent ".../AshPrime" -> "Chassis").
-/// Falls back to the untouched tail when nothing lines up (e.g. companion
-/// parts whose path doesn't share the parent's name).
-fn component_suffix_from_path(parent_name: &str, parent_unique: &str, comp_unique: &str) -> String {
-    let comp_tail = comp_unique.rsplit('/').next().unwrap_or(comp_unique);
-    let comp_tail = comp_tail.strip_suffix("Component").unwrap_or(comp_tail);
-
-    let parent_tail = parent_unique.rsplit('/').next().unwrap_or("");
-    let mut parent_words: std::collections::HashSet<String> = pascal_words(parent_tail).into_iter().collect();
-    parent_words.extend(parent_name.split_whitespace().map(|w| w.to_lowercase()));
-
-    let comp_words = pascal_words(comp_tail);
-    let remaining: Vec<&String> = comp_words.iter()
-        .filter(|w| !parent_words.contains(w.as_str()))
-        .collect();
-
-    if remaining.is_empty() {
-        return comp_tail.to_string();
-    }
-    remaining.iter()
-        .map(|w| {
-            let mut c = w.chars();
-            match c.next() {
-                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                None => String::new(),
-            }
+/// ExportRecipes: blueprint path → crafted path, for every entry that has one.
+fn parse_blueprint_results(json: Option<&serde_json::Value>) -> HashMap<String, String> {
+    json.and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(bp, entry)| Some((bp.clone(), entry.get("resultType")?.as_str()?.to_string())))
+                .collect()
         })
-        .collect::<Vec<_>>()
-        .join(" ")
+        .unwrap_or_default()
 }
 
-/// Full display name for a component whose WFCD JSON lacks a `name` field:
-/// the derived suffix, prefixed with the parent's own display name unless
-/// the suffix already includes it (mirrors the historical WFCD convention).
-fn component_name_from_path(parent_name: &str, parent_unique: &str, comp_unique: &str) -> String {
-    let suffix = component_suffix_from_path(parent_name, parent_unique, comp_unique);
-    if parent_name.is_empty() || suffix.to_lowercase().starts_with(&parent_name.to_lowercase()) {
-        suffix
-    } else {
-        format!("{} {}", parent_name, suffix)
+/// Relics.json reward items, uniqueName → name.
+fn parse_relic_item_names(json: Option<&serde_json::Value>) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let Some(relics) = json.and_then(|v| v.as_array()) else { return out };
+    for relic in relics {
+        for reward in relic.get("rewards").and_then(|v| v.as_array()).into_iter().flatten() {
+            let Some(item) = reward.get("item") else { continue };
+            let (Some(unique), Some(name)) = (
+                item.get("uniqueName").and_then(|v| v.as_str()),
+                item.get("name").and_then(|v| v.as_str()),
+            ) else { continue };
+            if !name.is_empty() {
+                out.entry(unique.trim().to_string()).or_insert_with(|| name.to_string());
+            }
+        }
     }
+    out
 }
 
 /// Fetch the LZMA-compressed Warframe public export index and return a map of
@@ -926,6 +977,20 @@ fn resolve_syn_item(
     (stub_id, normed, category.to_string(), None, None)
 }
 
+/// Label for a node in a recipe tree: the catalogue's name, else DE's name
+/// tables. A uniqueName no table knows is shown as its own last path segment,
+/// verbatim, so the gap is visible rather than dressed up as a real name.
+fn tree_node_name(unique: &str, display_names: &HashMap<String, String>, resolver: &NameResolver) -> String {
+    display_names
+        .get(unique)
+        .cloned()
+        .or_else(|| resolver.resolve(unique))
+        .unwrap_or_else(|| {
+            warn!(unique, "no name known for recipe ingredient");
+            unique.rsplit('/').next().unwrap_or(unique).to_string()
+        })
+}
+
 /// Build a recipe node. Prefers DE's ExportRecipes for sub-ingredients;
 /// falls back to WFCD nested `components` for items not in ExportRecipes.
 fn build_recipe_node(
@@ -934,6 +999,7 @@ fn build_recipe_node(
     count: u32,
     wfcd_json: Option<&serde_json::Value>,
     display_names: &HashMap<String, String>,
+    resolver: &NameResolver,
     export_recipes: &HashMap<String, ExportRecipe>,
     depth: u32,
 ) -> RecipeComponent {
@@ -956,13 +1022,10 @@ fn build_recipe_node(
         }];
 
         for (item_type, item_count) in &recipe.ingredients {
-            let item_name = display_names
-                .get(item_type)
-                .cloned()
-                .unwrap_or_else(|| item_type.split('/').next_back().unwrap_or("Unknown").to_string());
+            let item_name = tree_node_name(item_type, display_names, resolver);
             components.push(build_recipe_node(
                 item_type.clone(), item_name, *item_count,
-                None, display_names, export_recipes, depth + 1,
+                None, display_names, resolver, export_recipes, depth + 1,
             ));
         }
         (recipe.result_count, components)
@@ -971,15 +1034,13 @@ fn build_recipe_node(
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().filter_map(|c| {
                 let cu = c["uniqueName"].as_str()?.trim().to_string();
-                // Resolve by uniqueName against the catalog first — that's the
-                // canonical source. WFCD's own `name` text on components[] is
-                // gone as of the 2026 schema change and untrustworthy even if
-                // it returns, so it's not consulted; path-derivation is the
-                // only fallback.
-                let cn = display_names.get(&cu).cloned()
-                    .unwrap_or_else(|| component_name_from_path(&name, &unique_name, &cu));
+                // Resolve by uniqueName: the catalog first, then DE's name
+                // tables. WFCD's own `name` text on components[] is gone as of
+                // the 2026 schema change and untrustworthy even if it returns,
+                // so it's not consulted.
+                let cn = tree_node_name(&cu, display_names, resolver);
                 let cc = c["itemCount"].as_u64().unwrap_or(1) as u32;
-                Some(build_recipe_node(cu, cn, cc, Some(c), display_names, export_recipes, depth + 1))
+                Some(build_recipe_node(cu, cn, cc, Some(c), display_names, resolver, export_recipes, depth + 1))
             }).collect())
             .unwrap_or_default();
         (1, comps)
@@ -1088,6 +1149,8 @@ fn fetch_from_wfcd(
     recipes_json: Option<&serde_json::Value>,
     syndicates_json: Option<&serde_json::Value>,
     relics_json: Option<&serde_json::Value>,
+    resources_json: Option<&serde_json::Value>,
+    dict_json: Option<&serde_json::Value>,
 ) -> Result<FetchResult, String> {
     let mut items: Vec<WfcdItem> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -1111,13 +1174,26 @@ fn fetch_from_wfcd(
     // "Bronco" (a standalone Secondary) must be known before it appears as a
     // component of "Akbolto" so it keeps "Secondary" not "Parts".
     let mut top_level_uniques: HashSet<String> = HashSet::new();
+    let mut resolver = NameResolver {
+        by_unique: parse_name_db(resources_json, dict_json),
+        blueprint_result: parse_blueprint_results(recipes_json),
+        relic_names: parse_relic_item_names(relics_json),
+        top_level: HashMap::new(),
+    };
     for (_, arr) in &all_files {
         for item in arr.iter() {
             if let Some(u) = item.get("uniqueName").and_then(|v| v.as_str()) {
                 top_level_uniques.insert(u.trim().to_string());
+                if let Some(n) = item.get("name").and_then(|v| v.as_str()) {
+                    let n = strip_tags(n);
+                    if n.len() >= 2 && n != "Blueprint" {
+                        resolver.top_level.insert(u.trim().to_string(), n.to_string());
+                    }
+                }
             }
         }
     }
+    let mut unresolved_components: Vec<String> = Vec::new();
 
     // Pass 2: full processing using cached data
     for (category, arr) in &all_files {
@@ -1227,16 +1303,11 @@ fn fetch_from_wfcd(
                         Some(u) => u.trim().to_string(),
                         None => continue,
                     };
-                    // WFCD's components[] stopped carrying a `name` field; derive a
-                    // short suffix ("Chassis", "Blueprint") from the path when absent.
-                    let derived_cname;
-                    let cname = match comp.get("name").and_then(|v| v.as_str()) {
-                        Some(n) => n.trim(),
-                        None => {
-                            derived_cname = component_suffix_from_path(&name, &unique_name, &cunique);
-                            derived_cname.as_str()
-                        }
-                    };
+                    // WFCD's components[] no longer carry a `name`. Look the
+                    // component's uniqueName up in DE's name tables; the result is
+                    // the full display name ("Ash Prime Chassis"), parent included.
+                    let resolved = resolver.resolve(&cunique);
+                    let cname = resolved.as_deref().unwrap_or("");
                     let is_part = cunique.starts_with("/Lotus/Types/Recipes/")
                         || cunique.starts_with("/Lotus/Powersuits/")
                         || cunique.starts_with("/Lotus/Weapons/")
@@ -1247,6 +1318,10 @@ fn fetch_from_wfcd(
                         || cunique.starts_with("/Lotus/Types/Game/") // Kubrow/Kavat pet parts
                         || cname.contains("Blueprint");
                     if !is_part { continue; }
+                    if resolved.is_none() {
+                        unresolved_components.push(cunique.clone());
+                        continue;
+                    }
 
                     // KEY: if this component is a TOP-LEVEL item in any WFCD file,
                     // skip it here — it will be added with its correct standalone category.
@@ -1276,11 +1351,9 @@ fn fetch_from_wfcd(
                             // strip the " Blueprint" suffix so the built part gets the
                             // correct name and ExportRecipes can provide a distinct blueprint entry.
                             // Also guard against WFCD including the parent name in the component name.
-                            let base = cname.strip_suffix(" Blueprint").unwrap_or(cname);
-                            if base.starts_with(&*name) { base.to_string() }
-                            else { format!("{} {}", name, base) }
+                            cname.strip_suffix(" Blueprint").unwrap_or(cname).to_string()
                         } else {
-                            format!("{} {}", name, cname)
+                            cname.to_string()
                         };
                         if raw_comp_name.trim() == "Blueprint" || raw_comp_name.trim().is_empty() {
                             seen.remove(&cunique); continue;
@@ -1327,6 +1400,15 @@ fn fetch_from_wfcd(
                 }
             }
         }
+    }
+
+    if !unresolved_components.is_empty() {
+        // Left out rather than guessed at: no name table knows these paths yet.
+        warn!(
+            count = unresolved_components.len(),
+            sample = ?unresolved_components.iter().take(10).collect::<Vec<_>>(),
+            "components with no name in ExportResources, ExportRecipes or Relics.json were not catalogued"
+        );
     }
 
     if items.is_empty() {
@@ -1568,18 +1650,14 @@ fn fetch_from_wfcd(
     // Build recipe trees
     let mut recipes: HashMap<String, Vec<RecipeComponent>> = HashMap::new();
     for (parent_unique, item_json) in &raw_craftable {
-        let parent_name = display_names.get(parent_unique).cloned().unwrap_or_default();
         if let Some(comps) = item_json.get("components").and_then(|v| v.as_array()) {
             let tree: Vec<RecipeComponent> = comps.iter().filter_map(|c| {
                 let cu = c["uniqueName"].as_str()?.trim().to_string();
-                // Resolve by uniqueName against the catalog first (see the
-                // matching comment in build_recipe_node) — never trust raw
-                // JSON text over the canonical uniqueName-keyed lookup.
-                let cn = display_names.get(&cu).cloned()
-                    .unwrap_or_else(|| component_name_from_path(&parent_name, parent_unique, &cu));
+                // Resolve by uniqueName (see build_recipe_node).
+                let cn = tree_node_name(&cu, &display_names, &resolver);
                 let cc = c["itemCount"].as_u64().unwrap_or(1) as u32;
                 Some(build_recipe_node(
-                    cu, cn, cc, Some(c), &display_names, &export_recipes, 0,
+                    cu, cn, cc, Some(c), &display_names, &resolver, &export_recipes, 0,
                 ))
             }).collect();
             if !tree.is_empty() {
@@ -1874,49 +1952,92 @@ mod tests {
         assert!(out.etag.is_none());
     }
 
-    // ── component_suffix_from_path / component_name_from_path ──────────────
+    // ── NameResolver: components are named by uniqueName lookup, never by path ─
 
-    #[test]
-    fn suffix_handles_reversed_word_order() {
-        // Parent tail "PrimeAkstiletto" vs. component tail "AkstilettoPrimeBarrel" —
-        // the component repeats "Akstiletto" and "Prime" but in the opposite order.
-        let suffix = component_suffix_from_path(
-            "Akstiletto Prime",
-            "/Lotus/Weapons/Tenno/Pistols/PrimeAkstiletto/PrimeAkstiletto",
-            "/Lotus/Types/Recipes/Weapons/WeaponParts/AkstilettoPrimeBarrel",
-        );
-        assert_eq!(suffix, "Barrel");
-
-        let name = component_name_from_path(
-            "Akstiletto Prime",
-            "/Lotus/Weapons/Tenno/Pistols/PrimeAkstiletto/PrimeAkstiletto",
-            "/Lotus/Types/Recipes/Weapons/WeaponParts/AkstilettoPrimeBarrel",
-        );
-        assert_eq!(name, "Akstiletto Prime Barrel");
+    fn resolver_fixture() -> NameResolver {
+        let resources = serde_json::json!({
+            "/Lotus/Types/Recipes/WarframeRecipes/YareliPrimeHelmetComponent": {
+                "name": "/Lotus/Language/Primes/CraftingComponent_YareliPrimeHelmetName"
+            },
+            "/Lotus/Types/Recipes/Weapons/WeaponParts/AkstilettoPrimeBarrel": {
+                "name": "/Lotus/Language/Menu/CraftingComponent_AkstilettoPrimeBarrel"
+            },
+            "/Lotus/Types/Items/NoText": { "name": "/Lotus/Language/Missing" }
+        });
+        let dict = serde_json::json!({
+            "/Lotus/Language/Primes/CraftingComponent_YareliPrimeHelmetName": "Yareli Prime Neuroptics",
+            "/Lotus/Language/Menu/CraftingComponent_AkstilettoPrimeBarrel": "Akstiletto Prime Barrel"
+        });
+        let recipes = serde_json::json!({
+            "/Lotus/Types/Recipes/WarframeRecipes/YareliPrimeHelmetBlueprint": {
+                "resultType": "/Lotus/Types/Recipes/WarframeRecipes/YareliPrimeHelmetComponent"
+            },
+            "/Lotus/Types/Recipes/Weapons/CorvasBlueprint": {
+                "resultType": "/Lotus/Weapons/Corvas/Corvas"
+            }
+        });
+        let relics = serde_json::json!([{ "rewards": [{ "item": {
+            "uniqueName": "/Lotus/Types/Recipes/Weapons/WeaponParts/CorufellPrimeHandle",
+            "name": "Corufell Prime Handle"
+        }}]}]);
+        let mut r = NameResolver {
+            by_unique: parse_name_db(Some(&resources), Some(&dict)),
+            blueprint_result: parse_blueprint_results(Some(&recipes)),
+            relic_names: parse_relic_item_names(Some(&relics)),
+            top_level: HashMap::new(),
+        };
+        r.top_level.insert("/Lotus/Weapons/Corvas/Corvas".into(), "Corvas".into());
+        r
     }
 
     #[test]
-    fn suffix_handles_matching_prefix_order() {
-        // The original case this function was written for: component tail
-        // literally starts with the parent's own tail.
-        let suffix = component_suffix_from_path(
-            "Ash Prime",
-            "/Lotus/Powersuits/AshPrime/AshPrime",
-            "/Lotus/Powersuits/AshPrime/AshPrimeChassisComponent",
+    fn neuroptics_is_named_from_the_database_not_the_path() {
+        // DE's path token for Neuroptics is "Helmet"; the name table says otherwise.
+        let r = resolver_fixture();
+        assert_eq!(
+            r.resolve("/Lotus/Types/Recipes/WarframeRecipes/YareliPrimeHelmetComponent").as_deref(),
+            Some("Yareli Prime Neuroptics")
         );
-        assert_eq!(suffix, "Chassis");
+        assert_eq!(
+            r.resolve("/Lotus/Types/Recipes/WarframeRecipes/YareliPrimeHelmetBlueprint").as_deref(),
+            Some("Yareli Prime Neuroptics Blueprint")
+        );
     }
 
     #[test]
-    fn suffix_falls_back_when_nothing_lines_up() {
-        // Companion parts whose path shares nothing with the parent's name —
-        // still word-split (nicer for display than the raw PascalCase run).
-        let suffix = component_suffix_from_path(
-            "Some Companion",
-            "/Lotus/Types/Game/CatbrowPet/CatbrowPetPowerSuit",
-            "/Lotus/Types/Recipes/Weapons/WeaponParts/UnrelatedPartName",
+    fn weapon_parts_and_blueprints_resolve() {
+        let r = resolver_fixture();
+        assert_eq!(
+            r.resolve("/Lotus/Types/Recipes/Weapons/WeaponParts/AkstilettoPrimeBarrel").as_deref(),
+            Some("Akstiletto Prime Barrel")
         );
-        assert_eq!(suffix, "Unrelated Part Name");
+        // A blueprint for a top-level item is named for the item it crafts.
+        assert_eq!(
+            r.resolve("/Lotus/Types/Recipes/Weapons/CorvasBlueprint").as_deref(),
+            Some("Corvas Blueprint")
+        );
+    }
+
+    #[test]
+    fn relic_reward_names_cover_paths_the_export_lacks() {
+        let r = resolver_fixture();
+        assert_eq!(
+            r.resolve("/Lotus/Types/Recipes/Weapons/WeaponParts/CorufellPrimeHandle").as_deref(),
+            Some("Corufell Prime Handle")
+        );
+    }
+
+    #[test]
+    fn unknown_paths_are_never_guessed_from_their_tail() {
+        let r = resolver_fixture();
+        assert_eq!(r.resolve("/Lotus/Types/Recipes/WarframeRecipes/SomeNewHelmetComponent"), None);
+        // A language key the dictionary cannot resolve yields no name either.
+        assert_eq!(r.resolve("/Lotus/Types/Items/NoText"), None);
+    }
+
+    #[test]
+    fn missing_name_tables_resolve_nothing() {
+        assert!(parse_name_db(None, None).is_empty());
     }
 
     // ── ducat_value_from_rarities / load_ducat_exceptions ──────────────────
