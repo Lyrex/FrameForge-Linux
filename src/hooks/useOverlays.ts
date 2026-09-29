@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { overlayScale } from "../lib/uiScale";
 import {
   ensureRivenWindow,
@@ -34,7 +34,6 @@ export function useOverlays(
     const runRivenCheck = async () => {
       setRivenLastTriggerMs(Date.now());
       incrementRivenRollCount();
-      const { emit } = await import("@tauri-apps/api/event");
 
       let rect: WarframeWindowRect = [0, 0, 0, 800];
       try { rect = await invoke<WarframeWindowRect>("get_warframe_window_rect"); } catch {}
@@ -192,7 +191,8 @@ export function useOverlays(
           tradeType:  p.tradeType,
           timestamp:  p.timestamp,
         };
-        return invoke(TAURI_COMMANDS.ADD_TRADE, args).catch(() => {});
+        return invoke(TAURI_COMMANDS.ADD_TRADE, { params: args })
+          .catch((e) => console.error("[trade-log] add_trade failed:", e));
       };
 
       if (p.tradeType === "sale") {
@@ -209,6 +209,9 @@ export function useOverlays(
         for (const item of p.offeredItems)  await save("traded-out", item.name, item.qty, 0);
         for (const item of p.receivedItems) await save("traded-in",  item.name, item.qty, 0);
       }
+
+      // All rows are in SQLite now — tell Statistics to refetch.
+      await emit(TAURI_EVENTS.TRADES_UPDATED).catch(() => {});
     });
     return () => { unlisten.then(fn => fn()); };
   }, []);

@@ -102,7 +102,7 @@ pub(crate) fn start_wfm_top_scan(app: tauri::AppHandle) {
             return;
         }
 
-        let changed = previous.as_ref().map_or(true, |old| {
+        let changed = previous.as_ref().is_none_or(|old| {
             old.iter().map(|i| &i.url_name).ne(results.iter().map(|i| &i.url_name))
         });
         let now_secs = std::time::SystemTime::now()

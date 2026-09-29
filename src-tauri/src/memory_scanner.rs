@@ -1201,7 +1201,7 @@ fn stitch_blobs(
         };
         let n = buf.len();
         bytes_read += n as u64;
-        let chunk = &buf[..];
+        let chunk = buf;
         regions_read += 1;
 
         // ── Step 1: append this chunk to every active scan and check for completion ──

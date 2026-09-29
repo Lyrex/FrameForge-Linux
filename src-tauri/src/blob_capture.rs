@@ -347,7 +347,7 @@ fn process_blob(
     path_to_product_category: &HashMap<String, String>,
     path_to_wfcd_cat: &HashMap<String, String>,
     ignored_paths: &std::collections::HashSet<String>,
-    unmatched_paths_dir: &std::path::PathBuf,
+    unmatched_paths_dir: &std::path::Path,
     debug_cat_enabled: &AtomicBool,
     shared_quantities: &Arc<Mutex<HashMap<String, i64>>>,
     shared_mods: &Arc<Mutex<HashMap<String, memory_scanner::ModCount>>>,
@@ -424,9 +424,13 @@ fn process_blob(
     // Debug: write paths with no WFCD entry or Misc fallback to the Unmatched Paths folder.
     if debug_cat_enabled.load(Ordering::Relaxed) {
         catalogue::write_debug_unmatched_paths(
-            blob, path_to_name, path_to_item_type,
-            path_to_product_category, path_to_wfcd_cat,
-            path_to_category, ignored_paths, unmatched_paths_dir,
+            blob,
+            catalogue::UnmatchedPathMaps {
+                path_to_name, path_to_item_type,
+                path_to_product_category, path_to_wfcd_cat,
+                path_to_category,
+            },
+            ignored_paths, unmatched_paths_dir,
         );
     }
 

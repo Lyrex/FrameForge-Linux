@@ -1010,16 +1010,28 @@ pub fn refresh_catalogue(app: &tauri::AppHandle, force: bool) -> Result<(), Stri
 
 // ── Debug unmatched paths ─────────────────────────────────────────────────────
 
+/// The path→label lookup maps that feed `write_debug_unmatched_paths`.
+pub(crate) struct UnmatchedPathMaps<'a> {
+    pub(crate) path_to_name: &'a HashMap<String, String>,
+    pub(crate) path_to_item_type: &'a HashMap<String, String>,
+    pub(crate) path_to_product_category: &'a HashMap<String, String>,
+    pub(crate) path_to_wfcd_cat: &'a HashMap<String, String>,
+    pub(crate) path_to_category: &'a HashMap<String, String>,
+}
+
 pub(crate) fn write_debug_unmatched_paths(
     blob: &memory_scanner::BlobInventory,
-    path_to_name: &HashMap<String, String>,
-    path_to_item_type: &HashMap<String, String>,
-    path_to_product_category: &HashMap<String, String>,
-    path_to_wfcd_cat: &HashMap<String, String>,
-    path_to_category: &HashMap<String, String>,
+    maps: UnmatchedPathMaps<'_>,
     ignored_paths: &std::collections::HashSet<String>,
     unmatched_paths_dir: &std::path::Path,
 ) {
+    let UnmatchedPathMaps {
+        path_to_name,
+        path_to_item_type,
+        path_to_product_category,
+        path_to_wfcd_cat,
+        path_to_category,
+    } = maps;
     // ── Reference file (written once per session) ─────────────────────
     let ref_path = unmatched_paths_dir.join("_reference.json");
     if !ref_path.exists() {

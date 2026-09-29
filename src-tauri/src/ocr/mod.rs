@@ -383,8 +383,8 @@ pub fn classify_card_icon(
 
     let mut min_x = G; let mut max_x = 0usize;
     let mut min_y = G; let mut max_y = 0usize;
-    for gy in 0..G { for gx in 0..G {
-        if lum[gy][gx] > 60.0 {
+    for (gy, row) in lum.iter().enumerate() { for (gx, &l) in row.iter().enumerate() {
+        if l > 60.0 {
             min_x = min_x.min(gx); max_x = max_x.max(gx);
             min_y = min_y.min(gy); max_y = max_y.max(gy);
         }
@@ -395,16 +395,16 @@ pub fn classify_card_icon(
 
     let mut sum_y = 0.0f32;
     let mut sum_lum = 0.0f32;
-    for gy in 0..G { for gx in 0..G {
-        sum_y += lum[gy][gx] * gy as f32;
-        sum_lum += lum[gy][gx];
+    for (gy, row) in lum.iter().enumerate() { for &l in row.iter() {
+        sum_y += l * gy as f32;
+        sum_lum += l;
     }}
     let cm_y = if sum_lum > 0.0 { sum_y / sum_lum / (G - 1) as f32 } else { 0.5 };
 
     let mut left_sum = 0.0f32;
     let mut right_sum = 0.0f32;
-    for gy in 0..G { for gx in 0..G/2 { left_sum += lum[gy][gx]; } }
-    for gy in 0..G { for gx in G/2..G { right_sum += lum[gy][gx]; } }
+    for row in lum.iter() { for &l in &row[..G/2] { left_sum += l; } }
+    for row in lum.iter() { for &l in &row[G/2..] { right_sum += l; } }
     let symmetry = if left_sum + right_sum > 0.0 {
         left_sum.min(right_sum) / left_sum.max(right_sum)
     } else { 0.0 };

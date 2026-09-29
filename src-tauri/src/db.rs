@@ -400,7 +400,7 @@ pub fn detect_mod_rank_changes(
             if old_count == new_count { continue; }
             let item_name = path_to_name.get(path.as_str())
                 .cloned()
-                .unwrap_or_else(|| path.split('/').last().unwrap_or("?").to_string());
+                .unwrap_or_else(|| path.split('/').next_back().unwrap_or("?").to_string());
             let _ = add_quantity_change(conn, path, &item_name, old_count, new_count, Some(rank));
             changes.push(QuantityChange {
                 id: 0,

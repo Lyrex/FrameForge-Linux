@@ -267,9 +267,13 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat, sys
   const [view, setView]             = useState<"analytics" | "log">("analytics");
 
   useEffect(() => {
-    invoke<Trade[]>("get_trades")
-      .then(t => { setTrades(t.map(trade => ({ ...trade, item_name: displayItemName(trade.item_name) }))); setLoading(false); })
-      .catch((e) => { console.error("[Reports] get_trades failed:", e); setTradesError(String(e)); setLoading(false); });
+    const fetchTrades = () => {
+      invoke<Trade[]>("get_trades")
+        .then(t => { setTrades(t.map(trade => ({ ...trade, item_name: displayItemName(trade.item_name) }))); setLoading(false); })
+        .catch((e) => { console.error("[Reports] get_trades failed:", e); setTradesError(String(e)); setLoading(false); });
+    };
+    fetchTrades();
+    const unlistenTrades = listen(TAURI_EVENTS.TRADES_UPDATED, fetchTrades);
 
     const unlistenProgress = listen<WfmTopProgress>(TAURI_EVENTS.WFM_TOP_PROGRESS, ({ payload }) => {
       setTopProgress(payload);
@@ -285,6 +289,7 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat, sys
       .then(items => { setTopItems(items); setTopLoading(false); })
       .catch((e) => { console.error("[Reports] get_wfm_top_items failed:", e); setTopError(String(e)); setTopLoading(false); });
     return () => {
+      unlistenTrades.then(fn => fn());
       unlistenProgress.then(fn => fn());
       unlistenUpdated.then(fn => fn());
     };

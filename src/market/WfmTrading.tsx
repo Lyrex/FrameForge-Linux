@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import ItemMarketPopup from "./ItemMarketPopup";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import type { WfmAuction, WfmItem, WfmManagedOrder, WfmWhisper } from "../types/market";
@@ -759,7 +759,9 @@ function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
         source: "wfm",
         notes: "",
       };
-      invoke(TAURI_COMMANDS.ADD_TRADE, args).catch(() => {});
+      invoke(TAURI_COMMANDS.ADD_TRADE, { params: args })
+        .then(() => emit(TAURI_EVENTS.TRADES_UPDATED).catch(() => {}))
+        .catch((e) => console.error("[trade-log] add_trade failed:", e));
     }
     setWhispers(prev => prev.filter(w => w.from !== from));
   };

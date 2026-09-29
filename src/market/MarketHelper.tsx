@@ -1227,7 +1227,7 @@ function RivenSellModal({ riven, weaponName, disposition, category, onClose, onS
         visible,
         isDirectSell:        saleType === "direct",
       };
-      await invoke("wfm_create_riven_auction", args);
+      await invoke("wfm_create_riven_auction", { params: args });
       onSuccess();
       onClose();
     } catch (e: unknown) {

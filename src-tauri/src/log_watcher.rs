@@ -11,6 +11,39 @@ use crate::{append_to_file, ocr, OcrParams};
 
 pub(crate) type RewardOcrResult = (bool, bool, Vec<String>, Vec<f32>, String);
 
+// ── Reward-pipeline parameter groups ──────────────────────────────────────────
+// Grouped so the reward-session helpers stay within clippy's argument limit.
+
+/// One OCR attempt's identity: attempt counter, timestamp, card reads, diagnostics.
+pub(crate) struct RewardAttempt<'a> {
+    pub(crate) attempt: u32,
+    pub(crate) ts: &'a str,
+    pub(crate) items: &'a [String],
+    pub(crate) dbg: &'a str,
+}
+
+/// The session-log and last-result paths shared by the reward log helpers.
+pub(crate) struct RewardPaths<'a> {
+    pub(crate) session_log_path: &'a std::path::Path,
+    pub(crate) last_path: &'a std::path::Path,
+}
+
+/// The trigger line that opened a reward session plus its catalog prefilter summary.
+pub(crate) struct RewardTrigger<'a> {
+    pub(crate) timestamp: &'a str,
+    pub(crate) trigger_line: &'a str,
+    pub(crate) prefilter_log: &'a str,
+    pub(crate) catalog_len: usize,
+}
+
+/// Mutable reward-screen watch state owned by the EE.log reader loop.
+pub(crate) struct DismissState<'a> {
+    pub(crate) active_since: &'a mut Option<std::time::Instant>,
+    pub(crate) last_dismiss_at: &'a mut Option<std::time::Instant>,
+    pub(crate) session_relics: &'a mut Vec<String>,
+    pub(crate) projection_state: &'a mut VoidProjectionState,
+}
+
 // ── Trade dialog parser ───────────────────────────────────────────────────────
 
 struct ParsedTrade {
@@ -514,12 +547,15 @@ pub(crate) fn dismiss_relic_rewards(
     session_log_path: &std::path::Path,
     diag_dir: &std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
     reward_screen_active: &std::sync::Arc<std::sync::atomic::AtomicBool>,
-    active_since: &mut Option<std::time::Instant>,
-    last_dismiss_at: &mut Option<std::time::Instant>,
-    session_relics: &mut Vec<String>,
     rewards_emitted_ms: &std::sync::Arc<std::sync::atomic::AtomicU64>,
-    projection_state: &mut VoidProjectionState,
+    state: DismissState<'_>,
 ) -> bool {
+    let DismissState {
+        active_since,
+        last_dismiss_at,
+        session_relics,
+        projection_state,
+    } = state;
     let lower = text.to_lowercase();
     let is_dismiss = lower.contains("relic reward screen shut down")
         || lower.contains("closevoidprojectionrewardscreen")
@@ -722,14 +758,17 @@ pub(crate) fn build_fallback_reward_catalog(
 pub(crate) fn prepare_reward_session(
     session_log_path: &std::path::Path,
     squad_names: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    timestamp: &str,
-    trigger_line: &str,
-    prefilter_log: &str,
-    catalog_len: usize,
+    trigger: RewardTrigger<'_>,
     auto_capture_dir: &std::path::Path,
     diag_dir: &std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
     last_found_path: &std::path::Path,
 ) {
+    let RewardTrigger {
+        timestamp,
+        trigger_line,
+        prefilter_log,
+        catalog_len,
+    } = trigger;
     let names = squad_names.lock().map(|names| names.clone()).unwrap_or_default();
     let known_names = if names.is_empty() {
         "  (none — names not yet seen in EE.log)".to_string()
@@ -1017,17 +1056,15 @@ pub(crate) fn log_reward_capture_failed(
 
 pub(crate) fn log_reward_no_match(
     app: &tauri::AppHandle,
-    attempt: u32,
-    ts: &str,
-    items: &[String],
-    dbg: &str,
+    attempt_info: RewardAttempt<'_>,
     no_match_streak: &mut u32,
     cat: &mut std::sync::Arc<Vec<(String, String)>>,
     fallback_cat: &std::sync::Arc<Vec<(String, String)>>,
-    session_log_path: &std::path::Path,
-    last_path: &std::path::Path,
+    paths: RewardPaths<'_>,
     diag_dir: &std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
 ) -> u64 {
+    let RewardAttempt { attempt, ts, items, dbg } = attempt_info;
+    let RewardPaths { session_log_path, last_path } = paths;
     *no_match_streak += 1;
     let expanded = if *no_match_streak == 3 && cat.len() < fallback_cat.len() {
         *cat = std::sync::Arc::clone(fallback_cat);
@@ -1066,15 +1103,13 @@ pub(crate) fn log_reward_no_match(
 }
 
 pub(crate) fn log_reward_best_result(
-    attempt: u32,
-    ts: &str,
-    items: &[String],
-    dbg: &str,
+    attempt_info: RewardAttempt<'_>,
     complete: bool,
     confirm_ready: bool,
-    session_log_path: &std::path::Path,
-    last_path: &std::path::Path,
+    paths: RewardPaths<'_>,
 ) {
+    let RewardAttempt { attempt, ts, items, dbg } = attempt_info;
+    let RewardPaths { session_log_path, last_path } = paths;
     let label = if complete && confirm_ready { "✅" } else { "⚡" };
     let status_label = if complete && confirm_ready {
         "locked"

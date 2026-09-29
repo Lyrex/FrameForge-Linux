@@ -10,6 +10,7 @@ use crate::wfm::{to_wfm_slug, WfmItem, WfmPrice, WfmRivenAttribute};
 use crate::credentials::wfm_delete_credentials;
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RivenAuctionParams {
     weapon_url_name: String,
     riven_name: String,
@@ -27,6 +28,7 @@ pub(crate) struct RivenAuctionParams {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ReceiveTokensParams {
     access_token: String,
     refresh_token: String,
@@ -191,14 +193,14 @@ fn open_wfm_webview(app: &tauri::AppHandle, start_url: &str) -> Result<tauri::We
       var csrfMeta = document.querySelector('meta[name="csrf-token"]');
       var csrf = csrfMeta ? csrfMeta.getAttribute('content') : '';
       if (window.__TAURI__) {
-        window.__TAURI__.core.invoke('wfm_receive_tokens', {
+        window.__TAURI__.core.invoke('wfm_receive_tokens', { params: {
           accessToken:  d.accessToken,
           refreshToken: d.refreshToken || '',
           clientId:     _clientId,
           deviceId:     _deviceId,
           v1Jwt:        v1Jwt || null,
           csrfToken:    csrf || null,
-        }).catch(function() {});
+        }}).catch(function() {});
       }
     }, 500);
   }

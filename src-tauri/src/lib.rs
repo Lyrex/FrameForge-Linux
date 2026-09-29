@@ -126,17 +126,31 @@ pub(crate) fn append_to_file(path: &std::path::Path, text: &str) -> std::io::Res
 
 // ─── State initialisation ─────────────────────────────────────────────────────
 
-fn load_initial_state(
-    items_cache_path: &std::path::PathBuf,
-    recipes_cache_path: &std::path::PathBuf,
-    relic_drops_cache_path: &std::path::PathBuf,
-    relic_rewards_cache_path: &std::path::PathBuf,
-    inventory_state_cache_path: &std::path::PathBuf,
-    syndicate_catalog_path: &std::path::PathBuf,
-    auction_ids_path: &std::path::PathBuf,
-    relics_run_prices_cache_path: &std::path::PathBuf,
-    corrections_path: &std::path::PathBuf,
-) -> InitialState {
+/// Cache file locations handed to `load_initial_state`.
+struct InitialCachePaths<'a> {
+    items_cache_path: &'a std::path::PathBuf,
+    recipes_cache_path: &'a std::path::PathBuf,
+    relic_drops_cache_path: &'a std::path::PathBuf,
+    relic_rewards_cache_path: &'a std::path::PathBuf,
+    inventory_state_cache_path: &'a std::path::PathBuf,
+    syndicate_catalog_path: &'a std::path::PathBuf,
+    auction_ids_path: &'a std::path::PathBuf,
+    relics_run_prices_cache_path: &'a std::path::PathBuf,
+    corrections_path: &'a std::path::PathBuf,
+}
+
+fn load_initial_state(paths: InitialCachePaths<'_>) -> InitialState {
+    let InitialCachePaths {
+        items_cache_path,
+        recipes_cache_path,
+        relic_drops_cache_path,
+        relic_rewards_cache_path,
+        inventory_state_cache_path,
+        syndicate_catalog_path,
+        auction_ids_path,
+        relics_run_prices_cache_path,
+        corrections_path,
+    } = paths;
     let items = load_items_cache(items_cache_path)
         .unwrap_or_else(wfcd::fallback_items);
     let weapon_dispositions: HashMap<String, f32> = items.iter()
@@ -453,13 +467,17 @@ pub fn run() {
     }
 
     // ── Load initial state from caches ─────────────────────────────────────
-    let initial = load_initial_state(
-        &items_cache_path, &recipes_cache_path,
-        &relic_drops_cache_path, &relic_rewards_cache_path,
-        &inventory_state_cache_path, &syndicate_catalog_path,
-        &auction_ids_path, &relics_run_prices_cache_path,
-        &config_dir.join("corrections.json"),
-    );
+    let initial = load_initial_state(InitialCachePaths {
+        items_cache_path: &items_cache_path,
+        recipes_cache_path: &recipes_cache_path,
+        relic_drops_cache_path: &relic_drops_cache_path,
+        relic_rewards_cache_path: &relic_rewards_cache_path,
+        inventory_state_cache_path: &inventory_state_cache_path,
+        syndicate_catalog_path: &syndicate_catalog_path,
+        auction_ids_path: &auction_ids_path,
+        relics_run_prices_cache_path: &relics_run_prices_cache_path,
+        corrections_path: &config_dir.join("corrections.json"),
+    });
 
     // ── Tauri builder ──────────────────────────────────────────────────────
     tauri::Builder::default()

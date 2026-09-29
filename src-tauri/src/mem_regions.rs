@@ -76,6 +76,9 @@ pub trait RegionSource {
     fn stats(&self) -> RegionStats { RegionStats::default() }
 }
 
+/// Caller-supplied predicate for skipping uninteresting memory regions.
+pub type RegionFilter = Box<dyn Fn(&MemoryRegionInfo) -> bool + Send>;
+
 /// Open a region source for the given process. Returns `None` on unsupported
 /// platforms or when the process cannot be opened.
 pub fn open_region_source(
@@ -84,7 +87,7 @@ pub fn open_region_source(
     read_cap: usize,
     chunk: usize,
     deadline: Option<std::time::Instant>,
-    filter: Option<Box<dyn Fn(&MemoryRegionInfo) -> bool + Send>>,
+    filter: Option<RegionFilter>,
 ) -> Option<Box<dyn RegionSource>> {
     let handle = Platform::open_process(pid).ok()?;
     Some(Box::new(ProcessRegions::new(handle, min_region, read_cap, chunk, deadline, filter)))
@@ -105,7 +108,7 @@ pub struct ProcessRegions {
     read_cap: usize,
     chunk: usize,
     deadline: Option<std::time::Instant>,
-    filter: Option<Box<dyn Fn(&MemoryRegionInfo) -> bool + Send>>,
+    filter: Option<RegionFilter>,
     /// Current region being yielded in chunks.
     current: Option<MemoryRegionInfo>,
     /// Byte offset within the current region for the next chunk.
@@ -121,7 +124,7 @@ impl ProcessRegions {
         read_cap: usize,
         chunk: usize,
         deadline: Option<std::time::Instant>,
-        filter: Option<Box<dyn Fn(&MemoryRegionInfo) -> bool + Send>>,
+        filter: Option<RegionFilter>,
     ) -> Self {
         Self {
             handle,
@@ -140,7 +143,7 @@ impl ProcessRegions {
 
     /// Check whether the deadline has been exceeded.
     fn expired(&self) -> bool {
-        self.deadline.map_or(false, |d| std::time::Instant::now() >= d)
+        self.deadline.is_some_and(|d| std::time::Instant::now() >= d)
     }
 
     /// Query the next region from the handle, apply the caller-supplied

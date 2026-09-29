@@ -184,11 +184,13 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
                     &session_log_path,
                     &diag_arc,
                     &reward_screen_active2,
-                    &mut active_since,
-                    &mut last_dismiss_at,
-                    &mut session_relics,
                     &rewards_emitted_ms_ee,
-                    &mut vp_state,
+                    log_watcher::DismissState {
+                        active_since: &mut active_since,
+                        last_dismiss_at: &mut last_dismiss_at,
+                        session_relics: &mut session_relics,
+                        projection_state: &mut vp_state,
+                    },
                 );
 
                 // ── Trigger: skip if dismiss in same batch, screen already active,
@@ -229,10 +231,12 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
                     log_watcher::prepare_reward_session(
                         &session_log_path,
                         &shared_squad_names,
-                        &ts0.to_string(),
-                        &trigger_line,
-                        &prefilter_log,
-                        filtered_cat.len(),
+                        log_watcher::RewardTrigger {
+                            timestamp: &ts0.to_string(),
+                            trigger_line: &trigger_line,
+                            prefilter_log: &prefilter_log,
+                            catalog_len: filtered_cat.len(),
+                        },
                         &ee_auto_capture_dir,
                         &diag_arc,
                         &ee_last_path,
@@ -319,9 +323,14 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
                                         best_item_count = items.len();
                                         best_payload = payload.clone();
                                         log_watcher::log_reward_best_result(
-                                            attempt, &ts, items, dbg,
+                                            log_watcher::RewardAttempt {
+                                                attempt, ts: &ts, items, dbg,
+                                            },
                                             *complete, confirm_ready,
-                                            &slog, &lpath,
+                                            log_watcher::RewardPaths {
+                                                session_log_path: &slog,
+                                                last_path: &lpath,
+                                            },
                                         );
                                     }
 
@@ -388,9 +397,16 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
                                 // ❌ Text found but no catalog match
                                 Some((_, _, ref items, _, ref dbg)) => {
                                     log_watcher::log_reward_no_match(
-                                        &app, attempt, &ts, items, dbg,
+                                        &app,
+                                        log_watcher::RewardAttempt {
+                                            attempt, ts: &ts, items, dbg,
+                                        },
                                         &mut no_match_streak, &mut cat, &fallback_cat,
-                                        &slog, &lpath, &diag_arc2,
+                                        log_watcher::RewardPaths {
+                                            session_log_path: &slog,
+                                            last_path: &lpath,
+                                        },
+                                        &diag_arc2,
                                     )
                                 }
                                 // ⚠️ Warframe window not found

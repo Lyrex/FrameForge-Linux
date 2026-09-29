@@ -1021,16 +1021,22 @@ fn tree_node_name(unique: &str, display_names: &HashMap<String, String>, resolve
 
 /// Build a recipe node. Prefers DE's ExportRecipes for sub-ingredients;
 /// falls back to WFCD nested `components` for items not in ExportRecipes.
+#[derive(Clone, Copy)]
+struct RecipeCtx<'a> {
+    display_names: &'a HashMap<String, String>,
+    resolver: &'a NameResolver,
+    export_recipes: &'a HashMap<String, ExportRecipe>,
+}
+
 fn build_recipe_node(
     unique_name: String,
     name: String,
     count: u32,
     wfcd_json: Option<&serde_json::Value>,
-    display_names: &HashMap<String, String>,
-    resolver: &NameResolver,
-    export_recipes: &HashMap<String, ExportRecipe>,
+    ctx: RecipeCtx<'_>,
     depth: u32,
 ) -> RecipeComponent {
+    let RecipeCtx { display_names, resolver, export_recipes } = ctx;
     if depth > 6 {
         return RecipeComponent { unique_name, name, count, result_count: 1, components: vec![] };
     }
@@ -1053,7 +1059,7 @@ fn build_recipe_node(
             let item_name = tree_node_name(item_type, display_names, resolver);
             components.push(build_recipe_node(
                 item_type.clone(), item_name, *item_count,
-                None, display_names, resolver, export_recipes, depth + 1,
+                None, ctx, depth + 1,
             ));
         }
         (recipe.result_count, components)
@@ -1068,7 +1074,7 @@ fn build_recipe_node(
                 // so it's not consulted.
                 let cn = tree_node_name(&cu, display_names, resolver);
                 let cc = c["itemCount"].as_u64().unwrap_or(1) as u32;
-                Some(build_recipe_node(cu, cn, cc, Some(c), display_names, resolver, export_recipes, depth + 1))
+                Some(build_recipe_node(cu, cn, cc, Some(c), ctx, depth + 1))
             }).collect())
             .unwrap_or_default();
         (1, comps)
@@ -1686,7 +1692,9 @@ fn fetch_from_wfcd(
                 let cn = tree_node_name(&cu, &display_names, &resolver);
                 let cc = c["itemCount"].as_u64().unwrap_or(1) as u32;
                 Some(build_recipe_node(
-                    cu, cn, cc, Some(c), &display_names, &resolver, &export_recipes, 0,
+                    cu, cn, cc, Some(c),
+                    RecipeCtx { display_names: &display_names, resolver: &resolver, export_recipes: &export_recipes },
+                    0,
                 ))
             }).collect();
             if !tree.is_empty() {

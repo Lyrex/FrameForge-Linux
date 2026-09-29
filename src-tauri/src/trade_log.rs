@@ -4,6 +4,7 @@ use crate::app_state::AppState;
 use crate::db::{self, Trade};
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct AddTradeParams {
     with_player: String,
     direction: String,
