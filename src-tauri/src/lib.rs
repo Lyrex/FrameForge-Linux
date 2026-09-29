@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use tracing::{info, warn};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
+use tauri::{Manager, State};
 use app_state::{load_corrections, AppState};
 use catalogue::{CATALOGUE_CACHE, patch_catalogue_items};
 use inventory_state::load_inventory_state_cache;
@@ -54,6 +54,7 @@ mod monitor;
 mod platform;
 mod pricing;
 mod relic_pick;
+mod reward_watcher;
 mod rivens;
 mod settings;
 mod stats;
@@ -75,6 +76,50 @@ pub struct OcrParams<'a> {
     capture_info: &'a str,
     hint_squad_size: Option<usize>,
     player_names: &'a [String],
+}
+
+// ─── Live monitor ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    if state.monitor_active.swap(true, Ordering::SeqCst) {
+        return Ok(()); // already running
+    }
+
+    let catalog = {
+        let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let relic_drops = state.relic_drops.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        monitor::build_monitor_catalog(&items, &state.corrections, &relic_drops)
+    };
+
+    // Channel for the blob capture thread to deliver a parsed BlobInventory to the monitor loop.
+    let (blob_tx, blob_rx) = std::sync::mpsc::channel::<memory_scanner::BlobInventory>();
+    blob_capture::spawn_blob_capture_thread(blob_capture::BlobCaptureDeps {
+        app: app.clone(),
+        flag: state.monitor_active.clone(),
+        db_path: state.db_path.clone(),
+        inventory_state_cache_path: state.inventory_state_cache_path.clone(),
+        mastery_progress: state.mastery_progress.clone(),
+        shared_quantities: state.current_quantities.clone(),
+        shared_unique: state.unique_quantities.clone(),
+        shared_mods: state.current_mods.clone(),
+        shared_crafting: state.current_crafting.clone(),
+        blob_log_enabled: state.blob_log_enabled.clone(),
+        blob_log_dir: state.blob_log_dir.clone(),
+        blob_sync_pending: state.blob_sync_pending.clone(),
+        debug_cat_enabled: state.debug_cat_enabled.clone(),
+        unmatched_paths_dir: state.unmatched_paths_dir.clone(),
+        force_pid_check: state.force_pid_check.clone(),
+        blob_rx,
+        blob_tx,
+    }, catalog);
+
+    let debug_path = state.roots.state.join("frameforge_reward_debug.txt");
+    let last_found_path = state.roots.state.join("frameforge_last_reward.txt");
+    monitor::start_memory_trigger(app);
+    monitor::start_legacy_reward_worker(state.monitor_active.clone(), debug_path, last_found_path);
+
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -375,6 +420,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
 
+            {
+                let state = app.state::<AppState>();
+                reward_watcher::spawn_reward_watcher_thread(reward_watcher::RewardWatcherDeps {
+                    app: app.handle().clone(),
+                    flag: state.monitor_active.clone(),
+                    auto_capture_dir: state.auto_capture_dir.clone(),
+                });
+            }
+
             // Every cache is revalidated from here on: the first tick, five
             // seconds in, walks the whole table, and a cache still inside its
             // TTL costs a disk read.
@@ -454,7 +508,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             pricing::refresh_all_caches,
             pricing::get_cache_statuses,
             wfm_commands::wfm_set_status,
-            log_watcher::start_log_watcher,
             rivens::ocr_riven_log_error,
             rivens::save_riven_roll,
             rivens::get_saved_riven_rolls,
@@ -513,7 +566,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             diagnostics::open_debug_folder,
             diagnostics::clear_debug_data,
             diagnostics::get_debug_data_size,
-            monitor::start_monitor,
+            start_monitor,
             monitor::stop_monitor,
             monitor::poke_scan,
             monitor::set_relic_pick_enabled,

@@ -214,13 +214,6 @@ export default function App() {
 
   settingsRef.current = { overlayEnabled, overlayPriority, textScale, colorblindMode, clockFormat, memoryScannerEnabled, blobLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, arbitrationFavorites: arbFavorites, arbitrationLeadMins: arbLeadMins, arbitrationOverlayEnabled: arbOverlayEnabled, arbitrationTierFilter: arbTierFilter, arbitrationAlertTiers: arbAlertTiers, arbitrationScheduleDays: arbScheduleDays, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled, masteryExclude, filterPresets };
 
-  // ── Log watcher — always start regardless of memory scanner toggle ─────────
-  // EE.log is plain file I/O (not memory reading) — handles riven detection,
-  // trade completion, and WFM whisper detection unconditionally.
-  useEffect(() => {
-    invoke("start_log_watcher").catch(() => {});
-  }, []); // eslint-disable-line
-
   // ── WFM auto-login at app start ───────────────────────────────────────────
   // Restores the session into Rust's AppState so the Trading tab is instantly
   // ready when the user opens it — no need to visit the tab first.

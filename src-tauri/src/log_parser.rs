@@ -903,19 +903,6 @@ impl LogTail {
         Self { path, pos: 0, file_id: None, partial_char: Vec::new(), restarted: false }
     }
 
-    /// Starts at the end, for readers that react to events as they happen and
-    /// would fire on hours-old lines if handed the existing log.
-    pub fn from_end(path: PathBuf) -> Self {
-        let seen = std::fs::metadata(&path).ok();
-        Self {
-            pos: seen.as_ref().map_or(0, |m| m.len()),
-            file_id: seen.as_ref().map(file_id),
-            path,
-            partial_char: Vec::new(),
-            restarted: false,
-        }
-    }
-
     /// Whatever has been appended since the last call, or `None` when the file
     /// is unreadable or has not grown.
     pub fn read(&mut self) -> Option<TailChunk> {
@@ -1096,23 +1083,6 @@ mod log_tail_tests {
         append(&path, b"old\n");
         let mut tail = LogTail::from_start(path.clone());
         assert_eq!(text_of(&mut tail), "old\n");
-
-        std::fs::remove_file(&path).expect("scratch file is removable");
-        append(&path, b"a much longer new session log\n");
-
-        let chunk = tail.read().expect("a replaced file reads from its start");
-        assert_eq!(chunk.text, "a much longer new session log\n");
-        assert!(chunk.restarted);
-    }
-
-    /// A tail that opened at the end already holds the file's identity, which
-    /// is a different way into the restart check than starting without one.
-    #[test]
-    fn a_tail_that_opened_at_the_end_still_sees_a_replacement() {
-        let path = scratch("end-replace.log");
-        append(&path, b"old session\n");
-        let mut tail = LogTail::from_end(path.clone());
-        assert!(tail.read().is_none(), "nothing has been appended yet");
 
         std::fs::remove_file(&path).expect("scratch file is removable");
         append(&path, b"a much longer new session log\n");
