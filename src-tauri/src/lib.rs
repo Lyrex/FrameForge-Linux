@@ -64,6 +64,19 @@ mod wfm_queue;
 mod wfm_top;
 mod worldstate;
 
+// ─── Structs ──────────────────────────────────────────────────────────────────
+
+pub struct OcrParams<'a> {
+    pixels: &'a [u8],
+    pix_w: u32,
+    pix_h: u32,
+    game_h: u32,
+    catalog: &'a [(String, String)],
+    capture_info: &'a str,
+    hint_squad_size: Option<usize>,
+    player_names: &'a [String],
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     logging::mark_process_start();

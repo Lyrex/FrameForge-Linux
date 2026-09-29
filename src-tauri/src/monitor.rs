@@ -14,17 +14,6 @@ use crate::relic_pick::park_overlay_offscreen;
 use crate::worldstate::store_to_unique;
 use crate::{blob_capture, events, log_parser, memory_scanner, ocr};
 
-pub struct OcrParams<'a> {
-    pub(crate) pixels: &'a [u8],
-    pub(crate) pix_w: u32,
-    pub(crate) pix_h: u32,
-    pub(crate) game_h: u32,
-    pub(crate) catalog: &'a [(String, String)],
-    pub(crate) capture_info: &'a str,
-    pub(crate) hint_squad_size: Option<usize>,
-    pub(crate) player_names: &'a [String],
-}
-
 // ─── Live monitor ─────────────────────────────────────────────────────────────
 
 #[derive(serde::Serialize, Clone)]
@@ -829,7 +818,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                                 let player_names = names_arc2.lock()
                                     .map(|g| g.clone()).unwrap_or_default();
                                 Some(ocr::extract_reward_items_twophase(
-                                    OcrParams {
+                                    crate::OcrParams {
                                         pixels: &pixels, pix_w: w, pix_h: cap_h, game_h: full_h,
                                         catalog: &cat2, capture_info: &cap_info,
                                         hint_squad_size: hint_squad, player_names: &player_names,
