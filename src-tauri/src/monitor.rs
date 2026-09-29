@@ -1,19 +1,18 @@
 use std::collections::HashMap;
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 use crate::app_state::AppState;
-use crate::catalogue::{fix_category, sanitize_chat_item_name, DebugUnmatched};
+use crate::catalogue::{fix_category, sanitize_chat_item_name};
 use crate::db::QuantityChange;
 use crate::diagnostics::write_bmp;
-use crate::inventory_state::{load_inventory_state_cache, build_inventory_from_blob, inventory_path_aliases, persist_complete_inventory, compare_inventory_quantities, BlobBuildParams};
-use crate::mastery::MasteryProvenance;
+use crate::inventory_state::{load_inventory_state_cache, inventory_path_aliases};
 use crate::mastery_rules;
 use crate::platform::{Platform, ProcessAccess};
 use crate::relic_pick::park_overlay_offscreen;
 use crate::worldstate::store_to_unique;
-use crate::{db, events, log_parser, memory_scanner, memory_scanner_linux, ocr};
+use crate::{blob_capture, events, log_parser, memory_scanner, ocr};
 
 pub struct OcrParams<'a> {
     pub(crate) pixels: &'a [u8],
@@ -70,53 +69,6 @@ pub struct InventoryUpdate {
     pub player_name: Option<String>,
 }
 
-/// Floor on walk frequency, inherited from the fixed cadence this policy
-/// replaced: whatever the probe reports, walking is never worth doing faster.
-const WALK_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
-/// A client with no blob found yet is usually at the login screen. The marker
-/// ends that wait as soon as the inventory arrives, so this interval only
-/// applies when no marker reaches us at all.
-const WALK_COLD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
-/// Covers the state a probe cannot detect: the game reallocates the blob but
-/// the old address still holds a parseable copy of the old bytes, so every
-/// probe answers "unchanged". That is rare and a walk costs the player frames,
-/// hence the long interval.
-const WALK_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_secs(900);
-/// Nothing changes the inventory without a sync, and a sync is always logged,
-/// so this only covers syncs that both marker sources missed. Kept below
-/// [`WALK_MAX_INTERVAL`] so the walk intervals still get evaluated on their own
-/// schedule.
-const BLOB_PROBE_FALLBACK: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// Whether a full region walk is worth its cost this tick.
-///
-/// A walk reads gigabytes and drops the player's framerate, so most of these
-/// rules exist to skip walks that cannot find anything new. The probe covers
-/// the common cases in half a millisecond: a blob that grew in place is
-/// `Updated`, one that moved is `CacheMiss`.
-///
-/// None of this depends on the marker for correctness. Every case has an
-/// interval that fires without one, so a missing EE.log or an unlocatable log
-/// buffer costs only latency.
-fn walk_is_due(
-    outcome: &memory_scanner::ScanOutcome,
-    sync_seen: bool,
-    has_cached_blob: bool,
-    since_walk: std::time::Duration,
-) -> bool {
-    use memory_scanner::ScanOutcome;
-    match outcome {
-        ScanOutcome::Updated => false,
-        ScanOutcome::CacheMiss if sync_seen => true,
-        ScanOutcome::CacheMiss if has_cached_blob => since_walk >= WALK_MIN_INTERVAL,
-        // A sync that moved nothing looks identical to a stale address still
-        // holding the old bytes, and the probe cannot tell them apart.
-        ScanOutcome::Unchanged if sync_seen => since_walk >= WALK_MIN_INTERVAL,
-        ScanOutcome::CacheMiss => since_walk >= WALK_COLD_INTERVAL,
-        ScanOutcome::Unchanged => since_walk >= WALK_MAX_INTERVAL,
-    }
-}
-
 #[tauri::command]
 pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     if state.monitor_active.swap(true, Ordering::SeqCst) {
@@ -124,748 +76,33 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
     }
 
     let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let mut unique_names: Vec<String> = items.iter().map(|i| i.unique_name.clone()).collect();
-    let mut display_names: Vec<String> = items.iter().map(|i| i.name.clone()).collect();
-    // Virtual catalog entries for currency fields not present in WFCD.
-    for (path, name) in [
-        ("/_currency/Endo",        "Endo"),
-        ("/_currency/Credits",     "Credits"),
-        ("/_currency/Platinum",    "Platinum"),
-        ("/_currency/PlatinumGift","Platinum (Gift)"),
-    ] {
-        unique_names.push(path.to_string());
-        display_names.push(name.to_string());
-    }
-    // Items that share a game path with a canonical counterpart (dual-body warframes,
-    // renamed items, etc.).  Map  secondary_path → primary_path.
-    // The scanner searches for ALL paths, but stores results under the primary so the
-    // inventory shows one entry with the canonical display name.
-    let path_aliases = inventory_path_aliases();
+    let relic_drops = state.relic_drops.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let catalog = build_monitor_catalog(&items, &state.corrections, &relic_drops);
 
-    // Alias keys (secondary paths) are excluded from the inventory cache entirely —
-    // they would show as phantom zero-quantity duplicates of the canonical entry.
-    let mut alias_excluded: std::collections::HashSet<String> =
-        path_aliases.keys().map(|s| s.to_string()).collect();
-
-    // Build path→name and path→ducat lookups once from the catalog snapshot.
-    // Alternate paths in path_aliases resolve to the canonical name.
-    let mut path_to_name: HashMap<String, String> = unique_names.iter().zip(display_names.iter())
-        .map(|(u, d)| (u.clone(), d.clone()))
-        .collect();
-    for (alt, primary) in &path_aliases {
-        if let Some(name) = path_to_name.get(*primary).cloned() {
-            path_to_name.insert(alt.to_string(), name);
-        }
-    }
-    let path_to_ducat: HashMap<String, u32> = items.iter()
-        .filter_map(|i| i.ducats.map(|d| (i.unique_name.clone(), d)))
-        .collect();
-    let path_to_vaulted: HashMap<String, bool> = items.iter()
-        .filter_map(|i| i.vaulted.map(|v| (i.unique_name.clone(), v)))
-        .collect();
-    let path_to_tradable: HashMap<String, bool> = items.iter()
-        .filter_map(|i| i.tradable.map(|t| (i.unique_name.clone(), t)))
-        .collect();
-    let mut path_to_max_level_cap: HashMap<String, u32> = items.iter()
-        .filter_map(|i| mastery_rules::known_cap(state.corrections.get(&i.unique_name), i.max_level_cap)
-            .map(|cap| (i.unique_name.clone(), cap)))
-        .collect();
-    let mut path_to_masterable: HashMap<String, bool> = items.iter()
-        .filter_map(|i| mastery_rules::masterable(state.corrections.get(&i.unique_name), i.masterable, &i.unique_name)
-            .map(|m| (i.unique_name.clone(), m)))
-        .collect();
-    // Owned maps for debug capture — cloned once, no borrow from `items`.
-    let path_to_item_type: HashMap<String, String> = items.iter()
-        .map(|i| (i.unique_name.clone(), i.item_type.clone())).collect();
-    let path_to_product_category: HashMap<String, String> = items.iter()
-        .map(|i| (i.unique_name.clone(), i.product_category.clone())).collect();
-    let path_to_wfcd_cat: HashMap<String, String> = items.iter()
-        .map(|i| (i.unique_name.clone(), i.category.clone())).collect();
-    let mut path_to_category: HashMap<String, String> = items.iter()
-        .map(|i| (i.unique_name.clone(), fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name)))
-        .collect();
-    for (path, name) in [
-        ("/_currency/Endo",        "Endo"),
-        ("/_currency/Credits",     "Credits"),
-        ("/_currency/Platinum",    "Platinum"),
-        ("/_currency/PlatinumGift","Platinum (Gift)"),
-    ] {
-        path_to_name.insert(path.to_string(), name.to_string());
-        path_to_category.insert(path.to_string(), "Miscellaneous".to_string());
-    }
-
-    // ── Apply corrections to path lookups ─────────────────────────────────────
-    let ignored_paths: std::collections::HashSet<String> = state.corrections.iter()
-        .filter(|(_, c)| c.category.as_deref() == Some("Ignored"))
-        .map(|(path, _)| path.clone())
-        .collect();
-    for p in &ignored_paths {
-        path_to_name.remove(p);
-        path_to_category.remove(p);
-    }
-    for (path, c) in &state.corrections {
-        if ignored_paths.contains(path) { continue; }
-        if let Some(ref name) = c.name {
-            if !name.is_empty() { path_to_name.insert(path.clone(), name.clone()); }
-        }
-        if let Some(ref cat) = c.category {
-            path_to_category.insert(path.clone(), cat.clone());
-        }
-        // The Plexus has no WFCD entry, so its table row is all the rules see.
-        if !path_to_item_type.contains_key(path) {
-            if let Some(masterable) = mastery_rules::masterable(Some(c), None, path) {
-                path_to_masterable.insert(path.clone(), masterable);
-            }
-            if let Some(cap) = mastery_rules::known_cap(Some(c), None) {
-                path_to_max_level_cap.insert(path.clone(), cap);
-            }
-        }
-    }
-    // Ignored paths are suppressed from the inventory cache just like alias secondaries.
-    alias_excluded.extend(ignored_paths.iter().cloned());
-
-    let relic_drops_snapshot: HashMap<String, Vec<String>> =
-        state.relic_drops.lock().unwrap_or_else(|e| e.into_inner()).clone();
-
-    let flag = state.monitor_active.clone();
-    let db_path = state.db_path.clone();
-    let inventory_state_cache_path = state.inventory_state_cache_path.clone();
-    let section_baseline_path = inventory_state_cache_path.with_file_name("section_baseline.json");
-    let mastery_progress     = state.mastery_progress.clone();
-    let shared_quantities    = state.current_quantities.clone();
-    let shared_unique        = state.unique_quantities.clone();
-    let shared_mods          = state.current_mods.clone();
-    let shared_crafting      = state.current_crafting.clone();
-    let blob_log_enabled     = state.blob_log_enabled.clone();
-    let blob_log_dir         = state.blob_log_dir.clone();
-    let blob_sync_pending    = state.blob_sync_pending.clone();
-    let debug_cat_enabled    = state.debug_cat_enabled.clone();
-    let auto_capture_dir     = state.auto_capture_dir.clone();
-    let unmatched_paths_dir  = state.unmatched_paths_dir.clone();
-    let force_pid_check      = state.force_pid_check.clone();
-    let reward_app = app.clone();  // clone before app is moved into the inventory thread
+    let auto_capture_dir = state.auto_capture_dir.clone();
+    let reward_app = app.clone();  // clone before app is moved into the blob capture thread
 
     // Channel for the blob capture thread to deliver a parsed BlobInventory to the monitor loop.
     let (blob_tx, blob_rx) = std::sync::mpsc::channel::<memory_scanner::BlobInventory>();
-
-    std::thread::spawn(move || {
-        let conn = match rusqlite::Connection::open(&db_path) {
-            Ok(c) => c,
-            Err(e) => { error!(error = %e, "monitor DB open failed"); return; }
-        };
-        let _ = conn.execute_batch("PRAGMA journal_mode=WAL;");
-
-        // Sections seen in the last accepted blob; persisted so the first capture
-        // after a restart is already checked for truncation.
-        let mut section_baseline = memory_scanner::SectionBaseline::from_keys(
-            std::fs::read(&section_baseline_path).ok()
-                .and_then(|b| serde_json::from_slice::<Vec<String>>(&b).ok())
-                .unwrap_or_default(),
-        );
-
-        // Content hash of the last blob actually applied; identical re-captures are skipped.
-        let mut last_applied_hash: Option<u64> = None;
-
-        // Start from whatever quantities were last known (survives restarts).
-        let mut known: HashMap<String, i64> =
-            shared_quantities.lock().unwrap_or_else(|e| e.into_inner()).clone();
-
-        // Load the full inventory state from the last session so the UI shows data
-        // immediately on restart without waiting for the first full scan pass.
-        let startup_cache = load_inventory_state_cache(&inventory_state_cache_path);
-
-        for (path, amount) in startup_cache.stackable_quantities() {
-            known.entry(path).or_insert(amount);
-        }
-        // Keep shared_quantities in sync so the cache-clear detector doesn't misfire.
-        {
-            let mut q = shared_quantities.lock().unwrap_or_else(|e| e.into_inner());
-            if q.is_empty() && !known.is_empty() { *q = known.clone(); }
-        }
-
-        let mut unique_quantities = startup_cache.unique_quantities();
-
-        // Mods: commit hint results directly on every partial pass.
-        // The hint is the live inventory-root region and is always authoritative.
-        // No stability buffer needed — wrong counts on a bad scan self-correct next pass.
-        // Pre-seed from startup cache so mods/arcanes show immediately on restart instead
-        // of going blank until the hint scan rediscovers the RawUpgrades region.
-        let mut known_mods: HashMap<String, memory_scanner::ModCount> = {
-            let from_shared = shared_mods.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            if !from_shared.is_empty() {
-                from_shared
-            } else {
-                startup_cache.items.iter()
-                    .filter(|(_, v)| v.mod_ranks.is_some())
-                    .map(|(path, v)| {
-                        let by_rank: HashMap<u8, i64> = v.mod_ranks.as_ref()
-                            .map(|ranks| ranks.iter()
-                                .filter_map(|(r, &c)| r.parse::<u8>().ok().map(|rank| (rank, c)))
-                                .collect())
-                            .unwrap_or_default();
-                        let total = by_rank.values().sum();
-                        (path.clone(), memory_scanner::ModCount { total, by_rank })
-                    })
-                    .collect()
-            }
-        };
-        let mut prev_mods: HashMap<String, memory_scanner::ModCount> = known_mods.clone();
-        // Track the last date we recorded daily snapshots (YYYY-MM-DD).
-        // Initialise to yesterday so the first scan of a new day always fires.
-        let mut last_snapshot_date = String::new();
-
-        // Emit an immediate status before the first scan so the UI shows cached
-        // inventory data without waiting for the scan to finish.
-        {
-            let game_found = Platform::find_warframe_pid().is_some();
-            let now_pre = chrono::Utc::now().timestamp();
-            let mut initial_qty = known.clone();
-            for (k, &amount) in &unique_quantities { initial_qty.entry(k.clone()).or_insert(amount); }
-            for (path, mc) in &known_mods { initial_qty.entry(path.clone()).or_insert(mc.total); }
-            let _ = app.emit(events::INVENTORY_UPDATE, InventoryUpdate {
-                quantities: initial_qty,
-                crafting: vec![],
-                mastery_rank: startup_cache.mastery_rank,
-                mastery_data: startup_cache.mastery_data(),
-                owned_levels: startup_cache.owned_levels(),
-                changes: vec![],
-                consumed_suits: startup_cache.consumed_suits(),
-                mods: known_mods.clone(),
-                socketed_shards: startup_cache.items.iter()
-                    .filter(|(_, v)| !v.archon_shards.is_empty())
-                    .map(|(k, v)| (k.clone(), v.archon_shards.clone()))
-                    .collect(),
-                forma_counts: startup_cache.items.iter()
-                    .filter_map(|(k, v)| v.forma_count.map(|n| (k.clone(), n)))
-                    .collect(),
-                warframe_running: game_found,
-                scanned_at: now_pre,
-                is_full_pass: true,
-                player_name: app.state::<AppState>().local_player_name
-                    .lock().ok().and_then(|g| g.clone()),
-            });
-        }
-
-        let mut current_mastery_rank: Option<u32> = startup_cache.mastery_rank;
-        let mut current_mastery_data: HashMap<String, u32> = startup_cache.mastery_data();
-        let mut current_owned_levels = startup_cache.owned_levels();
-        let mut current_recipes: Vec<memory_scanner::PendingRecipe> = Vec::new();
-        let mut current_consumed_suits: Vec<String> = startup_cache.consumed_suits();
-        let mut current_socketed_shards: HashMap<String, Vec<memory_scanner::ArchonShard>> = startup_cache.items.iter()
-            .filter(|(_, v)| !v.archon_shards.is_empty())
-            .map(|(k, v)| (k.clone(), v.archon_shards.clone()))
-            .collect();
-        let mut current_forma_counts: HashMap<String, u32> = startup_cache.items.iter()
-            .filter_map(|(k, v)| v.forma_count.map(|n| (k.clone(), n)))
-            .collect();
-        let mut last_walk_time: Option<std::time::Instant> = None;
-        let mut last_probe_time: Option<std::time::Instant> = None;
-        let mut last_blob_probe: Option<std::time::Instant> = None;
-        // Guard against overlapping captures: a full memory walk can take >10 s on large
-        // game processes, so without this flag we'd stack up concurrent scan threads.
-        let blob_scan_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        // Cache the game-running state so we only re-enumerate processes once every 5 s
-        // instead of on every 2-second loop tick (CreateToolhelp32Snapshot is not free).
-        let mut last_pid_check: Option<std::time::Instant> = None;
-        let mut last_pid: Option<u32> = None;
-        let mut cached_game_running = false;
-        // When game is not running, suppress redundant inventory-update emits.
-        // Only emit on the status-change tick and then at most once every 30 s as a heartbeat.
-        let mut prev_game_running = false;
-        let mut last_not_running_emit: Option<std::time::Instant> = None;
-
-        while flag.load(Ordering::SeqCst) {
-            {
-                let sq = shared_quantities.lock().unwrap_or_else(|e| e.into_inner());
-                let local_has_data = !known.is_empty() || !unique_quantities.is_empty() || !known_mods.is_empty();
-                if sq.is_empty() && local_has_data {
-                    known.clear();
-                    unique_quantities.clear();
-                    known_mods.clear();
-                    last_applied_hash = None;
-                    section_baseline = memory_scanner::SectionBaseline::default();
-                }
-            }
-
-            let now = chrono::Utc::now().timestamp();
-
-            // Process any incoming blob (non-blocking)
-            while let Ok(blob) = blob_rx.try_recv() {
-                // Truncation guard: reject a blob that lost a section the previous
-                // accepted blob had. Must run before anything is written, since an
-                // accepted blob fully replaces the inventory.
-                match section_baseline.evaluate(&blob.sections) {
-                    Err(missing) => {
-                        warn!(?missing, "blob rejected: sections present in last good blob are missing — truncated capture");
-                        mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).discard_blob();
-                        last_applied_hash = None;
-                        // The scanner would otherwise report these bytes as unchanged and
-                        // never resend them, so the missing-section streak could not advance.
-                        memory_scanner::forget_blob_digest();
-                        continue;
-                    }
-                    Ok(true) => {
-                        if let Ok(json) = serde_json::to_string(&section_baseline.keys()) {
-                            let _ = crate::cache::atomic_write(&section_baseline_path, json.as_bytes());
-                        }
-                    }
-                    Ok(false) => {}
-                }
-
-                // Identical to what is already applied — nothing to do. Still report
-                // "done" so the UI doesn't sit on "scanning". The same data seen
-                // again is a re-observation of the last confirmed progress.
-                if blob.content_hash != 0 && Some(blob.content_hash) == last_applied_hash {
-                    debug!("blob unchanged since last apply — skipping");
-                    let provenance = {
-                        let mut progress = mastery_progress.lock().unwrap_or_else(|e| e.into_inner());
-                        progress.reobserve(now).then(|| MasteryProvenance::from(progress.record()))
-                    };
-                    if let Some(provenance) = provenance {
-                        let _ = app.emit(events::MASTERY_OBSERVED, provenance);
-                    }
-                    let _ = app.emit(events::BLOB_STATUS, BlobStatusPayload {
-                        stage: "done".into(),
-                        detail: "No changes".into(),
-                    });
-                    continue;
-                }
-
-                let existing_wfm: HashMap<String, u32> =
-                    load_inventory_state_cache(&inventory_state_cache_path)
-                        .items.into_iter()
-                        .filter_map(|(k, v)| v.wfm_price.map(|p| (k, p)))
-                        .collect();
-                let sc = build_inventory_from_blob(BlobBuildParams {
-                    blob: &blob,
-                    path_to_name: &path_to_name, path_to_category: &path_to_category,
-                    path_to_ducat: &path_to_ducat, path_to_vaulted: &path_to_vaulted,
-                    path_to_tradable: &path_to_tradable, path_to_masterable: &path_to_masterable,
-                    path_to_max_level_cap: &path_to_max_level_cap,
-                    relic_drops: &relic_drops_snapshot, existing_wfm_prices: &existing_wfm,
-                    excluded_paths: &alias_excluded,
-                });
-                if !persist_complete_inventory(&blob, &unique_quantities, &sc, &inventory_state_cache_path) {
-                    mastery_progress.lock().unwrap_or_else(|e| e.into_inner()).discard_blob();
-                    last_applied_hash = None;
-                    continue;
-                }
-                if blob.mastery_xp.is_none() {
-                    warn!("XPInfo is not an array; inventory applied, equipment progress left as it was");
-                }
-                if blob.player_skills.is_none() {
-                    warn!("PlayerSkills is not an object; inventory applied, Intrinsics progress left as it was");
-                }
-                if blob.missions.is_none() {
-                    warn!("Missions is not an array; inventory applied, node progress left as it was");
-                }
-                if blob.affiliations.is_none() {
-                    warn!("Affiliations is not an array; inventory applied, standing left as it was");
-                }
-                if mastery_progress.lock().unwrap_or_else(|e| e.into_inner())
-                    .apply_blob(blob.mastery_xp.as_ref(), blob.player_skills.as_ref(), blob.missions.as_ref(), blob.affiliations.as_ref(), now)
-                {
-                    let _ = app.emit(events::MASTERY_UPDATE, ());
-                }
-
-                // Snapshot previous full inventory (known + uniques + mods) for change detection.
-                let prev_all: HashMap<String, i64> = {
-                    let mut m = known.clone();
-                    for (k, &amount) in &unique_quantities { m.entry(k.clone()).or_insert(amount); }
-                    for (p, mc) in &known_mods { m.entry(p.clone()).or_insert(mc.total); }
-                    m
-                };
-
-                known = sc.stackable_quantities();
-                unique_quantities = sc.unique_quantities();
-                current_socketed_shards = sc.items.iter()
-                    .filter(|(_, item)| !item.archon_shards.is_empty())
-                    .map(|(path, item)| (path.clone(), item.archon_shards.clone()))
-                    .collect();
-                current_forma_counts = sc.items.iter()
-                    .filter_map(|(path, item)| item.forma_count.map(|count| (path.clone(), count)))
-                    .collect();
-
-                // Mods — full replacement
-                known_mods.clear();
-                for (path, mc) in &blob.mods {
-                    known_mods.insert(path.clone(), mc.clone());
-                }
-                // Rivens — group by item_type so they appear in inventory like regular mods
-                for riven in &blob.rivens {
-                    let mc = known_mods.entry(riven.item_type.clone()).or_default();
-                    mc.total += riven.count as i64;
-                    *mc.by_rank.entry(riven.mod_rank).or_insert(0) += riven.count as i64;
-                }
-
-                // Debug: write paths with no WFCD entry or Misc fallback to the Unmatched Paths folder.
-                if debug_cat_enabled.load(Ordering::Relaxed) {
-                    // ── Reference file (written once per session) ─────────────────────
-                    // Lists every distinct item_type / product_category / wfcd_category value
-                    // present in the catalog, together with the display category fix_category()
-                    // assigns to each.  Useful for adding new tiers to fix_category.
-                    let ref_path = unmatched_paths_dir.join("_reference.json");
-                    if !ref_path.exists() {
-                        // Collect distinct values; BTreeMap keeps them alphabetically sorted.
-                        // Iterate over path_to_name (covers ALL catalog entries, including
-                        // blueprints that have item_type = "" but wfcd_category = "Blueprints").
-                        let mut item_types: std::collections::BTreeMap<String, String> = Default::default();
-                        let mut prod_cats:  std::collections::BTreeMap<String, String> = Default::default();
-                        let mut wfcd_cats:  std::collections::BTreeMap<String, String> = Default::default();
-                        for (path, nm) in &path_to_name {
-                            let it  = path_to_item_type.get(path).map(|s| s.as_str()).unwrap_or("");
-                            let pc  = path_to_product_category.get(path).map(|s| s.as_str()).unwrap_or("");
-                            let wc  = path_to_wfcd_cat.get(path).map(|s| s.as_str()).unwrap_or("");
-                            let cat = fix_category(nm, it, pc, wc, path);
-                            if !it.is_empty() { item_types.entry(it.to_string()).or_insert(cat.clone()); }
-                            if !pc.is_empty() { prod_cats.entry(pc.to_string()).or_insert(cat.clone()); }
-                            if !wc.is_empty() { wfcd_cats.entry(wc.to_string()).or_insert(cat); }
-                        }
-                        let ref_json = serde_json::json!({
-                            "note": "Distinct field values from the loaded WFCD catalog. 'maps_to' shows the display category fix_category() assigns when that field is the deciding factor.",
-                            "item_type": item_types.iter().map(|(v, c)| serde_json::json!({ "value": v, "maps_to": c })).collect::<Vec<_>>(),
-                            "product_category": prod_cats.iter().map(|(v, c)| serde_json::json!({ "value": v, "maps_to": c })).collect::<Vec<_>>(),
-                            "wfcd_category": wfcd_cats.iter().map(|(v, c)| serde_json::json!({ "value": v, "maps_to": c })).collect::<Vec<_>>(),
-                        });
-                        if let Ok(s) = serde_json::to_string_pretty(&ref_json) {
-                            let _ = std::fs::write(&ref_path, s);
-                        }
-                    }
-
-                    // ── Per-scan unmatched file ───────────────────────────────────────
-                    // Build per-path blob field lookups.
-                    let stackable_count: std::collections::HashMap<&str, i64> = blob.stackable_items.iter()
-                        .map(|e| (e.item_type.as_str(), e.item_count)).collect();
-                    let unique_section: std::collections::HashMap<&str, &str> = blob.unique_items.iter()
-                        .map(|e| (e.item_type.as_str(), e.section.as_str())).collect();
-                    let unique_polarized: std::collections::HashMap<&str, u32> = blob.unique_items.iter()
-                        .map(|e| (e.item_type.as_str(), e.polarized)).collect();
-
-                    let all_paths: Vec<&str> = blob.stackable_items.iter().map(|e| e.item_type.as_str())
-                        .chain(blob.unique_items.iter().map(|e| e.item_type.as_str()))
-                        .chain(blob.mods.keys().map(|k| k.as_str()))
-                        .collect();
-                    let mut new_entries: Vec<DebugUnmatched> = Vec::new();
-                    for p in all_paths {
-                        if p.starts_with("/_currency/") { continue; }
-                        if ignored_paths.contains(p) { continue; }
-                        let name = path_to_name.get(p).cloned().unwrap_or_default();
-                        let (reason, final_cat) = if name.is_empty() {
-                            // Check path-prefix rules first (Tier 8 in fix_category).
-                            let inferred_cat = fix_category("", "", "", "", p);
-                            if inferred_cat != "Miscellaneous" && inferred_cat != "Excluded" {
-                                ("path_rule".to_string(), inferred_cat)
-                            } else {
-                                let last = p.rsplit('/').next().unwrap_or("");
-                                if last.ends_with("Blueprint") && p.contains("/Recipes/") {
-                                    ("path_inferred".to_string(), "Blueprints".to_string())
-                                } else {
-                                    ("no_wfcd_match".to_string(), "Unknown".to_string())
-                                }
-                            }
-                        } else {
-                            let cat = path_to_category.get(p).map(|s| s.as_str()).unwrap_or("Miscellaneous");
-                            if cat != "Miscellaneous" { continue; }
-                            ("misc_fallback".to_string(), "Misc".to_string())
-                        };
-                        // Last 4 non-trivial segments for quick identification.
-                        let path_hint: Vec<String> = p.split('/')
-                            .filter(|s| !s.is_empty() && *s != "Lotus")
-                            .rev().take(4).collect::<Vec<_>>()
-                            .into_iter().rev().map(|s| s.to_string()).collect();
-                        new_entries.push(DebugUnmatched {
-                            path: p.to_string(),
-                            name,
-                            item_type:        path_to_item_type.get(p).cloned().unwrap_or_default(),
-                            product_category: path_to_product_category.get(p).cloned().unwrap_or_default(),
-                            wfcd_category:    path_to_wfcd_cat.get(p).cloned().unwrap_or_default(),
-                            final_category:   final_cat,
-                            reason,
-                            item_count:  stackable_count.get(p).copied(),
-                            section:     unique_section.get(p).map(|s| s.to_string()),
-                            polarized:   unique_polarized.get(p).copied(),
-                            mod_total:   blob.mods.get(p).map(|m| m.total),
-                            path_hint,
-                        });
-                    }
-                    if !new_entries.is_empty() {
-                        let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
-                        let out = unmatched_paths_dir.join(format!("{}.json", ts));
-                        if let Ok(json) = serde_json::to_string_pretty(&new_entries) {
-                            let _ = std::fs::write(&out, json);
-                        }
-                    }
-                }
-
-                // Meta
-                current_mastery_rank = Some(blob.mastery_level);
-                current_mastery_data = sc.mastery_data();
-                current_owned_levels = sc.owned_levels();
-                current_consumed_suits = blob.consumed_suits.clone();
-                current_recipes = blob.pending_recipes.iter().map(|r| memory_scanner::PendingRecipe {
-                    unique_name:   r.item_type.clone(),
-                    completion_ms: r.completion_ms,
-                }).collect();
-
-                // Sync shared state
-                if let Ok(mut q)  = shared_quantities.lock() { *q = known.clone(); }
-                if let Ok(mut sm) = shared_mods.lock()       { *sm = known_mods.clone(); }
-                if let Ok(mut uq) = shared_unique.lock() {
-                    *uq = unique_quantities.clone();
-                }
-
-                // Emit inventory update
-                let mut emit_qty = known.clone();
-                for (k, &amount) in &unique_quantities { emit_qty.entry(k.clone()).or_insert(amount); }
-                for (p, mc) in &known_mods { emit_qty.entry(p.clone()).or_insert(mc.total); }
-
-                let mut changes = compare_inventory_quantities(
-                    &prev_all, &emit_qty, &path_to_name, &ignored_paths, now,
-                );
-                for change in &changes {
-                    let _ = db::add_quantity_change(
-                        &conn, &change.unique_name, &change.item_name, change.old_qty, change.new_qty, None,
-                    );
-                }
-
-                // Rank-specific change detection for mods/arcanes.
-                // Compare current by_rank with previous to find which specific rank changed.
-                if !prev_mods.is_empty() {
-                    let ts = chrono::Utc::now().timestamp();
-                    let all_paths: std::collections::HashSet<&String> =
-                        prev_mods.keys().chain(known_mods.keys()).collect();
-                    for path in all_paths {
-                        if ignored_paths.contains(path.as_str()) { continue; }
-                        let prev = prev_mods.get(path);
-                        let current = known_mods.get(path);
-                        let all_ranks: std::collections::HashSet<u8> = prev.into_iter()
-                            .flat_map(|mods| mods.by_rank.keys())
-                            .chain(current.into_iter().flat_map(|mods| mods.by_rank.keys()))
-                            .cloned()
-                            .collect();
-                        for rank in all_ranks {
-                            let old_count = prev.map(|p| *p.by_rank.get(&rank).unwrap_or(&0)).unwrap_or(0);
-                            let new_count = current.map(|mods| *mods.by_rank.get(&rank).unwrap_or(&0)).unwrap_or(0);
-                            if old_count == new_count { continue; }
-                            let item_name = path_to_name.get(path.as_str())
-                                .cloned()
-                                .unwrap_or_else(|| path.split('/').next_back().unwrap_or("?").to_string());
-                            let _ = db::add_quantity_change(&conn, path, &item_name, old_count, new_count, Some(rank));
-                            changes.push(QuantityChange {
-                                id: 0,
-                                unique_name: path.clone(),
-                                item_name,
-                                old_qty: old_count,
-                                new_qty: new_count,
-                                delta: new_count - old_count,
-                                timestamp: ts,
-                                rank: Some(rank),
-                            });
-                        }
-                    }
-                }
-                // Update prev_mods for next iteration
-                prev_mods = known_mods.clone();
-
-                let crafting: Vec<CraftingJob> = blob.pending_recipes.iter().map(|r| {
-                    let name = display_names.iter().zip(unique_names.iter())
-                        .find(|(_, u)| **u == r.item_type)
-                        .map(|(d, _)| d.clone())
-                        .unwrap_or_else(|| r.item_type.split('/').next_back().unwrap_or("?").to_string());
-                    CraftingJob { unique_name: r.item_type.clone(), item_name: name, completion_ms: r.completion_ms }
-                }).collect();
-                *shared_crafting.lock().unwrap_or_else(|e| e.into_inner()) = crafting.clone();
-                let _ = app.emit(events::INVENTORY_UPDATE, InventoryUpdate {
-                    quantities: emit_qty,
-                    crafting,
-                    mastery_rank: current_mastery_rank,
-                    mastery_data: current_mastery_data.clone(),
-                    owned_levels: current_owned_levels.clone(),
-                    changes,
-                    warframe_running: true,
-                    scanned_at:   now,
-                    consumed_suits:   current_consumed_suits.clone(),
-                    mods:             known_mods.clone(),
-                    socketed_shards:  current_socketed_shards.clone(),
-                    forma_counts:     current_forma_counts.clone(),
-                    is_full_pass:     true,
-                    player_name: app.state::<AppState>().local_player_name
-                        .lock().ok().and_then(|g| g.clone()),
-                });
-
-                let detail = format!(
-                    "{} unique · {} resources · {} mods · {} flavour",
-                    blob.unique_items.len(), blob.stackable_items.len(),
-                    blob.mods.len(), blob.flavour_items.len()
-                );
-                last_applied_hash = Some(blob.content_hash);
-                info!(detail = %detail, "blob applied");
-                let _ = app.emit(events::BLOB_STATUS, BlobStatusPayload {
-                    stage: "done".into(),
-                    detail,
-                });
-
-                // Daily snapshots
-                let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-                if today != last_snapshot_date {
-                    last_snapshot_date = today.clone();
-                    if let Ok(tracked) = db::get_tracked_items(&conn) {
-                        for item in &tracked {
-                            let qty = *known.get(&item.unique_name).unwrap_or(&0);
-                            let _ = db::record_snapshot(&conn, &item.unique_name, &today, qty);
-                        }
-                    }
-                }
-            }
-
-            // A /proc sweep every tick costs more than a 5 s stale PID does.
-            // force_pid_check bypasses the cooldown (set by the poke_scan command).
-            let forced = force_pid_check.swap(false, Ordering::SeqCst);
-            let needs_pid_check = forced || last_pid_check
-                .is_none_or(|t: std::time::Instant| t.elapsed().as_secs() >= 5);
-            if needs_pid_check {
-                let current_pid = Platform::find_warframe_pid();
-                cached_game_running = current_pid.is_some();
-                if current_pid != last_pid {
-                    if current_pid.is_some() {
-                        info!(?last_pid, ?current_pid, "Warframe PID changed, clearing blob region cache");
-                        memory_scanner::reset_last_blob_region();
-                        memory_scanner::reset_log_region();
-                    }
-                    last_pid = current_pid;
-                }
-                last_pid_check = Some(std::time::Instant::now());
-            }
-            let game_running = cached_game_running;
-
-            // The status the UI shows comes from the PID. A game that has
-            // started but has not been scanned yet used to keep reading as
-            // "not running" until the first blob parse succeeded.
-            // While it is not running the payload repeats at most every 30 s.
-            // Without that throttle the loop emits identical data every 2 s
-            // and triggers a full React render cascade (17 k-item useMemo
-            // rebuild).
-            let status_changed = game_running != prev_game_running;
-            let heartbeat_due = !game_running
-                && last_not_running_emit
-                    .is_none_or(|t: std::time::Instant| t.elapsed() >= std::time::Duration::from_secs(30));
-            if status_changed || heartbeat_due {
-                let mut emit_qty = known.clone();
-                for (k, &amount) in &unique_quantities { emit_qty.entry(k.clone()).or_insert(amount); }
-                for (p, mc) in &known_mods { emit_qty.entry(p.clone()).or_insert(mc.total); }
-                let crafting: Vec<CraftingJob> = current_recipes.iter().map(|r| {
-                    let name = display_names.iter().zip(unique_names.iter())
-                        .find(|(_, u)| *u == &r.unique_name)
-                        .map(|(d, _)| d.clone())
-                        .unwrap_or_else(|| r.unique_name.split('/').next_back().unwrap_or("?").to_string());
-                    CraftingJob { unique_name: r.unique_name.clone(), item_name: name, completion_ms: r.completion_ms }
-                }).collect();
-                // Skip mastery_data on heartbeats — it hasn't changed and spreading 17k
-                // entries into React state on every tick is expensive.
-                let send_mastery = status_changed;
-                let _ = app.emit(events::INVENTORY_UPDATE, InventoryUpdate {
-                    quantities: emit_qty, crafting,
-                    mastery_rank: current_mastery_rank,
-                    mastery_data: if send_mastery { current_mastery_data.clone() } else { HashMap::new() },
-                    owned_levels: if send_mastery { current_owned_levels.clone() } else { HashMap::new() },
-                    changes: vec![], warframe_running: game_running, scanned_at: now,
-                    consumed_suits: current_consumed_suits.clone(),
-                    mods: known_mods.clone(),
-                    socketed_shards: current_socketed_shards.clone(),
-                    forma_counts: current_forma_counts.clone(),
-                    is_full_pass: false,
-                    player_name: app.state::<AppState>().local_player_name
-                        .lock().ok().and_then(|g| g.clone()),
-                });
-                if !game_running { last_not_running_emit = Some(std::time::Instant::now()); }
-            }
-            prev_game_running = game_running;
-
-            if game_running {
-                // ── Blob capture: cheap probe, rate-limited walk ──────────────
-                // The probe runs at PROBE_INTERVAL; re-reading the blob itself is
-                // gated additionally by BLOB_PROBE_FALLBACK or the sync marker.
-                const PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
-
-                let walk_in_flight = blob_scan_active.load(Ordering::SeqCst);
-                let probe_due = last_probe_time
-                    .is_none_or(|t: std::time::Instant| t.elapsed() >= PROBE_INTERVAL);
-
-                let mut should_capture = false;
-                if probe_due && !walk_in_flight {
-                    last_probe_time = Some(std::time::Instant::now());
-                    let stitch_due = last_blob_probe
-                        .is_none_or(|t: std::time::Instant| t.elapsed() >= BLOB_PROBE_FALLBACK)
-                        || blob_sync_pending.load(Ordering::SeqCst)
-                        || !memory_scanner::has_cached_blob();
-                    let (outcome, sync_marker) = match last_pid {
-                        Some(pid) => memory_scanner_linux::probe_tick(pid, blob_tx.clone(), stitch_due),
-                        None => (None, false),
-                    };
-                    if outcome.is_some() {
-                        last_blob_probe = Some(std::time::Instant::now());
-                    }
-                    // A full overview refetch would rerun the planning pass
-                    // to move one pill, so the stamp goes out on its own.
-                    if outcome == Some(memory_scanner::ScanOutcome::Unchanged) {
-                        let provenance = {
-                            let mut progress = mastery_progress.lock().unwrap_or_else(|e| e.into_inner());
-                            progress.reobserve(now).then(|| MasteryProvenance::from(progress.record()))
-                        };
-                        if let Some(provenance) = provenance {
-                            let _ = app.emit(events::MASTERY_OBSERVED, provenance);
-                        }
-                    }
-                    if sync_marker {
-                        blob_sync_pending.store(true, Ordering::SeqCst);
-                    }
-                    let sync_seen  = blob_sync_pending.load(Ordering::SeqCst);
-                    let blob_known = memory_scanner::has_cached_blob();
-                    let since_walk = last_walk_time
-                        .map_or(std::time::Duration::MAX, |t: std::time::Instant| t.elapsed());
-                    should_capture = outcome
-                        .as_ref()
-                        .is_some_and(|o| walk_is_due(o, sync_seen, blob_known, since_walk));
-                    if should_capture || outcome == Some(memory_scanner::ScanOutcome::Updated) {
-                        blob_sync_pending.store(false, Ordering::SeqCst);
-                    }
-                    if should_capture {
-                        let since = match last_walk_time {
-                            Some(t) => format!("{:.1}s", t.elapsed().as_secs_f64()),
-                            None => "never".into(),
-                        };
-                        info!(outcome = ?outcome, sync_seen, blob_known, since_last_walk = %since, "escalating to full walk");
-                    }
-                }
-
-                if should_capture {
-                    blob_scan_active.store(true, Ordering::SeqCst);
-                    last_walk_time = Some(std::time::Instant::now());
-                    let ts     = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
-                    let dir    = blob_log_dir.clone();
-                    let tx     = blob_tx.clone();
-                    let save   = blob_log_enabled.load(Ordering::SeqCst);
-                    let active = blob_scan_active.clone();
-                    let _ = app.emit(events::BLOB_STATUS, BlobStatusPayload {
-                        stage:  "scanning".into(),
-                        detail: "Reading Warframe memory\u{2026}".into(),
-                    });
-                    debug!(save, "blob capture starting");
-                    std::thread::spawn(move || {
-                        struct ClearOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
-                        impl Drop for ClearOnDrop {
-                            fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); }
-                        }
-                        let _guard = ClearOnDrop(active);
-                        let count = memory_scanner_linux::capture_all_blobs(&dir, &ts, tx, save);
-                        debug!(files_saved = count, save_flag = save, ts = %ts, "blob capture finished");
-                    });
-                }
-            }
-
-            std::thread::sleep(std::time::Duration::from_secs(2));
-        }
-    });
+    blob_capture::spawn_blob_capture_thread(blob_capture::BlobCaptureDeps {
+        app,
+        flag: state.monitor_active.clone(),
+        db_path: state.db_path.clone(),
+        inventory_state_cache_path: state.inventory_state_cache_path.clone(),
+        mastery_progress: state.mastery_progress.clone(),
+        shared_quantities: state.current_quantities.clone(),
+        shared_unique: state.unique_quantities.clone(),
+        shared_mods: state.current_mods.clone(),
+        shared_crafting: state.current_crafting.clone(),
+        blob_log_enabled: state.blob_log_enabled.clone(),
+        blob_log_dir: state.blob_log_dir.clone(),
+        blob_sync_pending: state.blob_sync_pending.clone(),
+        debug_cat_enabled: state.debug_cat_enabled.clone(),
+        unmatched_paths_dir: state.unmatched_paths_dir.clone(),
+        force_pid_check: state.force_pid_check.clone(),
+        blob_rx,
+        blob_tx,
+    }, catalog);
 
     // ── Dedicated relic reward thread — OCR poll every 500 ms ───────────────
     // Takes a screenshot of the Warframe window, runs OCR on the
@@ -1897,6 +1134,355 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
     // The EE.log watcher already retries OCR for 45 seconds after the trigger,
     // so the fallback is both redundant and harmful.
 
+    start_memory_trigger(reward_app);
+    start_legacy_reward_worker(reward_flag, debug_path, last_found_path);
+
+
+    Ok(())
+}
+
+/// Extract the local player name from EE.log lines containing "Logged in NAME".
+/// Adds the name to shared_squad_names (for OCR filtering) and AppState.local_player_name
+/// (for UI display). Safe to call with a single line or the full log contents.
+fn publish_last_logged_in_name(
+    text: &str,
+    squad_names: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    app: &tauri::AppHandle,
+) {
+    if let Some(name) = text.lines().rev().find_map(logged_in_name) {
+        publish_player_name(&name, squad_names, app);
+    }
+}
+
+/// The account name on a "Sys [Info]: Logged in Sikewyrm" line.
+/// The account-login line has exactly ONE token after "Logged in" and nothing more.
+/// Lines like "Logged in to region server" have multiple tokens — skip them.
+fn logged_in_name(line: &str) -> Option<String> {
+    const MARKER: &str = "]: Logged in ";
+    let pos = line.find(MARKER)?;
+    let after = line[pos + MARKER.len()..].trim();
+    let name: String = after.chars().take_while(|c| !c.is_whitespace()).collect();
+    let remainder = after[name.len()..].trim();
+    (name.len() >= 3 && remainder.is_empty()).then_some(name)
+}
+
+/// First account login in the log, read forward line by line.
+// ponytail: a log with no login is read in full; cap the scan if that ever
+// shows up as a slow first tail read.
+fn first_logged_in_name(mut reader: impl std::io::BufRead) -> Option<String> {
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => {}
+        }
+        // Lossy: a stray non-UTF-8 byte on one line must not hide the login on another.
+        if let Some(name) = logged_in_name(&String::from_utf8_lossy(&line)) {
+            return Some(name);
+        }
+    }
+}
+
+fn publish_player_name(
+    name: &str,
+    squad_names: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    app: &tauri::AppHandle,
+) {
+    if let Ok(mut g) = squad_names.lock() {
+        if !g.iter().any(|n: &String| n == name) { g.push(name.to_string()); }
+    }
+    if let Ok(mut n) = app.state::<AppState>().local_player_name.lock() {
+        *n = Some(name.to_string());
+    }
+    // Emit immediately so the header updates without waiting for the next scan tick.
+    let _ = app.emit(events::PLAYER_NAME, name);
+}
+
+pub(crate) fn now_hms() -> String {
+    chrono::Local::now().format("%H:%M:%S%.3f").to_string()
+}
+
+pub(crate) fn append_to_file(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    f.write_all(text.as_bytes())
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+#[tauri::command]
+pub(crate) fn stop_monitor(state: State<AppState>) {
+    state.monitor_active.store(false, Ordering::SeqCst);
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+#[tauri::command]
+pub(crate) fn poke_scan(state: State<AppState>) {
+    state.force_pid_check.store(true, Ordering::SeqCst);
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+#[tauri::command]
+pub(crate) fn set_relic_pick_enabled(state: State<AppState>, enabled: bool) {
+    state.relic_pick_overlay_enabled.store(enabled, Ordering::SeqCst);
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+#[tauri::command]
+pub(crate) fn set_mem_trigger_enabled(state: State<AppState>, enabled: bool) {
+    state.mem_trigger_enabled.store(enabled, Ordering::SeqCst);
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+#[tauri::command]
+pub(crate) fn get_monitor_status(state: State<AppState>) -> bool {
+    state.monitor_active.load(Ordering::SeqCst)
+}
+
+// ── Monitor catalog ───────────────────────────────────────────────────────────
+
+pub(crate) struct MonitorCatalog {
+    pub path_to_name: HashMap<String, String>,
+    pub path_to_ducat: HashMap<String, u32>,
+    pub path_to_vaulted: HashMap<String, bool>,
+    pub path_to_tradable: HashMap<String, bool>,
+    pub path_to_masterable: HashMap<String, bool>,
+    pub path_to_max_level_cap: HashMap<String, u32>,
+    pub path_to_category: HashMap<String, String>,
+    pub path_to_item_type: HashMap<String, String>,
+    pub path_to_product_category: HashMap<String, String>,
+    pub path_to_wfcd_cat: HashMap<String, String>,
+    pub alias_excluded: std::collections::HashSet<String>,
+    pub ignored_paths: std::collections::HashSet<String>,
+    pub unique_names: Vec<String>,
+    pub display_names: Vec<String>,
+    pub relic_drops_snapshot: HashMap<String, Vec<String>>,
+}
+
+pub(crate) fn build_monitor_catalog(
+    wfcd_items: &[crate::wfcd::WfcdItem],
+    corrections: &HashMap<String, crate::app_state::CorrectionEntry>,
+    relic_drops: &HashMap<String, Vec<String>>,
+) -> MonitorCatalog {
+    let mut unique_names: Vec<String> = wfcd_items.iter().map(|i| i.unique_name.clone()).collect();
+    let mut display_names: Vec<String> = wfcd_items.iter().map(|i| i.name.clone()).collect();
+    // Virtual catalog entries for currency fields not present in WFCD.
+    for (path, name) in [
+        ("/_currency/Endo",        "Endo"),
+        ("/_currency/Credits",     "Credits"),
+        ("/_currency/Platinum",    "Platinum"),
+        ("/_currency/PlatinumGift","Platinum (Gift)"),
+    ] {
+        unique_names.push(path.to_string());
+        display_names.push(name.to_string());
+    }
+    // Items that share a game path with a canonical counterpart (dual-body warframes,
+    // renamed items, etc.).  Map  secondary_path → primary_path.
+    // The scanner searches for ALL paths, but stores results under the primary so the
+    // inventory shows one entry with the canonical display name.
+    let path_aliases = inventory_path_aliases();
+
+    // Alias keys (secondary paths) are excluded from the inventory cache entirely —
+    // they would show as phantom zero-quantity duplicates of the canonical entry.
+    let mut alias_excluded: std::collections::HashSet<String> =
+        path_aliases.keys().map(|s| s.to_string()).collect();
+
+    // Build path→name and path→ducat lookups once from the catalog snapshot.
+    // Alternate paths in path_aliases resolve to the canonical name.
+    let mut path_to_name: HashMap<String, String> = unique_names.iter().zip(display_names.iter())
+        .map(|(u, d)| (u.clone(), d.clone()))
+        .collect();
+    for (alt, primary) in &path_aliases {
+        if let Some(name) = path_to_name.get(*primary).cloned() {
+            path_to_name.insert(alt.to_string(), name);
+        }
+    }
+    let path_to_ducat: HashMap<String, u32> = wfcd_items.iter()
+        .filter_map(|i| i.ducats.map(|d| (i.unique_name.clone(), d)))
+        .collect();
+    let path_to_vaulted: HashMap<String, bool> = wfcd_items.iter()
+        .filter_map(|i| i.vaulted.map(|v| (i.unique_name.clone(), v)))
+        .collect();
+    let path_to_tradable: HashMap<String, bool> = wfcd_items.iter()
+        .filter_map(|i| i.tradable.map(|t| (i.unique_name.clone(), t)))
+        .collect();
+    let mut path_to_max_level_cap: HashMap<String, u32> = wfcd_items.iter()
+        .filter_map(|i| mastery_rules::known_cap(corrections.get(&i.unique_name), i.max_level_cap)
+            .map(|cap| (i.unique_name.clone(), cap)))
+        .collect();
+    let mut path_to_masterable: HashMap<String, bool> = wfcd_items.iter()
+        .filter_map(|i| mastery_rules::masterable(corrections.get(&i.unique_name), i.masterable, &i.unique_name)
+            .map(|m| (i.unique_name.clone(), m)))
+        .collect();
+    // Owned maps for debug capture — cloned once, no borrow from `items`.
+    let path_to_item_type: HashMap<String, String> = wfcd_items.iter()
+        .map(|i| (i.unique_name.clone(), i.item_type.clone())).collect();
+    let path_to_product_category: HashMap<String, String> = wfcd_items.iter()
+        .map(|i| (i.unique_name.clone(), i.product_category.clone())).collect();
+    let path_to_wfcd_cat: HashMap<String, String> = wfcd_items.iter()
+        .map(|i| (i.unique_name.clone(), i.category.clone())).collect();
+    let mut path_to_category: HashMap<String, String> = wfcd_items.iter()
+        .map(|i| (i.unique_name.clone(), fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name)))
+        .collect();
+    for (path, name) in [
+        ("/_currency/Endo",        "Endo"),
+        ("/_currency/Credits",     "Credits"),
+        ("/_currency/Platinum",    "Platinum"),
+        ("/_currency/PlatinumGift","Platinum (Gift)"),
+    ] {
+        path_to_name.insert(path.to_string(), name.to_string());
+        path_to_category.insert(path.to_string(), "Miscellaneous".to_string());
+    }
+
+    // ── Apply corrections to path lookups ─────────────────────────────────────
+    let ignored_paths: std::collections::HashSet<String> = corrections.iter()
+        .filter(|(_, c)| c.category.as_deref() == Some("Ignored"))
+        .map(|(path, _)| path.clone())
+        .collect();
+    for p in &ignored_paths {
+        path_to_name.remove(p);
+        path_to_category.remove(p);
+    }
+    for (path, c) in corrections {
+        if ignored_paths.contains(path) { continue; }
+        if let Some(ref name) = c.name {
+            if !name.is_empty() { path_to_name.insert(path.clone(), name.clone()); }
+        }
+        if let Some(ref cat) = c.category {
+            path_to_category.insert(path.clone(), cat.clone());
+        }
+        // The Plexus has no WFCD entry, so its table row is all the rules see.
+        if !path_to_item_type.contains_key(path) {
+            if let Some(masterable) = mastery_rules::masterable(Some(c), None, path) {
+                path_to_masterable.insert(path.clone(), masterable);
+            }
+            if let Some(cap) = mastery_rules::known_cap(Some(c), None) {
+                path_to_max_level_cap.insert(path.clone(), cap);
+            }
+        }
+    }
+    // Ignored paths are suppressed from the inventory cache just like alias secondaries.
+    alias_excluded.extend(ignored_paths.iter().cloned());
+
+
+    MonitorCatalog {
+        path_to_name, path_to_ducat, path_to_vaulted, path_to_tradable,
+        path_to_masterable, path_to_max_level_cap, path_to_category,
+        path_to_item_type, path_to_product_category, path_to_wfcd_cat,
+        alias_excluded, ignored_paths, unique_names, display_names,
+        relic_drops_snapshot: relic_drops.clone(),
+    }
+}
+
+pub(crate) fn build_crafting_jobs(
+    recipes: &[(String, i64)],
+    display_names: &[String],
+    unique_names: &[String],
+) -> Vec<CraftingJob> {
+    recipes.iter().map(|(unique_name, completion_ms)| {
+        let item_name = display_names.iter().zip(unique_names.iter())
+            .find(|(_, u)| **u == *unique_name)
+            .map(|(d, _)| d.clone())
+            .unwrap_or_else(|| unique_name.split('/').next_back().unwrap_or("?").to_string());
+        CraftingJob { unique_name: unique_name.clone(), item_name, completion_ms: *completion_ms }
+    }).collect()
+}
+
+/// Holds the inventory as last applied. The blob capture loop seeds it from the
+/// previous session's cache and updates it with every blob.
+pub(crate) struct MonitorStartupState {
+    pub known: HashMap<String, i64>,
+    pub unique_quantities: HashMap<String, i64>,
+    pub known_mods: HashMap<String, memory_scanner::ModCount>,
+    pub prev_mods: HashMap<String, memory_scanner::ModCount>,
+    pub current_mastery_rank: Option<u32>,
+    pub current_mastery_data: HashMap<String, u32>,
+    pub current_owned_levels: HashMap<String, Vec<u32>>,
+    pub current_recipes: Vec<memory_scanner::PendingRecipe>,
+    pub current_consumed_suits: Vec<String>,
+    pub current_socketed_shards: HashMap<String, Vec<memory_scanner::ArchonShard>>,
+    pub current_forma_counts: HashMap<String, u32>,
+    pub last_snapshot_date: String,
+}
+
+pub(crate) fn init_monitor_startup_state(
+    shared_quantities: &Arc<Mutex<HashMap<String, i64>>>,
+    shared_mods: &Arc<Mutex<HashMap<String, memory_scanner::ModCount>>>,
+    inventory_state_cache_path: &std::path::PathBuf,
+) -> MonitorStartupState {
+    // Start from whatever quantities were last known (survives restarts).
+    let mut known: HashMap<String, i64> =
+        shared_quantities.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+    // Load the full inventory state from the last session so the UI shows data
+    // immediately on restart without waiting for the first full scan pass.
+    let startup_cache = load_inventory_state_cache(inventory_state_cache_path);
+
+    for (path, amount) in startup_cache.stackable_quantities() {
+        known.entry(path).or_insert(amount);
+    }
+    // Keep shared_quantities in sync so the cache-clear detector doesn't misfire.
+    {
+        let mut q = shared_quantities.lock().unwrap_or_else(|e| e.into_inner());
+        if q.is_empty() && !known.is_empty() { *q = known.clone(); }
+    }
+
+    let unique_quantities = startup_cache.unique_quantities();
+
+    // Mods: commit hint results directly on every partial pass.
+    // The hint is the live inventory-root region and is always authoritative.
+    // No stability buffer needed — wrong counts on a bad scan self-correct next pass.
+    // Pre-seed from startup cache so mods/arcanes show immediately on restart instead
+    // of going blank until the hint scan rediscovers the RawUpgrades region.
+    let known_mods: HashMap<String, memory_scanner::ModCount> = {
+        let from_shared = shared_mods.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if !from_shared.is_empty() {
+            from_shared
+        } else {
+            startup_cache.items.iter()
+                .filter(|(_, v)| v.mod_ranks.is_some())
+                .map(|(path, v)| {
+                    let by_rank: HashMap<u8, i64> = v.mod_ranks.as_ref()
+                        .map(|ranks| ranks.iter()
+                            .filter_map(|(r, &c)| r.parse::<u8>().ok().map(|rank| (rank, c)))
+                            .collect())
+                        .unwrap_or_default();
+                    let total = by_rank.values().sum();
+                    (path.clone(), memory_scanner::ModCount { total, by_rank })
+                })
+                .collect()
+        }
+    };
+    let prev_mods: HashMap<String, memory_scanner::ModCount> = known_mods.clone();
+    // Track the last date we recorded daily snapshots (YYYY-MM-DD).
+    // Initialise to yesterday so the first scan of a new day always fires.
+    let last_snapshot_date = String::new();
+    let current_mastery_rank: Option<u32> = startup_cache.mastery_rank;
+    let current_mastery_data: HashMap<String, u32> = startup_cache.mastery_data();
+    let current_owned_levels = startup_cache.owned_levels();
+    let current_recipes: Vec<memory_scanner::PendingRecipe> = Vec::new();
+    let current_consumed_suits: Vec<String> = startup_cache.consumed_suits();
+    let current_socketed_shards: HashMap<String, Vec<memory_scanner::ArchonShard>> = startup_cache.items.iter()
+        .filter(|(_, v)| !v.archon_shards.is_empty())
+        .map(|(k, v)| (k.clone(), v.archon_shards.clone()))
+        .collect();
+    let current_forma_counts: HashMap<String, u32> = startup_cache.items.iter()
+        .filter_map(|(k, v)| v.forma_count.map(|n| (k.clone(), n)))
+        .collect();
+
+    MonitorStartupState {
+        known, unique_quantities, known_mods, prev_mods,
+        current_mastery_rank, current_mastery_data, current_owned_levels,
+        current_recipes, current_consumed_suits, current_socketed_shards,
+        current_forma_counts, last_snapshot_date,
+    }
+}
+
+/// Start the memory-based relic reward trigger alongside the EE.log watcher.
+pub(crate) fn start_memory_trigger(app: tauri::AppHandle) {
     // ── Memory trigger thread ────────────────────────────────────────────────
     // Parallel to the EE.log watcher. When mem_trigger_enabled is true this thread
     // polls Warframe's heap memory every second, searching for the same trigger
@@ -1916,7 +1502,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
     // OCR itself is always started by the EE.log watcher; this thread only races
     // for the overlay pre-creation event. Toggle on/off from Settings.
     {
-        let mt_app   = reward_app.clone();
+        let mt_app   = app;
         std::thread::spawn(move || {
             // Inner helper: scan heap for a byte pattern. Two-phase design:
             //
@@ -2094,9 +1680,15 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
             }
         });
     }
+}
 
+pub(crate) fn start_legacy_reward_worker(
+    monitor_active: Arc<std::sync::atomic::AtomicBool>,
+    debug_path: std::path::PathBuf,
+    last_found_path: std::path::PathBuf,
+) {
     std::thread::spawn(move || {
-        while reward_flag.load(Ordering::SeqCst) {
+        while monitor_active.load(Ordering::SeqCst) {
             let _relic_screen = false;
             let mut debug = String::new();
             let ts = now_hms();
@@ -2116,171 +1708,8 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
         }
     });
 
-    Ok(())
 }
 
-/// Extract the local player name from EE.log lines containing "Logged in NAME".
-/// Adds the name to shared_squad_names (for OCR filtering) and AppState.local_player_name
-/// (for UI display). Safe to call with a single line or the full log contents.
-fn publish_last_logged_in_name(
-    text: &str,
-    squad_names: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    app: &tauri::AppHandle,
-) {
-    if let Some(name) = text.lines().rev().find_map(logged_in_name) {
-        publish_player_name(&name, squad_names, app);
-    }
-}
-
-/// The account name on a "Sys [Info]: Logged in Sikewyrm" line.
-/// The account-login line has exactly ONE token after "Logged in" and nothing more.
-/// Lines like "Logged in to region server" have multiple tokens — skip them.
-fn logged_in_name(line: &str) -> Option<String> {
-    const MARKER: &str = "]: Logged in ";
-    let pos = line.find(MARKER)?;
-    let after = line[pos + MARKER.len()..].trim();
-    let name: String = after.chars().take_while(|c| !c.is_whitespace()).collect();
-    let remainder = after[name.len()..].trim();
-    (name.len() >= 3 && remainder.is_empty()).then_some(name)
-}
-
-/// First account login in the log, read forward line by line.
-// ponytail: a log with no login is read in full; cap the scan if that ever
-// shows up as a slow first tail read.
-fn first_logged_in_name(mut reader: impl std::io::BufRead) -> Option<String> {
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        match reader.read_until(b'\n', &mut line) {
-            Ok(0) | Err(_) => return None,
-            Ok(_) => {}
-        }
-        // Lossy: a stray non-UTF-8 byte on one line must not hide the login on another.
-        if let Some(name) = logged_in_name(&String::from_utf8_lossy(&line)) {
-            return Some(name);
-        }
-    }
-}
-
-fn publish_player_name(
-    name: &str,
-    squad_names: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    app: &tauri::AppHandle,
-) {
-    if let Ok(mut g) = squad_names.lock() {
-        if !g.iter().any(|n: &String| n == name) { g.push(name.to_string()); }
-    }
-    if let Ok(mut n) = app.state::<AppState>().local_player_name.lock() {
-        *n = Some(name.to_string());
-    }
-    // Emit immediately so the header updates without waiting for the next scan tick.
-    let _ = app.emit(events::PLAYER_NAME, name);
-}
-
-pub(crate) fn now_hms() -> String {
-    chrono::Local::now().format("%H:%M:%S%.3f").to_string()
-}
-
-pub(crate) fn append_to_file(path: &std::path::Path, text: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
-    f.write_all(text.as_bytes())
-}
-
-#[tracing::instrument(level = "debug", skip_all)]
-#[tauri::command]
-pub(crate) fn stop_monitor(state: State<AppState>) {
-    state.monitor_active.store(false, Ordering::SeqCst);
-}
-
-#[tracing::instrument(level = "debug", skip_all)]
-#[tauri::command]
-pub(crate) fn poke_scan(state: State<AppState>) {
-    state.force_pid_check.store(true, Ordering::SeqCst);
-}
-
-#[tracing::instrument(level = "debug", skip_all)]
-#[tauri::command]
-pub(crate) fn set_relic_pick_enabled(state: State<AppState>, enabled: bool) {
-    state.relic_pick_overlay_enabled.store(enabled, Ordering::SeqCst);
-}
-
-#[tracing::instrument(level = "debug", skip_all)]
-#[tauri::command]
-pub(crate) fn set_mem_trigger_enabled(state: State<AppState>, enabled: bool) {
-    state.mem_trigger_enabled.store(enabled, Ordering::SeqCst);
-}
-
-#[tracing::instrument(level = "debug", skip_all)]
-#[tauri::command]
-pub(crate) fn get_monitor_status(state: State<AppState>) -> bool {
-    state.monitor_active.load(Ordering::SeqCst)
-}
-
-#[cfg(test)]
-mod walk_policy_tests {
-    use super::{walk_is_due, WALK_COLD_INTERVAL, WALK_MAX_INTERVAL, WALK_MIN_INTERVAL};
-    use crate::memory_scanner::ScanOutcome;
-    use std::time::Duration;
-
-    /// At the login screen no blob has ever been found, and re-checking that
-    /// every WALK_MIN_INTERVAL reads gigabytes and costs the player frames for
-    /// seconds at a time.
-    #[test]
-    fn a_client_with_no_blob_yet_waits_for_the_backstop() {
-        let just_walked = WALK_MIN_INTERVAL + Duration::from_secs(1);
-        assert!(!walk_is_due(&ScanOutcome::CacheMiss, false, false, just_walked));
-        assert!(walk_is_due(&ScanOutcome::CacheMiss, false, false, WALK_COLD_INTERVAL));
-    }
-
-    /// A settled inventory answers "unchanged" every couple of seconds for as
-    /// long as the player stays docked.
-    #[test]
-    fn a_settled_inventory_does_not_walk_on_the_minute() {
-        assert!(!walk_is_due(&ScanOutcome::Unchanged, false, true, Duration::from_secs(60)));
-        assert!(!walk_is_due(&ScanOutcome::Unchanged, false, true, Duration::from_secs(300)));
-        assert!(walk_is_due(&ScanOutcome::Unchanged, false, true, WALK_MAX_INTERVAL));
-    }
-
-    /// The client announced a fetch and our copy did not move. Usually a sync
-    /// with no delta, but it is also what a stale address holding the old bytes
-    /// looks like.
-    #[test]
-    fn an_unchanged_probe_with_a_marker_still_walks() {
-        assert!(walk_is_due(&ScanOutcome::Unchanged, true, true, WALK_MIN_INTERVAL));
-        assert!(!walk_is_due(&ScanOutcome::Unchanged, true, true, Duration::from_secs(3)));
-    }
-
-    /// The probe already delivered the new inventory.
-    #[test]
-    fn a_fresh_parse_never_escalates() {
-        assert!(!walk_is_due(&ScanOutcome::Updated, true, true, Duration::MAX));
-    }
-
-    /// Once a blob is known, a miss plausibly means the game reallocated it.
-    #[test]
-    fn a_miss_on_a_known_blob_keeps_the_old_cadence() {
-        assert!(walk_is_due(&ScanOutcome::CacheMiss, false, true, WALK_MIN_INTERVAL));
-        assert!(!walk_is_due(&ScanOutcome::CacheMiss, false, true, Duration::from_secs(4)));
-    }
-
-    /// The marker resolves the ambiguity, including at the login screen.
-    #[test]
-    fn a_sync_marker_escalates_immediately() {
-        assert!(walk_is_due(&ScanOutcome::CacheMiss, true, false, Duration::ZERO));
-        assert!(walk_is_due(&ScanOutcome::CacheMiss, true, true, Duration::ZERO));
-    }
-
-    /// The first tick after the game appears has no previous walk to rate-limit
-    /// against, so the app still gets one immediately at startup.
-    #[test]
-    fn the_first_walk_is_never_delayed() {
-        assert!(walk_is_due(&ScanOutcome::CacheMiss, false, false, Duration::MAX));
-    }
-}
 
 #[cfg(test)]
 mod login_scan_tests {

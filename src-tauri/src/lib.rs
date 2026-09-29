@@ -13,6 +13,7 @@ use wfm::{PriceQuote, Wfm};
 
 pub mod arbitration;
 mod arbitrations;
+mod blob_capture;
 mod cache;
 mod db;
 // EE.log lives at a different path per platform (Proton prefix on Linux), so
