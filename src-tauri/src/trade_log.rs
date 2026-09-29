@@ -81,8 +81,12 @@ fn extract_trade_items(section: &str) -> Vec<(String, i64)> {
 /// Parse the full trade confirmation dialog from EE.log.
 /// Returns None if the dialog doesn't contain the expected markers.
 pub(crate) fn parse_trade_dialog(raw: &str) -> Option<ParsedTrade> {
+    // The game sometimes appends a private-use-area glyph (U+E000, an in-game
+    // status icon) to the player name with no space before it.
     let with_player = raw.find("will receive from ")
-        .and_then(|i| { let a = &raw[i + 18..]; a.find(" the following").map(|j| a[..j].trim().to_string()) })?;
+        .and_then(|i| { let a = &raw[i + 18..]; a.find(" the following").map(|j| {
+            a[..j].trim().trim_end_matches(|c: char| ('\u{E000}'..='\u{F8FF}').contains(&c)).trim().to_string()
+        }) })?;
     let offered_raw = raw.find("You are offering:")
         .and_then(|i| { let a = &raw[i + 17..]; a.find("and will receive from").map(|j| a[..j].trim().to_string()) })
         .unwrap_or_default();
@@ -119,6 +123,41 @@ pub(crate) fn parse_trade_dialog(raw: &str) -> Option<ParsedTrade> {
         session_id: now.format("%Y%m%dT%H%M%S%3f").to_string(),
         timestamp: now.to_rfc3339(),
     })
+}
+
+const MAX_TRADE_BUFFER_BYTES: usize = 256 * 1024;
+const TRADE_SUCCESS_MARKER: &str = "the trade was successful";
+
+/// Feeds one EE.log read into `trade_buffer`. Once the success line arrives,
+/// parses the last confirmation dialog before it and clears the buffer. The
+/// flag reports the success line even when no dialog parsed.
+///
+/// The tailer can wake while the game is still writing the multi-line dialog,
+/// so the dialog, and even the success line, can span several reads.
+pub(crate) fn collect_trade_completion(
+    buf: &str,
+    trade_buffer: &mut String,
+) -> (bool, Option<ParsedTrade>) {
+    trade_buffer.push_str(buf);
+    if trade_buffer.len() > MAX_TRADE_BUFFER_BYTES {
+        let start = trade_buffer.ceil_char_boundary(trade_buffer.len() - MAX_TRADE_BUFFER_BYTES);
+        trade_buffer.drain(..start);
+    }
+
+    let scan_start = trade_buffer
+        .floor_char_boundary(trade_buffer.len().saturating_sub(buf.len() + TRADE_SUCCESS_MARKER.len()));
+    if !trade_buffer[scan_start..].to_ascii_lowercase().contains(TRADE_SUCCESS_MARKER) {
+        return (false, None);
+    }
+
+    // ASCII lowercasing keeps byte offsets, so an index into `lower` is valid
+    // in `trade_buffer` too.
+    let lower = trade_buffer.to_ascii_lowercase();
+    let trade = lower
+        .rfind("dialog::createokcancel")
+        .and_then(|start| parse_trade_dialog(&trade_buffer[start..]));
+    trade_buffer.clear();
+    (true, trade)
 }
 
 // ─── Trade log ────────────────────────────────────────────────────────────────
@@ -163,4 +202,71 @@ pub(crate) fn add_trade(
     );
     app.emit("stats-changed", ()).ok();
     Ok(trade_id)
+}
+
+#[cfg(test)]
+mod trade_dialog_tests {
+    use super::*;
+
+    /// Real (player-redacted) dialog text captured from EE.log for a trade where
+    /// the local player sold 4 Sevagoth Prime blueprints for 33 platinum. The
+    /// player name is followed by a private-use-area glyph (U+E000) with no
+    /// preceding space, and item lines are prefixed with a bare '\r'.
+    #[test]
+    fn trade_sale_for_platinum_extracts_received_plat_and_offered_items() {
+        let raw = "1037.335 Script [Info]: Dialog.lua: Dialog::CreateOkCancel(description=Are you sure you want to accept this trade? You are offering:\n\rSevagoth Prime Chassis Blueprint\n\rSevagoth Prime Neuroptics Blueprint\n\rSevagoth Prime Systems Blueprint\n\rSevagoth Prime Blueprint\r\n\r\nand will receive from Winter.Mine\u{E000} the following:\n\rPlatinum x 33, title= leftItem=/Menu/Confirm_Item_Ok, rightItem=/Menu/Confirm_Item_Cancel)\n";
+
+        let parsed = parse_trade_dialog(raw).expect("dialog should parse");
+        assert_eq!(parsed.with_player, "Winter.Mine");
+        assert_eq!(parsed.trade_type, "sale");
+        assert_eq!(parsed.received_plat, 33);
+        assert_eq!(parsed.offered_plat, 0);
+        assert!(parsed.received_items.is_empty());
+        assert_eq!(
+            parsed.offered_items,
+            vec![
+                ("Sevagoth Prime Chassis Blueprint".to_string(), 1),
+                ("Sevagoth Prime Neuroptics Blueprint".to_string(), 1),
+                ("Sevagoth Prime Systems Blueprint".to_string(), 1),
+                ("Sevagoth Prime Blueprint".to_string(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn trade_purchase_extracts_received_items() {
+        let raw = "Dialog::CreateOkCancel(description=Are you sure you want to accept this trade? You are offering:\r\nPlatinum x 20\r\n\r\nand will receive from Buyer123 the following:\r\nAyatan Anasa Sculpture, title= leftItem=/Menu/Confirm_Item_Ok, rightItem=/Menu/Confirm_Item_Cancel)";
+
+        let parsed = parse_trade_dialog(raw).expect("dialog should parse");
+        assert_eq!(parsed.trade_type, "purchase");
+        assert_eq!(parsed.offered_plat, 20);
+        assert_eq!(parsed.received_items, vec![("Ayatan Anasa Sculpture".to_string(), 1)]);
+    }
+
+    #[test]
+    fn trade_completion_reassembles_split_log_reads() {
+        let chunks = [
+            "unrelated log text\nDialog::CreateOkCan",
+            "cel(description=Are you sure? You are off",
+            "ering:\r\nSaryn Prime Chassis Blueprint\r\n\r\nand will receive from Buyer123 the follow",
+            "ing:\r\nPlatinum x 15, title= leftItem=/Menu/Confirm_Item_Ok)\nThe trade was succ",
+            "essful\n",
+        ];
+        let mut trade_buffer = String::new();
+        let mut result = None;
+
+        for chunk in chunks {
+            let (_, parsed) = collect_trade_completion(chunk, &mut trade_buffer);
+            if parsed.is_some() {
+                result = parsed;
+            }
+        }
+
+        let parsed = result.expect("split dialog and completion should be reconstructed");
+        assert_eq!(parsed.with_player, "Buyer123");
+        assert_eq!(parsed.trade_type, "sale");
+        assert_eq!(parsed.received_plat, 15);
+        assert_eq!(parsed.offered_items, vec![("Saryn Prime Chassis Blueprint".to_string(), 1)]);
+        assert!(trade_buffer.is_empty());
+    }
 }

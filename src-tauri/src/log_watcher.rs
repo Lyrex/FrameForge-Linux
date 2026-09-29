@@ -5,7 +5,7 @@ use crate::app_state::AppState;
 use crate::monitor::{append_to_file, now_hms};
 use crate::catalogue::sanitize_chat_item_name;
 use crate::relic_pick::{build_relic_pick_payload, relic_pick_show, relic_pick_hide, show_overlay};
-use crate::trade_log::parse_trade_dialog;
+use crate::trade_log::collect_trade_completion;
 use crate::{db, log_parser};
 
 // ==============================================================================
@@ -111,7 +111,7 @@ pub(crate) fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
             record_arbitration_runs(&app, &mut arbitration_runs, backfill.text, false);
         }
 
-        let mut pending_trade: Option<String> = None;
+        let mut trade_buffer = String::new();
         // Cooldown: don't fire riven-screen-open again within 4 seconds of the last fire.
         // Guards against the same EE.log buffer being processed twice by React StrictMode listeners.
         let mut last_riven_fire: Option<std::time::Instant> = None;
@@ -126,6 +126,7 @@ pub(crate) fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
                 // over from the old file would otherwise be glued onto the new
                 // file's boot-time header.
                 arbitration_runs = db::ArbitrationRecorder::default();
+                trade_buffer.clear();
             }
             let buf = chunk.text;
             // A replaced log arrives whole and may hold runs finished long
@@ -254,25 +255,30 @@ pub(crate) fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
             }
 
             // ── In-game trade completion ──────────────────────────────────────
-            if lower.contains("dialog::createokcancel") && lower.contains("you are offering") {
-                pending_trade = Some(buf.clone());
-            }
-            if lower.contains("the trade was successful") {
-                if let Some(ref trade_raw) = pending_trade.clone() {
-                    if let Some(t) = parse_trade_dialog(trade_raw) {
-                        let _ = app.emit("trade-completed", serde_json::json!({
-                            "sessionId":     t.session_id,
-                            "withPlayer":    t.with_player,
-                            "tradeType":     t.trade_type,
-                            "offeredItems":  t.offered_items.iter().map(|(n, q)| serde_json::json!({"name": n, "qty": q})).collect::<Vec<_>>(),
-                            "offeredPlat":   t.offered_plat,
-                            "receivedItems": t.received_items.iter().map(|(n, q)| serde_json::json!({"name": n, "qty": q})).collect::<Vec<_>>(),
-                            "receivedPlat":  t.received_plat,
-                            "timestamp":     t.timestamp,
-                        }));
+            match collect_trade_completion(&buf, &mut trade_buffer) {
+                (_, Some(t)) => {
+                    info!(
+                        with_player = %t.with_player,
+                        trade_type = %t.trade_type,
+                        offered_items = t.offered_items.len(),
+                        received_items = t.received_items.len(),
+                        "trade completion detected"
+                    );
+                    if let Err(error) = app.emit("trade-completed", serde_json::json!({
+                        "sessionId":     t.session_id,
+                        "withPlayer":    t.with_player,
+                        "tradeType":     t.trade_type,
+                        "offeredItems":  t.offered_items.iter().map(|(n, q)| serde_json::json!({"name": n, "qty": q})).collect::<Vec<_>>(),
+                        "offeredPlat":   t.offered_plat,
+                        "receivedItems": t.received_items.iter().map(|(n, q)| serde_json::json!({"name": n, "qty": q})).collect::<Vec<_>>(),
+                        "receivedPlat":  t.received_plat,
+                        "timestamp":     t.timestamp,
+                    })) {
+                        warn!(%error, "failed to emit trade-completed event");
                     }
                 }
-                pending_trade = None;
+                (true, None) => warn!("trade completion detected, but confirmation dialog could not be parsed"),
+                (false, None) => {}
             }
         }
     });
