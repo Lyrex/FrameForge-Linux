@@ -1523,6 +1523,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                         let mut attempt = 0u32;
                         let mut best_item_count = 0usize;
                         let mut best_payload: Option<serde_json::Value> = None; // locked when complete
+                        let mut best_low_confidence = false;
                         // When no EE squad hint is available, the first "complete" result may
                         // undercount cards (e.g. dark text hides a 2-line item name).
                         // soft_complete_at tracks the first attempt that returned complete-without-hint
@@ -1604,7 +1605,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                             let ts = now_hms();
                             let sleep_ms = match &result {
                                 // ✅ 1+ items found (solo=1, duo=2, trio=3, full squad=4)
-                                Some((complete, _, ref items, ref positions, ref dbg)) if !items.is_empty() => {
+                                Some((complete, low_confidence, ref items, ref positions, ref dbg)) if !items.is_empty() => {
                                     no_match_streak = 0;
                                     let payload = Some(serde_json::json!({
                                         "items": items, "positions": positions
@@ -1625,16 +1626,22 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                                     let hint_wants_more = hint_squad
                                         .is_some_and(|h| h > items.len());
                                     let confirm_ready = !hint_wants_more
-                                        && (hint_squad.is_some() || soft_retries_done);
+                                        && (hint_squad.is_some() || soft_retries_done)
+                                        && (!*low_confidence || soft_retries_done);
 
                                     // Save best result; only emit to overlay when confirmed (LOCK).
                                     // Partial updates are intentionally suppressed — emitting
                                     // partial data while the user is still hovering cards causes
                                     // the overlay to flicker with wrong items between attempts.
-                                    let is_new_best = items.len() > best_item_count;
+                                    // A confident read of as many cards replaces a low-confidence
+                                    // one, or the retries the gate above waits for could never
+                                    // change what gets shown.
+                                    let is_new_best = items.len() > best_item_count
+                                        || (items.len() == best_item_count && best_low_confidence && !*low_confidence);
                                     if is_new_best {
                                         best_item_count = items.len();
                                         best_payload = payload.clone();
+                                        best_low_confidence = *low_confidence;
                                         let label = if *complete && confirm_ready { "✅" } else { "⚡" };
                                         let status_label = if *complete && confirm_ready { "locked" }
                                             else if *complete { "soft-complete, waiting for EE hint" }

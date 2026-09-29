@@ -273,6 +273,15 @@ fn word_found_in_set(
     false
 }
 
+/// True when OCR read every word of `display_name`. Words are cut the way
+/// `build_word_set` cuts them, since a word it drops ("&" in "Silva & Aegis")
+/// can never be read.
+fn every_word_seen(display_name: &str, words: &std::collections::HashSet<String>) -> bool {
+    let norm = normalise(display_name);
+    let mut name_words = norm.split(|c: char| !c.is_ascii_alphabetic()).filter(|w| w.len() >= 3).peekable();
+    name_words.peek().is_some() && name_words.all(|w| word_found_in_set(w, words))
+}
+
 // ─── Catalog matching ─────────────────────────────────────────────────────────
 
 /// Normalise OCR text for catalog matching.
@@ -1065,6 +1074,7 @@ fn match_reward_items(
     };
 
     let mut col_match_log: Vec<String> = Vec::new();
+    let mut any_low_confidence = false;
 
     for (col_idx, (col_texts, cx)) in columns.iter().enumerate() {
         if items.len() >= active_centers.len() { break; }
@@ -1106,6 +1116,7 @@ fn match_reward_items(
 
         // ── Icon-based fallback when text match is weak ──────────────────────
         let mut icon_log = String::new();
+        let mut icon_accepted = false;
         if best_score < 0.67 && have_bars {
             let bar_y = _bar_y_frac;
             let half_w = if columns.len() > 1 { 0.56 / columns.len() as f32 / 2.0 } else { 0.10 };
@@ -1158,6 +1169,7 @@ fn match_reward_items(
                         icon_best_unique.as_ref().and_then(|u| catalog.iter().find(|(k,_)| k==u)).map(|(_,n)| n.as_str()).unwrap_or("?"));
                     best_score = icon_best_score;
                     best_unique = icon_best_unique;
+                    icon_accepted = true;
                 } else {
                     icon_log += "\n    Icon rejected (score < 0.40)";
                 }
@@ -1196,10 +1208,21 @@ fn match_reward_items(
             if !raw.is_empty() {
                 items.push(format!("?:{}", raw));
                 positions.push(*cx);
+                // A retry may read the card properly. Counting it as confident
+                // would also let it replace a matched read of the same size.
+                any_low_confidence = true;
             }
             continue;
         }
         let unique = match best_unique { Some(u) => u, None => continue };
+        // A passing score can come from a read of only one or two words, which
+        // cannot tell "Wisp Prime Neuroptics" from "Wisp Prime Chassis". Unless
+        // the icon confirmed the card, trust it only when every word was read.
+        if !icon_accepted
+            && !catalog.iter().find(|(k, _)| *k == unique).is_some_and(|(_, dn)| every_word_seen(dn, &words))
+        {
+            any_low_confidence = true;
+        }
         // No dedup here — each column is a distinct physical card.
         // Two players cracking the same relic legitimately show the same reward twice.
         // The `seen` set is only used in section 3b (full-frame fallback) where we
@@ -1384,7 +1407,7 @@ fn match_reward_items(
          ├─ Bars     : {}\n\
          ├─ Prime/Forma: {}p + {}f + {}x = {} cards\n\
          ├─ EE hint  : {}\n\
-         ├─ Expected : {} cards (from {}){}\n\
+         ├─ Expected : {} cards (from {}){}{}\n\
          ├─ Raw lines:\n{}\n\
          ├─ Match    : {} — {} formed\n\
          {}\n\
@@ -1396,13 +1419,14 @@ fn match_reward_items(
         ee_hint_str,
         estimated_cards, expected_src,
         if is_complete { " ✅ complete" } else { " ⚡ partial" },
+        if any_low_confidence { " ⚠ low-confidence card(s) — retrying" } else { "" },
         raw_ocr_log,
         col_mode, columns.len(),
         col_match_log.join("\n"),
         ff_items,
     );
 
-    (is_complete, false, items, positions, debug)
+    (is_complete, any_low_confidence, items, positions, debug)
 }
 
 
@@ -2183,6 +2207,19 @@ mod tests {
 
     fn ocr_words(words: &[&str]) -> std::collections::HashSet<String> {
         words.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_sparse_read_does_not_see_every_word_of_either_part() {
+        let sparse = ocr_words(&["wisp", "prime"]);
+        assert!(!every_word_seen("Wisp Prime Neuroptics", &sparse));
+        assert!(!every_word_seen("Wisp Prime Chassis", &sparse));
+
+        let full = ocr_words(&["wisp", "prime", "neuroptics"]);
+        assert!(every_word_seen("Wisp Prime Neuroptics", &full));
+        assert!(!every_word_seen("Wisp Prime Chassis", &full));
+
+        assert!(every_word_seen("Silva & Aegis Prime Guard", &ocr_words(&["silva", "aegis", "prime", "guard"])));
     }
 
     #[test]
