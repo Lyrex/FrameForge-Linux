@@ -47,7 +47,15 @@ pub(crate) fn add_trade(
         trade_type: params.trade_type.unwrap_or_default(),
     };
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    db::add_trade(&conn, &trade).map_err(|e| e.to_string())
+    let trade_id = db::add_trade(&conn, &trade).map_err(|e| e.to_string())?;
+    tracing::info!(
+        trade_id,
+        session_id = %trade.session_id,
+        direction = %trade.direction,
+        item_name = %trade.item_name,
+        "trade saved"
+    );
+    Ok(trade_id)
 }
 
 #[tauri::command]

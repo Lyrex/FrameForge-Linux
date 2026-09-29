@@ -57,6 +57,9 @@ struct ParsedTrade {
     timestamp: String,
 }
 
+const MAX_TRADE_BUFFER_BYTES: usize = 256 * 1024;
+const TRADE_SUCCESS_MARKER: &str = "the trade was successful";
+
 /// Clean a single item line from a trade dialog:
 /// strips Warframe PUA rank-dot characters and normalises mod rank suffixes.
 fn clean_trade_item(raw: &str) -> String {
@@ -148,6 +151,42 @@ fn parse_trade_dialog(raw: &str) -> Option<ParsedTrade> {
         session_id: now.format("%Y%m%dT%H%M%S%3f").to_string(),
         timestamp: now.to_rfc3339(),
     })
+}
+
+/// Keep enough raw EE.log text to reconstruct a trade dialog when Windows wakes
+/// the tailer while Warframe is still writing the multi-line log entry.
+fn collect_trade_completion(
+    buf: &str,
+    trade_buffer: &mut String,
+) -> (bool, Option<ParsedTrade>) {
+    trade_buffer.push_str(buf);
+    if trade_buffer.len() > MAX_TRADE_BUFFER_BYTES {
+        let mut start = trade_buffer.len() - MAX_TRADE_BUFFER_BYTES;
+        while !trade_buffer.is_char_boundary(start) {
+            start += 1;
+        }
+        trade_buffer.drain(..start);
+    }
+
+    let mut scan_start = trade_buffer
+        .len()
+        .saturating_sub(buf.len() + TRADE_SUCCESS_MARKER.len());
+    while !trade_buffer.is_char_boundary(scan_start) {
+        scan_start += 1;
+    }
+    if !trade_buffer[scan_start..]
+        .to_ascii_lowercase()
+        .contains(TRADE_SUCCESS_MARKER)
+    {
+        return (false, None);
+    }
+
+    let lower = trade_buffer.to_ascii_lowercase();
+    let trade = lower
+        .rfind("dialog::createokcancel")
+        .and_then(|start| parse_trade_dialog(&trade_buffer[start..]));
+    trade_buffer.clear();
+    (true, trade)
 }
 
 /// Detect riven reroll/unveil screen open and close from freshly-read EE.log text.
@@ -265,33 +304,34 @@ pub(crate) fn handle_relic_pick_events(
 }
 
 /// Detect an in-game trade offer dialog and its completion from EE.log text.
-/// `pending_trade` carries the captured offer dialog text across calls until
-/// "the trade was successful" arrives.
 pub(crate) fn handle_trade_completion(
     app: &tauri::AppHandle,
-    lower: &str,
     buf: &str,
-    pending_trade: &mut Option<String>,
+    trade_buffer: &mut String,
 ) {
-    if lower.contains("dialog::createokcancel") && lower.contains("you are offering") {
-        *pending_trade = Some(buf.to_string());
-    }
-    if lower.contains("the trade was successful") {
-        if let Some(trade_raw) = pending_trade.clone() {
-            if let Some(t) = parse_trade_dialog(&trade_raw) {
-                let _ = app.emit(events::TRADE_COMPLETED, serde_json::json!({
-                    "sessionId":     t.session_id,
-                    "withPlayer":    t.with_player,
-                    "tradeType":     t.trade_type,
-                    "offeredItems":  t.offered_items.iter().map(|(n, q)| serde_json::json!({"name": n, "qty": q})).collect::<Vec<_>>(),
-                    "offeredPlat":   t.offered_plat,
-                    "receivedItems": t.received_items.iter().map(|(n, q)| serde_json::json!({"name": n, "qty": q})).collect::<Vec<_>>(),
-                    "receivedPlat":  t.received_plat,
-                    "timestamp":     t.timestamp,
-                }));
-            }
+    let (completed, trade) = collect_trade_completion(buf, trade_buffer);
+    if let Some(t) = trade {
+        info!(
+            with_player = %t.with_player,
+            trade_type = %t.trade_type,
+            offered_items = t.offered_items.len(),
+            received_items = t.received_items.len(),
+            "trade completion detected"
+        );
+        if let Err(error) = app.emit(events::TRADE_COMPLETED, serde_json::json!({
+            "sessionId":     t.session_id,
+            "withPlayer":    t.with_player,
+            "tradeType":     t.trade_type,
+            "offeredItems":  t.offered_items.iter().map(|(n, q)| serde_json::json!({"name": n, "qty": q})).collect::<Vec<_>>(),
+            "offeredPlat":   t.offered_plat,
+            "receivedItems": t.received_items.iter().map(|(n, q)| serde_json::json!({"name": n, "qty": q})).collect::<Vec<_>>(),
+            "receivedPlat":  t.received_plat,
+            "timestamp":     t.timestamp,
+        })) {
+            warn!(%error, "failed to emit trade-completed event");
         }
-        *pending_trade = None;
+    } else if completed {
+        warn!("trade completion detected, but confirmation dialog could not be parsed");
     }
 }
 
@@ -1237,5 +1277,32 @@ mod trade_dialog_tests {
         assert_eq!(parsed.trade_type, "purchase");
         assert_eq!(parsed.offered_plat, 20);
         assert_eq!(parsed.received_items, vec![("Ayatan Anasa Sculpture".to_string(), 1)]);
+    }
+
+    #[test]
+    fn trade_completion_reassembles_split_log_reads() {
+        let chunks = [
+            "unrelated log text\nDialog::CreateOkCan",
+            "cel(description=Are you sure? You are off",
+            "ering:\r\nSaryn Prime Chassis Blueprint\r\n\r\nand will receive from Buyer123 the follow",
+            "ing:\r\nPlatinum x 15, title= leftItem=/Menu/Confirm_Item_Ok)\nThe trade was succ",
+            "essful\n",
+        ];
+        let mut trade_buffer = String::new();
+        let mut result = None;
+
+        for chunk in chunks {
+            let (_, parsed) = collect_trade_completion(chunk, &mut trade_buffer);
+            if parsed.is_some() {
+                result = parsed;
+            }
+        }
+
+        let parsed = result.expect("split dialog and completion should be reconstructed");
+        assert_eq!(parsed.with_player, "Buyer123");
+        assert_eq!(parsed.trade_type, "sale");
+        assert_eq!(parsed.received_plat, 15);
+        assert_eq!(parsed.offered_items, vec![("Saryn Prime Chassis Blueprint".to_string(), 1)]);
+        assert!(trade_buffer.is_empty());
     }
 }
