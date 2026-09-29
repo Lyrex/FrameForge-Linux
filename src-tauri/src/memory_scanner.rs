@@ -871,6 +871,10 @@ pub(crate) fn forget_blob_digest() {
 ///
 /// Returns true when `json` is byte-identical to what the previous call saw.
 fn blob_unchanged(json: &[u8]) -> bool {
+    digest_unchanged(blob_digest(json))
+}
+
+fn blob_digest(json: &[u8]) -> u64 {
     use std::hash::{DefaultHasher, Hash, Hasher};
     // Callers hand over a stitched buffer, not a trimmed blob. The stitch stops
     // at the mapping that closes the JSON, so everything past the closing brace
@@ -884,7 +888,10 @@ fn blob_unchanged(json: &[u8]) -> bool {
     // OR in a set bit so a hashed digest can never equal the 0 sentinel that
     // reset_last_blob_region stores — that sentinel must always compare as
     // "changed" to force a re-parse after a PID change.
-    let digest = hasher.finish() | 1;
+    hasher.finish() | 1
+}
+
+fn digest_unchanged(digest: u64) -> bool {
     let unchanged = LAST_BLOB_DIGEST.swap(digest, std::sync::atomic::Ordering::Relaxed) == digest;
     if !unchanged {
         // Bytes moved, so the next settle into the steady state is worth
@@ -1055,9 +1062,10 @@ pub(crate) fn scan_cached_blob(
 /// Multi-scan strategy: the blob may span many memory regions and multiple copies
 /// can exist at different addresses. We track every potential start point as a
 /// separate in-flight scan and stitch them all in parallel as the region walk
-/// advances. The first scan that produces a valid JSON blob wins; all others are
-/// dropped. This is far more robust than the old single-start approach when the
-/// blob is large or when the first start hit leads to a truncated region.
+/// advances. Every scan that parses becomes a candidate, and the one holding the
+/// most items is sent once the walk ends. This is far more robust than the old
+/// single-start approach when the blob is large or when the first start hit
+/// leads to a truncated region.
 ///
 /// Algorithm:
 ///   1. Walk every committed readable region.
@@ -1066,17 +1074,16 @@ pub(crate) fn scan_cached_blob(
 ///      data from the START_MARKER offset onwards.
 ///   3. Every readable region is appended to ALL active scans (stitching).
 ///   4. After each append, check every scan for the end marker. If found, parse it.
-///      On success send the inventory to the monitor loop. On failure drop the scan.
-///      The walk always continues through all of memory — every blob start is found.
+///      On success keep the inventory as a candidate. On failure drop the scan.
 ///   5. Drop any scan that grows past MAX_SCAN_BYTES without finding the end.
 ///
-/// When `save=true` also writes the raw text to `blob_dir` for debugging.
-/// Walk all memory regions via `src`, stitch blobs, parse and send them.
+/// When `save=true` every candidate is sent and its raw text written to
+/// `blob_dir` for debugging.
 ///
 /// `None` means no blob completed at all. `Some` carries the number of blob
-/// files written, always 0 when `save=false`. A walk that stops early on a full
-/// inventory writes and sends nothing, so the count alone cannot say whether
-/// the walk found anything.
+/// files written, always 0 when `save=false`. A winner whose bytes match the
+/// previous digest is not sent, so the count alone cannot say whether the walk
+/// found anything.
 pub(crate) fn stitch_blobs(
     src: &mut dyn crate::mem_regions::RegionSource,
     blob_dir: &std::path::Path,
@@ -1085,6 +1092,14 @@ pub(crate) fn stitch_blobs(
     save: bool,
 ) -> Option<usize> {
     const MAX_BLOBS: usize = 25;
+    // A walk opens at most MAX_CANDIDATE_SEEDS scans. Once the first candidate
+    // parses, it keeps reading for another EXTRA_SEED_BUDGET bytes to find a
+    // second copy. A stale copy left over from before a re-serialize sits in the
+    // same heap area as the live one, so a short window catches the pair while
+    // a walk with one copy still exits early. Save mode seeds without either limit, because comparing every
+    // in-memory copy against the others is what the debug capture is for.
+    const MAX_CANDIDATE_SEEDS: usize = 6;
+    const EXTRA_SEED_BUDGET: u64 = 64 * 1024 * 1024;
 
     struct ActiveScan {
         data: Vec<u8>,
@@ -1110,16 +1125,20 @@ pub(crate) fn stitch_blobs(
     let mut starts_found    = 0usize;
     let mut t_search = std::time::Duration::ZERO;
     let mut bytes_read: u64 = 0;
-    // Once at least one blob parsed (or matched the digest), stop opening new
-    // scans — unless saving, which wants every copy. Active scans already in
-    // progress are still stitched to completion (or dropped). The loop exits
-    // as soon as all active scans are gone.
     let mut found_blob = false;
+    // A stale copy of the blob can stay fully intact beside the live one, and
+    // whichever finishes stitching first depends on address order. Outside save
+    // mode every candidate is kept here and the most complete one wins after
+    // the walk. Item counts rarely shrink, so the larger copy is the current one.
+    let mut completed: Vec<(usize, u64, BlobInventory)> = Vec::new();
+    let mut candidate_at_bytes: Option<u64> = None;
 
     loop {
         if saved >= MAX_BLOBS { break; }
-        // Early exit: we have a result and no active scans left to finish.
-        if found_blob && scans.is_empty() && !save { break; }
+        let no_more_seeds = !save
+            && (starts_found >= MAX_CANDIDATE_SEEDS
+                || candidate_at_bytes.is_some_and(|b| bytes_read - b > EXTRA_SEED_BUDGET));
+        if no_more_seeds && scans.is_empty() { break; }
 
         let (region_addr, buf) = match src.next_region() {
             Some(r) => r,
@@ -1134,10 +1153,6 @@ pub(crate) fn stitch_blobs(
         // search_from tracks where we left off so we only scan newly-appended bytes
         // (plus a small overlap for markers that straddle a region boundary).
         scans.retain_mut(|scan| {
-            // A previous scan in this same retain_mut pass already succeeded.
-            // Drop this one immediately — applying a second blob overwrites correct data
-            // with a stale/parallel copy from a different memory region.
-            if found_blob && !save { return false; }
             // The append is capped at what is left of the budget rather than
             // dropped for overrunning it. A blob that closes on the very last
             // byte the budget allows still parses.
@@ -1153,12 +1168,6 @@ pub(crate) fn stitch_blobs(
                 }
                 return true; // keep waiting for end
             }
-            if !save && blob_unchanged(&scan.data) {
-                debug!(scan_id = scan.id, "unchanged since last scan — skipping parse");
-                LAST_BLOB_REGION.store(scan.seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
-                found_blob = true;
-                return false;
-            }
             match parse_full_account_blob(&scan.data) {
                 Some(inv) => {
                     info!(
@@ -1169,30 +1178,29 @@ pub(crate) fn stitch_blobs(
                         mods = inv.mods.len(),
                         "scan SUCCESS"
                     );
-                    LAST_BLOB_REGION.store(scan.seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                     if save {
+                        LAST_BLOB_REGION.store(scan.seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                         let name = format!("Actual_inventory_FULL_ACCOUNT_v{}_{}_{:02}.json", env!("CARGO_PKG_VERSION"), ts, saved + 1);
                         let path = blob_dir.join(&name);
                         if let Some(json) = extract_blob_json(&scan.data) {
                             if std::fs::write(&path, &json).is_ok() { saved += 1; }
                         }
+                        blob_tx.send(inv).ok();
+                        found_blob = true;
+                    } else {
+                        candidate_at_bytes.get_or_insert(bytes_read);
+                        completed.push((scan.seed_addr, blob_digest(&scan.data), inv));
                     }
-                    blob_tx.send(inv).ok();
-                    found_blob = true;
                 }
                 None => {
                     warn!(scan_id = scan.id, "end marker found but JSON parse failed — dropped");
-                    forget_blob_digest();
                 }
             }
             false // remove completed (or failed) scan
         });
 
         // ── Step 2: check if this chunk opens a new scan ──
-        // Don't open new scans once we already have a result — drain the active
-        // ones then exit. Save mode keeps seeding: comparing the up-to-MAX_BLOBS
-        // in-memory copies against each other is what the debug capture is for.
-        if found_blob && !save { continue; }
+        if no_more_seeds { continue; }
 
         let t2 = std::time::Instant::now();
         // Every region pays for this one search, since it gates both
@@ -1297,12 +1305,7 @@ pub(crate) fn stitch_blobs(
             );
             let seed = combined[json_open..].to_vec();
 
-            let seed_ends = find_blob_end(&seed).is_some();
-            if seed_ends && !save && blob_unchanged(&seed) {
-                debug!(scan_id = id, "immediate hit: unchanged since last scan — skipping parse");
-                LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
-                found_blob = true;
-            } else if seed_ends {
+            if find_blob_end(&seed).is_some() {
                 match parse_full_account_blob(&seed) {
                     Some(inv) => {
                         info!(
@@ -1312,19 +1315,21 @@ pub(crate) fn stitch_blobs(
                             stackable = inv.stackable_items.len(),
                             "scan immediate SUCCESS"
                         );
-                        LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                         if save {
+                            LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                             let name = format!("Actual_inventory_FULL_ACCOUNT_v{}_{}_{:02}.json", env!("CARGO_PKG_VERSION"), ts, saved + 1);
                             if let Some(json) = extract_blob_json(&seed) {
                                 if std::fs::write(blob_dir.join(&name), &json).is_ok() { saved += 1; }
                             }
+                            blob_tx.send(inv).ok();
+                            found_blob = true;
+                        } else {
+                            candidate_at_bytes.get_or_insert(bytes_read);
+                            completed.push((seed_addr, blob_digest(&seed), inv));
                         }
-                        blob_tx.send(inv).ok();
-                        found_blob = true;
                     }
                     None => {
                         warn!(scan_id = id, "immediate end found but parse failed — dropping");
-                        forget_blob_digest();
                     }
                 }
             } else {
@@ -1333,11 +1338,33 @@ pub(crate) fn stitch_blobs(
         }
     }
 
+    let candidates = completed.len();
+    if let Some((seed_addr, digest, inv)) = completed.into_iter().max_by_key(|(_, _, inv)| {
+        inv.unique_items.len() + inv.stackable_items.len() + inv.mods.len()
+    }) {
+        LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
+        found_blob = true;
+        if digest_unchanged(digest) {
+            debug!(addr = format_args!("0x{seed_addr:012x}"), candidates, "unchanged since last scan — not resent");
+        } else {
+            info!(
+                addr = format_args!("0x{seed_addr:012x}"),
+                candidates,
+                unique = inv.unique_items.len(),
+                stackable = inv.stackable_items.len(),
+                mods = inv.mods.len(),
+                "picked most complete candidate"
+            );
+            blob_tx.send(inv).ok();
+        }
+    }
+
     debug!(
         target: "frameforge::blob_capture",
         regions_read,
         starts_found,
         saved,
+        candidates,
         bytes_mb = bytes_read / 1_000_000,
         search_ms = t_search.as_secs_f64() * 1000.0,
         "capture done"
@@ -1874,7 +1901,7 @@ mod sync_marker_tests {
 
 #[cfg(test)]
 mod stitch_engine_tests {
-    use super::{blob_digest_test_guard, parse_full_account_blob, stitch_blobs, BlobAffiliation, BlobInventory, BlobMission};
+    use super::{blob_digest_test_guard, parse_full_account_blob, reset_last_blob_region, stitch_blobs, BlobAffiliation, BlobInventory, BlobMission};
     use crate::mem_regions::RecordedRegions;
 
     /// Carries every section `parse_full_account_blob`'s completeness checks
@@ -1971,9 +1998,10 @@ mod stitch_engine_tests {
     }
 
     fn run(regions: Vec<(usize, Vec<u8>)>) -> Option<BlobInventory> {
-        // The engine skips a parse whose bytes match the last digest, which is
-        // process-wide state shared with every other test that touches it.
+        // The engine withholds a winner whose bytes match the last digest, which
+        // is process-wide state shared with every other test that touches it.
         let _digest_guard = blob_digest_test_guard();
+        reset_last_blob_region();
         let mut src = RecordedRegions::new(regions);
         let (tx, rx) = std::sync::mpsc::channel();
         let dir = std::env::temp_dir();
@@ -2020,6 +2048,45 @@ mod stitch_engine_tests {
         let real = make_blob(r#""RegularCredits":42"#);
         let inv = run(vec![(0x1000, open), (0x9000_0000, real)]).expect("real blob should parse");
         assert_eq!(inv.credits, 42);
+    }
+
+    fn live_blob() -> Vec<u8> {
+        make_blob(
+            r#""RegularCredits":2,"Suits":[{"ItemType":"/Lotus/Powersuits/A/A"},{"ItemType":"/Lotus/Powersuits/B/B"},{"ItemType":"/Lotus/Powersuits/C/C"}]"#,
+        )
+    }
+
+    #[test]
+    fn stale_copy_at_a_lower_address_does_not_beat_the_live_one() {
+        let stale = make_blob(r#""RegularCredits":1"#);
+        let inv = run(vec![(0x1000, stale), (0x9000, live_blob())]).expect("should pick a candidate");
+        assert_eq!(inv.credits, 2);
+        assert_eq!(inv.unique_items.len(), 3);
+    }
+
+    #[test]
+    fn stale_copy_at_a_higher_address_does_not_beat_the_live_one() {
+        let stale = make_blob(r#""RegularCredits":1"#);
+        let inv = run(vec![(0x1000, live_blob()), (0x9000, stale)]).expect("should pick a candidate");
+        assert_eq!(inv.credits, 2);
+        assert_eq!(inv.unique_items.len(), 3);
+    }
+
+    /// The scan falls back to file-backed regions when the anonymous walk
+    /// reports `None`, so an unchanged winner must still count as found.
+    #[test]
+    fn unchanged_winner_is_found_but_not_resent() {
+        let _digest_guard = blob_digest_test_guard();
+        reset_last_blob_region();
+        let dir = std::env::temp_dir();
+        let walk = || {
+            let mut src = RecordedRegions::new(vec![(0x1000, live_blob())]);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let found = stitch_blobs(&mut src, &dir, "test", tx, false);
+            (found, rx.try_recv().is_ok())
+        };
+        assert_eq!(walk(), (Some(0), true));
+        assert_eq!(walk(), (Some(0), false));
     }
 }
 
