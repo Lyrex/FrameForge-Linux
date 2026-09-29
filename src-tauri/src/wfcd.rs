@@ -1598,23 +1598,6 @@ fn fetch_from_wfcd(
             }
         }
 
-        // Debug: write counts to temp file so we can diagnose issues
-        let sentinel_in_recipes = export_recipes.keys()
-            .filter(|k| k.starts_with("/Lotus/Types/Sentinels/SentinelParts/")).count();
-        let _ = std::fs::write(
-            std::env::temp_dir().join("frameforge_wfcd_debug.txt"),
-            format!(
-                "export_recipes total={} powersuits_entries={} sentinel_parts_entries={}\n\
-                 strategy_a bp_items added={}\n\
-                 first 10 bp items:\n{}",
-                export_recipes.len(),
-                export_recipes.keys().filter(|k| k.starts_with("/Lotus/Powersuits/")).count(),
-                sentinel_in_recipes,
-                bp_items.len(),
-                bp_items.iter().take(10).map(|i| format!("  {} = {}", i.unique_name, i.name)).collect::<Vec<_>>().join("\n")
-            )
-        );
-
         items.extend(bp_items);
     }
 
@@ -1819,6 +1802,13 @@ fn fetch_from_wfcd(
     // StoreItems proxy entries (e.g. /Lotus/StoreItems/.../Kuva) often lack imageName while
     // the canonical inventory path (/Lotus/Types/.../Kuva) has it. If the scanner ever
     // returns the StoreItems path, the lookup would find no image without this fix.
+    //
+    // A blueprint is named "<crafted item> Blueprint" but is never *named* the same as
+    // what it crafts, so the exact-name match above never fires for it — even when the
+    // crafted item sits right there in the same catalog with a real WFCD imageName
+    // (e.g. "Gorgon" the weapon vs. "Gorgon Blueprint" the separate catalog entry).
+    // DE gives blueprints no icon of their own; they wear the icon of what they craft,
+    // same as in-game, so strip the suffix and match again before giving up.
     {
         let name_to_image: HashMap<String, String> = items.iter()
             .filter_map(|i| i.image_name.as_ref().map(|img| (i.name.clone(), img.clone())))
@@ -1827,6 +1817,10 @@ fn fetch_from_wfcd(
             if item.image_name.is_none() {
                 if let Some(img) = name_to_image.get(&item.name) {
                     item.image_name = Some(img.clone());
+                } else if let Some(base) = item.name.strip_suffix(" Blueprint") {
+                    if let Some(img) = name_to_image.get(base) {
+                        item.image_name = Some(img.clone());
+                    }
                 }
             }
         }

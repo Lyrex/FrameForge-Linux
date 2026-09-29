@@ -209,6 +209,30 @@ pub(crate) fn build_inventory_from_blob(
             continue;
         }
 
+        // Kitguns: key by Barrel path instead of the generic LotusModularSecondary(Beam/Shotgun)
+        // type. Must come before the excluded_paths guard for the same reason as Amps/Zaws above.
+        // Without this, every owned Kitgun collapses onto one of 3 shared wrapper paths (`amount`
+        // gets overwritten, not accumulated, below) and shows unnamed since the generic wrapper
+        // path is never in the WFCD catalog.
+        if entry.section == "Pistols" && entry.item_type.contains("LotusModularSecondary") {
+            let barrel_path = entry.modular_parts.iter()
+                .find(|p| p.contains("Barrel"))
+                .cloned()
+                .unwrap_or_else(|| entry.item_type.clone());
+            if excluded_paths.contains(&barrel_path) { continue; }
+            let item = items.entry(barrel_path.clone()).or_insert_with(|| CachedItem {
+                unique_name: barrel_path.clone(),
+                name: path_to_name.get(&barrel_path).cloned().unwrap_or_default(),
+                ..Default::default()
+            });
+            item.amount += 1;
+            if entry.item_name.is_some() {
+                let rank = memory_scanner::xp_to_rank(entry.xp, &entry.item_type).min(30);
+                if rank > item.mastery_rank { item.mastery_rank = rank; }
+            }
+            continue;
+        }
+
         if excluded_paths.contains(&entry.item_type) { continue; }
 
         if stackable_paths.contains(&entry.item_type) {
