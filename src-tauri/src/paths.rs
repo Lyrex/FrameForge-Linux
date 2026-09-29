@@ -367,11 +367,13 @@ mod tests {
             dir.join("cache"),
         );
         write(old.join("settings.json"), "{}");
-        write(old.join("scan_log.txt"), "log");
+        // Unrecognised. A known cache file is deleted instead, so only an
+        // unknown leftover can keep the old directory alive.
+        write(old.join("notes.txt"), "keep me");
 
         migrate_into(&old, &config, &data, &cache);
 
-        assert!(old.join("scan_log.txt").exists());
+        assert!(old.join("notes.txt").exists());
         assert!(old.exists());
     }
 
