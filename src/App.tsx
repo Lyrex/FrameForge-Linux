@@ -14,6 +14,7 @@ import { useOverlays } from "./hooks/useOverlays";
 import { useTimerPreferences } from "./hooks/useTimerPreferences";
 import { useFissureNotifications } from "./hooks/useFissureNotifications";
 import { CATEGORIES } from "./constants/categories";
+import { APP_TITLE, IS_DEV } from "./constants/app";
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -392,6 +393,8 @@ export default function App() {
 
   // ── Auto-update check ─────────────────────────────────────────────────────
   useEffect(() => {
+    // A dev build must never download a release over itself.
+    if (IS_DEV) return;
     invoke<string | null>("check_for_update")
       .then(v => { if (v) setPendingUpdate(v); })
       .catch(() => {});
@@ -622,7 +625,7 @@ export default function App() {
 
       {/* ── Header ── */}
       <header className="header">
-        <span className="header-title">FrameForge</span>
+        <span className="header-title">{APP_TITLE}</span>
         <HeaderStatusBadges
           masteryRank={masteryRank}
           playerName={playerName}

@@ -28,6 +28,44 @@ pub fn set_root_override(root: PathBuf) -> Result<(), PathBuf> {
     ROOT_OVERRIDE.set(root)
 }
 
+/// Picks the root before anything reads a path. Debug builds live entirely in
+/// `.frameforge-dev/` beside the project, so running `pnpm tauri dev` never
+/// touches the installed production files; release builds compile this body
+/// away and keep using the user directories exactly as before. Set
+/// `FRAMEFORGE_ROOT` to point a debug build somewhere else.
+pub fn init_root() {
+    #[cfg(debug_assertions)]
+    {
+        let root = std::env::var_os("FRAMEFORGE_ROOT")
+            .map(PathBuf::from)
+            .or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .map(|project| project.join(".frameforge-dev"))
+            });
+        if let Some(root) = root {
+            let _ = ROOT_OVERRIDE.set(root);
+        }
+    }
+}
+
+/// The root in force, when there is one. Always `None` in release builds.
+pub fn root() -> Option<&'static Path> {
+    ROOT_OVERRIDE.get().map(PathBuf::as_path)
+}
+
+/// Where the deferred factory-reset marker lives. Dev and release share %TEMP%,
+/// so the names must differ: a reset requested in a dev run must not delete the
+/// production database on the next launch of the installed app.
+pub fn factory_reset_marker() -> PathBuf {
+    let name = if root().is_some() {
+        "frameforge_factory_reset_dev"
+    } else {
+        "frameforge_factory_reset"
+    };
+    std::env::temp_dir().join(name)
+}
+
 /// Downloaded catalogues, price snapshots, item images, OCR models: anything
 /// that can be fetched again.
 pub fn cache_dir() -> PathBuf {

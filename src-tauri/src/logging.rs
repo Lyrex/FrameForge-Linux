@@ -22,10 +22,16 @@ pub fn init(app: &tauri::AppHandle) {
         return;
     }
 
-    let log_dir = app
-        .path()
-        .app_log_dir()
-        .expect("Tauri always resolves a log dir on supported platforms");
+    // A dev build keeps its logs with the rest of its data: the Tauri log dir
+    // is keyed on the app identifier, which dev and release builds share, so
+    // writing there would interleave both apps in one file.
+    let log_dir = match crate::paths::root() {
+        Some(_) => crate::paths::state_dir().join("logs"),
+        None => app
+            .path()
+            .app_log_dir()
+            .expect("Tauri always resolves a log dir on supported platforms"),
+    };
     let _ = std::fs::create_dir_all(&log_dir);
 
     let appender = tracing_appender::rolling::Builder::new()

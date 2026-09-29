@@ -251,6 +251,11 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     logging::init(app.handle());
 
+    match paths::root() {
+        Some(root) => info!("app root: {} (dev)", root.display()),
+        None => info!("app root: user directories (production)"),
+    }
+
     // Local HTTP server for cached item images.
     {
         let img_cache_dir = app.state::<AppState>().img_cache_dir.clone();
@@ -272,6 +277,9 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             include_bytes!("../icons/icon.png")
         ).map_err(|e| e.to_string())?;
         window.set_icon(icon).map_err(|e| e.to_string())?;
+        if cfg!(debug_assertions) {
+            let _ = window.set_title("FrameForge Dev");
+        }
         let state = app.state::<AppState>();
         restore_window_state(app.handle(), &window, &state.settings_path, "window", 400, 300);
         let _ = window.show();
@@ -387,6 +395,8 @@ async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
 // ─── App entry point ──────────────────────────────────────────────────────────
 
 pub fn run() {
+    // Before any path is read: decides which root the whole run lives in.
+    paths::init_root();
     paths::migrate_legacy();
 
     // Directory layout:
@@ -435,7 +445,7 @@ pub fn run() {
     let relics_run_prices_cache_path = cache_dir.join("relics_run_prices.json");
 
     // ── Factory reset ──────────────────────────────────────────────────────
-    let reset_marker = std::env::temp_dir().join("frameforge_factory_reset");
+    let reset_marker = paths::factory_reset_marker();
     if reset_marker.exists() {
         let _ = std::fs::remove_file(&reset_marker);
         for suffix in ["data.db", "data.db-wal", "data.db-shm"] {
