@@ -442,6 +442,12 @@ pub(crate) fn wfm_delete_order(state: State<AppState>, order_id: String) -> Resu
     state.wfm.delete_order(&order_id)
 }
 
+/// Complete part or all of an order and record the transaction on WFM.
+#[tauri::command]
+pub(crate) fn wfm_close_order(state: State<AppState>, order_id: String, quantity: u32) -> Result<serde_json::Value, String> {
+    state.wfm.close_order(&order_id, quantity)
+}
+
 /// Post a revealed riven as an auction on warframe.market.
 #[tauri::command]
 pub(crate) fn wfm_create_riven_auction(

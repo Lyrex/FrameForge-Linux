@@ -42,6 +42,7 @@ interface UseSettingsReturn {
   wfmInvisibleOnClose: boolean;
   wfmAutoInvisible: boolean;
   wfmAutoInvisibleMins: number;
+  wfmRecordSales: boolean;
   companionApiEnabled: boolean;
   filterPresets: FilterPresetSettings;
 
@@ -66,6 +67,7 @@ interface UseSettingsReturn {
   setWfmInvisibleOnClose: React.Dispatch<React.SetStateAction<boolean>>;
   setWfmAutoInvisible: React.Dispatch<React.SetStateAction<boolean>>;
   setWfmAutoInvisibleMins: React.Dispatch<React.SetStateAction<number>>;
+  setWfmRecordSales: React.Dispatch<React.SetStateAction<boolean>>;
   setFilterPresets: React.Dispatch<React.SetStateAction<FilterPresetSettings>>;
 
   // Refs
@@ -113,6 +115,7 @@ export function useSettings(
   const [wfmInvisibleOnClose, setWfmInvisibleOnClose] = useState(false);
   const [wfmAutoInvisible, setWfmAutoInvisible] = useState(false);
   const [wfmAutoInvisibleMins, setWfmAutoInvisibleMins] = useState(30);
+  const [wfmRecordSales, setWfmRecordSales] = useState(false);
   const [filterPresets, setFilterPresets] = useState<FilterPresetSettings>(() => parseFilterPresetSettings(undefined));
   const companionApiEnabled = false; // Feature suspended pending DE clarification
 
@@ -141,6 +144,7 @@ export function useSettings(
     wfmInvisibleOnClose: false,
     wfmAutoInvisible: false,
     wfmAutoInvisibleMins: 30,
+    wfmRecordSales: false,
     relicPickEnabled: true,
     relicPickPriority: DEFAULT_RELIC_PICK_PRIORITY,
     relicPickRefinement: DEFAULT_RELIC_PICK_REFINEMENT,
@@ -222,6 +226,7 @@ export function useSettings(
         }
         if (typeof s.wfmAutoInvisible === "boolean") setWfmAutoInvisible(s.wfmAutoInvisible);
         if (typeof s.wfmAutoInvisibleMins === "number") setWfmAutoInvisibleMins(s.wfmAutoInvisibleMins);
+        if (typeof s.wfmRecordSales === "boolean") setWfmRecordSales(s.wfmRecordSales);
         if (s.filterPresets) setFilterPresets(parseFilterPresetSettings(s.filterPresets));
         return s;
       } catch {
@@ -276,6 +281,7 @@ export function useSettings(
     wfmInvisibleOnClose,
     wfmAutoInvisible,
     wfmAutoInvisibleMins,
+    wfmRecordSales,
     companionApiEnabled,
     filterPresets,
 
@@ -300,6 +306,7 @@ export function useSettings(
     setWfmInvisibleOnClose,
     setWfmAutoInvisible,
     setWfmAutoInvisibleMins,
+    setWfmRecordSales,
     setFilterPresets,
 
     // Refs

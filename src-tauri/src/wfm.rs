@@ -764,6 +764,19 @@ impl Wfm {
         Ok(())
     }
 
+    /// Record a sale or purchase against an order. WFM decrements the quantity
+    /// and removes a fully completed order while retaining transaction history.
+    pub fn close_order(&self, order_id: &str, quantity: u32) -> Result<serde_json::Value, String> {
+        let auth = self.auth()?;
+        let body = serde_json::json!({ "quantity": quantity });
+        self.wait();
+        self.send_json("POST", &format!("/v2/order/{}/close", order_id), &auth, &body)
+            .map_err(|e| format!("Close order: {}", e))?
+            .into_json::<serde_json::Value>()
+            .map_err(|e| format!("Parse: {}", e))
+            .map(|json| json["data"].clone())
+    }
+
     // ── Riven auctions (v1) ───────────────────────────────────────────────────
 
     /// Known riven attribute url_names, scraped from live auction listings

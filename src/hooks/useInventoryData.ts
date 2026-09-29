@@ -345,15 +345,30 @@ export function useInventoryData(): UseInventoryDataReturn {
       setRecipeCount(s.recipe_count);
     });
 
+    // Explicitly complete the startup catalogue refresh instead of relying on
+    // a background event that may have fired before this WebView subscribed.
+    invoke<number>("fetch_item_list", { force: false })
+      .then(async count => {
+        const [items, status] = await Promise.all([
+          invoke<CatalogItem[]>(TAURI_COMMANDS.GET_ALL_ITEMS),
+          invoke<ItemListStatus>("get_item_list_status"),
+        ]);
+        setCatalog(items);
+        catalogRef.current = items;
+        setItemCount(count);
+        setRecipeCount(status.recipe_count);
+        setItemsRefreshKey(k => k + 1);
+        invoke("prewarm_image_cache").catch(() => {});
+      })
+      .catch(() => { /* keep cached data and the manual refresh fallback */ });
+
     getVersion().catch(() => {});
 
     invoke<string>("get_img_cache_dir").then(setImgCacheDir).catch(() => {});
     invoke("prewarm_image_cache").catch(() => {});
   }, []);
 
-  // ── Background catalogue refresh ────────────────────────────────────────────
-  // The Rust side rebuilds the catalogue on its own (first run after an upgrade,
-  // daily refresh). Reload what the UI holds so no manual "Refresh item list" is needed.
+  // Reload catalogue state after the startup or manual refresh rebuilds it.
   useEffect(() => {
     const unlisten = listen<number>(TAURI_EVENTS.CATALOGUE_UPDATED, async () => {
       try {

@@ -42,12 +42,8 @@ function fetchOnce(): Promise<void> {
   return inFlight;
 }
 
-// The Rust side rebuilds the catalogue asynchronously in the background (e.g. the
-// full re-fetch triggered by a fresh launch after Factory Reset / cache wipe, or the
-// daily refresh). Without this, a consumer that mounts and fetches before that rebuild
-// finishes is stuck on whatever it captured first (the tiny hardcoded `fallback_items()`
-// list, which has zero "Relics" entries) for the rest of the session — see App.tsx's
-// own catalog fetch (useInventoryData.ts), which listens for the same event.
+// The explicit startup/manual refresh emits after rebuilding the Rust catalogue.
+// Without this, an early consumer can stay on the tiny hardcoded fallback for the session.
 function ensureListener() {
   if (listenerStarted) return;
   listenerStarted = true;

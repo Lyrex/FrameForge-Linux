@@ -608,8 +608,17 @@ pub(crate) fn get_item_list_status(state: State<AppState>) -> serde_json::Value 
 }
 
 #[tauri::command]
-pub(crate) async fn fetch_item_list(state: State<'_, AppState>, force: Option<bool>) -> Result<usize, String> {
-    let force = force.unwrap_or(false);
+pub(crate) async fn fetch_item_list(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    force: Option<bool>,
+) -> Result<usize, String> {
+    // An ETag can outlive a deleted or invalid local catalogue. In that state a
+    // conditional request returns Not Modified and leaves the 15-item fallback
+    // active until the user manually forces a refresh.
+    let has_fallback_only = state.wfcd_items.lock().map_err(|e| e.to_string())?.len() <= 15;
+    let has_no_recipes = state.recipes.lock().map_err(|e| e.to_string())?.is_empty();
+    let force = force.unwrap_or(false) || has_fallback_only || has_no_recipes;
     let fetched = tauri::async_runtime::spawn_blocking(move || wfcd::fetch_items(None, force))
         .await
         .map_err(|e| e.to_string())??;
@@ -620,7 +629,9 @@ pub(crate) async fn fetch_item_list(state: State<'_, AppState>, force: Option<bo
         }
     };
 
-    apply_catalogue(&state, result)
+    let count = apply_catalogue(&state, result)?;
+    let _ = app.emit(events::CATALOGUE_UPDATED, count);
+    Ok(count)
 }
 
 fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> Result<usize, String> {
@@ -993,6 +1004,9 @@ fn dedup_known_aliases(mut items: Vec<WfcdItem>) -> Vec<WfcdItem> {
     items
 }
 
+/// Daily pass for long-running sessions. The launch probe belongs to the
+/// frontend (`fetch_item_list` at mount), so `refresh::spawn` holds this task
+/// back for one full interval instead of running it at the launch tick.
 pub fn refresh_catalogue(app: &tauri::AppHandle, force: bool) -> Result<(), String> {
     let state = app.state::<AppState>();
     // A valid ETag is not enough when version invalidation removed the local cache.
