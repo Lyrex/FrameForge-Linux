@@ -5,6 +5,7 @@ use crate::db::Trade;
 use crate::db;
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct AddTradeParams {
     with_player: String,
     direction: String,
@@ -152,7 +153,14 @@ pub(crate) fn add_trade(
         trade_type: params.trade_type.unwrap_or_default(),
     };
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    let id = db::add_trade(&conn, &trade).map_err(|e| e.to_string())?;
+    let trade_id = db::add_trade(&conn, &trade).map_err(|e| e.to_string())?;
+    tracing::info!(
+        trade_id,
+        session_id = %trade.session_id,
+        direction = %trade.direction,
+        item_name = %trade.item_name,
+        "trade saved"
+    );
     app.emit("stats-changed", ()).ok();
-    Ok(id)
+    Ok(trade_id)
 }

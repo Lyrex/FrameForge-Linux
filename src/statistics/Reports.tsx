@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ItemImg from "../ItemImg";
 import { PlatIcon } from "../shared/icons";
-import { TAURI_COMMANDS } from "../constants/tauri";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import type { WfmTopItem } from "../types/market";
 import type { Trade, TradeSession } from "../types/trades";
 import "./Reports.css";
@@ -273,10 +273,10 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat }: P
     // Stays mounted through in-game trades and imports.
     const unlisten = listen("stats-changed", () => { loadTrades(); });
 
-    const unlistenProgress = listen<WfmTopProgress>("wfm-top-progress", ({ payload }) => {
+    const unlistenProgress = listen<WfmTopProgress>(TAURI_EVENTS.WFM_TOP_PROGRESS, ({ payload }) => {
       setTopProgress(payload);
     });
-    const unlistenUpdated = listen<WfmTopItem[]>("wfm-top-updated", ({ payload }) => {
+    const unlistenUpdated = listen<WfmTopItem[]>(TAURI_EVENTS.WFM_TOP_UPDATED, ({ payload }) => {
       setTopItems(payload);
       setTopLoading(false);
       setTopError(null);

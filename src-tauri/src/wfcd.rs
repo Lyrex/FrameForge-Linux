@@ -118,6 +118,52 @@ pub struct FetchResult {
     pub weapon_dispositions: HashMap<String, f32>,
 }
 
+/// Hand-curated exceptions where a prime part's ducat value doesn't follow the
+/// standard drop-rarity formula (`ducat_value_from_rarities`). Mirrors the Warframe
+/// Wiki's `Module:Void/data` `DUCAT_EXCEPTIONS` table — fetched once and bundled here
+/// rather than queried live, so no per-user runtime dependency on the wiki is added.
+/// Keys are lowercased full item+part display names.
+const DUCAT_EXCEPTIONS_JSON: &str = include_str!("../resources/ducat_exceptions.json");
+
+fn load_ducat_exceptions() -> HashMap<String, u32> {
+    let parsed: serde_json::Value = match serde_json::from_str(DUCAT_EXCEPTIONS_JSON) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, "failed to parse bundled ducat_exceptions.json");
+            return HashMap::new();
+        }
+    };
+    parsed.get("exceptions")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_u64().map(|n| (k.to_lowercase(), n as u32)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Derive a prime part/blueprint's ducat value from the set of rarities it drops as
+/// across all relics that carry it. WFCD's `components[]` sub-objects stopped carrying
+/// a `ducats` field upstream (same schema change that dropped `name`/`imageName`), and
+/// unlike those two fields there is no parent-item fallback — ducat value genuinely
+/// isn't stored anywhere else in WFCD's data. The Warframe Wiki computes it the same
+/// way: it's a pure function of drop rarity, not an independently tracked number.
+/// "Bronze"/"Silver"/"Gold" = Common/Uncommon/Rare (this codebase's naming, matching
+/// `RelicReward::rarity`).
+fn ducat_value_from_rarities(rarities: &HashSet<&str>) -> Option<u32> {
+    let bronze = rarities.contains("Bronze");
+    let silver = rarities.contains("Silver");
+    let gold = rarities.contains("Gold");
+    if bronze && gold { return Some(25); }
+    if bronze && silver { return Some(25); }
+    if silver && gold { return Some(65); }
+    if gold { return Some(100); }
+    if silver { return Some(45); }
+    if bronze { return Some(15); }
+    None
+}
+
 // ==============================================================================
 // Upstream sources
 // ==============================================================================
@@ -156,6 +202,16 @@ const RECIPES_URLS: [&str; 2] = [
     "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/master/ExportRecipes.json",
     "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/HEAD/ExportRecipes.json",
 ];
+/// DE's own name table: `ExportResources.json` maps a uniqueName to a language
+/// key, and `dict.en.json` maps that key to the English display text.
+const RESOURCES_URLS: [&str; 2] = [
+    "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/master/ExportResources.json",
+    "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/HEAD/ExportResources.json",
+];
+const DICT_EN_URLS: [&str; 2] = [
+    "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/master/dict.en.json",
+    "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/HEAD/dict.en.json",
+];
 const SYNDICATES_URL: &str =
     "https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data/syndicates.json";
 
@@ -185,6 +241,16 @@ fn source_specs() -> Vec<SourceSpec> {
     specs.push(SourceSpec {
         name: "ExportRecipes".to_string(),
         urls: RECIPES_URLS.iter().map(|u| u.to_string()).collect(),
+        required: false,
+    });
+    specs.push(SourceSpec {
+        name: "ExportResources".to_string(),
+        urls: RESOURCES_URLS.iter().map(|u| u.to_string()).collect(),
+        required: false,
+    });
+    specs.push(SourceSpec {
+        name: "dict_en".to_string(),
+        urls: DICT_EN_URLS.iter().map(|u| u.to_string()).collect(),
         required: false,
     });
     specs.push(SourceSpec {
@@ -433,9 +499,13 @@ fn fetch_items_with(
     let relics_json = bodies.get("Relics");
     let recipes_json = bodies.get("ExportRecipes");
     let syndicates_json = bodies.get("syndicates");
+    let resources_json = bodies.get("ExportResources");
+    let dict_json = bodies.get("dict_en");
 
     info!(raw_items = all_items.len(), "catalogue sources assembled");
-    let result = fetch_from_wfcd(&all_items, recipes_json, syndicates_json, relics_json)?;
+    let result = fetch_from_wfcd(
+        &all_items, recipes_json, syndicates_json, relics_json, resources_json, dict_json,
+    )?;
     info!(
         items = result.items.len(),
         recipes = result.recipes.len(),
@@ -455,6 +525,124 @@ fn strip_tags(s: &str) -> &str {
         s.trim()
     }
 }
+
+/// Every uniqueName → display name lookup the catalogue builder may use.
+///
+/// WFCD's `components[]` entries stopped carrying a `name`, and a component's
+/// path is not a name: DE's path token for a warframe's Neuroptics is
+/// `...HelmetComponent`. So a component is named by looking its uniqueName up
+/// in a database that holds the real text, never by reading the path.
+#[derive(Default)]
+struct NameResolver {
+    /// DE's ExportResources uniqueName → language key, through dict.en.json.
+    /// Covers built parts ("Yareli Prime Neuroptics", "Akstiletto Prime Barrel").
+    by_unique: HashMap<String, String>,
+    /// ExportRecipes blueprint path → the path it crafts.
+    blueprint_result: HashMap<String, String>,
+    /// Relics.json `rewards[].item`, keyed by the same uniqueName.
+    relic_names: HashMap<String, String>,
+    /// Names WFCD itself gives top-level items.
+    top_level: HashMap<String, String>,
+    /// ExportResources uniqueName → icon file name (last segment of DE's `icon` path).
+    icons: HashMap<String, String>,
+}
+
+impl NameResolver {
+    /// The icon file DE's data gives `unique`. A blueprint has no icon entry of
+    /// its own; it wears the icon of what it crafts, as it does in the game
+    /// ("Yareli Prime Neuroptics Blueprint" shows the Neuroptics icon).
+    fn icon(&self, unique: &str) -> Option<&str> {
+        self.icons
+            .get(unique)
+            .or_else(|| self.icons.get(self.blueprint_result.get(unique)?))
+            .map(|s| s.as_str())
+    }
+
+    /// The display name DE's data gives `unique`, or `None` when no database
+    /// knows it. Callers decide what an unnamed entry means.
+    fn resolve(&self, unique: &str) -> Option<String> {
+        if let Some(n) = self.by_unique.get(unique) {
+            return Some(n.clone());
+        }
+        // A blueprint has no text of its own in ExportResources: it is named
+        // for what it crafts, as the game shows it ("Yareli Prime Neuroptics
+        // Blueprint").
+        if let Some(result) = self.blueprint_result.get(unique) {
+            let crafted = self.by_unique.get(result).or_else(|| self.top_level.get(result));
+            if let Some(n) = crafted {
+                return Some(if n.ends_with(" Blueprint") { n.clone() } else { format!("{n} Blueprint") });
+            }
+        }
+        self.relic_names.get(unique).or_else(|| self.top_level.get(unique)).cloned()
+    }
+}
+
+/// ExportResources × dict.en: uniqueName → English name.
+fn parse_name_db(
+    resources: Option<&serde_json::Value>,
+    dict: Option<&serde_json::Value>,
+) -> HashMap<String, String> {
+    let (Some(resources), Some(dict)) = (resources.and_then(|v| v.as_object()), dict.and_then(|v| v.as_object()))
+    else {
+        warn!("ExportResources/dict.en unavailable — component names will not resolve");
+        return HashMap::new();
+    };
+    resources
+        .iter()
+        .filter_map(|(unique, entry)| {
+            let key = entry.get("name")?.as_str()?;
+            let text = strip_tags(dict.get(key)?.as_str()?);
+            (!text.is_empty()).then(|| (unique.clone(), text.to_string()))
+        })
+        .collect()
+}
+
+/// ExportResources: uniqueName → icon file name. The image host serves DE's icons
+/// under the bare file name of the `icon` path.
+fn parse_icon_db(resources: Option<&serde_json::Value>) -> HashMap<String, String> {
+    resources
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(unique, entry)| {
+                    let file = entry.get("icon")?.as_str()?.rsplit('/').next()?;
+                    (!file.is_empty()).then(|| (unique.clone(), file.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// ExportRecipes: blueprint path → crafted path, for every entry that has one.
+fn parse_blueprint_results(json: Option<&serde_json::Value>) -> HashMap<String, String> {
+    json.and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(bp, entry)| Some((bp.clone(), entry.get("resultType")?.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Relics.json reward items, uniqueName → name.
+fn parse_relic_item_names(json: Option<&serde_json::Value>) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let Some(relics) = json.and_then(|v| v.as_array()) else { return out };
+    for relic in relics {
+        for reward in relic.get("rewards").and_then(|v| v.as_array()).into_iter().flatten() {
+            let Some(item) = reward.get("item") else { continue };
+            let (Some(unique), Some(name)) = (
+                item.get("uniqueName").and_then(|v| v.as_str()),
+                item.get("name").and_then(|v| v.as_str()),
+            ) else { continue };
+            if !name.is_empty() {
+                out.entry(unique.trim().to_string()).or_insert_with(|| name.to_string());
+            }
+        }
+    }
+    out
+}
+
 
 /// One entry from the recipe data: the blueprint consumed + raw ingredients + result count.
 struct ExportRecipe {
@@ -717,17 +905,38 @@ fn resolve_syn_item(
     (stub_id, normed, category.to_string(), None, None)
 }
 
+/// Label for a node in a recipe tree: the catalogue's name, else DE's name
+/// tables. A uniqueName no table knows is shown as its own last path segment,
+/// verbatim, so the gap is visible rather than dressed up as a real name.
+fn tree_node_name(unique: &str, display_names: &HashMap<String, String>, resolver: &NameResolver) -> String {
+    display_names
+        .get(unique)
+        .cloned()
+        .or_else(|| resolver.resolve(unique))
+        .unwrap_or_else(|| {
+            warn!(unique, "no name known for recipe ingredient");
+            unique.rsplit('/').next().unwrap_or(unique).to_string()
+        })
+}
+
 /// Build a recipe node. Prefers DE's ExportRecipes for sub-ingredients;
 /// falls back to WFCD nested `components` for items not in ExportRecipes.
+#[derive(Clone, Copy)]
+struct RecipeCtx<'a> {
+    display_names: &'a HashMap<String, String>,
+    resolver: &'a NameResolver,
+    export_recipes: &'a HashMap<String, ExportRecipe>,
+}
+
 fn build_recipe_node(
     unique_name: String,
     name: String,
     count: u32,
     wfcd_json: Option<&serde_json::Value>,
-    display_names: &HashMap<String, String>,
-    export_recipes: &HashMap<String, ExportRecipe>,
+    ctx: RecipeCtx<'_>,
     depth: u32,
 ) -> RecipeComponent {
+    let RecipeCtx { display_names, resolver, export_recipes } = ctx;
     if depth > 6 {
         return RecipeComponent { unique_name, name, count, result_count: 1, components: vec![], credits: None, reusable: false };
     }
@@ -751,13 +960,10 @@ fn build_recipe_node(
         }];
 
         for (item_type, item_count) in &recipe.ingredients {
-            let item_name = display_names
-                .get(item_type)
-                .cloned()
-                .unwrap_or_else(|| item_type.split('/').next_back().unwrap_or("Unknown").to_string());
+            let item_name = tree_node_name(item_type, display_names, resolver);
             components.push(build_recipe_node(
                 item_type.clone(), item_name, *item_count,
-                None, display_names, export_recipes, depth + 1,
+                None, ctx, depth + 1,
             ));
         }
         (recipe.result_count, components)
@@ -766,11 +972,13 @@ fn build_recipe_node(
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().filter_map(|c| {
                 let cu = c["uniqueName"].as_str()?.trim().to_string();
-                let raw = c["name"].as_str().unwrap_or("Unknown");
-                let cn = display_names.get(&cu).cloned()
-                    .unwrap_or_else(|| strip_tags(raw).to_string());
+                // Resolve by uniqueName: the catalog first, then DE's name
+                // tables. WFCD's own `name` text on components[] is gone as of
+                // the 2026 schema change and untrustworthy even if it returns,
+                // so it's not consulted.
+                let cn = tree_node_name(&cu, display_names, resolver);
                 let cc = c["itemCount"].as_u64().unwrap_or(1) as u32;
-                Some(build_recipe_node(cu, cn, cc, Some(c), display_names, export_recipes, depth + 1))
+                Some(build_recipe_node(cu, cn, cc, Some(c), ctx, depth + 1))
             }).collect())
             .unwrap_or_default();
         (1, comps)
@@ -927,6 +1135,8 @@ fn fetch_from_wfcd(
     recipes_json: Option<&serde_json::Value>,
     syndicates_json: Option<&serde_json::Value>,
     relics_json: Option<&serde_json::Value>,
+    resources_json: Option<&serde_json::Value>,
+    dict_json: Option<&serde_json::Value>,
 ) -> Result<FetchResult, String> {
     let mut items: Vec<WfcdItem> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -951,13 +1161,27 @@ fn fetch_from_wfcd(
     // "Bronco" (a standalone Secondary) must be known before it appears as a
     // component of "Akbolto" so it keeps "Secondary" not "Parts".
     let mut top_level_uniques: HashSet<String> = HashSet::new();
+    let mut resolver = NameResolver {
+        by_unique: parse_name_db(resources_json, dict_json),
+        blueprint_result: parse_blueprint_results(recipes_json),
+        relic_names: parse_relic_item_names(relics_json),
+        top_level: HashMap::new(),
+        icons: parse_icon_db(resources_json),
+    };
     for (_, arr) in &all_files {
         for item in arr.iter() {
             if let Some(u) = item.get("uniqueName").and_then(|v| v.as_str()) {
                 top_level_uniques.insert(u.trim().to_string());
+                if let Some(n) = item.get("name").and_then(|v| v.as_str()) {
+                    let n = strip_tags(n);
+                    if n.len() >= 2 && n != "Blueprint" {
+                        resolver.top_level.insert(u.trim().to_string(), n.to_string());
+                    }
+                }
             }
         }
     }
+    let mut unresolved_components: Vec<String> = Vec::new();
 
     // Pass 2: full processing using cached data
     for (category, arr) in &all_files {
@@ -1045,14 +1269,15 @@ fn fetch_from_wfcd(
             // Add component parts to catalog
             if let Some(comps) = item.get("components").and_then(|v| v.as_array()) {
                 for comp in comps {
-                    let cname = match comp.get("name").and_then(|v| v.as_str()) {
-                        Some(n) => n.trim(),
-                        None => continue,
-                    };
                     let cunique = match comp.get("uniqueName").and_then(|v| v.as_str()) {
                         Some(u) => u.trim().to_string(),
                         None => continue,
                     };
+                    // WFCD's components[] no longer carry a `name`. Look the
+                    // component's uniqueName up in DE's name tables; the result is
+                    // the full display name ("Ash Prime Chassis"), parent included.
+                    let resolved = resolver.resolve(&cunique);
+                    let cname = resolved.as_deref().unwrap_or("");
                     // Relic and mission drops live on the component, and a
                     // resource keeps its table whether or not it makes the
                     // catalogue below.
@@ -1069,6 +1294,10 @@ fn fetch_from_wfcd(
                         || cunique.starts_with("/Lotus/Types/Game/") // Kubrow/Kavat pet parts
                         || cname.contains("Blueprint");
                     if !is_part { continue; }
+                    if resolved.is_none() {
+                        unresolved_components.push(cunique.clone());
+                        continue;
+                    }
 
                     // KEY: if this component is a TOP-LEVEL item in any WFCD file,
                     // skip it here — it will be added with its correct standalone category.
@@ -1098,11 +1327,9 @@ fn fetch_from_wfcd(
                             // strip the " Blueprint" suffix so the built part gets the
                             // correct name and ExportRecipes can provide a distinct blueprint entry.
                             // Also guard against WFCD including the parent name in the component name.
-                            let base = cname.strip_suffix(" Blueprint").unwrap_or(cname);
-                            if base.starts_with(&*name) { base.to_string() }
-                            else { format!("{} {}", name, base) }
+                            cname.strip_suffix(" Blueprint").unwrap_or(cname).to_string()
                         } else {
-                            format!("{} {}", name, cname)
+                            cname.to_string()
                         };
                         if raw_comp_name.trim() == "Blueprint" || raw_comp_name.trim().is_empty() {
                             seen.remove(&cunique); continue;
@@ -1150,6 +1377,15 @@ fn fetch_from_wfcd(
                 }
             }
         }
+    }
+
+    if !unresolved_components.is_empty() {
+        // Left out rather than guessed at: no name table knows these paths yet.
+        warn!(
+            count = unresolved_components.len(),
+            sample = ?unresolved_components.iter().take(10).collect::<Vec<_>>(),
+            "components with no name in ExportResources, ExportRecipes or Relics.json were not catalogued"
+        );
     }
 
     if items.is_empty() {
@@ -1388,12 +1624,13 @@ fn fetch_from_wfcd(
         if let Some(comps) = item_json.get("components").and_then(|v| v.as_array()) {
             let mut tree: Vec<RecipeComponent> = comps.iter().filter_map(|c| {
                 let cu = c["uniqueName"].as_str()?.trim().to_string();
-                let raw = c["name"].as_str().unwrap_or("Unknown");
-                let cn = display_names.get(&cu).cloned()
-                    .unwrap_or_else(|| strip_tags(raw).to_string());
+                // Resolve by uniqueName (see build_recipe_node).
+                let cn = tree_node_name(&cu, &display_names, &resolver);
                 let cc = c["itemCount"].as_u64().unwrap_or(1) as u32;
                 Some(build_recipe_node(
-                    cu, cn, cc, Some(c), &display_names, &export_recipes, 0,
+                    cu, cn, cc, Some(c),
+                    RecipeCtx { display_names: &display_names, resolver: &resolver, export_recipes: &export_recipes },
+                    0,
                 ))
             }).collect();
             price_blueprints(&mut tree, &prices);
@@ -1416,6 +1653,18 @@ fn fetch_from_wfcd(
         }
     }
     for components in recipes.values() { alias_part_drops(components, &mut drop_locations); }
+    // WFCD's components[] no longer carry an `imageName`, so every part and blueprint
+    // above inherited its parent's image (all of Yareli Prime's parts wore
+    // Yareli Prime's portrait). Give each the icon DE's data lists for its own
+    // uniqueName; entries DE has no icon for keep what they have. This runs before
+    // the name-based lookup below so relic rewards pick the right icons up too.
+    for item in items.iter_mut() {
+        if item.category == "Parts" || item.category == "Blueprints" {
+            if let Some(icon) = resolver.icon(&item.unique_name) {
+                item.image_name = Some(icon.to_string());
+            }
+        }
+    }
 
     // Name-based image lookup passed to fetch_relics_rewards for icon enrichment.
     let image_by_name: HashMap<String, String> = items.iter()
@@ -1435,6 +1684,44 @@ fn fetch_from_wfcd(
 
     // Build relic_rewards from pre-fetched Relics.json.
     let relic_rewards = parse_relics_rewards(relics_json, &image_by_name);
+
+    // Backfill ducat values that WFCD's components[] no longer carries (the same
+    // upstream schema change that dropped `name`/`imageName` from every component
+    // sub-object also dropped `ducats`, but with no parent-item fallback available —
+    // see `ducat_value_from_rarities`). This must run before blueprint_names below,
+    // which reads item.ducats.
+    {
+        let ducat_exceptions = load_ducat_exceptions();
+        let mut rarities_by_unique: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut rarities_by_name: HashMap<String, HashSet<String>> = HashMap::new();
+        for rewards in relic_rewards.values() {
+            for r in rewards {
+                if !r.unique_name.is_empty() {
+                    rarities_by_unique.entry(r.unique_name.clone()).or_default().insert(r.rarity.clone());
+                }
+                rarities_by_name.entry(r.name.to_lowercase()).or_default().insert(r.rarity.clone());
+            }
+        }
+        let mut backfilled = 0u32;
+        for item in items.iter_mut() {
+            if item.ducats.is_some() { continue; }
+            if let Some(&v) = ducat_exceptions.get(&item.name.to_lowercase()) {
+                item.ducats = Some(v);
+                backfilled += 1;
+                continue;
+            }
+            let rarities = rarities_by_unique.get(&item.unique_name)
+                .or_else(|| rarities_by_name.get(&item.name.to_lowercase()));
+            if let Some(rarities) = rarities {
+                let set: HashSet<&str> = rarities.iter().map(|s| s.as_str()).collect();
+                if let Some(v) = ducat_value_from_rarities(&set) {
+                    item.ducats = Some(v);
+                    backfilled += 1;
+                }
+            }
+        }
+        info!(backfilled, "backfilled ducat values from relic drop rarity (WFCD components[] no longer carries them)");
+    }
 
     // Build blueprint_names: blueprint_path → (display_name, ducats)
     // Lets the frontend create virtual catalog entries for component blueprints that
@@ -1619,7 +1906,7 @@ mod tests {
         });
         let cell = serde_json::json!({ "name": "Orokin Cell", "uniqueName": CELL, "category": "Resources",
             "drops": [{ "location": "Saturn/Titan (Survival), Rotation C", "chance": 12.5 }] });
-        let out = fetch_from_wfcd(&[&braton, &cell], None, None, None).expect("fixture builds");
+        let out = fetch_from_wfcd(&[&braton, &cell], None, None, None, None, None).expect("fixture builds");
 
         assert_eq!(out.relic_drops.get(BARREL).map(Vec::as_slice), Some(&[AXI.to_string()][..]));
         let at = |unique: &str| out.drop_locations.get(unique).map(|v| v.iter().map(|d| (d.location.as_str(), d.chance)).collect::<Vec<_>>());
@@ -1628,9 +1915,6 @@ mod tests {
         assert!(!out.drop_locations.contains_key(AXI));
     }
 
-    /// A Warframe part is renamed to its built name once the export names
-    /// its blueprint; an Archwing part keeps WFCD's "… Blueprint" name, so
-    /// its blueprint node must not gain the suffix again.
     #[test]
     fn recipe_blueprint_nodes_carry_the_suffix_once_and_the_market_credit_price_is_kept() {
         const FROST_CHASSIS: &str = "/Lotus/Types/Recipes/WarframeRecipes/FrostChassisComponent";
@@ -1653,7 +1937,15 @@ mod tests {
             FROST_CHASSIS_BP: { "resultType": FROST_CHASSIS, "buildPrice": 15000, "ingredients": [{ "ItemType": FERRITE, "ItemCount": 1000 }] },
             ELYTRON_HARNESS_BP: { "resultType": ELYTRON_HARNESS, "buildPrice": 15000, "ingredients": [{ "ItemType": FERRITE, "ItemCount": 1000 }] },
         });
-        let out = fetch_from_wfcd(&[&frost, &elytron, &astilla], Some(&export), None, None).expect("fixture builds");
+        let resources = serde_json::json!({
+            FROST_CHASSIS: { "name": "/Lotus/Language/Menu/CraftingComponent_FrostChassisName" },
+            ELYTRON_HARNESS: { "name": "/Lotus/Language/Menu/CraftingComponent_DemolitionArchwingChassisName" },
+        });
+        let dict = serde_json::json!({
+            "/Lotus/Language/Menu/CraftingComponent_FrostChassisName": "Frost Chassis",
+            "/Lotus/Language/Menu/CraftingComponent_DemolitionArchwingChassisName": "Elytron Harness",
+        });
+        let out = fetch_from_wfcd(&[&frost, &elytron, &astilla], Some(&export), None, None, Some(&resources), Some(&dict)).expect("fixture builds");
 
         let names = |result: &str| -> Vec<(String, String)> {
             out.recipes[result].iter().flat_map(|part| std::iter::once((part.unique_name.clone(), part.name.clone()))
@@ -1765,5 +2057,148 @@ mod tests {
 
         assert!(out.json.is_none());
         assert!(out.etag.is_none());
+    }
+
+    // ── NameResolver: components are named by uniqueName lookup, never by path ─
+
+    fn resolver_fixture() -> NameResolver {
+        let resources = serde_json::json!({
+            "/Lotus/Types/Recipes/WarframeRecipes/YareliPrimeHelmetComponent": {
+                "name": "/Lotus/Language/Primes/CraftingComponent_YareliPrimeHelmetName",
+                "icon": "/Lotus/Interface/Icons/StoreIcons/Resources/CraftingComponents/GenericWarframePrimeHelmet.png"
+            },
+            "/Lotus/Types/Recipes/Weapons/WeaponParts/AkstilettoPrimeBarrel": {
+                "name": "/Lotus/Language/Menu/CraftingComponent_AkstilettoPrimeBarrel"
+            },
+            "/Lotus/Types/Items/NoText": { "name": "/Lotus/Language/Missing" }
+        });
+        let dict = serde_json::json!({
+            "/Lotus/Language/Primes/CraftingComponent_YareliPrimeHelmetName": "Yareli Prime Neuroptics",
+            "/Lotus/Language/Menu/CraftingComponent_AkstilettoPrimeBarrel": "Akstiletto Prime Barrel"
+        });
+        let recipes = serde_json::json!({
+            "/Lotus/Types/Recipes/WarframeRecipes/YareliPrimeHelmetBlueprint": {
+                "resultType": "/Lotus/Types/Recipes/WarframeRecipes/YareliPrimeHelmetComponent"
+            },
+            "/Lotus/Types/Recipes/Weapons/CorvasBlueprint": {
+                "resultType": "/Lotus/Weapons/Corvas/Corvas"
+            }
+        });
+        let relics = serde_json::json!([{ "rewards": [{ "item": {
+            "uniqueName": "/Lotus/Types/Recipes/Weapons/WeaponParts/CorufellPrimeHandle",
+            "name": "Corufell Prime Handle"
+        }}]}]);
+        let mut r = NameResolver {
+            by_unique: parse_name_db(Some(&resources), Some(&dict)),
+            blueprint_result: parse_blueprint_results(Some(&recipes)),
+            relic_names: parse_relic_item_names(Some(&relics)),
+            top_level: HashMap::new(),
+            icons: parse_icon_db(Some(&resources)),
+        };
+        r.top_level.insert("/Lotus/Weapons/Corvas/Corvas".into(), "Corvas".into());
+        r
+    }
+
+    #[test]
+    fn parts_and_their_blueprints_wear_the_part_icon_not_the_parents() {
+        let r = resolver_fixture();
+        assert_eq!(
+            r.icon("/Lotus/Types/Recipes/WarframeRecipes/YareliPrimeHelmetComponent"),
+            Some("GenericWarframePrimeHelmet.png")
+        );
+        // The blueprint has no icon entry; it shows what it crafts.
+        assert_eq!(
+            r.icon("/Lotus/Types/Recipes/WarframeRecipes/YareliPrimeHelmetBlueprint"),
+            Some("GenericWarframePrimeHelmet.png")
+        );
+        // Nothing known → no icon, so the caller keeps whatever image it already had.
+        assert_eq!(r.icon("/Lotus/Types/Recipes/Weapons/CorvasBlueprint"), None);
+        assert!(parse_icon_db(None).is_empty());
+    }
+
+    #[test]
+    fn neuroptics_is_named_from_the_database_not_the_path() {
+        // DE's path token for Neuroptics is "Helmet"; the name table says otherwise.
+        let r = resolver_fixture();
+        assert_eq!(
+            r.resolve("/Lotus/Types/Recipes/WarframeRecipes/YareliPrimeHelmetComponent").as_deref(),
+            Some("Yareli Prime Neuroptics")
+        );
+        assert_eq!(
+            r.resolve("/Lotus/Types/Recipes/WarframeRecipes/YareliPrimeHelmetBlueprint").as_deref(),
+            Some("Yareli Prime Neuroptics Blueprint")
+        );
+    }
+
+    #[test]
+    fn weapon_parts_and_blueprints_resolve() {
+        let r = resolver_fixture();
+        assert_eq!(
+            r.resolve("/Lotus/Types/Recipes/Weapons/WeaponParts/AkstilettoPrimeBarrel").as_deref(),
+            Some("Akstiletto Prime Barrel")
+        );
+        // A blueprint for a top-level item is named for the item it crafts.
+        assert_eq!(
+            r.resolve("/Lotus/Types/Recipes/Weapons/CorvasBlueprint").as_deref(),
+            Some("Corvas Blueprint")
+        );
+    }
+
+    #[test]
+    fn relic_reward_names_cover_paths_the_export_lacks() {
+        let r = resolver_fixture();
+        assert_eq!(
+            r.resolve("/Lotus/Types/Recipes/Weapons/WeaponParts/CorufellPrimeHandle").as_deref(),
+            Some("Corufell Prime Handle")
+        );
+    }
+
+    #[test]
+    fn unknown_paths_are_never_guessed_from_their_tail() {
+        let r = resolver_fixture();
+        assert_eq!(r.resolve("/Lotus/Types/Recipes/WarframeRecipes/SomeNewHelmetComponent"), None);
+        // A language key the dictionary cannot resolve yields no name either.
+        assert_eq!(r.resolve("/Lotus/Types/Items/NoText"), None);
+    }
+
+    #[test]
+    fn missing_name_tables_resolve_nothing() {
+        assert!(parse_name_db(None, None).is_empty());
+    }
+
+    // ── ducat_value_from_rarities / load_ducat_exceptions ──────────────────
+    // WFCD's components[] entries stopped carrying a `ducats` field upstream, with
+    // no parent-item fallback available (unlike name/image). Ducat value is instead
+    // derived from drop rarity, matching the Warframe Wiki's own Module:Void/data
+    // formula, plus a small bundled exceptions table for parts that don't follow it.
+
+    #[test]
+    fn ducat_formula_matches_single_rarity_tiers() {
+        assert_eq!(ducat_value_from_rarities(&["Bronze"].into_iter().collect()), Some(15));
+        assert_eq!(ducat_value_from_rarities(&["Silver"].into_iter().collect()), Some(45));
+        assert_eq!(ducat_value_from_rarities(&["Gold"].into_iter().collect()), Some(100));
+    }
+
+    #[test]
+    fn ducat_formula_matches_mixed_rarity_tiers() {
+        assert_eq!(ducat_value_from_rarities(&["Bronze", "Gold"].into_iter().collect()), Some(25));
+        assert_eq!(ducat_value_from_rarities(&["Bronze", "Silver"].into_iter().collect()), Some(25));
+        assert_eq!(ducat_value_from_rarities(&["Silver", "Gold"].into_iter().collect()), Some(65));
+    }
+
+    #[test]
+    fn ducat_formula_none_for_empty_rarities() {
+        assert_eq!(ducat_value_from_rarities(&HashSet::new()), None);
+    }
+
+    #[test]
+    fn ducat_exceptions_load_and_contain_known_entries() {
+        let exceptions = load_ducat_exceptions();
+        assert!(!exceptions.is_empty(), "bundled ducat_exceptions.json should parse to a non-empty map");
+        // Sanity-check a couple of entries against the wiki's DUCAT_EXCEPTIONS table.
+        assert_eq!(exceptions.get("akstiletto prime receiver"), Some(&45));
+        assert_eq!(exceptions.get("forma blueprint"), Some(&0));
+        // The "_comment" key must never leak in as a fake exception entry.
+        assert!(!exceptions.contains_key("_comment"));
     }
 }

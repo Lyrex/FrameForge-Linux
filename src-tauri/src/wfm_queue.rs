@@ -5,6 +5,7 @@ use tauri::{Emitter, State};
 use crate::app_state::AppState;
 use crate::cache::atomic_write;
 use crate::catalogue::fix_category;
+use crate::events;
 use crate::inventory_state::{load_inventory_state_cache, CachedItem};
 use crate::resolver::ItemResolver;
 use crate::resolver;
@@ -135,7 +136,7 @@ pub(crate) fn start_wfm_queue(app: tauri::AppHandle, state: State<'_, AppState>)
             }
 
             // Notify the frontend.
-            let _ = app.emit("wfm-price-update", WfmPriceUpdate {
+            let _ = app.emit(events::WFM_PRICE_UPDATE, WfmPriceUpdate {
                 url_name: slug, sell_median: price, tradeable,
             });
         }

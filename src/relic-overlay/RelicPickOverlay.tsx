@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useOverlayWindow } from "../lib/useOverlayWindow";
 import { PlatIcon, DucatIcon } from "../shared/icons";
 import { DEFAULT_RELIC_PICK_LINES, DEFAULT_RELIC_PICK_PRIORITY, RELIC_PICK_LINES_OPTIONS, RELIC_PICK_PRIORITY_OPTIONS } from "../constants/settings";
-import { TAURI_COMMANDS } from "../constants/tauri";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import type { SettingsFile } from "../types/tauri";
 import type { RelicPickPayload, RelicPickRelic, RelicPickReward } from "../types/relics";
 import type { RelicPickLines, RelicPickPriority } from "../types/settings";
@@ -69,7 +69,7 @@ export default function RelicPickOverlay() {
   };
 
   useEffect(() => {
-    const unOpen = listen<RelicPickPayload>("relic-pick-open", async e => {
+    const unOpen = listen<RelicPickPayload>(TAURI_EVENTS.RELIC_PICK_OPEN, async e => {
       // Reload settings fresh on every show — the main window may have changed them
       // since this overlay was first mounted at app startup.
       try {

@@ -1,0 +1,31 @@
+{
+    "_comment": "Hand-curated exceptions where a prime part's ducat value doesn't follow the standard drop-rarity formula (Common=15, Uncommon=45, Rare=100, mixed=25/65). Mirrors the Warframe Wiki's Module:Void/data DUCAT_EXCEPTIONS table (fetched 2026-09-24 from https://wiki.warframe.com/api.php?action=parse&page=Module:Void/data). Keys in `exceptions` are lowercased full item+part display names, matching WfcdItem.name after component-name derivation. Update by re-fetching the same wiki module if new exceptions are added upstream.",
+    "exceptions": {
+        "forma blueprint": 0,
+        "khora prime blueprint": 65,
+        "akstiletto prime receiver": 45,
+        "knell prime receiver": 45,
+        "braton prime receiver": 45,
+        "rubico prime stock": 45,
+        "saryn prime neuroptics blueprint": 45,
+        "soma prime blueprint": 15,
+        "mesa prime systems blueprint": 100,
+        "bronco prime barrel": 45,
+        "gauss prime blueprint": 25,
+        "panthera prime receiver": 100,
+        "fang prime blueprint": 15,
+        "limbo prime neuroptics blueprint": 100,
+        "exilus weapon adapter blueprint": 0,
+        "riven sliver": 0,
+        "kuva": 0,
+        "ayatan amber star": 0,
+        "xata": 0,
+        "lohk": 0,
+        "vome": 0,
+        "jahu": 0,
+        "fass": 0,
+        "ris": 0,
+        "netra": 0,
+        "khra": 0
+    }
+}

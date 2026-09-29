@@ -300,7 +300,7 @@ export default function App() {
 
   // ── Blob processing status ────────────────────────────────────────────────
   useEffect(() => {
-    const unlisten = listen<BlobStatusPayload>("blob-status", e => {
+    const unlisten = listen<BlobStatusPayload>(TAURI_EVENTS.BLOB_STATUS, e => {
       const { stage } = e.payload;
       if (stage === "scanning") {
         if (blobDoneTimerRef.current) clearTimeout(blobDoneTimerRef.current);

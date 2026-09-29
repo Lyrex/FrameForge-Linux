@@ -260,7 +260,7 @@ export function useInventoryData(): UseInventoryDataReturn {
 
   // ── Player name (immediate, from EE.log "Logged in NAME") ──────────────────
   useEffect(() => {
-    const unlisten = listen<string>("player-name", e => {
+    const unlisten = listen<string>(TAURI_EVENTS.PLAYER_NAME, e => {
       setPlayerName(e.payload);
     });
     return () => { unlisten.then(fn => fn()); };

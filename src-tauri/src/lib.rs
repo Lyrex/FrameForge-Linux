@@ -39,6 +39,7 @@ mod catalogue;
 mod companion_api;
 mod credentials;
 mod diagnostics;
+mod events;
 mod image_cache;
 mod inventory_state;
 mod log_watcher;

@@ -630,7 +630,7 @@ function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
   }, []);
 
   useEffect(() => {
-    const unlisten = listen<WfmWhisper>("wfm-whisper", e => {
+    const unlisten = listen<WfmWhisper>(TAURI_EVENTS.WFM_WHISPER, e => {
       setWhispers(prev => [...prev, e.payload]);
     });
     return () => { unlisten.then(fn => fn()); };
@@ -773,7 +773,8 @@ function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
         source: "wfm",
         notes: "",
       };
-      invoke(TAURI_COMMANDS.ADD_TRADE, args).catch(() => {});
+      invoke(TAURI_COMMANDS.ADD_TRADE, { params: args })
+        .catch((e) => console.error("[trade-log] add_trade failed:", e));
     }
     setWhispers(prev => prev.filter(w => w.from !== from));
   };
@@ -984,7 +985,7 @@ export default function WfmTrading({ wfmLookup: _wfmLookup, wfmItems, imageMap, 
 
   // Listen for whispers to increment badge
   useEffect(() => {
-    const unlisten = listen("wfm-whisper", () => {
+    const unlisten = listen(TAURI_EVENTS.WFM_WHISPER, () => {
       if (tab !== "messages") {
         setUnread(n => n + 1);
         onNewWhisper();

@@ -715,6 +715,14 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
 /// genuinely gone (~2 min at the 10 s scan interval).
 pub const MAX_MISSING_STREAK: u32 = 12;
 
+/// Top-level JSON sections that appear and disappear from memory depending on
+/// game state (e.g. after a vendor interaction or inventory sync). These should
+/// never trigger a truncated-capture rejection because their absence is normal.
+const VOLATILE_SECTIONS: &[&str] = &[
+    "RecentVendorPurchases",
+    "MiscAccountData",
+];
+
 /// Per-account memory of which top-level sections a complete blob contains.
 ///
 /// The monitor applies each accepted blob as a full replacement, so a blob that
@@ -744,6 +752,7 @@ impl SectionBaseline {
         let current: std::collections::BTreeSet<&str> = sections.iter().map(String::as_str).collect();
         let missing: Vec<String> = self.known.iter()
             .filter(|k| !current.contains(k.as_str()))
+            .filter(|k| !VOLATILE_SECTIONS.contains(&k.as_str()))
             .cloned()
             .collect();
 
@@ -756,10 +765,14 @@ impl SectionBaseline {
         }
 
         self.missing_streak = 0;
-        let changed = self.known.len() != current.len()
-            || self.known.iter().any(|k| !current.contains(k.as_str()));
+        // Filter volatile sections from the baseline so they are never tracked.
+        let new_known: std::collections::BTreeSet<String> = sections.iter()
+            .filter(|k| !VOLATILE_SECTIONS.contains(&k.as_str()))
+            .cloned()
+            .collect();
+        let changed = self.known != new_known;
         if changed {
-            self.known = sections.iter().cloned().collect();
+            self.known = new_known;
         }
         Ok(changed)
     }
@@ -1158,7 +1171,7 @@ pub(crate) fn stitch_blobs(
                     );
                     LAST_BLOB_REGION.store(scan.seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                     if save {
-                        let name = format!("Actual_inventory_FULL_ACCOUNT_{}_{:02}.json", ts, saved + 1);
+                        let name = format!("Actual_inventory_FULL_ACCOUNT_v{}_{}_{:02}.json", env!("CARGO_PKG_VERSION"), ts, saved + 1);
                         let path = blob_dir.join(&name);
                         if let Some(json) = extract_blob_json(&scan.data) {
                             if std::fs::write(&path, &json).is_ok() { saved += 1; }
@@ -1301,7 +1314,7 @@ pub(crate) fn stitch_blobs(
                         );
                         LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                         if save {
-                            let name = format!("Actual_inventory_FULL_ACCOUNT_{}_{:02}.json", ts, saved + 1);
+                            let name = format!("Actual_inventory_FULL_ACCOUNT_v{}_{}_{:02}.json", env!("CARGO_PKG_VERSION"), ts, saved + 1);
                             if let Some(json) = extract_blob_json(&seed) {
                                 if std::fs::write(blob_dir.join(&name), &json).is_ok() { saved += 1; }
                             }

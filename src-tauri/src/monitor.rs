@@ -841,7 +841,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                 if should_capture {
                     blob_scan_active.store(true, Ordering::SeqCst);
                     last_walk_time = Some(std::time::Instant::now());
-                    let ts     = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
+                    let ts     = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
                     let dir    = blob_log_dir.clone();
                     let tx     = blob_tx.clone();
                     let save   = blob_log_enabled.load(Ordering::SeqCst);

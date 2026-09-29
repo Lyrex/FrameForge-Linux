@@ -1,5 +1,6 @@
 import { useEffect, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { notify, ensurePermission } from "./lib/notify";
 import EeLogSettings from "./EeLogSettings";
 import StatsDataTransfer from "./statistics/StatsDataTransfer";
@@ -260,9 +261,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                         settingsRef.current = { ...settingsRef.current, overlayEnabled: next };
                         saveAllSettings();
                         if (!next) {
-                          import("@tauri-apps/api/event").then(({ emit }) =>
-                            emit(TAURI_EVENTS.RELIC_SCREEN, true).catch(() => {})
-                          );
+                          emit(TAURI_EVENTS.RELIC_SCREEN, true).catch(() => {});
                         }
                       }}
                     >{overlayEnabled ? "On" : "Off"}</button>

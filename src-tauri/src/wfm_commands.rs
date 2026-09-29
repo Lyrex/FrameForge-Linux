@@ -8,6 +8,7 @@ use crate::resolver::ItemResolver;
 use crate::wfm::{to_wfm_slug, Wfm, WfmItem, WfmRivenAttribute};
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RivenAuctionParams {
     weapon_url_name: String,
     riven_name: String,

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { TAURI_EVENTS } from "../constants/tauri";
 import type { CacheStatuses } from "../types/cache";
 import { useClickOutside } from "../shared/useClickOutside";
 import { formatAge } from "../lib/formatters";
@@ -35,7 +36,7 @@ export default function CacheStatusChip() {
     const poll = () => invoke<CacheStatuses>("get_cache_statuses").then(setStatuses).catch(() => {});
     poll();
     const timer = setInterval(poll, 5000);
-    const unsub = listen<CacheStatuses>("cache-status", (e) => setStatuses(e.payload));
+    const unsub = listen<CacheStatuses>(TAURI_EVENTS.CACHE_STATUS, (e) => setStatuses(e.payload));
     return () => { clearInterval(timer); unsub.then((f) => f()); };
   }, []);
 
