@@ -1,6 +1,7 @@
 use tauri::{AppHandle, Emitter, Manager, State};
 use crate::app_state::AppState;
 use crate::cache;
+use crate::events;
 use crate::rivens::WfmScanSlot;
 use crate::wfm::{sanitize_display_name, to_wfm_slug, Wfm, WfmTopItem};
 
@@ -143,7 +144,7 @@ fn scan_wfm_top_items(wfm: &Wfm, arcane_candidates: &[ArcaneCandidate], app: &Ap
     let total = prime_sets.len() + arcane_candidates.len();
     let mut completed = 0;
     let report_progress = |completed| {
-        let _ = app.emit("wfm-top-progress", WfmTopProgress { completed, total, refreshing });
+        let _ = app.emit(events::WFM_TOP_PROGRESS, WfmTopProgress { completed, total, refreshing });
     };
     report_progress(completed);
 
@@ -193,7 +194,7 @@ fn finish_wfm_top_scan(wfm: &Wfm, results: Vec<WfmTopItem>, app: &AppHandle) {
             warning:      Some("warframe.market top items: scan returned nothing".into()),
         });
         // Closes the progress bar in Reports without replacing the ranking on screen.
-        let _ = app.emit("wfm-top-updated", wfm.top_items().unwrap_or_default());
+        let _ = app.emit(events::WFM_TOP_UPDATED, wfm.top_items().unwrap_or_default());
         return;
     }
     if let Err(e) = cache::store(WFM_TOP_CACHE, None, &results) {
@@ -205,5 +206,5 @@ fn finish_wfm_top_scan(wfm: &Wfm, results: Vec<WfmTopItem>, app: &AppHandle) {
         warning:      None,
     });
     wfm.set_top_items(results.clone());
-    let _ = app.emit("wfm-top-updated", results);
+    let _ = app.emit(events::WFM_TOP_UPDATED, results);
 }

@@ -6,7 +6,7 @@ use crate::monitor::{append_to_file, now_hms};
 use crate::catalogue::sanitize_chat_item_name;
 use crate::relic_pick::{build_relic_pick_payload, relic_pick_show, relic_pick_hide, show_overlay};
 use crate::trade_log::collect_trade_completion;
-use crate::{db, log_parser};
+use crate::{db, events, log_parser};
 
 // ==============================================================================
 // EE.log wake-up source
@@ -38,7 +38,7 @@ fn record_arbitration_runs(
     let overlay_on = state.arbitration_overlay_enabled.load(Ordering::SeqCst);
     if let Some(summary) = db::live_run_summary(&ended, live, overlay_on) {
         show_overlay(app, "arbitration-overlay");
-        if let Err(e) = app.emit("arbitration-run-ended", &summary) {
+        if let Err(e) = app.emit(events::ARBITRATION_RUN_ENDED, &summary) {
             warn!(error = %e, "arbitration overlay event not delivered");
         }
     }
@@ -57,7 +57,7 @@ fn record_arbitration_runs(
         Ok(0) => {}
         Ok(stored) => {
             info!(runs = stored, "arbitration runs recorded");
-            app.emit("arbitration-runs-changed", ()).ok();
+            app.emit(events::ARBITRATION_RUNS_CHANGED, ()).ok();
         }
         Err(e) => warn!(error = %e, "storing arbitration runs failed; retrying on the next read"),
     }
@@ -149,8 +149,8 @@ pub(crate) fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
 
             if riven_trigger && cooldown_ok {
                 last_riven_fire = Some(std::time::Instant::now());
-                let _ = app.emit("riven-screen-open", ());
-                let _ = app.emit("ff-status", "🎲 Riven screen detected");
+                let _ = app.emit(events::RIVEN_SCREEN_OPEN, ());
+                let _ = app.emit(events::FF_STATUS, "🎲 Riven screen detected");
             }
 
             // ── Riven screen close — card UI hidden (primary) ─────────────────
@@ -170,7 +170,7 @@ pub(crate) fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
                     let _ = append_to_file(&riven_log, &format!(
                         "[STEP 4] CLOSE (DiegeticArtifactCards HudVis 0) — {}\n\n", ts
                     ));
-                    let _ = app.emit("riven-screen-close", ());
+                    let _ = app.emit(events::RIVEN_SCREEN_CLOSE, ());
                 }
             }
 
@@ -190,7 +190,7 @@ pub(crate) fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
                     let _ = append_to_file(&riven_log, &format!(
                         "[STEP 4] CLOSE (VolumetricFog render target = orbiter loaded) — {}\n\n", ts
                     ));
-                    let _ = app.emit("riven-screen-close", ());
+                    let _ = app.emit(events::RIVEN_SCREEN_CLOSE, ());
                 }
             }
 
@@ -206,7 +206,7 @@ pub(crate) fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
                 let price: Option<u64> = raw.find(" for ").and_then(|i| {
                     let r=&raw[i+5..]; r.find(" platinum").and_then(|j| r[..j].trim().parse().ok())
                 });
-                let _ = app.emit("wfm-whisper", serde_json::json!({
+                let _ = app.emit(events::WFM_WHISPER, serde_json::json!({
                     "from": from, "message": raw.trim(), "item": item, "price": price,
                     "timestamp": chrono::Local::now().format("%H:%M:%S").to_string(),
                 }));
@@ -235,7 +235,7 @@ pub(crate) fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
                             // Show the overlay window from Rust — more reliable than
                             // calling win.show() from the WebView (avoids timing races).
                             relic_pick_show(&app_clone);
-                            let _ = app_clone.emit("relic-pick-open", payload);
+                            let _ = app_clone.emit(events::RELIC_PICK_OPEN, payload);
                         }
                     });
                 } else {
@@ -251,7 +251,7 @@ pub(crate) fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
                 let which = if entitlement_dismiss { "OnEntitlementServiceComplete" } else { "mapredux" };
                 info!("relic-pick: dismiss fired ({})", which);
                 relic_pick_hide(&app);
-                let _ = app.emit("relic-pick-close", ());
+                let _ = app.emit(events::RELIC_PICK_CLOSE, ());
             }
 
             // ── In-game trade completion ──────────────────────────────────────
@@ -264,7 +264,7 @@ pub(crate) fn start_log_watcher(app: tauri::AppHandle) -> Result<(), String> {
                         received_items = t.received_items.len(),
                         "trade completion detected"
                     );
-                    if let Err(error) = app.emit("trade-completed", serde_json::json!({
+                    if let Err(error) = app.emit(events::TRADE_COMPLETED, serde_json::json!({
                         "sessionId":     t.session_id,
                         "withPlayer":    t.with_player,
                         "tradeType":     t.trade_type,

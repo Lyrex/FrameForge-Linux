@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { TAURI_EVENTS } from "../constants/tauri";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useOverlayWindow } from "../lib/useOverlayWindow";
 import { fmtMs } from "../TimerHelper";
@@ -54,7 +55,7 @@ export default function ArbitrationOverlay() {
   }, [run]);
 
   useEffect(() => {
-    const unEnded = listen<unknown>("arbitration-run-ended", e => {
+    const unEnded = listen<unknown>(TAURI_EVENTS.ARBITRATION_RUN_ENDED, e => {
       if (!isRunSummary(e.payload)) return;
       // A second run ending while the first is still up restarts the clock
       // rather than cutting the new one short.

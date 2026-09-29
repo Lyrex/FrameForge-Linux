@@ -82,7 +82,7 @@ export default function RelicPickOverlay() {
       } catch {}
       setPayload(e.payload);
     });
-    const unClose = listen("relic-pick-close", () => hide());
+    const unClose = listen(TAURI_EVENTS.RELIC_PICK_CLOSE, () => hide());
     return () => { unOpen.then(f => f()); unClose.then(f => f()); };
   }, []);
 

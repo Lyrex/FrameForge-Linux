@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { TAURI_EVENTS } from "../constants/tauri";
 import Sparkline from "../shared/Sparkline";
 import "../shared/Report.css";
 import { useCatalog } from "../hooks/useCatalog";
@@ -212,7 +213,7 @@ export default function ItemReport() {
     load();
 
     // Stays mounted through imports.
-    const unlisten = listen("stats-changed", () => { load(); });
+    const unlisten = listen(TAURI_EVENTS.STATS_CHANGED, () => { load(); });
     return () => { unlisten.then(fn => fn()); };
   }, []);
 

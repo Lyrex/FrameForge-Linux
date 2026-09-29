@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { TAURI_EVENTS } from "../constants/tauri";
 import { verdictColor } from "./rivenTypes";
 import type { GradedRiven, GradedStat } from "./rivenTypes";
 import { formatChallengeName } from "../market/MarketHelper";
@@ -79,7 +80,7 @@ export default function RivenOwned({ onOpenInAnalyzer, onSell, canSell }: {
         .finally(() => setLoading(false));
     load();
     // The scanner has no riven-specific event; a fresh roll arrives with the inventory.
-    const unlisten = listen("inventory-update", load);
+    const unlisten = listen(TAURI_EVENTS.INVENTORY_UPDATE, load);
     return () => { unlisten.then(fn => fn()); };
   }, []);
 

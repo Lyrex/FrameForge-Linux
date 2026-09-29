@@ -13,7 +13,7 @@ use crate::mastery_rules;
 use crate::platform::{Platform, ProcessAccess};
 use crate::relic_pick::park_overlay_offscreen;
 use crate::worldstate::store_to_unique;
-use crate::{db, log_parser, memory_scanner, memory_scanner_linux, ocr};
+use crate::{db, events, log_parser, memory_scanner, memory_scanner_linux, ocr};
 
 pub struct OcrParams<'a> {
     pub(crate) pixels: &'a [u8],
@@ -322,7 +322,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
             let mut initial_qty = known.clone();
             for (k, &amount) in &unique_quantities { initial_qty.entry(k.clone()).or_insert(amount); }
             for (path, mc) in &known_mods { initial_qty.entry(path.clone()).or_insert(mc.total); }
-            let _ = app.emit("inventory-update", InventoryUpdate {
+            let _ = app.emit(events::INVENTORY_UPDATE, InventoryUpdate {
                 quantities: initial_qty,
                 crafting: vec![],
                 mastery_rank: startup_cache.mastery_rank,
@@ -422,9 +422,9 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                         progress.reobserve(now).then(|| MasteryProvenance::from(progress.record()))
                     };
                     if let Some(provenance) = provenance {
-                        let _ = app.emit("mastery-observed", provenance);
+                        let _ = app.emit(events::MASTERY_OBSERVED, provenance);
                     }
-                    let _ = app.emit("blob-status", BlobStatusPayload {
+                    let _ = app.emit(events::BLOB_STATUS, BlobStatusPayload {
                         stage: "done".into(),
                         detail: "No changes".into(),
                     });
@@ -465,7 +465,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                 if mastery_progress.lock().unwrap_or_else(|e| e.into_inner())
                     .apply_blob(blob.mastery_xp.as_ref(), blob.player_skills.as_ref(), blob.missions.as_ref(), blob.affiliations.as_ref(), now)
                 {
-                    let _ = app.emit("mastery-update", ());
+                    let _ = app.emit(events::MASTERY_UPDATE, ());
                 }
 
                 // Snapshot previous full inventory (known + uniques + mods) for change detection.
@@ -675,7 +675,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     CraftingJob { unique_name: r.item_type.clone(), item_name: name, completion_ms: r.completion_ms }
                 }).collect();
                 *shared_crafting.lock().unwrap_or_else(|e| e.into_inner()) = crafting.clone();
-                let _ = app.emit("inventory-update", InventoryUpdate {
+                let _ = app.emit(events::INVENTORY_UPDATE, InventoryUpdate {
                     quantities: emit_qty,
                     crafting,
                     mastery_rank: current_mastery_rank,
@@ -700,7 +700,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                 );
                 last_applied_hash = Some(blob.content_hash);
                 info!(detail = %detail, "blob applied");
-                let _ = app.emit("blob-status", BlobStatusPayload {
+                let _ = app.emit(events::BLOB_STATUS, BlobStatusPayload {
                     stage: "done".into(),
                     detail,
                 });
@@ -763,7 +763,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                 // Skip mastery_data on heartbeats — it hasn't changed and spreading 17k
                 // entries into React state on every tick is expensive.
                 let send_mastery = status_changed;
-                let _ = app.emit("inventory-update", InventoryUpdate {
+                let _ = app.emit(events::INVENTORY_UPDATE, InventoryUpdate {
                     quantities: emit_qty, crafting,
                     mastery_rank: current_mastery_rank,
                     mastery_data: if send_mastery { current_mastery_data.clone() } else { HashMap::new() },
@@ -813,7 +813,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                             progress.reobserve(now).then(|| MasteryProvenance::from(progress.record()))
                         };
                         if let Some(provenance) = provenance {
-                            let _ = app.emit("mastery-observed", provenance);
+                            let _ = app.emit(events::MASTERY_OBSERVED, provenance);
                         }
                     }
                     if sync_marker {
@@ -846,7 +846,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                     let tx     = blob_tx.clone();
                     let save   = blob_log_enabled.load(Ordering::SeqCst);
                     let active = blob_scan_active.clone();
-                    let _ = app.emit("blob-status", BlobStatusPayload {
+                    let _ = app.emit(events::BLOB_STATUS, BlobStatusPayload {
                         stage:  "scanning".into(),
                         detail: "Reading Warframe memory\u{2026}".into(),
                     });
@@ -1204,7 +1204,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                         let rest = &raw[i+5..];
                         rest.find(" platinum").and_then(|j| rest[..j].trim().parse().ok())
                     });
-                    let _ = ee_ocr_app.emit("wfm-whisper", serde_json::json!({
+                    let _ = ee_ocr_app.emit(events::WFM_WHISPER, serde_json::json!({
                         "from": from,
                         "message": raw.trim(),
                         "item": item,
@@ -1218,7 +1218,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
 
                 // Unveil: riven challenge completion
                 if lower.contains("modreveal") || (lower.contains("riven") && lower.contains("unveiled")) {
-                    let _ = ee_ocr_app.emit("riven-unveiled", ());
+                    let _ = ee_ocr_app.emit(events::RIVEN_UNVEILED, ());
                 }
 
                 // Trigger: "VoidProjections: GetVoidProjectionReward[s]" fires when the
@@ -1309,7 +1309,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                                 "[{}] EE.log Reward | {} | {} → {} (gets reward)",
                                 ts_log, item_name, old_qty, new_qty);
                         }
-                        let _ = ee_ocr_app.emit("inventory-reward",
+                        let _ = ee_ocr_app.emit(events::INVENTORY_REWARD,
                             serde_json::json!({ "path": inv_path, "qty": new_qty }));
                         let _ = append_to_file(&session_log_path, &format!(
                             "[REWARD] Inventory updated from EE.log\n\
@@ -1349,7 +1349,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                         if let Ok(mut g) = dismiss_app.state::<AppState>().pending_relic_rewards.lock() {
                             *g = None;
                         }
-                        let _ = dismiss_app.emit("relic-rewards", serde_json::Value::Null);
+                        let _ = dismiss_app.emit(events::RELIC_REWARDS, serde_json::Value::Null);
                     });
                 }
 
@@ -1468,10 +1468,10 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                         "=== {} ===\nEE.log trigger fired\n{}\n", ts0, trigger_line
                     ));
 
-                    let _ = ee_ocr_app.emit("ff-status", "🔍 Relic reward screen detected");
+                    let _ = ee_ocr_app.emit(events::FF_STATUS, "🔍 Relic reward screen detected");
                     // Tell App.tsx to pre-create the overlay window NOW, before OCR finishes.
                     // Window creation takes 1-2 s; pre-creating shaves that off the visible delay.
-                    let _ = ee_ocr_app.emit("relic-trigger", ());
+                    let _ = ee_ocr_app.emit(events::RELIC_TRIGGER, ());
 
                     let app          = ee_ocr_app.clone();
                     let cat          = filtered_cat; // relic prefilter (was: Arc::clone(&ee_catalog))
@@ -1569,7 +1569,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                                     }
                                 }
                             }
-                            let _ = app.emit("ff-status", "📷 OCR scanning...");
+                            let _ = app.emit(events::FF_STATUS, "📷 OCR scanning...");
                             let cat2 = std::sync::Arc::clone(&cat);
                             // Clone the Arc so the hint can be read inside spawn_blocking.
                             // Reading AFTER capture (~100-400 ms) rather than before gives the
@@ -1646,7 +1646,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                                         let status_label = if *complete && confirm_ready { "locked" }
                                             else if *complete { "soft-complete, waiting for EE hint" }
                                             else { "waiting" };
-                                        let _ = app.emit("ff-status",
+                                        let _ = app.emit(events::FF_STATUS,
                                             format!("{} {} items ({})", label, items.len(), status_label));
                                         let result_label = if *complete && confirm_ready { "LOCKED & emitting" }
                                             else if *complete { "soft-complete, retrying (waiting for EE hint)" }
@@ -1693,7 +1693,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                                                     *g = Some(v.clone());
                                                 }
                                             }
-                                            let _ = app.emit("relic-rewards", emit_val);
+                                            let _ = app.emit(events::RELIC_REWARDS, emit_val);
                                             // Record when rewards were emitted so the dismiss handler can
                                             // enforce a minimum display time (see below).
                                             emitted_ms.store(
@@ -1712,7 +1712,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                                                 // when EE.log fires "relic timer closed" (player picks).
                                                 tokio::time::sleep(std::time::Duration::from_secs(20)).await;
                                                 if let Ok(mut g) = app2.state::<AppState>().pending_relic_rewards.lock() { *g = None; }
-                                                let _ = app2.emit("relic-rewards", serde_json::Value::Null);
+                                                let _ = app2.emit(events::RELIC_REWARDS, serde_json::Value::Null);
                                                 park_overlay_offscreen(&app2, "relic-overlay");
                                                 let _ = append_to_file(&slog2,
                                                     "[STEP 4] AUTO-DISMISS (20s safety fallback)\n\n");
@@ -1745,7 +1745,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                                                 *g = Some(emit_val.clone());
                                             }
                                         }
-                                        let _ = app.emit("relic-rewards", &emit_val);
+                                        let _ = app.emit(events::RELIC_REWARDS, &emit_val);
                                         let _ = append_to_file(&slog,
                                             "[STEP 3] OVERLAY OPENED (soft-complete confirmed — no improvement)\n\n");
                                         let app2 = app.clone();
@@ -1755,7 +1755,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                                         tauri::async_runtime::spawn(async move {
                                             tokio::time::sleep(std::time::Duration::from_secs(20)).await;
                                             if let Ok(mut g) = app2.state::<AppState>().pending_relic_rewards.lock() { *g = None; }
-                                            let _ = app2.emit("relic-rewards", serde_json::Value::Null);
+                                            let _ = app2.emit(events::RELIC_REWARDS, serde_json::Value::Null);
                                             park_overlay_offscreen(&app2, "relic-overlay");
                                             let _ = append_to_file(&slog2,
                                                 "[STEP 4] AUTO-DISMISS (20s safety fallback)\n\n");
@@ -1797,7 +1797,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                                     let _ = std::fs::write(&lpath, format!(
                                         "=== {} ===\nno match (catalog={}): {:?}\n{}\n",
                                         ts, cur_cat_len, items, dbg));
-                                    let _ = app.emit("ff-status", "❌ No catalog match, retrying...");
+                                    let _ = app.emit(events::FF_STATUS, "❌ No catalog match, retrying...");
                                     // On attempt 1, save the captured frame to the diagnostic folder
                                     // so we have a screenshot even when OCR never finds a match.
                                     if attempt == 1 {
@@ -1821,7 +1821,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                                     let _ = append_to_file(&slog, &entry);
                                     let _ = std::fs::write(&lpath,
                                         format!("=== {} ===\nCapture failed (window not found?)\n", ts));
-                                    let _ = app.emit("ff-status", "⚠️ Capture failed");
+                                    let _ = app.emit(events::FF_STATUS, "⚠️ Capture failed");
                                     500u64
                                 }
                             };
@@ -1840,7 +1840,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                                         *g = Some(emit_val.clone());
                                     }
                                 }
-                                let _ = app.emit("relic-rewards", &emit_val);
+                                let _ = app.emit(events::RELIC_REWARDS, &emit_val);
                                 let _ = append_to_file(&slog,
                                     "[STEP 2] OCR TIMEOUT — 45 seconds elapsed, emitting best result\n\n");
                                 park_overlay_offscreen(&app, "relic-overlay");
@@ -1884,7 +1884,7 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                         last_dismiss_at = Some(std::time::Instant::now());
                         park_overlay_offscreen(&ee_ocr_app, "relic-overlay");
                         if let Ok(mut g) = ee_ocr_app.state::<AppState>().pending_relic_rewards.lock() { *g = None; }
-                        let _ = ee_ocr_app.emit("relic-rewards", serde_json::Value::Null);
+                        let _ = ee_ocr_app.emit(events::RELIC_REWARDS, serde_json::Value::Null);
                     }
                 }
             }
@@ -2088,8 +2088,8 @@ pub(crate) async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppSta
                             use std::io::Write;
                             writeln!(f, "[MEM TRIGGER] Open detected @ {}", ts)
                         });
-                    let _ = mt_app.emit("ff-status", "🔍 [MEM] Relic reward screen detected");
-                    let _ = mt_app.emit("relic-trigger", ());
+                    let _ = mt_app.emit(events::FF_STATUS, "🔍 [MEM] Relic reward screen detected");
+                    let _ = mt_app.emit(events::RELIC_TRIGGER, ());
                 }
             }
         });
@@ -2174,7 +2174,7 @@ fn publish_player_name(
         *n = Some(name.to_string());
     }
     // Emit immediately so the header updates without waiting for the next scan tick.
-    let _ = app.emit("player-name", name);
+    let _ = app.emit(events::PLAYER_NAME, name);
 }
 
 pub(crate) fn now_hms() -> String {

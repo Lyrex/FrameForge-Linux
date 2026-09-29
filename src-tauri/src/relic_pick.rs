@@ -58,7 +58,7 @@ pub(crate) fn test_arbitration_overlay(app: tauri::AppHandle) -> String {
         vitus_per_minute: 1.67,
     };
     show_overlay(&app, "arbitration-overlay");
-    let _ = app.emit("arbitration-run-ended", &summary);
+    let _ = app.emit(events::ARBITRATION_RUN_ENDED, &summary);
     "Emitted arbitration-run-ended with a sample run".to_string()
 }
 

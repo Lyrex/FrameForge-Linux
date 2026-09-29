@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { TAURI_EVENTS } from "../constants/tauri";
 import { getCurrentWindow, primaryMonitor, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
 import { overlayScale } from "./uiScale";
 
@@ -56,7 +57,7 @@ export function useOverlayWindow(width: number, anchor: OverlayAnchor) {
 
   // Refit an already-open window when the overlay scale changes.
   useEffect(() => {
-    const un = listen("settings-updated", () => {
+    const un = listen(TAURI_EVENTS.SETTINGS_UPDATED, () => {
       const el = rootRef.current;
       if (el) place(Math.ceil(el.getBoundingClientRect().height / overlayScale()));
     });

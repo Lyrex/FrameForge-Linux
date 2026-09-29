@@ -5,7 +5,7 @@ use crate::app_state::AppState;
 use crate::inventory_state::{persist_inventory_state_cache, CachedItem};
 use crate::monitor::CraftingJob;
 use crate::wfcd::{RecipeComponent, WfcdItem};
-use crate::{cache, mastery_recipe, mastery_rules, wfcd};
+use crate::{cache, events, mastery_recipe, mastery_rules, wfcd};
 
 // ─── Item catalog ─────────────────────────────────────────────────────────────
 
@@ -650,7 +650,7 @@ pub(crate) fn refresh_catalogue(app: &tauri::AppHandle, force: bool) -> Result<(
         Some(result) if warning.is_none() => {
             let count = apply_catalogue(&app.state::<AppState>(), result);
             tracing::info!(items = count, "catalogue refreshed in background");
-            let _ = app.emit("catalogue-updated", count);
+            let _ = app.emit(events::CATALOGUE_UPDATED, count);
             Ok(())
         }
         _ => Err(warning.unwrap_or_else(|| "catalogue unavailable".into())),

@@ -35,6 +35,10 @@ pub const INVENTORY_UPDATE: &str = "inventory-update";
 pub const INVENTORY_REWARD: &str = "inventory-reward";
 pub const CATALOGUE_UPDATED: &str = "catalogue-updated";
 pub const TRADE_COMPLETED: &str = "trade-completed";
+pub const STATS_CHANGED: &str = "stats-changed";
+
+pub const ARBITRATION_RUN_ENDED: &str = "arbitration-run-ended";
+pub const ARBITRATION_RUNS_CHANGED: &str = "arbitration-runs-changed";
 
 pub const BLOB_STATUS: &str = "blob-status";
 pub const CACHE_STATUS: &str = "cache-status";

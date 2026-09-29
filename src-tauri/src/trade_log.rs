@@ -3,6 +3,7 @@ use tauri::{Emitter, State};
 use crate::app_state::AppState;
 use crate::db::Trade;
 use crate::db;
+use crate::events;
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -200,7 +201,7 @@ pub(crate) fn add_trade(
         item_name = %trade.item_name,
         "trade saved"
     );
-    app.emit("stats-changed", ()).ok();
+    app.emit(events::STATS_CHANGED, ()).ok();
     Ok(trade_id)
 }
 

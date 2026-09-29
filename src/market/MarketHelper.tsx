@@ -1410,7 +1410,7 @@ const RivensTab = memo(function RivensTab({ rivens, catalog, wfmUsername, onAuct
     load();
     // A reroll changes a riven's stats without changing which rivens exist, so
     // the badges have to be recomputed whenever the blob is read again.
-    const unlisten = listen("inventory-update", load);
+    const unlisten = listen(TAURI_EVENTS.INVENTORY_UPDATE, load);
     return () => { unlisten.then(f => f()); };
   }, []);
 

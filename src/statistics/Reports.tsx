@@ -271,7 +271,7 @@ export default function Reports({ dateRange, onDateRangeChange, clockFormat }: P
     loadTrades();
 
     // Stays mounted through in-game trades and imports.
-    const unlisten = listen("stats-changed", () => { loadTrades(); });
+    const unlisten = listen(TAURI_EVENTS.STATS_CHANGED, () => { loadTrades(); });
 
     const unlistenProgress = listen<WfmTopProgress>(TAURI_EVENTS.WFM_TOP_PROGRESS, ({ payload }) => {
       setTopProgress(payload);
