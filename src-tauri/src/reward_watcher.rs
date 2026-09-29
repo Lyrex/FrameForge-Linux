@@ -86,8 +86,8 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
             let mut last_riven_fire: Option<std::time::Instant> = None;
             // Cooldown: prevent spawning multiple relic-pick OCR threads if the trigger fires rapidly.
             let mut last_relic_pick_trigger: Option<std::time::Instant> = None;
-            // Captured "You are offering" trade dialog text, held until "the trade was successful".
-            let mut pending_trade: Option<String> = None;
+            // Rolling raw log text used to reconstruct multi-read trade dialogs.
+            let mut trade_buffer = String::new();
             use std::io::{Read, Seek, SeekFrom};
 
             log_watcher::seed_ee_log_names(&log_path, &shared_squad_names2, &ee_ocr_app);
@@ -163,7 +163,7 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
 
                 log_watcher::handle_riven_events(&ee_ocr_app, &lower, &mut last_riven_fire);
                 log_watcher::handle_relic_pick_events(&ee_ocr_app, &lower, &mut last_relic_pick_trigger);
-                log_watcher::handle_trade_completion(&ee_ocr_app, &lower, &buf, &mut pending_trade);
+                log_watcher::handle_trade_completion(&ee_ocr_app, &buf, &mut trade_buffer);
 
                 // Unveil: riven challenge completion
                 if lower.contains("modreveal") || (lower.contains("riven") && lower.contains("unveiled")) {
