@@ -702,6 +702,7 @@ function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
                 originalQty,
                 newQty,
                 visible: match.visible,
+                modRank: match.rank,
               };
 
               if (newQty > 0) {
@@ -781,7 +782,7 @@ function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
 
   const revertOrder = async (w: WfmWhisper, idx: number) => {
     if (!w.revertInfo) return;
-    const { orderId, itemId, platinum, originalQty, newQty, visible } = w.revertInfo;
+    const { orderId, itemId, platinum, originalQty, newQty, visible, modRank } = w.revertInfo;
     setReverting(idx);
     try {
       if (newQty > 0) {
@@ -789,7 +790,7 @@ function MessagesPanel({ username: _username, wfmItems, onListingChange }: {
         await invokeWfm("wfm_update_order", { orderId, platinum, quantity: originalQty, visible } satisfies WfmUpdateOrderArgs);
       } else {
         // We deleted the listing → re-create it
-        await invokeWfm(TAURI_COMMANDS.WFM_CREATE_ORDER, { itemId, orderType: "sell", platinum, quantity: originalQty, visible } satisfies WfmCreateOrderArgs);
+        await invokeWfm(TAURI_COMMANDS.WFM_CREATE_ORDER, { itemId, orderType: "sell", platinum, quantity: originalQty, visible, modRank } satisfies WfmCreateOrderArgs);
       }
       // Clear revertInfo after a successful revert so the button disappears
       setWhispers(prev => {
@@ -896,11 +897,11 @@ export default function WfmTrading({ wfmLookup: _wfmLookup, wfmItems, imageMap, 
   const handleUndo = useCallback(async (entry: ListingChangeEntry) => {
     setListingChangelog(prev => prev.map(e => e.id === entry.id ? { ...e, reverting: true } : e));
     try {
-      const { orderId, itemId, platinum, originalQty, newQty, visible } = entry.revertInfo;
+      const { orderId, itemId, platinum, originalQty, newQty, visible, modRank } = entry.revertInfo;
       if (newQty > 0) {
         await invokeWfm("wfm_update_order", { orderId, platinum, quantity: originalQty, visible } satisfies WfmUpdateOrderArgs);
       } else {
-        await invokeWfm(TAURI_COMMANDS.WFM_CREATE_ORDER, { itemId, orderType: "sell", platinum, quantity: originalQty, visible } satisfies WfmCreateOrderArgs);
+        await invokeWfm(TAURI_COMMANDS.WFM_CREATE_ORDER, { itemId, orderType: "sell", platinum, quantity: originalQty, visible, modRank } satisfies WfmCreateOrderArgs);
       }
       setListingChangelog(prev => prev.map(e => e.id === entry.id ? { ...e, reverted: true, reverting: false } : e));
     } catch (err) {
