@@ -36,6 +36,7 @@ export interface SettingsModalProps {
   memoryScannerEnabled: boolean; setMemoryScannerEnabled: Setter<boolean>; modularPopout: boolean; setModularPopout: Setter<boolean>; overlayStatus: string;
   overlayEnabled: boolean; setOverlayEnabled: Setter<boolean>; overlayPriority: RelicOverlayPriority; setOverlayPriority: Setter<RelicOverlayPriority>;
   overlayOffsets: OverlayOffsets; setOverlayOffsets: Setter<OverlayOffsets>;
+  rivenEnabled: boolean; setRivenEnabled: Setter<boolean>;
   memTriggerEnabled: boolean; setMemTriggerEnabled: Setter<boolean>;
   relicPickEnabled: boolean; setRelicPickEnabled: Setter<boolean>; relicPickPriority: RelicPickPriority; setRelicPickPriority: Setter<RelicPickPriority>;
   relicPickLines: RelicPickLines; setRelicPickLines: Setter<RelicPickLines>; wfmLoggedIn: boolean;
@@ -67,7 +68,7 @@ function BulkPriceRefreshButton() {
 }
 
 export default function SettingsModal(props: SettingsModalProps) {
-  const { settingsTab, setSettingsTab, settingsFilterModule, setSettingsFilterModule, filterPresets, setFilterPresets, inventoryFilters, setInventoryFilters, foundryFilters, setFoundryFilters, marketFilters, setMarketFilters, relicFilters, setRelicFilters, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, overlayOffsets, setOverlayOffsets, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, wfmRecordSales, setWfmRecordSales, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, systemLocale, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setApiQuantities, setApiModCopies, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setWfConnected, wfConnectedRef, setItemsRefreshKey, setClearMsg, clearMsg, blobLogEnabled, setBlobLogEnabled, blobLogSize, setBlobLogSize, companionApiEnabled, apiLogEnabled, setApiLogEnabled, apiLogSize, setApiLogSize, setShowInventoryBatchPreview, notifyTestResult, setNotifyTestResult, overlayLogCopied, setOverlayLogCopied, autoDiagEnabled, setAutoDiagEnabled, diagFolderSize, setDiagFolderSize, diagPath, diagCapturing, setDiagCapturing, setDiagPath, reloadDebugSizes, memoryProbing, setMemoryProbing, probeSize, setProbeSize, rawScanning, setRawScanning, rawScanSize, setRawScanSize, memRelicDebugRunning, setMemRelicDebugRunning, relicPickOcrResult, relicPickOcrTesting, setRelicPickOcrTesting, setRelicPickOcrResult, relicPickTestResult, relicPickTestEra, setRelicPickTestEra, setRelicPickTestResult, eeLogTail, setEeLogTail, debugCatEnabled, setDebugCatEnabled, unmatchedPathsSize, setUnmatchedPathsSize, appVersion } = props;
+  const { settingsTab, setSettingsTab, settingsFilterModule, setSettingsFilterModule, filterPresets, setFilterPresets, inventoryFilters, setInventoryFilters, foundryFilters, setFoundryFilters, marketFilters, setMarketFilters, relicFilters, setRelicFilters, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, overlayOffsets, setOverlayOffsets, rivenEnabled, setRivenEnabled, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, wfmRecordSales, setWfmRecordSales, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, systemLocale, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setApiQuantities, setApiModCopies, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setWfConnected, wfConnectedRef, setItemsRefreshKey, setClearMsg, clearMsg, blobLogEnabled, setBlobLogEnabled, blobLogSize, setBlobLogSize, companionApiEnabled, apiLogEnabled, setApiLogEnabled, apiLogSize, setApiLogSize, setShowInventoryBatchPreview, notifyTestResult, setNotifyTestResult, overlayLogCopied, setOverlayLogCopied, autoDiagEnabled, setAutoDiagEnabled, diagFolderSize, setDiagFolderSize, diagPath, diagCapturing, setDiagCapturing, setDiagPath, reloadDebugSizes, memoryProbing, setMemoryProbing, probeSize, setProbeSize, rawScanning, setRawScanning, rawScanSize, setRawScanSize, memRelicDebugRunning, setMemRelicDebugRunning, relicPickOcrResult, relicPickOcrTesting, setRelicPickOcrTesting, setRelicPickOcrResult, relicPickTestResult, relicPickTestEra, setRelicPickTestEra, setRelicPickTestResult, eeLogTail, setEeLogTail, debugCatEnabled, setDebugCatEnabled, unmatchedPathsSize, setUnmatchedPathsSize, appVersion } = props;
   if (!props.open) return null;
   const onClose = props.onClose;
 
@@ -174,7 +175,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                       style={{ minWidth: 64, background: memoryScannerEnabled ? "rgba(240,192,64,.15)" : undefined, borderColor: memoryScannerEnabled ? "#f0c040" : undefined, color: memoryScannerEnabled ? "#f0c040" : undefined }}
                         onClick={() => setMemoryScannerEnabled(v => !v)}
                     >
-                      {memoryScannerEnabled ? "Enabled" : "Disabled"}
+                      {memoryScannerEnabled ? "On" : "Off"}
                     </button>
                   </div>
                 </div>
@@ -259,7 +260,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                   )}
                   <div className="settings-row">
                     <div className="settings-row-info">
-                      <span className="settings-row-label">Overlay</span>
+                      <span className="settings-row-label">Enable</span>
                       <span className="settings-row-desc">Auto-shows reward cards when a Void Fissure screen is detected.</span>
                     </div>
                     <button
@@ -333,7 +334,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                   <div className="settings-section-title">Relic Pick Overlay</div>
                   <div className="settings-row">
                     <div className="settings-row-info">
-                      <span className="settings-row-label">Enable Overlay</span>
+                      <span className="settings-row-label">Enable</span>
                       <span className="settings-row-desc">Show the relic pick overlay when opening the relic selection screen.</span>
                     </div>
                     <button
@@ -346,7 +347,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                         saveAllSettings();
                         invoke(TAURI_COMMANDS.SET_RELIC_PICK_ENABLED, { enabled: next });
                       }}
-                    >{relicPickEnabled ? "Enabled" : "Disabled"}</button>
+                    >{relicPickEnabled ? "On" : "Off"}</button>
                   </div>
                   <div className="settings-row" style={{ marginTop: 8, opacity: relicPickEnabled ? 1 : 0.45, pointerEvents: relicPickEnabled ? "auto" : "none" }}>
                     <div className="settings-row-info">
@@ -388,7 +389,24 @@ export default function SettingsModal(props: SettingsModalProps) {
                 {/* Riven Overlay */}
                 <div className="settings-section">
                   <div className="settings-section-title">Riven Overlay</div>
-                  {offsetRow("rivenX", "rivenY", false)}
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <span className="settings-row-label">Enable</span>
+                      <span className="settings-row-desc">Show the riven overlay when a riven card screen is detected.</span>
+                    </div>
+                    <button
+                      className="btn-secondary"
+                      style={{ minWidth: 64, background: rivenEnabled ? "rgba(56,139,253,.15)" : undefined, borderColor: rivenEnabled ? "var(--accent)" : undefined }}
+                      onClick={() => {
+                        const next = !rivenEnabled;
+                        setRivenEnabled(next);
+                        localStorage.setItem(PREFERENCE_KEYS.RIVEN_OVERLAY_ENABLED, String(next));
+                        settingsRef.current = { ...settingsRef.current, rivenEnabled: next };
+                        saveAllSettings();
+                      }}
+                    >{rivenEnabled ? "On" : "Off"}</button>
+                  </div>
+                  {offsetRow("rivenX", "rivenY", !rivenEnabled)}
                 </div>
 
               </>}

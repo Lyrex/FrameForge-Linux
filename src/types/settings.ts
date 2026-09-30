@@ -44,7 +44,8 @@ export function parseOverlayOffsets(v: unknown): OverlayOffsets {
 }
 
 export interface SettingsSnapshot {
-  overlayEnabled: boolean; overlayPriority: RelicOverlayPriority; overlayOffsets: OverlayOffsets; textScale: number; colorblindMode: boolean;
+  overlayEnabled: boolean; overlayPriority: RelicOverlayPriority; overlayOffsets: OverlayOffsets;
+  rivenEnabled: boolean; textScale: number; colorblindMode: boolean;
   clockFormat: ClockFormat; companionApiEnabled: boolean; memoryScannerEnabled: boolean;
   blobLogEnabled: boolean; apiLogEnabled: boolean; autoDiagEnabled: boolean; tracked: string[];
   favorites: string[]; timerFavorites: string[]; fissureWatches: FissureWatch[]; fissureNotifications: boolean;

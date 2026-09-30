@@ -30,6 +30,7 @@ interface UseSettingsReturn {
   overlayEnabled: boolean;
   overlayPriority: RelicOverlayPriority;
   overlayOffsets: OverlayOffsets;
+  rivenEnabled: boolean;
   textScale: number;
   colorblindMode: boolean;
   clockFormat: ClockFormat;
@@ -56,6 +57,7 @@ interface UseSettingsReturn {
   setOverlayEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   setOverlayPriority: React.Dispatch<React.SetStateAction<RelicOverlayPriority>>;
   setOverlayOffsets: React.Dispatch<React.SetStateAction<OverlayOffsets>>;
+  setRivenEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   setTextScale: React.Dispatch<React.SetStateAction<number>>;
   setColorblindMode: React.Dispatch<React.SetStateAction<boolean>>;
   setClockFormat: React.Dispatch<React.SetStateAction<ClockFormat>>;
@@ -99,6 +101,9 @@ export function useSettings(
     () => (localStorage.getItem(PREFERENCE_KEYS.OVERLAY_PRIORITY) ?? DEFAULT_RELIC_OVERLAY_PRIORITY) as RelicOverlayPriority
   );
   const [overlayOffsets, setOverlayOffsets] = useState<OverlayOffsets>(DEFAULT_OVERLAY_OFFSETS);
+  const [rivenEnabled, setRivenEnabled] = useState<boolean>(
+    () => localStorage.getItem(PREFERENCE_KEYS.RIVEN_OVERLAY_ENABLED) !== "false"
+  );
   const [textScale, setTextScale] = useState(() => {
     const s = parseFloat(localStorage.getItem(PREFERENCE_KEYS.TEXT_SCALE) ?? "1");
     document.documentElement.style.setProperty("--ff-scale", s.toString());
@@ -129,6 +134,7 @@ export function useSettings(
     overlayEnabled: true,
     overlayPriority: DEFAULT_RELIC_OVERLAY_PRIORITY,
     overlayOffsets: DEFAULT_OVERLAY_OFFSETS,
+    rivenEnabled: true,
     textScale: 1,
     colorblindMode: false,
     clockFormat: DEFAULT_CLOCK_FORMAT,
@@ -200,6 +206,10 @@ export function useSettings(
           setOverlayOffsets(offsets);
           // Mirror for overlay windows, which read localStorage directly.
           localStorage.setItem(PREFERENCE_KEYS.OVERLAY_OFFSETS, JSON.stringify(offsets));
+        }
+        if (typeof s.rivenEnabled === "boolean") {
+          setRivenEnabled(s.rivenEnabled);
+          localStorage.setItem(PREFERENCE_KEYS.RIVEN_OVERLAY_ENABLED, String(s.rivenEnabled));
         }
         if (typeof s.textScale === "number") {
           setTextScale(s.textScale);
@@ -279,6 +289,7 @@ export function useSettings(
     overlayEnabled,
     overlayPriority,
     overlayOffsets,
+    rivenEnabled,
     textScale,
     colorblindMode,
     clockFormat,
@@ -305,6 +316,7 @@ export function useSettings(
     setOverlayEnabled,
     setOverlayPriority,
     setOverlayOffsets,
+    setRivenEnabled,
     setTextScale,
     setColorblindMode,
     setClockFormat,
