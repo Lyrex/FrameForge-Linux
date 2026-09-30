@@ -3,6 +3,8 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { LogicalSize } from "@tauri-apps/api/window";
 import { overlayScale } from "./uiScale";
 import { APP_TITLE } from "../constants/app";
+import { PREFERENCE_KEYS } from "../constants/preferences";
+import { DEFAULT_OVERLAY_OFFSETS, parseOverlayOffsets, type OverlayOffsets } from "../types/settings";
 
 // ── Riven overlay — module-level window management ────────────────────────────
 // Stored OUTSIDE React so StrictMode remounts don't destroy/recreate the window.
@@ -52,6 +54,15 @@ export function rivenWinHide(reason = "rivenWinHide") {
   win.close().catch(() => {});
 }
 
+/** Position offsets from Settings → Overlays; the main window mirrors them to localStorage. */
+function savedOffsets(): OverlayOffsets {
+  try {
+    return parseOverlayOffsets(JSON.parse(localStorage.getItem(PREFERENCE_KEYS.OVERLAY_OFFSETS) ?? "null"));
+  } catch {
+    return DEFAULT_OVERLAY_OFFSETS;
+  }
+}
+
 export async function ensureRivenWindow(wx: number, wy: number, wh: number): Promise<{ win: WebviewWindow; fresh: boolean } | null> {
   // 1. Existing valid handle
   if (_rivenWin) return { win: _rivenWin, fresh: false };
@@ -66,13 +77,14 @@ export async function ensureRivenWindow(wx: number, wy: number, wh: number): Pro
 
   // 3. Create fresh at correct position — shows immediately
   try {
+    const off = savedOffsets();
     _rivenWin = new WebviewWindow("riven-overlay", {
       url: `index.html#rivenoverlay`,
       title: `${APP_TITLE} Riven`,
       transparent: true, decorations: false,
       alwaysOnTop: true, skipTaskbar: true,
       resizable: false, focus: false,
-      x: wx + 10, y: wy + Math.round(wh * 0.20),
+      x: wx + 10 + off.rivenX, y: wy + Math.round(wh * 0.20) + off.rivenY,
       width: Math.round(300 * overlayScale()), height: Math.round(wh * 0.60),
     });
     _rivenWin.once("tauri://destroyed", () => { _rivenWin = null; });

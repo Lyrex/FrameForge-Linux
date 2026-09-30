@@ -9,7 +9,8 @@ import { CLOCK_FORMAT_OPTIONS, FOUNDRY_PAGE_SIZE_OPTIONS, RELIC_OVERLAY_PRIORITY
 import { TAURI_COMMANDS, TAURI_EVENTS } from "./constants/tauri";
 import type { ArchonShard, QuantityMap } from "./types/items";
 import type { ChangeLogEntry, ModCopy } from "./types/inventory";
-import type { ClockFormat, FoundryPageSize, RelicOverlayPriority, RelicPickLines, RelicPickPriority, SettingsSnapshot } from "./types/settings";
+import type { ClockFormat, FoundryPageSize, OverlayOffsets, RelicOverlayPriority, RelicPickLines, RelicPickPriority, SettingsSnapshot } from "./types/settings";
+import { OVERLAY_OFFSET_LIMIT, clampOverlayOffset } from "./types/settings";
 import type { FilterPresetModule, FilterPresetSettings } from "./types/filterPresets";
 import type { FoundryFilters, InventoryFilters, MarketFilters, RelicFilters } from "./types/filters";
 import type { SaveApiInventoryArgs } from "./types/tauri";
@@ -33,7 +34,9 @@ export interface SettingsModalProps {
   relicFilters: RelicFilters; setRelicFilters: Setter<RelicFilters>;
   foundryPageSize: FoundryPageSize; setFoundryPageSize: Setter<FoundryPageSize>; settingsRef: MutableRefObject<SettingsSnapshot>; saveAllSettings: () => void;
   memoryScannerEnabled: boolean; setMemoryScannerEnabled: Setter<boolean>; modularPopout: boolean; setModularPopout: Setter<boolean>; overlayStatus: string;
-  overlayEnabled: boolean; setOverlayEnabled: Setter<boolean>; overlayPriority: RelicOverlayPriority; setOverlayPriority: Setter<RelicOverlayPriority>; memTriggerEnabled: boolean; setMemTriggerEnabled: Setter<boolean>;
+  overlayEnabled: boolean; setOverlayEnabled: Setter<boolean>; overlayPriority: RelicOverlayPriority; setOverlayPriority: Setter<RelicOverlayPriority>;
+  overlayOffsets: OverlayOffsets; setOverlayOffsets: Setter<OverlayOffsets>;
+  memTriggerEnabled: boolean; setMemTriggerEnabled: Setter<boolean>;
   relicPickEnabled: boolean; setRelicPickEnabled: Setter<boolean>; relicPickPriority: RelicPickPriority; setRelicPickPriority: Setter<RelicPickPriority>;
   relicPickLines: RelicPickLines; setRelicPickLines: Setter<RelicPickLines>; wfmLoggedIn: boolean;
   wfmInvisibleOnStart: boolean; setWfmInvisibleOnStart: Setter<boolean>; wfmInvisibleOnStartRef: MutableRefObject<boolean>; wfmInvisibleOnClose: boolean; setWfmInvisibleOnClose: Setter<boolean>; wfmInvisibleOnCloseRef: MutableRefObject<boolean>;
@@ -64,9 +67,44 @@ function BulkPriceRefreshButton() {
 }
 
 export default function SettingsModal(props: SettingsModalProps) {
-  const { settingsTab, setSettingsTab, settingsFilterModule, setSettingsFilterModule, filterPresets, setFilterPresets, inventoryFilters, setInventoryFilters, foundryFilters, setFoundryFilters, marketFilters, setMarketFilters, relicFilters, setRelicFilters, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, wfmRecordSales, setWfmRecordSales, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, systemLocale, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setApiQuantities, setApiModCopies, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setWfConnected, wfConnectedRef, setItemsRefreshKey, setClearMsg, clearMsg, blobLogEnabled, setBlobLogEnabled, blobLogSize, setBlobLogSize, companionApiEnabled, apiLogEnabled, setApiLogEnabled, apiLogSize, setApiLogSize, setShowInventoryBatchPreview, notifyTestResult, setNotifyTestResult, overlayLogCopied, setOverlayLogCopied, autoDiagEnabled, setAutoDiagEnabled, diagFolderSize, setDiagFolderSize, diagPath, diagCapturing, setDiagCapturing, setDiagPath, reloadDebugSizes, memoryProbing, setMemoryProbing, probeSize, setProbeSize, rawScanning, setRawScanning, rawScanSize, setRawScanSize, memRelicDebugRunning, setMemRelicDebugRunning, relicPickOcrResult, relicPickOcrTesting, setRelicPickOcrTesting, setRelicPickOcrResult, relicPickTestResult, relicPickTestEra, setRelicPickTestEra, setRelicPickTestResult, eeLogTail, setEeLogTail, debugCatEnabled, setDebugCatEnabled, unmatchedPathsSize, setUnmatchedPathsSize, appVersion } = props;
+  const { settingsTab, setSettingsTab, settingsFilterModule, setSettingsFilterModule, filterPresets, setFilterPresets, inventoryFilters, setInventoryFilters, foundryFilters, setFoundryFilters, marketFilters, setMarketFilters, relicFilters, setRelicFilters, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, overlayOffsets, setOverlayOffsets, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, wfmRecordSales, setWfmRecordSales, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, systemLocale, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setApiQuantities, setApiModCopies, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setWfConnected, wfConnectedRef, setItemsRefreshKey, setClearMsg, clearMsg, blobLogEnabled, setBlobLogEnabled, blobLogSize, setBlobLogSize, companionApiEnabled, apiLogEnabled, setApiLogEnabled, apiLogSize, setApiLogSize, setShowInventoryBatchPreview, notifyTestResult, setNotifyTestResult, overlayLogCopied, setOverlayLogCopied, autoDiagEnabled, setAutoDiagEnabled, diagFolderSize, setDiagFolderSize, diagPath, diagCapturing, setDiagCapturing, setDiagPath, reloadDebugSizes, memoryProbing, setMemoryProbing, probeSize, setProbeSize, rawScanning, setRawScanning, rawScanSize, setRawScanSize, memRelicDebugRunning, setMemRelicDebugRunning, relicPickOcrResult, relicPickOcrTesting, setRelicPickOcrTesting, setRelicPickOcrResult, relicPickTestResult, relicPickTestEra, setRelicPickTestEra, setRelicPickTestResult, eeLogTail, setEeLogTail, debugCatEnabled, setDebugCatEnabled, unmatchedPathsSize, setUnmatchedPathsSize, appVersion } = props;
   if (!props.open) return null;
   const onClose = props.onClose;
+
+  // ── Position offset row (Settings → Overlays) ─────────────────────────────
+  // Adds a pixel delta on top of the overlay's built-in placement; 0 = default.
+  const offsetRow = (keyX: keyof OverlayOffsets, keyY: keyof OverlayOffsets, disabled: boolean) => {
+    const setAxis = (key: keyof OverlayOffsets, n: number) => {
+      const next: OverlayOffsets = { ...overlayOffsets, [key]: clampOverlayOffset(n) };
+      setOverlayOffsets(next);
+      settingsRef.current = { ...settingsRef.current, overlayOffsets: next };
+      localStorage.setItem(PREFERENCE_KEYS.OVERLAY_OFFSETS, JSON.stringify(next));
+      saveAllSettings();
+    };
+    const axisInput = (key: keyof OverlayOffsets) => (
+      <input
+        type="number" min={-OVERLAY_OFFSET_LIMIT} max={OVERLAY_OFFSET_LIMIT} step={10}
+        value={overlayOffsets[key]}
+        onChange={e => { const n = e.target.valueAsNumber; if (!Number.isNaN(n)) setAxis(key, n); }}
+        style={{ width: 56, fontSize: 12, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 4, color: "var(--text)", padding: "1px 4px", textAlign: "center" }}
+      />
+    );
+    return (
+      <div className="settings-row" style={{ marginTop: 8, opacity: disabled ? 0.45 : 1, pointerEvents: disabled ? "none" : "auto" }}>
+        <div className="settings-row-info">
+          <span className="settings-row-label">Position offset</span>
+          <span className="settings-row-desc">Moves the overlay this many pixels from its built-in spot. 0 keeps the current placement.</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <span style={{ fontSize: 11, opacity: 0.6 }}>X</span>
+          {axisInput(keyX)}
+          <span style={{ fontSize: 11, opacity: 0.6 }}>Y</span>
+          {axisInput(keyY)}
+        </div>
+      </div>
+    );
+  };
+
   return (
       <div className="settings-overlay" onClick={() => onClose()}>
         <div className={`settings-modal settings-modal-${settingsTab}`} onClick={e => e.stopPropagation()}>
@@ -261,6 +299,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                       ))}
                     </select>
                   </div>
+                  {offsetRow("relicX", "relicY", !overlayEnabled)}
                 </div>
 
                 {/* Relic Overlay — Memory Trigger */}
@@ -343,6 +382,13 @@ export default function SettingsModal(props: SettingsModalProps) {
                       ))}
                     </select>
                   </div>
+                  {offsetRow("relicPickX", "relicPickY", !relicPickEnabled)}
+                </div>
+
+                {/* Riven Overlay */}
+                <div className="settings-section">
+                  <div className="settings-section-title">Riven Overlay</div>
+                  {offsetRow("rivenX", "rivenY", false)}
                 </div>
 
               </>}

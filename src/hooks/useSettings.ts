@@ -15,7 +15,8 @@ import {
   RELIC_PICK_PRIORITY_OPTIONS,
   RELIC_PICK_REFINEMENT_OPTIONS,
 } from "../constants/settings";
-import type { ClockFormat, FissureWatch, FoundryPageSize, RelicOverlayPriority, RelicPickLines, RelicPickPriority, RelicRefinement, SettingsSnapshot } from "../types/settings";
+import type { ClockFormat, FissureWatch, FoundryPageSize, OverlayOffsets, RelicOverlayPriority, RelicPickLines, RelicPickPriority, RelicRefinement, SettingsSnapshot } from "../types/settings";
+import { DEFAULT_OVERLAY_OFFSETS, parseOverlayOffsets } from "../types/settings";
 import type { FilterPresetSettings } from "../types/filterPresets";
 import { parseFilterPresetSettings } from "../types/filterPresets";
 import type { SettingsFile, SettingsPatch } from "../types/tauri";
@@ -28,6 +29,7 @@ interface UseSettingsReturn {
   autoDiagEnabled: boolean;
   overlayEnabled: boolean;
   overlayPriority: RelicOverlayPriority;
+  overlayOffsets: OverlayOffsets;
   textScale: number;
   colorblindMode: boolean;
   clockFormat: ClockFormat;
@@ -53,6 +55,7 @@ interface UseSettingsReturn {
   setAutoDiagEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   setOverlayEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   setOverlayPriority: React.Dispatch<React.SetStateAction<RelicOverlayPriority>>;
+  setOverlayOffsets: React.Dispatch<React.SetStateAction<OverlayOffsets>>;
   setTextScale: React.Dispatch<React.SetStateAction<number>>;
   setColorblindMode: React.Dispatch<React.SetStateAction<boolean>>;
   setClockFormat: React.Dispatch<React.SetStateAction<ClockFormat>>;
@@ -95,6 +98,7 @@ export function useSettings(
   const [overlayPriority, setOverlayPriority] = useState<RelicOverlayPriority>(
     () => (localStorage.getItem(PREFERENCE_KEYS.OVERLAY_PRIORITY) ?? DEFAULT_RELIC_OVERLAY_PRIORITY) as RelicOverlayPriority
   );
+  const [overlayOffsets, setOverlayOffsets] = useState<OverlayOffsets>(DEFAULT_OVERLAY_OFFSETS);
   const [textScale, setTextScale] = useState(() => {
     const s = parseFloat(localStorage.getItem(PREFERENCE_KEYS.TEXT_SCALE) ?? "1");
     document.documentElement.style.setProperty("--ff-scale", s.toString());
@@ -124,6 +128,7 @@ export function useSettings(
   const settingsRef = useRef<SettingsSnapshot>({
     overlayEnabled: true,
     overlayPriority: DEFAULT_RELIC_OVERLAY_PRIORITY,
+    overlayOffsets: DEFAULT_OVERLAY_OFFSETS,
     textScale: 1,
     colorblindMode: false,
     clockFormat: DEFAULT_CLOCK_FORMAT,
@@ -189,6 +194,12 @@ export function useSettings(
         if (typeof s.overlayPriority === "string") {
           setOverlayPriority(s.overlayPriority as RelicOverlayPriority);
           localStorage.setItem(PREFERENCE_KEYS.OVERLAY_PRIORITY, s.overlayPriority);
+        }
+        if (s.overlayOffsets) {
+          const offsets = parseOverlayOffsets(s.overlayOffsets);
+          setOverlayOffsets(offsets);
+          // Mirror for overlay windows, which read localStorage directly.
+          localStorage.setItem(PREFERENCE_KEYS.OVERLAY_OFFSETS, JSON.stringify(offsets));
         }
         if (typeof s.textScale === "number") {
           setTextScale(s.textScale);
@@ -267,6 +278,7 @@ export function useSettings(
     autoDiagEnabled,
     overlayEnabled,
     overlayPriority,
+    overlayOffsets,
     textScale,
     colorblindMode,
     clockFormat,
@@ -292,6 +304,7 @@ export function useSettings(
     setAutoDiagEnabled,
     setOverlayEnabled,
     setOverlayPriority,
+    setOverlayOffsets,
     setTextScale,
     setColorblindMode,
     setClockFormat,
