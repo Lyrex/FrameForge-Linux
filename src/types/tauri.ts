@@ -92,6 +92,11 @@ export interface WfmCreateOrderArgs extends Record<string, unknown> {
   modRank?: number | null;
 }
 
+export interface WfmCloseOrderArgs extends Record<string, unknown> {
+  orderId: string;
+  quantity: number;
+}
+
 export interface WfmUpdateOrderArgs extends Record<string, unknown> {
   orderId: string;
   platinum: number;

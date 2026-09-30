@@ -59,6 +59,7 @@ export const TAURI_COMMANDS = {
   SET_MEM_TRIGGER_ENABLED: "set_mem_trigger_enabled",
   SET_RELIC_PICK_ENABLED: "set_relic_pick_enabled",
   START_WFM_QUEUE: "start_wfm_queue",
+  WFM_CLOSE_ORDER: "wfm_close_order",
   WFM_CREATE_ORDER: "wfm_create_order",
   WFM_GET_ITEM_INFO: "wfm_get_item_info",
   WFM_GET_SESSION: "wfm_get_session",

@@ -539,6 +539,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             wfm_commands::wfm_create_order,
             wfm_commands::wfm_update_order,
             wfm_commands::wfm_delete_order,
+            wfm_commands::wfm_close_order,
             wfm_commands::wfm_create_riven_auction,
             wfm_commands::wfm_switch_riven_type,
             wfm_commands::wfm_get_my_riven_auctions,

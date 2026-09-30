@@ -219,6 +219,13 @@ pub(crate) async fn wfm_delete_order(state: State<'_, AppState>, order_id: Strin
     off_main(&state, move |wfm| wfm.delete_order(&order_id)).await
 }
 
+/// Complete part or all of an order and record the transaction on WFM.
+#[tracing::instrument(level = "debug", skip_all)]
+#[tauri::command]
+pub(crate) async fn wfm_close_order(state: State<'_, AppState>, order_id: String, quantity: u32) -> Result<serde_json::Value, String> {
+    off_main(&state, move |wfm| wfm.close_order(&order_id, quantity)).await
+}
+
 /// Post a revealed riven as an auction on warframe.market.
 #[tracing::instrument(level = "debug", skip_all)]
 #[tauri::command]
