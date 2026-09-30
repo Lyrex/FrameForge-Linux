@@ -53,23 +53,21 @@ export async function hidePickOutline(): Promise<void> {
   await invoke("hide_relic_pick_overlay").catch(() => {});
 }
 
-/** Riven overlay: show it where the current offsets put it, then draw the outline. */
-export async function showRivenOutline(): Promise<void> {
+/** Riven overlay: show it where the current offsets put it (no outline mode). */
+export async function showRivenOverlay(): Promise<void> {
   const [wx, wy, , wh] = await rectOrScreen();
   const result = await ensureRivenWindow(wx, wy, wh);
   if (!result) return;
   if (!result.fresh) {
-    // Already open (mid-analysis) — re-place it so the outline reflects saved offsets.
+    // Already open — re-place it so the show reflects the saved offsets.
     try {
       const p = await rivenPlacement(wx, wy, wh);
       await result.win.setPosition(new LogicalPosition(p.x, p.y));
       await result.win.setSize(new LogicalSize(p.width, p.height));
     } catch {}
   }
-  await send("riven");
 }
 
-export async function hideRivenOutline(): Promise<void> {
-  await send("off-riven");
-  rivenWinHide("outline", false);
+export async function hideRivenOverlay(): Promise<void> {
+  rivenWinHide("manual-hide", false);
 }

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { notify, ensurePermission } from "./lib/notify";
 import { formatBytes } from "./lib/formatters";
-import { hidePickOutline, hideRewardOutline, hideRivenOutline, showPickOutline, showRewardOutline, showRivenOutline } from "./lib/outlineWindows";
+import { hidePickOutline, hideRewardOutline, hideRivenOverlay, showPickOutline, showRewardOutline, showRivenOverlay } from "./lib/outlineWindows";
 import FilterPresets from "./shared/FilterPresets";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import { CLOCK_FORMAT_OPTIONS, FOUNDRY_PAGE_SIZE_OPTIONS, RELIC_OVERLAY_PRIORITY_OPTIONS, RELIC_PICK_LINES_OPTIONS, RELIC_PICK_PRIORITY_OPTIONS } from "./constants/settings";
@@ -71,10 +71,11 @@ function BulkPriceRefreshButton() {
 export default function SettingsModal(props: SettingsModalProps) {
   const { settingsTab, setSettingsTab, settingsFilterModule, setSettingsFilterModule, filterPresets, setFilterPresets, inventoryFilters, setInventoryFilters, foundryFilters, setFoundryFilters, marketFilters, setMarketFilters, relicFilters, setRelicFilters, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, overlayOffsets, setOverlayOffsets, rivenEnabled, setRivenEnabled, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, wfmRecordSales, setWfmRecordSales, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, systemLocale, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setApiQuantities, setApiModCopies, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setWfConnected, wfConnectedRef, setItemsRefreshKey, setClearMsg, clearMsg, blobLogEnabled, setBlobLogEnabled, blobLogSize, setBlobLogSize, companionApiEnabled, apiLogEnabled, setApiLogEnabled, apiLogSize, setApiLogSize, setShowInventoryBatchPreview, notifyTestResult, setNotifyTestResult, overlayLogCopied, setOverlayLogCopied, autoDiagEnabled, setAutoDiagEnabled, diagFolderSize, setDiagFolderSize, diagPath, diagCapturing, setDiagCapturing, setDiagPath, reloadDebugSizes, memoryProbing, setMemoryProbing, probeSize, setProbeSize, rawScanning, setRawScanning, rawScanSize, setRawScanSize, memRelicDebugRunning, setMemRelicDebugRunning, relicPickOcrResult, relicPickOcrTesting, setRelicPickOcrTesting, setRelicPickOcrResult, relicPickTestResult, relicPickTestEra, setRelicPickTestEra, setRelicPickTestResult, eeLogTail, setEeLogTail, debugCatEnabled, setDebugCatEnabled, unmatchedPathsSize, setUnmatchedPathsSize, appVersion } = props;
 
-  // Outline toggles for the three overlays (Settings → Overlays → Show Outline).
+  // Outline toggles for the reward and pick overlays; the riven overlay shows
+  // itself directly (Settings → Overlays).
   const [outlineReward, setOutlineReward] = useState(false);
   const [outlinePick,   setOutlinePick]   = useState(false);
-  const [outlineRiven,  setOutlineRiven]  = useState(false);
+  const [rivenShown,    setRivenShown]    = useState(false);
   if (!props.open) return null;
   const onClose = props.onClose;
 
@@ -92,7 +93,7 @@ export default function SettingsModal(props: SettingsModalProps) {
       try {
         if (outlineReward) await showRewardOutline();
         if (outlinePick)   await showPickOutline();
-        if (outlineRiven)  await showRivenOutline();
+        if (rivenShown)    await showRivenOverlay();
       } catch {}
     };
     const axisInput = (key: keyof OverlayOffsets) => (
@@ -418,14 +419,14 @@ export default function SettingsModal(props: SettingsModalProps) {
                   {offsetRow("rivenX", "rivenY", !rivenEnabled)}
                   <div className="settings-row" style={{ marginTop: 8 }}>
                     <div className="settings-row-info">
-                      <span className="settings-row-label">Show Outline</span>
-                      <span className="settings-row-desc">Toggle a dashed outline of the overlay at its current position.</span>
+                      <span className="settings-row-label">Show</span>
+                      <span className="settings-row-desc">Show the riven overlay at its current position.</span>
                     </div>
-                    <button className="btn-secondary" style={{ minWidth: 64, background: outlineRiven ? "rgba(56,139,253,.15)" : undefined, borderColor: outlineRiven ? "var(--accent)" : undefined }}
+                    <button className="btn-secondary" style={{ minWidth: 64, background: rivenShown ? "rgba(56,139,253,.15)" : undefined, borderColor: rivenShown ? "var(--accent)" : undefined }}
                       onClick={() => {
-                        if (outlineRiven) { hideRivenOutline().catch(() => {}); setOutlineRiven(false); }
-                        else { showRivenOutline().catch(() => {}); setOutlineRiven(true); }
-                      }}>{outlineRiven ? "Hide" : "Show"}</button>
+                        if (rivenShown) { hideRivenOverlay().catch(() => {}); setRivenShown(false); }
+                        else { showRivenOverlay().catch(() => {}); setRivenShown(true); }
+                      }}>{rivenShown ? "Hide" : "Show"}</button>
                   </div>
                 </div>
 
