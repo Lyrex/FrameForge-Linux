@@ -89,7 +89,12 @@ export default function RelicPickOverlay() {
     if (roRef.current) { roRef.current.disconnect(); roRef.current = null; }
     rootRef.current = el;
     if (!el) return;
-    const ro = new ResizeObserver(entries => syncSize(Math.ceil(entries[0].contentRect.height)));
+    // Measure the border box: contentRect excludes the root's padding and
+    // border (14 px), which clipped the bottom of the window.
+    const ro = new ResizeObserver(() => {
+      const node = rootRef.current;
+      if (node) syncSize(Math.ceil(node.offsetHeight));
+    });
     ro.observe(el);
     roRef.current = ro;
   }, [syncSize]);
@@ -120,7 +125,7 @@ export default function RelicPickOverlay() {
     // fires. Measure again to resize a window that is already open.
     const unScale = listen(TAURI_EVENTS.SETTINGS_UPDATED, () => {
       const el = rootRef.current;
-      if (el) syncSize(Math.ceil(el.getBoundingClientRect().height / overlayScale()));
+      if (el) syncSize(Math.ceil(el.offsetHeight));
     });
     const unOutline = listen<string>(TAURI_EVENTS.OVERLAY_OUTLINE, e => {
       if (e.payload === "relicPick") setOutline(true);
