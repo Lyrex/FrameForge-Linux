@@ -135,6 +135,33 @@ pub(crate) fn is_unique_path(p: &str) -> bool {
 }
 
 
+/// The component path a modular weapon is keyed by, or `None` for anything that
+/// is not modular. Amps, zaws and kitguns all share one generic `item_type` per
+/// weapon class, so keying by it would collapse every owned copy onto one path
+/// that is not in the catalogue. The component identifies the build instead:
+/// the prism (Barrel) for amps, the tip for zaws, the barrel for kitguns.
+///
+/// Both the inventory cache and the change-detection state must key these the
+/// same way. When they disagree, the cache seeds a quantity the first scanned
+/// blob cannot reproduce, and the difference is reported as a real change.
+pub(crate) fn modular_component_path(entry: &memory_scanner::BlobUniqueEntry) -> Option<String> {
+    let marker = match entry.section.as_str() {
+        "OperatorAmps" => "Barrel",
+        "Melee" if entry.item_type.contains("LotusModularWeapon") => "/Tip",
+        "Pistols" if entry.item_type.contains("LotusModularSecondary") => "Barrel",
+        _ => return None,
+    };
+    Some(
+        entry
+            .modular_parts
+            .iter()
+            .find(|p| p.contains(marker))
+            .cloned()
+            .unwrap_or_else(|| entry.item_type.clone()),
+    )
+}
+
+
 /// Build a fresh `InventoryStateCache` from a parsed FULL_ACCOUNT blob.
 /// All sections are authoritative — this fully replaces scanner-derived data.
 pub(crate) fn build_inventory_from_blob(
@@ -166,63 +193,19 @@ pub(crate) fn build_inventory_from_blob(
 
     // Unique items — binary owned (amount = 1).
     for entry in &blob.unique_items {
-        // Amps: key by Prism (Barrel) path instead of the generic OperatorAmpWeapon type.
-        // Must come before the excluded_paths guard because OperatorAmpWeapon is Ignored
-        // (suppressed from the catalog) but the Prism-specific path is not.
-        if entry.section == "OperatorAmps" {
-            let prism_path = entry.modular_parts.iter()
-                .find(|p| p.contains("Barrel"))
-                .cloned()
-                .unwrap_or_else(|| entry.item_type.clone());
-            if excluded_paths.contains(&prism_path) { continue; }
-            let item = items.entry(prism_path.clone()).or_insert_with(|| CachedItem {
-                unique_name: prism_path.clone(),
-                name: path_to_name.get(&prism_path).cloned().unwrap_or_default(),
-                ..Default::default()
-            });
-            item.amount += 1;
-            if entry.item_name.is_some() {
-                let rank = memory_scanner::xp_to_rank(entry.xp, &entry.item_type).min(30);
-                if rank > item.mastery_rank { item.mastery_rank = rank; }
-            }
-            continue;
-        }
-
-        // Zaws: key by Strike (Tip) path instead of the generic LotusModularWeapon type.
-        // Must come before the excluded_paths guard for the same reason as Amps above.
-        if entry.section == "Melee" && entry.item_type.contains("LotusModularWeapon") {
-            let strike_path = entry.modular_parts.iter()
-                .find(|p| p.contains("/Tip"))
-                .cloned()
-                .unwrap_or_else(|| entry.item_type.clone());
-            if excluded_paths.contains(&strike_path) { continue; }
-            let item = items.entry(strike_path.clone()).or_insert_with(|| CachedItem {
-                unique_name: strike_path.clone(),
-                name: path_to_name.get(&strike_path).cloned().unwrap_or_default(),
-                ..Default::default()
-            });
-            item.amount += 1;
-            if entry.item_name.is_some() {
-                let rank = memory_scanner::xp_to_rank(entry.xp, &entry.item_type).min(30);
-                if rank > item.mastery_rank { item.mastery_rank = rank; }
-            }
-            continue;
-        }
-
-        // Kitguns: key by Barrel path instead of the generic LotusModularSecondary(Beam/Shotgun)
-        // type. Must come before the excluded_paths guard for the same reason as Amps/Zaws above.
-        // Without this, every owned Kitgun collapses onto one of 3 shared wrapper paths (`amount`
-        // gets overwritten, not accumulated, below) and shows unnamed since the generic wrapper
-        // path is never in the WFCD catalog.
-        if entry.section == "Pistols" && entry.item_type.contains("LotusModularSecondary") {
-            let barrel_path = entry.modular_parts.iter()
-                .find(|p| p.contains("Barrel"))
-                .cloned()
-                .unwrap_or_else(|| entry.item_type.clone());
-            if excluded_paths.contains(&barrel_path) { continue; }
-            let item = items.entry(barrel_path.clone()).or_insert_with(|| CachedItem {
-                unique_name: barrel_path.clone(),
-                name: path_to_name.get(&barrel_path).cloned().unwrap_or_default(),
+        // Modular weapons (amps, zaws, kitguns): key by the component that
+        // identifies the build instead of the generic wrapper item_type.
+        // Must come before the excluded_paths guard because the wrapper types
+        // (OperatorAmpWeapon, LotusModularWeapon, LotusModularSecondary) are
+        // Ignored/suppressed from the catalog while the component path is not.
+        // Without this, every owned copy collapses onto one shared wrapper path
+        // (`amount` gets overwritten, not accumulated) and shows unnamed since
+        // the wrapper path is never in the WFCD catalog.
+        if let Some(component) = modular_component_path(entry) {
+            if excluded_paths.contains(&component) { continue; }
+            let item = items.entry(component.clone()).or_insert_with(|| CachedItem {
+                unique_name: component.clone(),
+                name: path_to_name.get(&component).cloned().unwrap_or_default(),
                 ..Default::default()
             });
             item.amount += 1;

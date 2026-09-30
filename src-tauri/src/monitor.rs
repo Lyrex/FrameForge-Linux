@@ -6,7 +6,7 @@ use tauri::{Emitter, Manager, State};
 use crate::app_state::AppState;
 use crate::db::QuantityChange;
 use crate::events;
-use crate::inventory_state::{is_unique_path, load_inventory_state_cache};
+use crate::inventory_state::{is_unique_path, load_inventory_state_cache, modular_component_path};
 use crate::memory_scanner;
 
 #[derive(serde::Serialize, Clone)]
@@ -444,8 +444,13 @@ pub(crate) fn apply_blob_to_state(
     state.current_socketed_shards.clear();
     state.current_forma_counts.clear();
     for entry in &blob.unique_items {
-        let canonical = path_aliases.get(entry.item_type.as_str())
-            .cloned()
+        // Modular weapons are keyed by their component path (prism/tip/barrel),
+        // exactly like `build_inventory_from_blob` keys the inventory cache the
+        // state is seeded from. Keying them by the generic wrapper type here
+        // makes the first pass lose the seeded quantity, which gets reported as
+        // a drop to zero even though nothing was consumed.
+        let canonical = modular_component_path(entry)
+            .or_else(|| path_aliases.get(entry.item_type.as_str()).cloned())
             .unwrap_or_else(|| entry.item_type.clone());
         if blob.consumed_suits.contains(&canonical) { continue; }
         if stackable_paths.contains(&canonical) {
