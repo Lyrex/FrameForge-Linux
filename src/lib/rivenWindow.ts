@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { LogicalSize } from "@tauri-apps/api/window";
+import { LogicalSize, availableMonitors } from "@tauri-apps/api/window";
 import { overlayScale } from "./uiScale";
 import { APP_TITLE } from "../constants/app";
 import { PREFERENCE_KEYS } from "../constants/preferences";
@@ -63,6 +63,23 @@ function savedOffsets(): OverlayOffsets {
   }
 }
 
+/**
+ * The Warframe rect arrives in physical pixels, but WebviewWindow takes
+ * x/y/width/height in logical pixels, so it has to be divided by the scale
+ * factor of the monitor holding that rect.
+ */
+async function scaleFactorAt(x: number, y: number): Promise<number> {
+  try {
+    const monitors = await availableMonitors();
+    const hit = monitors.find(m =>
+      x >= m.position.x && x < m.position.x + m.size.width &&
+      y >= m.position.y && y < m.position.y + m.size.height);
+    return hit?.scaleFactor ?? monitors[0]?.scaleFactor ?? 1;
+  } catch {
+    return 1;
+  }
+}
+
 export async function ensureRivenWindow(wx: number, wy: number, wh: number): Promise<{ win: WebviewWindow; fresh: boolean } | null> {
   // 1. Existing valid handle
   if (_rivenWin) return { win: _rivenWin, fresh: false };
@@ -78,14 +95,17 @@ export async function ensureRivenWindow(wx: number, wy: number, wh: number): Pro
   // 3. Create fresh at correct position — shows immediately
   try {
     const off = savedOffsets();
+    const f = await scaleFactorAt(wx, wy);
+    const lx = wx / f, ly = wy / f, lh = wh / f;
     _rivenWin = new WebviewWindow("riven-overlay", {
       url: `index.html#rivenoverlay`,
       title: `${APP_TITLE} Riven`,
       transparent: true, decorations: false,
       alwaysOnTop: true, skipTaskbar: true,
       resizable: false, focus: false,
-      x: wx + 10 + off.rivenX, y: wy + Math.round(wh * 0.20) + off.rivenY,
-      width: Math.round(300 * overlayScale()), height: Math.round(wh * 0.60),
+      x: Math.round(lx + 10 + off.rivenX),
+      y: Math.round(ly + lh * 0.20 + off.rivenY),
+      width: Math.round(300 * overlayScale()), height: Math.round(lh * 0.60),
     });
     _rivenWin.once("tauri://destroyed", () => { _rivenWin = null; });
     return { win: _rivenWin, fresh: true };
