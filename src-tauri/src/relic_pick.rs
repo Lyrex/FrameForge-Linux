@@ -64,6 +64,12 @@ pub(crate) fn test_relic_pick_overlay(era: String, app: tauri::AppHandle) -> Str
     format!("Emitted relic-pick-open: era={}, {} relics in inventory", era, relic_count)
 }
 
+/// Debug/preview: hide the relic pick overlay again (pairs with test_relic_pick_overlay).
+#[tauri::command]
+pub(crate) fn hide_relic_pick_overlay(app: tauri::AppHandle) {
+    relic_pick_hide(&app);
+}
+
 /// Debug: return the last ~4 KB of EE.log so we can see what strings appear when
 /// opening the relic selection screen. Call this immediately after opening the screen.
 #[tauri::command]

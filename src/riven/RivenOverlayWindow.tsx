@@ -65,6 +65,8 @@ export default function RivenOverlayWindow() {
   const [rollCount, setRollCount]       = useState(0);
   const [scanning, setScanning]         = useState(true);
   const [saved, setSaved]               = useState(false);
+  // Outline mode (Settings → Overlays → Show Outline): dashed frame instead of scan data.
+  const [outline, setOutline]           = useState(false);
   const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const resetToScanning = () => {
@@ -81,9 +83,10 @@ export default function RivenOverlayWindow() {
   };
 
   useEffect(() => {
-    const unlistenStart = listen(TAURI_EVENTS.RIVEN_SCANNING_START, () => resetToScanning());
+    const unlistenStart = listen(TAURI_EVENTS.RIVEN_SCANNING_START, () => { setOutline(false); resetToScanning(); });
 
     const unlistenUpdate = listen<RivenAnalysisUpdate>(TAURI_EVENTS.RIVEN_ANALYSIS_UPDATE, e => {
+      setOutline(false);
       if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
       setAnalysis(e.payload.analysis ?? null);
       setRollCount(e.payload.rollCount);
@@ -109,6 +112,14 @@ export default function RivenOverlayWindow() {
       if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
     };
   }, []); // eslint-disable-line
+
+  useEffect(() => {
+    const unlistenOutline = listen<string>(TAURI_EVENTS.OVERLAY_OUTLINE, (e) => {
+      if (e.payload === "riven") setOutline(true);
+      else if (e.payload === "off-riven") setOutline(false);
+    });
+    return () => { unlistenOutline.then(fn => fn()); };
+  }, []);
 
   const weaponName = analysis?.weapon ?? parsedWeapon;
   const displayName = weaponName
@@ -156,6 +167,22 @@ export default function RivenOverlayWindow() {
     if (cls === "harmful")  return "✗";
     return "○";
   };
+
+  if (outline) {
+    return (
+      <div className="rov-root">
+        <div style={{
+          position: "absolute", left: 24, right: 24, top: 24, bottom: 24,
+          border: "2px dashed rgba(56,139,253,.85)", borderRadius: 10,
+          background: "rgba(22,27,34,.55)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          color: "#79b8ff", fontSize: 18, fontWeight: 600, textAlign: "center",
+        }}>
+          Riven Overlay — outline
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rov-root">

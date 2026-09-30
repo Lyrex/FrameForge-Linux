@@ -693,6 +693,7 @@ pub fn run() {
             catalogue::get_current_crafting,
             relic_pick::debug_detect_fissure_era,
             relic_pick::test_relic_pick_overlay,
+            relic_pick::hide_relic_pick_overlay,
             relic_pick::debug_ee_log_tail,
             console_login::open_console_login,
             wfcd::get_drop_data,

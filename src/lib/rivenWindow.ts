@@ -46,10 +46,10 @@ export async function resizeRivenForScale() {
   } catch {}
 }
 
-export function rivenWinHide(reason = "rivenWinHide") {
+export function rivenWinHide(reason = "rivenWinHide", log = true) {
   const win = _rivenWin;
   if (!win) { return; }
-  invoke("ocr_riven_log_error", { error: `[HIDE] ${reason}` }).catch(() => {});
+  if (log) invoke("ocr_riven_log_error", { error: `[HIDE] ${reason}` }).catch(() => {});
   _rivenWin = null;
   win.close().catch(() => {});
 }
@@ -80,6 +80,24 @@ async function scaleFactorAt(x: number, y: number): Promise<number> {
   }
 }
 
+/**
+ * Where the riven window belongs for a given game rect (physical pixels):
+ * x/y/width/height in logical pixels, offsets applied on top (issue #73).
+ */
+export async function rivenPlacement(
+  wx: number, wy: number, wh: number,
+): Promise<{ x: number; y: number; width: number; height: number }> {
+  const off = savedOffsets();
+  const f = await scaleFactorAt(wx, wy);
+  const lx = wx / f, ly = wy / f, lh = wh / f;
+  return {
+    x: Math.round(lx + 10 + off.rivenX),
+    y: Math.round(ly + lh * 0.20 + off.rivenY),
+    width: Math.round(300 * overlayScale()),
+    height: Math.round(lh * 0.60),
+  };
+}
+
 export async function ensureRivenWindow(wx: number, wy: number, wh: number): Promise<{ win: WebviewWindow; fresh: boolean } | null> {
   // 1. Existing valid handle
   if (_rivenWin) return { win: _rivenWin, fresh: false };
@@ -94,18 +112,14 @@ export async function ensureRivenWindow(wx: number, wy: number, wh: number): Pro
 
   // 3. Create fresh at correct position — shows immediately
   try {
-    const off = savedOffsets();
-    const f = await scaleFactorAt(wx, wy);
-    const lx = wx / f, ly = wy / f, lh = wh / f;
+    const p = await rivenPlacement(wx, wy, wh);
     _rivenWin = new WebviewWindow("riven-overlay", {
       url: `index.html#rivenoverlay`,
       title: `${APP_TITLE} Riven`,
       transparent: true, decorations: false,
       alwaysOnTop: true, skipTaskbar: true,
       resizable: false, focus: false,
-      x: Math.round(lx + 10 + off.rivenX),
-      y: Math.round(ly + lh * 0.20 + off.rivenY),
-      width: Math.round(300 * overlayScale()), height: Math.round(lh * 0.60),
+      x: p.x, y: p.y, width: p.width, height: p.height,
     });
     _rivenWin.once("tauri://destroyed", () => { _rivenWin = null; });
     return { win: _rivenWin, fresh: true };

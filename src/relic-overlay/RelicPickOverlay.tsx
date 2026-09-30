@@ -65,6 +65,8 @@ function DucatIcon() {
 
 export default function RelicPickOverlay() {
   const [payload,  setPayload]  = useState<RelicPickPayload | null>(null);
+  // Outline mode (Settings → Overlays → Show Outline): dashed frame instead of relic cards.
+  const [outline,  setOutline]  = useState(false);
   const [priority, setPriority] = useState<RelicPickPriority>(DEFAULT_RELIC_PICK_PRIORITY);
   const [lines,    setLines]    = useState<RelicPickLines>(DEFAULT_RELIC_PICK_LINES);
   // Use a callback ref so the ResizeObserver is set up each time the root div
@@ -99,6 +101,8 @@ export default function RelicPickOverlay() {
 
   useEffect(() => {
     const unOpen = listen<RelicPickPayload>(TAURI_EVENTS.RELIC_PICK_OPEN, async e => {
+      // Real screen open wins over an active outline.
+      setOutline(false);
       // Reload settings fresh on every show — the main window may have changed them
       // since this overlay was first mounted at app startup.
       try {
@@ -118,8 +122,26 @@ export default function RelicPickOverlay() {
       const el = rootRef.current;
       if (el) syncSize(Math.ceil(el.getBoundingClientRect().height / overlayScale()));
     });
-    return () => { unOpen.then(f => f()); unClose.then(f => f()); unScale.then(f => f()); };
+    const unOutline = listen<string>(TAURI_EVENTS.OVERLAY_OUTLINE, e => {
+      if (e.payload === "relicPick") setOutline(true);
+      else if (e.payload === "off-relicPick") { setOutline(false); setPayload(null); }
+    });
+    return () => { unOpen.then(f => f()); unClose.then(f => f()); unScale.then(f => f()); unOutline.then(f => f()); };
   }, [syncSize]);
+
+  if (outline) {
+    return (
+      <div ref={rootCallback} style={{
+        width: "100%", height: 300, boxSizing: "border-box",
+        border: "2px dashed rgba(56,139,253,.85)", borderRadius: 10,
+        background: "rgba(22,27,34,.55)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        color: "#79b8ff", fontSize: 16, fontWeight: 600,
+      }}>
+        Relic Pick Overlay — outline
+      </div>
+    );
+  }
 
   if (!payload) return null;
 

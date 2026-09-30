@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { notify, ensurePermission } from "./lib/notify";
 import { formatBytes } from "./lib/formatters";
+import { hidePickOutline, hideRewardOutline, hideRivenOutline, showPickOutline, showRewardOutline, showRivenOutline } from "./lib/outlineWindows";
 import FilterPresets from "./shared/FilterPresets";
 import { PREFERENCE_KEYS } from "./constants/preferences";
 import { CLOCK_FORMAT_OPTIONS, FOUNDRY_PAGE_SIZE_OPTIONS, RELIC_OVERLAY_PRIORITY_OPTIONS, RELIC_PICK_LINES_OPTIONS, RELIC_PICK_PRIORITY_OPTIONS } from "./constants/settings";
@@ -69,6 +70,11 @@ function BulkPriceRefreshButton() {
 
 export default function SettingsModal(props: SettingsModalProps) {
   const { settingsTab, setSettingsTab, settingsFilterModule, setSettingsFilterModule, filterPresets, setFilterPresets, inventoryFilters, setInventoryFilters, foundryFilters, setFoundryFilters, marketFilters, setMarketFilters, relicFilters, setRelicFilters, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, overlayOffsets, setOverlayOffsets, rivenEnabled, setRivenEnabled, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, wfmRecordSales, setWfmRecordSales, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, systemLocale, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setApiQuantities, setApiModCopies, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setWfConnected, wfConnectedRef, setItemsRefreshKey, setClearMsg, clearMsg, blobLogEnabled, setBlobLogEnabled, blobLogSize, setBlobLogSize, companionApiEnabled, apiLogEnabled, setApiLogEnabled, apiLogSize, setApiLogSize, setShowInventoryBatchPreview, notifyTestResult, setNotifyTestResult, overlayLogCopied, setOverlayLogCopied, autoDiagEnabled, setAutoDiagEnabled, diagFolderSize, setDiagFolderSize, diagPath, diagCapturing, setDiagCapturing, setDiagPath, reloadDebugSizes, memoryProbing, setMemoryProbing, probeSize, setProbeSize, rawScanning, setRawScanning, rawScanSize, setRawScanSize, memRelicDebugRunning, setMemRelicDebugRunning, relicPickOcrResult, relicPickOcrTesting, setRelicPickOcrTesting, setRelicPickOcrResult, relicPickTestResult, relicPickTestEra, setRelicPickTestEra, setRelicPickTestResult, eeLogTail, setEeLogTail, debugCatEnabled, setDebugCatEnabled, unmatchedPathsSize, setUnmatchedPathsSize, appVersion } = props;
+
+  // Outline toggles for the three overlays (Settings → Overlays → Show Outline).
+  const [outlineReward, setOutlineReward] = useState(false);
+  const [outlinePick,   setOutlinePick]   = useState(false);
+  const [outlineRiven,  setOutlineRiven]  = useState(false);
   if (!props.open) return null;
   const onClose = props.onClose;
 
@@ -250,7 +256,7 @@ export default function SettingsModal(props: SettingsModalProps) {
 
                 {/* Relic Overlay */}
                 <div className="settings-section">
-                  <div className="settings-section-title">Relic Overlay</div>
+                  <div className="settings-section-title">Relic Reward Overlay</div>
                   {overlayStatus && (
                     <div style={{ fontSize: 12, padding: '4px 8px', marginBottom: 6,
                       background: 'rgba(255,255,255,0.05)', borderRadius: 4,
@@ -301,31 +307,16 @@ export default function SettingsModal(props: SettingsModalProps) {
                     </select>
                   </div>
                   {offsetRow("relicX", "relicY", !overlayEnabled)}
-                </div>
-
-                {/* Relic Overlay — Memory Trigger */}
-                <div className="settings-section">
-                  <div className="settings-section-title">Memory Trigger <span style={{ fontSize: 11, opacity: 0.55, fontWeight: 400, marginLeft: 6 }}>in development</span></div>
-                  <div className="settings-row">
+                  <div className="settings-row" style={{ marginTop: 8 }}>
                     <div className="settings-row-info">
-                      <span className="settings-row-label">Use memory scan</span>
-                      <span className="settings-row-desc">
-                        Still in development — for testing only. Polls Warframe's process memory for the reward screen event in parallel with EE.log.
-                        Timing for both paths is written to the session log so they can be compared.
-                        The EE.log overlay is unaffected regardless of this setting.
-                      </span>
+                      <span className="settings-row-label">Show Outline</span>
+                      <span className="settings-row-desc">Toggle a dashed outline of the overlay at its current position.</span>
                     </div>
-                    <button
-                      className="btn-secondary"
-                      style={{ minWidth: 64, background: memTriggerEnabled ? "rgba(56,139,253,.15)" : undefined, borderColor: memTriggerEnabled ? "var(--accent)" : undefined }}
+                    <button className="btn-secondary" style={{ minWidth: 64, background: outlineReward ? "rgba(56,139,253,.15)" : undefined, borderColor: outlineReward ? "var(--accent)" : undefined }}
                       onClick={() => {
-                        const next = !memTriggerEnabled;
-                        setMemTriggerEnabled(next);
-                        settingsRef.current = { ...settingsRef.current, memTriggerEnabled: next };
-                        saveAllSettings();
-                        invoke(TAURI_COMMANDS.SET_MEM_TRIGGER_ENABLED, { enabled: next });
-                      }}
-                    >{memTriggerEnabled ? "On" : "Off"}</button>
+                        if (outlineReward) { hideRewardOutline().catch(() => {}); setOutlineReward(false); }
+                        else { showRewardOutline().catch(() => {}); setOutlineReward(true); }
+                      }}>{outlineReward ? "Hide" : "Show"}</button>
                   </div>
                 </div>
 
@@ -384,6 +375,17 @@ export default function SettingsModal(props: SettingsModalProps) {
                     </select>
                   </div>
                   {offsetRow("relicPickX", "relicPickY", !relicPickEnabled)}
+                  <div className="settings-row" style={{ marginTop: 8 }}>
+                    <div className="settings-row-info">
+                      <span className="settings-row-label">Show Outline</span>
+                      <span className="settings-row-desc">Toggle a dashed outline of the overlay at its current position.</span>
+                    </div>
+                    <button className="btn-secondary" style={{ minWidth: 64, background: outlinePick ? "rgba(56,139,253,.15)" : undefined, borderColor: outlinePick ? "var(--accent)" : undefined }}
+                      onClick={() => {
+                        if (outlinePick) { hidePickOutline().catch(() => {}); setOutlinePick(false); }
+                        else { showPickOutline().catch(() => {}); setOutlinePick(true); }
+                      }}>{outlinePick ? "Hide" : "Show"}</button>
+                  </div>
                 </div>
 
                 {/* Riven Overlay */}
@@ -407,6 +409,43 @@ export default function SettingsModal(props: SettingsModalProps) {
                     >{rivenEnabled ? "On" : "Off"}</button>
                   </div>
                   {offsetRow("rivenX", "rivenY", !rivenEnabled)}
+                  <div className="settings-row" style={{ marginTop: 8 }}>
+                    <div className="settings-row-info">
+                      <span className="settings-row-label">Show Outline</span>
+                      <span className="settings-row-desc">Toggle a dashed outline of the overlay at its current position.</span>
+                    </div>
+                    <button className="btn-secondary" style={{ minWidth: 64, background: outlineRiven ? "rgba(56,139,253,.15)" : undefined, borderColor: outlineRiven ? "var(--accent)" : undefined }}
+                      onClick={() => {
+                        if (outlineRiven) { hideRivenOutline().catch(() => {}); setOutlineRiven(false); }
+                        else { showRivenOutline().catch(() => {}); setOutlineRiven(true); }
+                      }}>{outlineRiven ? "Hide" : "Show"}</button>
+                  </div>
+                </div>
+
+                {/* Relic Overlay — Memory Trigger */}
+                <div className="settings-section">
+                  <div className="settings-section-title">Memory Trigger <span style={{ fontSize: 11, opacity: 0.55, fontWeight: 400, marginLeft: 6 }}>in development</span></div>
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <span className="settings-row-label">Use memory scan</span>
+                      <span className="settings-row-desc">
+                        Still in development — for testing only. Polls Warframe's process memory for the reward screen event in parallel with EE.log.
+                        Timing for both paths is written to the session log so they can be compared.
+                        The EE.log overlay is unaffected regardless of this setting.
+                      </span>
+                    </div>
+                    <button
+                      className="btn-secondary"
+                      style={{ minWidth: 64, background: memTriggerEnabled ? "rgba(56,139,253,.15)" : undefined, borderColor: memTriggerEnabled ? "var(--accent)" : undefined }}
+                      onClick={() => {
+                        const next = !memTriggerEnabled;
+                        setMemTriggerEnabled(next);
+                        settingsRef.current = { ...settingsRef.current, memTriggerEnabled: next };
+                        saveAllSettings();
+                        invoke(TAURI_COMMANDS.SET_MEM_TRIGGER_ENABLED, { enabled: next });
+                      }}
+                    >{memTriggerEnabled ? "On" : "Off"}</button>
+                  </div>
                 </div>
 
               </>}
