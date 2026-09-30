@@ -82,7 +82,7 @@ interface UseSettingsReturn {
   wfmInvisibleOnCloseRef: React.MutableRefObject<boolean>;
 
   // Callbacks
-  saveAllSettings: () => void;
+  saveAllSettings: () => Promise<void>;
   loadSettings: () => Promise<SettingsFile | null>;
 }
 
@@ -171,10 +171,10 @@ export function useSettings(
   const saveAllSettings = useCallback(() => {
     if (!settingsLoadedRef.current) {
       console.error("save_settings skipped: settings not loaded yet, saving now would clobber the file");
-      return;
+      return Promise.resolve();
     }
     const settings: SettingsPatch = { ...settingsRef.current };
-    invoke(TAURI_COMMANDS.SAVE_SETTINGS, { json: JSON.stringify(settings) }).catch((e) => {
+    return invoke(TAURI_COMMANDS.SAVE_SETTINGS, { json: JSON.stringify(settings) }).then(() => {}).catch((e) => {
       console.error("save_settings failed:", e);
     });
   }, []);

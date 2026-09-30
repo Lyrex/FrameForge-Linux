@@ -33,7 +33,7 @@ export interface SettingsModalProps {
   foundryFilters: FoundryFilters; setFoundryFilters: Setter<FoundryFilters>;
   marketFilters: MarketFilters; setMarketFilters: Setter<MarketFilters>;
   relicFilters: RelicFilters; setRelicFilters: Setter<RelicFilters>;
-  foundryPageSize: FoundryPageSize; setFoundryPageSize: Setter<FoundryPageSize>; settingsRef: MutableRefObject<SettingsSnapshot>; saveAllSettings: () => void;
+  foundryPageSize: FoundryPageSize; setFoundryPageSize: Setter<FoundryPageSize>; settingsRef: MutableRefObject<SettingsSnapshot>; saveAllSettings: () => Promise<void>;
   memoryScannerEnabled: boolean; setMemoryScannerEnabled: Setter<boolean>; modularPopout: boolean; setModularPopout: Setter<boolean>; overlayStatus: string;
   overlayEnabled: boolean; setOverlayEnabled: Setter<boolean>; overlayPriority: RelicOverlayPriority; setOverlayPriority: Setter<RelicOverlayPriority>;
   overlayOffsets: OverlayOffsets; setOverlayOffsets: Setter<OverlayOffsets>;
@@ -81,12 +81,19 @@ export default function SettingsModal(props: SettingsModalProps) {
   // ── Position offset row (Settings → Overlays) ─────────────────────────────
   // Adds a pixel delta on top of the overlay's built-in placement; 0 = default.
   const offsetRow = (keyX: keyof OverlayOffsets, keyY: keyof OverlayOffsets, disabled: boolean) => {
-    const setAxis = (key: keyof OverlayOffsets, n: number) => {
+    const setAxis = async (key: keyof OverlayOffsets, n: number) => {
       const next: OverlayOffsets = { ...overlayOffsets, [key]: clampOverlayOffset(n) };
       setOverlayOffsets(next);
       settingsRef.current = { ...settingsRef.current, overlayOffsets: next };
       localStorage.setItem(PREFERENCE_KEYS.OVERLAY_OFFSETS, JSON.stringify(next));
-      saveAllSettings();
+      // Rust reads offsets from settings.json, so wait for the write to land
+      // before re-applying placement of an outline that is currently shown.
+      await saveAllSettings();
+      try {
+        if (outlineReward) await showRewardOutline();
+        if (outlinePick)   await showPickOutline();
+        if (outlineRiven)  await showRivenOutline();
+      } catch {}
     };
     const axisInput = (key: keyof OverlayOffsets) => (
       <input

@@ -70,6 +70,13 @@ pub(crate) fn hide_relic_pick_overlay(app: tauri::AppHandle) {
     relic_pick_hide(&app);
 }
 
+/// Position and show the pick window without emitting a payload — used by the
+/// outline toggle and by live offset changes, which only need the placement.
+#[tauri::command]
+pub(crate) fn show_relic_pick_window(app: tauri::AppHandle) {
+    relic_pick_show(&app);
+}
+
 /// Debug: return the last ~4 KB of EE.log so we can see what strings appear when
 /// opening the relic selection screen. Call this immediately after opening the screen.
 #[tauri::command]

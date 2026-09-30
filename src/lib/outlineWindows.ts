@@ -41,7 +41,7 @@ export async function hideRewardOutline(): Promise<void> {
 /** Relic pick window: show it at its normal spot, then draw the outline. */
 export async function showPickOutline(): Promise<void> {
   try {
-    await invoke<string>("test_relic_pick_overlay", { era: "ALL" });
+    await invoke("show_relic_pick_window");
   } catch {
     return;
   }
