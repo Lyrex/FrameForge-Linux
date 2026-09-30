@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { availableMonitors } from "@tauri-apps/api/window";
 import { MODULAR_SECTION_ORDER_DEFAULT } from "../constants/settings";
+import { APP_TITLE } from "../constants/app";
 import type { SettingsFile } from "../types/tauri";
 
 const sameArray = <T,>(left: T[], right: T[]) =>
@@ -84,7 +85,7 @@ export function useModularWindow(): UseModularWindowReturn {
 
       const createWin = (usePos: boolean) => new WebviewWindow("modular-popout", {
         url: "index.html#modular",
-        title: "FrameForge — Modular Window",
+        title: `${APP_TITLE} — Modular Window`,
         width: g.w ?? modularWidth,
         height: g.h ?? 700,
         ...(usePos && g.x !== undefined ? { x: g.x } : {}),
