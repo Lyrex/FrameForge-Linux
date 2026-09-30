@@ -200,6 +200,16 @@ cd src-tauri
 cargo run
 ```
 
+A development run shares its settings, database, caches, logs and
+warframe.market login with the installed app. To keep them apart, set
+`FRAMEFORGE_ROOT` to an absolute path. FrameForge then keeps everything under
+that directory, titles its window "FrameForge Dev" and skips the update check
+at launch:
+
+```sh
+FRAMEFORGE_ROOT="$HOME/.frameforge-dev" cargo run
+```
+
 Packages build with the normal command:
 
 ```sh

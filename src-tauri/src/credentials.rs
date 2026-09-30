@@ -14,6 +14,7 @@
 use crate::platform::{CredentialStore, Platform};
 
 const WFM_SECRET_SERVICE: &str = "FrameForge_WFM";
+const WFM_DEV_SECRET_SERVICE: &str = "FrameForge_WFM_Dev";
 const WFM_SECRET_ACCOUNT: &str = "wfm-session";
 const WFM_SECRET_LABEL: &str = "FrameForge: warframe.market session";
 
@@ -136,22 +137,31 @@ pub(crate) fn secret_delete(service: &str) -> Result<(), String> {
     wfm_secret_delete(service).map_err(wfm_secret_error)
 }
 
+/// A run under `FRAMEFORGE_ROOT` keeps its own session, so logging in or
+/// factory-resetting there leaves the installed app logged in.
+fn wfm_secret_service() -> &'static str {
+    match crate::paths::root() {
+        Some(_) => WFM_DEV_SECRET_SERVICE,
+        None => WFM_SECRET_SERVICE,
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn wfm_save_credentials(email: String, token: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || Platform::save_credentials(WFM_SECRET_SERVICE, &email, &token))
+    tauri::async_runtime::spawn_blocking(move || Platform::save_credentials(wfm_secret_service(), &email, &token))
         .await
         .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub(crate) async fn wfm_load_credentials() -> Result<Option<(String, String)>, String> {
-    tauri::async_runtime::spawn_blocking(move || Platform::load_credentials(WFM_SECRET_SERVICE))
+    tauri::async_runtime::spawn_blocking(move || Platform::load_credentials(wfm_secret_service()))
         .await
         .map_err(|e| e.to_string())?
 }
 
 pub(crate) async fn wfm_delete_credentials() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || Platform::delete_credentials(WFM_SECRET_SERVICE))
+    tauri::async_runtime::spawn_blocking(move || Platform::delete_credentials(wfm_secret_service()))
         .await
         .map_err(|e| e.to_string())?
 }

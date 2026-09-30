@@ -165,6 +165,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let roots = paths::init()?;
     // Before the DB open and cache loads below, so their spans are captured.
     logging::init(&roots.state);
+    if let Some(root) = paths::root() {
+        info!("FRAMEFORGE_ROOT: keeping all files under {}", root.display());
+    }
     let paths::Roots { config: config_dir, data: data_dir, cache: cache_dir, state: state_dir } = &roots;
 
     let db_path = data_dir.join("data.db");
@@ -210,7 +213,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // If a factory-reset was requested on the previous run, finish it now:
     // the DB files can only be deleted before a new connection is opened.
-    let reset_marker = std::env::temp_dir().join("frameforge_factory_reset");
+    let reset_marker = paths::factory_reset_marker();
     if reset_marker.exists() {
         let _ = std::fs::remove_file(&reset_marker);
         for suffix in ["data.db", "data.db-wal", "data.db-shm"] {
@@ -373,6 +376,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     include_bytes!("../icons/icon.png")
                 ).map_err(|e| e.to_string())?;
                 window.set_icon(icon).map_err(|e| e.to_string())?;
+                if paths::root().is_some() {
+                    let _ = window.set_title("FrameForge Dev");
+                }
 
                 // Restore saved window geometry, then show (window starts hidden so
                 // it doesn't flash at the default position on the primary monitor first)
@@ -434,7 +440,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             // TTL costs a disk read.
             refresh::spawn(app.handle().clone());
 
-            updater::spawn_launch_check(app.handle().clone());
+            // A development run must never install a release over itself.
+            if paths::root().is_none() {
+                updater::spawn_launch_check(app.handle().clone());
+            }
 
             // Sync commands and window events run on the GTK thread, so a stall
             // there delays every IPC message.

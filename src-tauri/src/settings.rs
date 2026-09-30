@@ -29,7 +29,7 @@ pub(crate) async fn factory_reset(app: tauri::AppHandle, state: State<'_, AppSta
     let _ = std::fs::remove_dir_all(cache_dir);
 
     // Ask the next launch to delete the DB once it can (before opening a connection).
-    let marker = std::env::temp_dir().join("frameforge_factory_reset");
+    let marker = paths::factory_reset_marker();
     std::fs::write(&marker, b"").map_err(|e| e.to_string())?;
 
     app.restart();
