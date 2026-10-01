@@ -13,6 +13,13 @@ absorbed.
   whatever their tip happens to be, so the tip routinely runs ahead of the
   newest tag. A release states the exact upstream base it was cut from;
   merging an untagged tip would make that unstatable.
+- **A sync always merges the tag, even when nothing in it is wanted.**
+  GitHub reports the fork as behind for each commit on `upstream/main` that
+  `main` lacks. A change taken early from upstream's `dev`, ported by hand or
+  left out on purpose must still arrive through the tag merge, resolved to
+  our side, or it counts as behind forever. When everything in the tag is
+  already in or unwanted, `git merge -s ours TAG` records it. Commits past
+  the newest tag count as behind until upstream tags them.
 - **Sync when we intend to cut a fork release**, not on every upstream
   release. The fork's value can only be verified in a manual session against
   the live game, and that session happens at release time; a synced-but-
@@ -34,15 +41,17 @@ absorbed.
 ```sh
 # one-time, per clone
 git config rerere.enabled true
+# Upstream's tags share names with ours, so they live outside refs/tags.
+git config remote.upstream.tagOpt --no-tags
 
 # 0. preconditions
 git status --porcelain              # must be empty
 
 # 1. fetch upstream, pick the newest RELEASE TAG (never main)
-git fetch upstream --tags
-git tag --sort=-v:refname --merged upstream/main | head -1
-# -> TAG, e.g. v2.8.0. --merged excludes our own release tags,
-#    which are not ancestors of upstream/main.
+git fetch upstream '+refs/tags/*:refs/upstream-tags/*'
+git for-each-ref --sort=-version:refname --count=1 \
+  --format='%(refname)' 'refs/upstream-tags/v*'
+# -> TAG, e.g. refs/upstream-tags/v4.5.0
 
 # 2. read the delta before touching anything
 git log --no-merges --reverse \
