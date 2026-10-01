@@ -82,8 +82,7 @@ export default function SettingsModal(props: SettingsModalProps) {
   // ── Position offset row (Settings → Overlays) ─────────────────────────────
   // Adds a pixel delta on top of the overlay's built-in placement; 0 = default.
   const offsetRow = (keyX: keyof OverlayOffsets, keyY: keyof OverlayOffsets, disabled: boolean) => {
-    const setAxis = async (key: keyof OverlayOffsets, n: number) => {
-      const next: OverlayOffsets = { ...overlayOffsets, [key]: clampOverlayOffset(n) };
+    const saveOffsets = async (next: OverlayOffsets) => {
       setOverlayOffsets(next);
       settingsRef.current = { ...settingsRef.current, overlayOffsets: next };
       localStorage.setItem(PREFERENCE_KEYS.OVERLAY_OFFSETS, JSON.stringify(next));
@@ -96,13 +95,26 @@ export default function SettingsModal(props: SettingsModalProps) {
         if (rivenShown)    await showRivenOverlay();
       } catch {}
     };
-    const axisInput = (key: keyof OverlayOffsets) => (
-      <input
-        type="number" min={-OVERLAY_OFFSET_LIMIT} max={OVERLAY_OFFSET_LIMIT} step={10}
-        value={overlayOffsets[key]}
-        onChange={e => { const n = e.target.valueAsNumber; if (!Number.isNaN(n)) setAxis(key, n); }}
-        style={{ width: 56, fontSize: 12, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 4, color: "var(--text)", padding: "1px 4px", textAlign: "center" }}
-      />
+    const setAxis = (key: keyof OverlayOffsets, n: number) => {
+      void saveOffsets({ ...overlayOffsets, [key]: clampOverlayOffset(n) });
+    };
+    const resetOffsets = () => {
+      void saveOffsets({ ...overlayOffsets, [keyX]: 0, [keyY]: 0 });
+    };
+    const axisInput = (key: keyof OverlayOffsets, axis: "X" | "Y") => (
+      <div className="settings-offset-stepper">
+        <input
+          className="settings-offset-input"
+          type="number" min={-OVERLAY_OFFSET_LIMIT} max={OVERLAY_OFFSET_LIMIT} step={10}
+          value={overlayOffsets[key]}
+          aria-label={`${axis} offset`}
+          onChange={e => { const n = e.target.valueAsNumber; if (!Number.isNaN(n)) setAxis(key, n); }}
+        />
+        <div className="settings-offset-step-buttons">
+          <button type="button" aria-label={`Increase ${axis} offset`} onClick={() => setAxis(key, overlayOffsets[key] + 10)}>▲</button>
+          <button type="button" aria-label={`Decrease ${axis} offset`} onClick={() => setAxis(key, overlayOffsets[key] - 10)}>▼</button>
+        </div>
+      </div>
     );
     return (
       <div className="settings-row" style={{ marginTop: 8, opacity: disabled ? 0.45 : 1, pointerEvents: disabled ? "none" : "auto" }}>
@@ -110,11 +122,13 @@ export default function SettingsModal(props: SettingsModalProps) {
           <span className="settings-row-label">Position offset</span>
           <span className="settings-row-desc">Moves the overlay this many pixels from its built-in spot. 0 keeps the current placement.</span>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          <span style={{ fontSize: 11, opacity: 0.6 }}>X</span>
-          {axisInput(keyX)}
-          <span style={{ fontSize: 11, opacity: 0.6 }}>Y</span>
-          {axisInput(keyY)}
+        <div className="settings-offset-controls">
+          <span className="settings-offset-axis">X</span>
+          {axisInput(keyX, "X")}
+          <span className="settings-offset-axis">Y</span>
+          {axisInput(keyY, "Y")}
+          <button className="btn-secondary settings-offset-reset" disabled={overlayOffsets[keyX] === 0 && overlayOffsets[keyY] === 0}
+            onClick={resetOffsets}>Reset</button>
         </div>
       </div>
     );
