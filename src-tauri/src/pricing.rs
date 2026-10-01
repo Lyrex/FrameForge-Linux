@@ -33,6 +33,13 @@ pub(crate) async fn refresh_bulk_prices(state: State<'_, AppState>) -> Result<()
     Ok(())
 }
 
+/// Return the in-memory bulk price map (lowercase display name → plat).
+/// Loaded at startup from relics_run_prices.json and refreshed daily.
+#[tauri::command]
+pub(crate) fn get_bulk_prices(state: State<'_, AppState>) -> HashMap<String, u32> {
+    state.relics_run_prices.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// Load today's relics.run price cache from disk.
 /// Returns (by_name, by_slug) or None if missing/stale.
 pub(crate) fn load_relics_run_cache(path: &PathBuf) -> Option<(HashMap<String, u32>, HashMap<String, u32>)> {

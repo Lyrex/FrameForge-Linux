@@ -85,6 +85,47 @@
 .inv-card-qty      { font-size: 15px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; display: flex; align-items: center; gap: 4px; }
 .inv-card-qty-zero { color: var(--muted); }
 
+/* ── Value chips + wiki button ─────────────────────────────────────────────── */
+
+/* Card view: wiki with plat/ducats stacked below, pinned top-right. Absolute,
+   so cards keep identical content flow whether or not values exist. */
+.inv-card-side {
+  position: absolute; top: 2px; right: 4px;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+  z-index: 2;
+}
+
+.inv-price {
+  display: inline-flex; align-items: center; gap: 2px;
+  font-size: 10px; font-weight: 700; line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  padding: 0 4px; border-radius: 3px;
+}
+.inv-price-plat  { color: #b39ddb; background: rgba(179,157,219,.10); }
+.inv-price-ducat { color: #f0c040; background: rgba(240,192,64,.10); }
+
+.inv-wiki-btn {
+  font-size: 8px; font-weight: 700; padding: 1px 4px; border-radius: 3px;
+  border: 1px solid rgba(56,139,253,.4); background: rgba(0,0,0,.4);
+  color: #6ea8fe; cursor: pointer; line-height: 1.3;
+  transition: background .1s;
+}
+.inv-wiki-btn:hover { background: rgba(56,139,253,.25); color: #a8c8ff; }
+
+.inv-row-values {
+  display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+  /* Fixed column right after the name so chips start at a constant x and
+     qty/cat/wiki keep their positions on every row. */
+  width: 96px; justify-content: flex-start;
+}
+.inv-wiki-row {
+  background: none; cursor: pointer;
+  border: 1px solid rgba(56,139,253,.3);
+  font-size: 8px; font-weight: 700; padding: 1px 4px; border-radius: 3px;
+  color: #6ea8fe; flex-shrink: 0; line-height: 1.3; transition: all .1s;
+}
+.inv-wiki-row:hover { background: rgba(56,139,253,.2); color: #a8c8ff; }
+
 /* ── Mod rank breakdown card ───────────────────────────────────────────────── */
 
 .inv-card-mod { align-items: flex-start; padding: 8px 10px 8px; }
@@ -149,7 +190,10 @@
 .item-grid-icons .inv-card-icon-only img,
 .item-grid-icons .inv-card-icon-only .img { width: 56px !important; height: 56px !important; }
 
-/* text-cards: keep grid, just no image area — handled inline */
+/* text-cards: keep grid, just no image area — handled inline.
+   Reserve the top-right corner for the wiki/values stack so it never
+   overlaps the full-width name. */
+.item-grid-text-cards .inv-card { padding-right: 50px; }
 
 /* list + list-compact */
 .item-grid.item-grid-list,

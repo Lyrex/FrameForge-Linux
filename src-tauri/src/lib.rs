@@ -604,6 +604,7 @@ pub fn run() {
             wfm_top::get_wfm_top_items,
             wfm_commands::get_item_price,
             pricing::refresh_bulk_prices,
+            pricing::get_bulk_prices,
             updater::check_for_update,
             updater::install_update,
             settings::factory_reset,

@@ -10,6 +10,7 @@ import { openWiki, copyWikiLink } from "./lib/wiki";
 import { useModularWindow } from "./hooks/useModularWindow";
 import { useSettings } from "./hooks/useSettings";
 import { useInventoryData } from "./hooks/useInventoryData";
+import { useBulkPrices } from "./hooks/useBulkPrices";
 import { useOverlays } from "./hooks/useOverlays";
 import { useTimerPreferences } from "./hooks/useTimerPreferences";
 import { useFissureNotifications } from "./hooks/useFissureNotifications";
@@ -208,7 +209,11 @@ export default function App() {
   const [foundryFilters, setFoundryFilters] = useState<FoundryFilters>(FOUNDRY_FILTERS_DEFAULT);
   const [marketFilters, setMarketFilters] = useState<MarketFilters>(MARKET_FILTERS_DEFAULT);
   const [relicFilters, setRelicFilters] = useState<RelicFilters>(RELIC_FILTERS_DEFAULT);
-  const { category, search, filterOwned, filterRecent, filterPrime, filterVaulted, filterUnvaulted, filterRank, sortMode } = inventoryFilters;
+  const { category, search, filterOwned, filterRecent, filterPrime, filterVaulted, filterUnvaulted, filterTradeable, filterDucats, filterRank, sortMode } = inventoryFilters;
+  const { bulkPrices, refresh: refreshBulkPrices } = useBulkPrices();
+  // Bulk prices refresh hourly in the background — re-fetch on each Inventory
+  // activation so the chips reflect the current map.
+  useEffect(() => { if (activeModule === "inventory") refreshBulkPrices(); }, [activeModule, refreshBulkPrices]);
   const prevSortRef = useRef(sortMode);
   useEffect(() => { if (sortMode !== "recent") prevSortRef.current = sortMode; }, [sortMode]);
   const toggleInventoryRecent = useCallback(() => setInventoryFilters(previous => {
@@ -531,7 +536,7 @@ export default function App() {
     // Changelog order map: lower index = more recent position in changelog
     const changeOrder = new Map<string, number>();
     changeLog.forEach((c, i) => { if (!changeOrder.has(c.unique_name)) changeOrder.set(c.unique_name, i); });
-    const out: (CatalogItem & { qty: number })[] = [];
+    const out: (CatalogItem & { qty: number; plat: number | null })[] = [];
     for (const i of catalog) {
       if (i.name === "Blueprint") continue;
       if (category !== "all" && i.category !== category) continue;
@@ -542,6 +547,12 @@ export default function App() {
       if (filterPrime    && !i.name.includes("Prime") && i.vaulted == null) continue;
       if (filterVaulted  && i.vaulted !== true) continue;
       if (filterUnvaulted && i.vaulted !== false) continue;
+      const plat = bulkPrices.get(i.name.toLowerCase()) ?? null;
+      // Tradeable = explicit corrections override wins; otherwise the production
+      // heuristic from get_item_price: has a price, has ducats, or is a mod/arcane.
+      if (filterTradeable && i.tradeable_wfm !== false &&
+          plat == null && i.ducats == null && i.category !== "Mods" && i.category !== "Arcanes") continue;
+      if (filterDucats && !(i.ducats != null && i.ducats > 0)) continue;
       if (filterRank !== null) {
         if (i.category === "Mods" || i.category === "Arcanes") {
           const copies = modCopiesMap[i.unique_name];
@@ -553,7 +564,7 @@ export default function App() {
           }
         }
       }
-      out.push({ ...i, qty });
+      out.push({ ...i, qty, plat });
     }
     out.sort((a, b) => {
       if (sortMode === "recent" || filterRecent) {
@@ -574,7 +585,7 @@ export default function App() {
       return b.qty - a.qty || a.name.localeCompare(b.name);
     });
     return out.slice(0, 1000);
-  }, [catalog, inventory, inventoryFilters, lastChanged, modCopiesMap, changeLog]);
+  }, [catalog, inventory, inventoryFilters, bulkPrices, lastChanged, modCopiesMap, changeLog]);
 
   const resetInventoryFilters = ({
     recent,

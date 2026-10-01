@@ -47,6 +47,7 @@ export const TAURI_COMMANDS = {
   ANALYZE_RIVEN: "analyze_riven",
   FETCH_WFM_ITEMS: "fetch_wfm_items",
   GET_ALL_ITEMS: "get_all_items",
+  GET_BULK_PRICES: "get_bulk_prices",
   GET_CRAFTABLE_ITEMS: "get_craftable_items",
   GET_RECIPE: "get_recipe",
   GET_WFM_TOP_ITEMS: "get_wfm_top_items",

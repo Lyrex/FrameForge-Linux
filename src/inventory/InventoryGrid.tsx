@@ -2,6 +2,7 @@ import { memo } from "react";
 import ItemImg from "../ItemImg";
 import type { ViewMode } from "../types/ui";
 import { fmt, deltaClass, deltaText } from "../utils";
+import { openWiki } from "../lib/wiki";
 import "./InventoryGrid.css";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -13,6 +14,8 @@ export interface InventoryGridItem {
   category: string;
   image_name?: string | null;
   qty: number;
+  plat?: number | null;
+  ducats?: number | null;
 }
 
 interface InventoryGridProps {
@@ -31,6 +34,70 @@ interface InventoryGridProps {
   onContextMenu?: (e: React.MouseEvent) => void;
 }
 
+// ─── Value + wiki helpers ─────────────────────────────────────────────────────
+
+function PlatIcon({ size = 11 }: { size?: number }) {
+  return <img src="/platinum.webp" alt="plat" width={size} height={size} style={{ objectFit: "contain", flexShrink: 0 }} />;
+}
+function DucatIcon({ size = 11 }: { size?: number }) {
+  return <img src="/ducats.webp" alt="ducat" width={size} height={size} style={{ objectFit: "contain", flexShrink: 0 }} />;
+}
+
+function valueTitle(plat: number | null, ducats: number | null | undefined): string {
+  const parts: string[] = [];
+  if (plat != null) parts.push(`${fmt(plat)}p`);
+  if (ducats != null && ducats > 0) parts.push(`${fmt(ducats)} ducats`);
+  return parts.length ? ` · ${parts.join(" · ")}` : "";
+}
+
+function PriceChip({ kind, value }: { kind: "plat" | "ducat"; value: number }) {
+  return kind === "plat" ? (
+    <span className="inv-price inv-price-plat" title={`Market: ${fmt(value)} plat`}><PlatIcon />{fmt(value)}</span>
+  ) : (
+    <span className="inv-price inv-price-ducat" title={`Ducats: ${fmt(value)}`}><DucatIcon />{fmt(value)}</span>
+  );
+}
+
+function ValueChips({ plat, ducats, className }: {
+  plat: number | null;
+  ducats: number | null | undefined;
+  className: string;
+}) {
+  // Always render the container so neighbouring rows keep identical column
+  // positions whether or not this item has values.
+  const showDucats = ducats != null && ducats > 0;
+  return (
+    <div className={className}>
+      {plat != null && <PriceChip kind="plat" value={plat} />}
+      {showDucats && <PriceChip kind="ducat" value={ducats!} />}
+    </div>
+  );
+}
+
+// Card view: wiki with plat/ducats stacked underneath, pinned to the top-right
+// corner so the content flow (name/cat/rank/qty) is identical on every card.
+function CardSide({ name, plat, ducats }: {
+  name: string;
+  plat: number | null;
+  ducats: number | null | undefined;
+}) {
+  const showDucats = ducats != null && ducats > 0;
+  return (
+    <div className="inv-card-side">
+      <WikiButton name={name} className="inv-wiki-btn" />
+      {plat != null && <PriceChip kind="plat" value={plat} />}
+      {showDucats && <PriceChip kind="ducat" value={ducats!} />}
+    </div>
+  );
+}
+
+function WikiButton({ name, className }: { name: string; className: string }) {
+  return (
+    <button className={className} title="Open wiki"
+      onClick={e => { e.stopPropagation(); openWiki(name); }}>wiki</button>
+  );
+}
+
 // ─── Memoized inventory card components ──────────────────────────────────────
 
 interface InvModCardProps {
@@ -40,12 +107,14 @@ interface InvModCardProps {
   image_name?: string | null;
   ranks: { rank: number; count: number }[];
   total: number;
+  plat: number | null;
+  ducats: number | null;
   view: ViewMode;
   changedAt?: number;
   recentDelta?: number | null;
   rankDeltas?: { rank: number; delta: number }[];
 }
-const InvModCard = memo(function InvModCard({ unique_name, name, category, image_name, ranks, total, view, changedAt, recentDelta, rankDeltas }: InvModCardProps) {
+const InvModCard = memo(function InvModCard({ unique_name, name, category, image_name, ranks, total, plat, ducats, view, changedAt, recentDelta, rankDeltas }: InvModCardProps) {
   const nowSec = Date.now() / 1000;
   const secAgo = changedAt != null ? nowSec - changedAt : null;
   const isRecent = secAgo !== null && secAgo < 300;
@@ -56,7 +125,7 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
 
   if (view === "icons") {
     return (
-      <div key={unique_name} className={`${baseClass} inv-card-icon-only`} title={`${name} ×${fmt(total)}`}>
+      <div key={unique_name} className={`${baseClass} inv-card-icon-only`} title={`${name} ×${fmt(total)}${valueTitle(plat, ducats)}`}>
         <ItemImg imageName={image_name ?? undefined} category={category} size={52} />
       </div>
     );
@@ -66,8 +135,10 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
       <div key={unique_name} className={`${baseClass} inv-card-row`}>
         {view === "list" && <div className="inv-row-icon"><ItemImg imageName={image_name ?? undefined} category={category} size={20} /></div>}
         <div className="inv-row-name">{name}</div>
+        <ValueChips plat={plat} ducats={ducats} className="inv-row-values" />
         <div className="inv-row-cat">{category}</div>
         <div className="inv-row-qty">{fmt(total)}</div>
+        <WikiButton name={name} className="inv-wiki-row" />
       </div>
     );
   }
@@ -99,6 +170,7 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
         })}
       </div>
       <div className="inv-card-qty mod-total">{fmt(total)}</div>
+      <CardSide name={name} plat={plat} ducats={ducats} />
     </div>
   );
 }, (prev, next) =>
@@ -106,6 +178,8 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
   prev.unique_name === next.unique_name &&
   prev.name === next.name &&
   prev.total === next.total &&
+  prev.plat === next.plat &&
+  prev.ducats === next.ducats &&
   prev.image_name === next.image_name &&
   prev.ranks.length === next.ranks.length &&
   prev.ranks.every((r, i) => r.rank === next.ranks[i].rank && r.count === next.ranks[i].count) &&
@@ -120,6 +194,8 @@ interface InvCardProps {
   category: string;
   image_name?: string | null;
   qty: number;
+  plat: number | null;
+  ducats: number | null;
   isFavorite: boolean;
   changedAt: number | undefined;
   recentDelta: number | null;
@@ -129,7 +205,7 @@ interface InvCardProps {
   view: ViewMode;
 }
 const InvCard = memo(function InvCard({
-  unique_name, name, category, image_name, qty,
+  unique_name, name, category, image_name, qty, plat, ducats,
   isFavorite, changedAt, recentDelta, craftJobName, masteryRank, onToggleFavorite, view,
 }: InvCardProps) {
   const nowSec = Date.now() / 1000;
@@ -143,7 +219,7 @@ const InvCard = memo(function InvCard({
 
   if (view === "icons") {
     return (
-      <div className={`${baseClass} inv-card-icon-only`} title={`${name} (${fmt(qty)})`}>
+      <div className={`${baseClass} inv-card-icon-only`} title={`${name} (${fmt(qty)})${valueTitle(plat, ducats)}`}>
         <ItemImg imageName={image_name ?? undefined} category={category} size={52} />
       </div>
     );
@@ -166,11 +242,13 @@ const InvCard = memo(function InvCard({
           {name}
           {isRecent && <span className="item-updated">{recentLabel}</span>}
         </div>
+        <ValueChips plat={plat} ducats={ducats} className="inv-row-values" />
         <div className="inv-row-cat">{category}</div>
         <div className="inv-row-qty">
           {fmt(qty)}
           {isRecent && recentDelta != null && <span className={`item-delta ${deltaClass(recentDelta)}`}>{deltaText(recentDelta)}</span>}
         </div>
+        <WikiButton name={name} className="inv-wiki-row" />
       </div>
     );
   }
@@ -205,6 +283,7 @@ const InvCard = memo(function InvCard({
           <span className={`item-delta ${deltaClass(recentDelta)}`}>{deltaText(recentDelta)}</span>
         )}
       </div>
+      <CardSide name={name} plat={plat} ducats={ducats} />
     </div>
   );
 }, (prev, next) => {
@@ -212,6 +291,8 @@ const InvCard = memo(function InvCard({
   if (
     prev.unique_name !== next.unique_name ||
     prev.qty !== next.qty ||
+    prev.plat !== next.plat ||
+    prev.ducats !== next.ducats ||
     prev.isFavorite !== next.isFavorite ||
     prev.image_name !== next.image_name ||
     prev.masteryRank !== next.masteryRank ||
@@ -271,7 +352,8 @@ export default memo(function InventoryGrid({
               <InvModCard key={item.unique_name}
                 unique_name={item.unique_name} name={item.name}
                 category={item.category} image_name={item.image_name}
-                ranks={ranks} total={total} view={view}
+                ranks={ranks} total={total}
+                plat={item.plat ?? null} ducats={item.ducats ?? null} view={view}
                 changedAt={lastChanged[item.unique_name]}
                 recentDelta={totalDelta || null}
                 rankDeltas={rankDeltas} />
@@ -289,6 +371,7 @@ export default memo(function InventoryGrid({
               unique_name={item.unique_name} name={item.name}
               category={item.category} image_name={item.image_name}
               qty={item.qty}
+              plat={item.plat ?? null} ducats={item.ducats ?? null}
               isFavorite={favorites.has(item.unique_name)}
               changedAt={changedAt}
               recentDelta={recentChange?.delta ?? null}
