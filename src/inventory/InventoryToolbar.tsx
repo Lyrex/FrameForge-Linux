@@ -47,8 +47,8 @@ export default function InventoryToolbar({
         <button className={`fchip ${filterPrime ? "fchip-on" : ""}`} onClick={() => onFiltersChange(previous => ({ ...previous, filterPrime: !previous.filterPrime }))}>Prime</button>
         <button className={`fchip ${filterVaulted ? "fchip-on" : ""}`} onClick={() => onFiltersChange(previous => ({ ...previous, filterVaulted: !previous.filterVaulted }))}>🔒 Vaulted</button>
         <button className={`fchip ${filterUnvaulted ? "fchip-on" : ""}`} onClick={() => onFiltersChange(previous => ({ ...previous, filterUnvaulted: !previous.filterUnvaulted }))}>🔓 Unvaulted</button>
-        <button className={`fchip ${filterTradeable ? "fchip-on" : ""}`} onClick={() => onFiltersChange(previous => ({ ...previous, filterTradeable: !previous.filterTradeable }))}>Tradeable</button>
-        <button className={`fchip ${filterDucats ? "fchip-on" : ""}`} onClick={() => onFiltersChange(previous => ({ ...previous, filterDucats: !previous.filterDucats }))}>Ducats</button>
+        <button className={`fchip ${filterTradeable ? "fchip-on" : ""}`} aria-pressed={filterTradeable} onClick={() => onFiltersChange(previous => ({ ...previous, filterTradeable: !previous.filterTradeable }))}>Tradeable</button>
+        <button className={`fchip ${filterDucats ? "fchip-on" : ""}`} aria-pressed={filterDucats} onClick={() => onFiltersChange(previous => ({ ...previous, filterDucats: !previous.filterDucats }))}>Ducats</button>
         {showRankFilters && <>
           <span className="fbar-sep" />
           <span className="fbar-label">Rank:</span>

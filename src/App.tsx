@@ -566,10 +566,12 @@ export default function App() {
       if (filterVaulted  && i.vaulted !== true) continue;
       if (filterUnvaulted && i.vaulted !== false) continue;
       const plat = bulkPrices.get(i.name.toLowerCase()) ?? null;
-      // Tradeable = explicit corrections override wins; otherwise the production
-      // heuristic from get_item_price: has a price, has ducats, or is a mod/arcane.
-      if (filterTradeable && i.tradeable_wfm !== false &&
-          plat == null && i.ducats == null && i.category !== "Mods" && i.category !== "Arcanes") continue;
+      // Explicit corrections are authoritative; otherwise match the production
+      // heuristic from get_item_price: has a price, ducats, or a mod/arcane category.
+      const isTradeable = i.tradeable_wfm ?? (
+        plat != null || (i.ducats != null && i.ducats > 0) || i.category === "Mods" || i.category === "Arcanes"
+      );
+      if (filterTradeable && !isTradeable) continue;
       if (filterDucats && !(i.ducats != null && i.ducats > 0)) continue;
       if (filterRank !== null) {
         if (i.category === "Mods" || i.category === "Arcanes") {

@@ -141,7 +141,9 @@
 
 /* ── Mod rank breakdown card ───────────────────────────────────────────────── */
 
-.inv-card-mod { align-items: flex-start; padding: 1.538em .923em .923em; }
+.inv-card-mod { align-items: flex-start; }
+.item-grid-cards .inv-card-mod,
+.item-grid-text-cards .inv-card-mod { padding: 2.154em .923em .923em; }
 .inv-card-mod .inv-card-img-wrap { width: var(--inventory-mod-image-size, 48px); height: var(--inventory-mod-image-size, 48px); }
 .item-grid-cards .inv-card-mod .inv-card-img-wrap .img,
 .item-grid-cards .inv-card-mod .inv-card-img-wrap .img-fallback { width: var(--inventory-mod-image-size, 48px) !important; height: var(--inventory-mod-image-size, 48px) !important; }
@@ -268,6 +270,17 @@
 .item-grid-list .inv-row-icon img,
 .item-grid-list .inv-row-icon .img { width: var(--inventory-list-icon-size, 28px) !important; height: var(--inventory-list-icon-size, 28px) !important; }
 .item-grid-list .inv-wiki-row { padding: 4px 7px; }
+
+@media (max-width: 900px) {
+  .item-grid-list .inv-card-row,
+  .item-grid-list-compact .inv-card-row { gap: 6px; padding-inline: 8px; }
+  .item-grid-list .inv-row-cat,
+  .item-grid-list-compact .inv-row-cat { display: none; }
+  .item-grid-list .inv-row-values,
+  .item-grid-list-compact .inv-row-values { width: auto; }
+  .item-grid-list .inv-row-qty,
+  .item-grid-list-compact .inv-row-qty { width: 4em; }
+}
 
 /* ── Loading skeleton ──────────────────────────────────────────────────────── */
 

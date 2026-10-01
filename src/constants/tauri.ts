@@ -17,6 +17,7 @@ export const TAURI_EVENTS = {
   INVENTORY_UPDATE: "inventory-update",
   INVENTORY_REWARD: "inventory-reward",
   CATALOGUE_UPDATED: "catalogue-updated",
+  BULK_PRICES_UPDATED: "bulk-prices-updated",
   TRADE_COMPLETED: "trade-completed",
   TRADES_UPDATED: "trades-updated",
   BLOB_STATUS: "blob-status",

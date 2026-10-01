@@ -129,7 +129,9 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
 
   if (view === "icons") {
     return (
-      <div key={unique_name} className={`${baseClass} inv-card-icon-only`} title={`${name} ×${fmt(total)}${valueTitle(plat, ducats)}`}>
+      <div key={unique_name} className={`${baseClass} inv-card-icon-only`} role="img"
+        aria-label={`${name} ×${fmt(total)}${valueTitle(plat, ducats)}`}
+        title={`${name} ×${fmt(total)}${valueTitle(plat, ducats)}`}>
         <ItemImg imageName={image_name ?? undefined} category={category} size={52} />
       </div>
     );
@@ -139,6 +141,7 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
       <div key={unique_name} className={`${baseClass} inv-card-row`}>
         <button className={`inv-fav-star-row ${isFavorite ? "active" : ""}`}
           title={isFavorite ? "Remove from Modular Window" : "Add to Modular Window"}
+          aria-label={isFavorite ? "Remove from Modular Window" : "Add to Modular Window"}
           onClick={e => { e.stopPropagation(); onToggleFavorite(unique_name); }}>
           {isFavorite ? "★" : "☆"}
         </button>
@@ -156,6 +159,7 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
       <button
         className={`inv-fav-star ${isFavorite ? "active" : ""}`}
         title={isFavorite ? "Remove from Modular Window" : "Add to Modular Window"}
+        aria-label={isFavorite ? "Remove from Modular Window" : "Add to Modular Window"}
         onClick={e => { e.stopPropagation(); onToggleFavorite(unique_name); }}
       >{isFavorite ? "★" : "☆"}</button>
       {view !== "text-cards" && (
@@ -234,7 +238,9 @@ const InvCard = memo(function InvCard({
 
   if (view === "icons") {
     return (
-      <div className={`${baseClass} inv-card-icon-only`} title={`${name} (${fmt(qty)})${valueTitle(plat, ducats)}`}>
+      <div className={`${baseClass} inv-card-icon-only`} role="img"
+        aria-label={`${name} (${fmt(qty)})${valueTitle(plat, ducats)}`}
+        title={`${name} (${fmt(qty)})${valueTitle(plat, ducats)}`}>
         <ItemImg imageName={image_name ?? undefined} category={category} size={52} />
       </div>
     );
@@ -244,6 +250,7 @@ const InvCard = memo(function InvCard({
       <div className={`${baseClass} inv-card-row`}>
         <button className={`inv-fav-star-row ${isFavorite ? "active" : ""}`}
           title={isFavorite ? "Remove from Modular Window" : "Add to Modular Window"}
+          aria-label={isFavorite ? "Remove from Modular Window" : "Add to Modular Window"}
           onClick={e => { e.stopPropagation(); onToggleFavorite(unique_name); }}>
           {isFavorite ? "★" : "☆"}
         </button>
@@ -272,6 +279,7 @@ const InvCard = memo(function InvCard({
       <button
         className={`inv-fav-star ${isFavorite ? "active" : ""}`}
         title={isFavorite ? "Remove from Modular Window" : "Add to Modular Window"}
+        aria-label={isFavorite ? "Remove from Modular Window" : "Add to Modular Window"}
         onClick={e => { e.stopPropagation(); onToggleFavorite(unique_name); }}
       >{isFavorite ? "★" : "☆"}</button>
       <div className="inv-mastery-row">

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { TAURI_COMMANDS } from "../constants/tauri";
+import { listen } from "@tauri-apps/api/event";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 
 // ─── Singleton ────────────────────────────────────────────────────────────────
 // One IPC call for every consumer needing the daily bulk price map
@@ -14,6 +15,8 @@ type Snapshot = {
 
 let current: Snapshot = { bulkPrices: new Map(), loaded: false };
 let inFlight: Promise<void> | null = null;
+let refreshQueued = false;
+let listenerReady: Promise<void> | null = null;
 const subscribers = new Set<(s: Snapshot) => void>();
 
 function publish(next: Snapshot) {
@@ -24,17 +27,36 @@ function publish(next: Snapshot) {
 function fetchOnce(): Promise<void> {
   inFlight ??= invoke<Record<string, number>>(TAURI_COMMANDS.GET_BULK_PRICES)
     .then(raw => {
+      if (refreshQueued) return;
       const prices = new Map<string, number>();
       for (const [name, price] of Object.entries(raw ?? {})) prices.set(name, price);
       publish({ bulkPrices: prices, loaded: true });
     })
     .catch(() => {
-      publish({ ...current, loaded: false });
+      if (!refreshQueued) publish({ ...current, loaded: false });
     })
     .finally(() => {
       inFlight = null;
+      if (refreshQueued) {
+        refreshQueued = false;
+        void fetchOnce();
+      }
     });
   return inFlight;
+}
+
+function ensureListener(): Promise<void> {
+  listenerReady ??= listen(TAURI_EVENTS.BULK_PRICES_UPDATED, () => {
+    if (inFlight) {
+      refreshQueued = true;
+    } else {
+      void fetchOnce();
+    }
+  }).then(() => undefined).catch(error => {
+    listenerReady = null;
+    throw error;
+  });
+  return listenerReady;
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -51,7 +73,7 @@ export function useBulkPrices(): UseBulkPricesReturn {
   useEffect(() => {
     subscribers.add(setSnapshot);
     if (subscribers.size === 1) {
-      fetchOnce();
+      void ensureListener().then(() => fetchOnce(), () => fetchOnce());
     } else {
       setSnapshot(current);
     }
@@ -61,9 +83,7 @@ export function useBulkPrices(): UseBulkPricesReturn {
   }, []);
 
   const refresh = useCallback(() => {
-    // Skip if a fetch is already running (mount triggers one via fetchOnce).
-    if (inFlight) return;
-    fetchOnce();
+    void ensureListener().then(() => fetchOnce(), () => fetchOnce());
   }, []);
 
   return { ...snapshot, refresh };

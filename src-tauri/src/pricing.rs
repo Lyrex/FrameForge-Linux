@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 use crate::app_state::AppState;
 use crate::wfm::to_wfm_slug;
@@ -9,7 +9,7 @@ use crate::{cache, refresh};
 /// Delete the bulk price cache and re-fetch from FrameForgePricing.
 /// Updates both relics_run_prices and the WFM price cache in-place.
 #[tauri::command]
-pub(crate) async fn refresh_bulk_prices(state: State<'_, AppState>) -> Result<(), String> {
+pub(crate) async fn refresh_bulk_prices(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let _ = std::fs::remove_file(&state.relics_run_prices_cache_path);
 
     let (by_name, by_slug) = tauri::async_runtime::spawn_blocking(fetch_relics_run_data)
@@ -30,6 +30,7 @@ pub(crate) async fn refresh_bulk_prices(state: State<'_, AppState>) -> Result<()
     for (slug, price) in by_slug {
         state.wfm.cache_price(slug, Some(price));
     }
+    let _ = app.emit(crate::events::BULK_PRICES_UPDATED, ());
     Ok(())
 }
 
@@ -119,6 +120,7 @@ pub fn refresh_bulk_prices_task(app: &tauri::AppHandle, _force: bool) -> Result<
     for (slug, price) in by_slug {
         state.wfm.cache_price(slug, Some(price));
     }
+    let _ = app.emit(crate::events::BULK_PRICES_UPDATED, ());
     Ok(())
 }
 
