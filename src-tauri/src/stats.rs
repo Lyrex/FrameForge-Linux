@@ -3,6 +3,7 @@ use tauri_plugin_dialog::DialogExt;
 use crate::app_state::AppState;
 use crate::db::{QuantityChange, SnapshotPoint, TrackedItem};
 use crate::db;
+use crate::events;
 
 
 // ─── Change log ───────────────────────────────────────────────────────────────
@@ -69,7 +70,7 @@ pub(crate) fn delete_arbitration_run(app: tauri::AppHandle, state: State<AppStat
     if !deleted {
         return Err("run not found; the history shown may be out of date".to_string());
     }
-    app.emit("arbitration-runs-changed", ()).ok();
+    app.emit(events::ARBITRATION_RUNS_CHANGED, ()).ok();
     Ok(())
 }
 
@@ -125,6 +126,6 @@ pub(crate) async fn import_stats(
         let mut conn = state.conn.lock().map_err(|e| e.to_string())?;
         db::import_document(&mut conn, &doc).map_err(|e| e.to_string())?
     };
-    app.emit("stats-changed", ()).ok();
+    app.emit(events::STATS_CHANGED, ()).ok();
     Ok(Some(counts))
 }

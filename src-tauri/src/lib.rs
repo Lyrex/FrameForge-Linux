@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use tracing::{info, warn};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
+use tauri::{Manager, State};
 use app_state::{load_corrections, AppState};
 use catalogue::{CATALOGUE_CACHE, patch_catalogue_items};
 use inventory_state::load_inventory_state_cache;
@@ -13,6 +13,7 @@ use wfm::{PriceQuote, Wfm};
 
 pub mod arbitration;
 mod arbitrations;
+mod blob_capture;
 mod cache;
 mod db;
 // EE.log lives at a different path per platform (Proton prefix on Linux), so
@@ -39,6 +40,7 @@ mod catalogue;
 mod companion_api;
 mod credentials;
 mod diagnostics;
+mod events;
 mod image_cache;
 mod inventory_state;
 mod log_watcher;
@@ -52,6 +54,7 @@ mod monitor;
 mod platform;
 mod pricing;
 mod relic_pick;
+mod reward_watcher;
 mod rivens;
 mod settings;
 mod stats;
@@ -61,6 +64,63 @@ mod wfm_commands;
 mod wfm_queue;
 mod wfm_top;
 mod worldstate;
+
+// ─── Structs ──────────────────────────────────────────────────────────────────
+
+pub struct OcrParams<'a> {
+    pixels: &'a [u8],
+    pix_w: u32,
+    pix_h: u32,
+    game_h: u32,
+    catalog: &'a [(String, String)],
+    capture_info: &'a str,
+    hint_squad_size: Option<usize>,
+    player_names: &'a [String],
+}
+
+// ─── Live monitor ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn start_monitor(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    if state.monitor_active.swap(true, Ordering::SeqCst) {
+        return Ok(()); // already running
+    }
+
+    let catalog = {
+        let items = state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let relic_drops = state.relic_drops.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        monitor::build_monitor_catalog(&items, &state.corrections, &relic_drops)
+    };
+
+    // Channel for the blob capture thread to deliver a parsed BlobInventory to the monitor loop.
+    let (blob_tx, blob_rx) = std::sync::mpsc::channel::<memory_scanner::BlobInventory>();
+    blob_capture::spawn_blob_capture_thread(blob_capture::BlobCaptureDeps {
+        app: app.clone(),
+        flag: state.monitor_active.clone(),
+        db_path: state.db_path.clone(),
+        inventory_state_cache_path: state.inventory_state_cache_path.clone(),
+        mastery_progress: state.mastery_progress.clone(),
+        shared_quantities: state.current_quantities.clone(),
+        shared_unique: state.unique_quantities.clone(),
+        shared_mods: state.current_mods.clone(),
+        shared_crafting: state.current_crafting.clone(),
+        blob_log_enabled: state.blob_log_enabled.clone(),
+        blob_log_dir: state.blob_log_dir.clone(),
+        blob_sync_pending: state.blob_sync_pending.clone(),
+        debug_cat_enabled: state.debug_cat_enabled.clone(),
+        unmatched_paths_dir: state.unmatched_paths_dir.clone(),
+        force_pid_check: state.force_pid_check.clone(),
+        blob_rx,
+        blob_tx,
+    }, catalog);
+
+    let debug_path = state.roots.state.join("frameforge_reward_debug.txt");
+    let last_found_path = state.roots.state.join("frameforge_last_reward.txt");
+    monitor::start_memory_trigger(app);
+    monitor::start_legacy_reward_worker(state.monitor_active.clone(), debug_path, last_found_path);
+
+    Ok(())
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -105,6 +165,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let roots = paths::init()?;
     // Before the DB open and cache loads below, so their spans are captured.
     logging::init(&roots.state);
+    if let Some(root) = paths::root() {
+        info!("FRAMEFORGE_ROOT: keeping all files under {}", root.display());
+    }
     let paths::Roots { config: config_dir, data: data_dir, cache: cache_dir, state: state_dir } = &roots;
 
     let db_path = data_dir.join("data.db");
@@ -150,7 +213,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // If a factory-reset was requested on the previous run, finish it now:
     // the DB files can only be deleted before a new connection is opened.
-    let reset_marker = std::env::temp_dir().join("frameforge_factory_reset");
+    let reset_marker = paths::factory_reset_marker();
     if reset_marker.exists() {
         let _ = std::fs::remove_file(&reset_marker);
         for suffix in ["data.db", "data.db-wal", "data.db-shm"] {
@@ -313,6 +376,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     include_bytes!("../icons/icon.png")
                 ).map_err(|e| e.to_string())?;
                 window.set_icon(icon).map_err(|e| e.to_string())?;
+                if paths::root().is_some() {
+                    let _ = window.set_title("FrameForge Dev");
+                }
 
                 // Restore saved window geometry, then show (window starts hidden so
                 // it doesn't flash at the default position on the primary monitor first)
@@ -360,12 +426,24 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
 
+            {
+                let state = app.state::<AppState>();
+                reward_watcher::spawn_reward_watcher_thread(reward_watcher::RewardWatcherDeps {
+                    app: app.handle().clone(),
+                    flag: state.monitor_active.clone(),
+                    auto_capture_dir: state.auto_capture_dir.clone(),
+                });
+            }
+
             // Every cache is revalidated from here on: the first tick, five
             // seconds in, walks the whole table, and a cache still inside its
             // TTL costs a disk read.
             refresh::spawn(app.handle().clone());
 
-            updater::spawn_launch_check(app.handle().clone());
+            // A development run must never install a release over itself.
+            if paths::root().is_none() {
+                updater::spawn_launch_check(app.handle().clone());
+            }
 
             // Sync commands and window events run on the GTK thread, so a stall
             // there delays every IPC message.
@@ -439,7 +517,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             pricing::refresh_all_caches,
             pricing::get_cache_statuses,
             wfm_commands::wfm_set_status,
-            log_watcher::start_log_watcher,
             rivens::ocr_riven_log_error,
             rivens::save_riven_roll,
             rivens::get_saved_riven_rolls,
@@ -471,6 +548,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             wfm_commands::wfm_create_order,
             wfm_commands::wfm_update_order,
             wfm_commands::wfm_delete_order,
+            wfm_commands::wfm_close_order,
             wfm_commands::wfm_create_riven_auction,
             wfm_commands::wfm_switch_riven_type,
             wfm_commands::wfm_get_my_riven_auctions,
@@ -498,7 +576,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             diagnostics::open_debug_folder,
             diagnostics::clear_debug_data,
             diagnostics::get_debug_data_size,
-            monitor::start_monitor,
+            start_monitor,
             monitor::stop_monitor,
             monitor::poke_scan,
             monitor::set_relic_pick_enabled,

@@ -3,7 +3,7 @@ use tracing::{debug, info, warn};
 use tauri::{Emitter, Manager, State};
 use crate::app_state::AppState;
 use std::sync::atomic::Ordering;
-use crate::{db, log_parser, overlay_linux};
+use crate::{db, events, log_parser, overlay_linux};
 
 
 // ── Overlay windows ───────────────────────────────────────────────────────────
@@ -58,7 +58,7 @@ pub(crate) fn test_arbitration_overlay(app: tauri::AppHandle) -> String {
         vitus_per_minute: 1.67,
     };
     show_overlay(&app, "arbitration-overlay");
-    let _ = app.emit("arbitration-run-ended", &summary);
+    let _ = app.emit(events::ARBITRATION_RUN_ENDED, &summary);
     "Emitted arbitration-run-ended with a sample run".to_string()
 }
 
@@ -79,7 +79,7 @@ pub(crate) fn test_relic_pick_overlay(era: String, app: tauri::AppHandle) -> Str
     let payload = build_relic_pick_payload(&era, &app);
     let relic_count = payload["relics"].as_array().map_or(0, |a| a.len());
     relic_pick_show(&app);
-    let _ = app.emit("relic-pick-open", &payload);
+    let _ = app.emit(events::RELIC_PICK_OPEN, &payload);
     format!("Emitted relic-pick-open: era={}, {} relics in inventory", era, relic_count)
 }
 

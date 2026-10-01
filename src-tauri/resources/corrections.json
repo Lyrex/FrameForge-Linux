@@ -1251,5 +1251,89 @@
             "kind": "quest",
             "quest": "Jade Shadows: Constellations"
         }
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/DuelistBowBlueprint",
+        "name": "Cintra Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/DuelistBowGrip",
+        "name": "Cintra Grip",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/DuelistBowLowerLimb",
+        "name": "Cintra Lower Limb",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/DuelistBowString",
+        "name": "Cintra String",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/Weapons/WeaponParts/DuelistBowUpperLimb",
+        "name": "Cintra Upper Limb",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/WarframeRecipes/CitrinePrimeChassisComponent",
+        "name": "Citrine Prime Chassis Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/WarframeRecipes/CitrinePrimeHelmetComponent",
+        "name": "Citrine Prime Neuroptics Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/WarframeRecipes/CitrinePrimeSystemsComponent",
+        "name": "Citrine Prime Systems Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": true,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/WarframeRecipes/NarinBlueprint",
+        "name": "Narin Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/WarframeRecipes/NarinChassisComponent",
+        "name": "Narin Chassis Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/WarframeRecipes/NarinHelmetComponent",
+        "name": "Narin Neuroptics Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
+    },
+    {
+        "path": "/Lotus/Types/Recipes/WarframeRecipes/NarinSystemsComponent",
+        "name": "Narin Systems Blueprint",
+        "category": "Blueprints",
+        "tradeable_wfm": false,
+        "is_stackable": true
     }
 ]

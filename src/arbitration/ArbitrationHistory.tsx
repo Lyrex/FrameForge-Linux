@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { TAURI_EVENTS } from "../constants/tauri";
 import { fmtMs } from "../TimerHelper";
 import {
   completed, filterRuns, summarize, MISSION_TYPES,
@@ -72,7 +73,7 @@ export default function ArbitrationHistory({ clockFormat }: { clockFormat: Clock
   useEffect(() => {
     void load();
     // Runs land from the log watcher while this tab is open.
-    const unlisten = listen("arbitration-runs-changed", () => void load());
+    const unlisten = listen(TAURI_EVENTS.ARBITRATION_RUNS_CHANGED, () => void load());
     return () => { void unlisten.then(fn => fn()); };
   }, [load]);
 

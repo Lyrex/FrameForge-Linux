@@ -45,8 +45,22 @@ impl std::error::Error for PathError {
 const LEGACY_DIR: &str = "warframe-companion";
 
 /// When set, all four roots become subdirectories of this path. Tests use it to
-/// keep off the real user directories.
+/// keep off the real user directories, and `FRAMEFORGE_ROOT` sets it so a
+/// development run leaves the installed app's files alone.
 static ROOT_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn root() -> Option<&'static Path> {
+    ROOT_OVERRIDE.get().map(PathBuf::as_path)
+}
+
+/// Dev and installed runs share the temp directory, so a marker there from a
+/// reset in one would wipe the other's database on its next launch.
+pub fn factory_reset_marker() -> PathBuf {
+    match root() {
+        Some(root) => root.join("factory-reset"),
+        None => std::env::temp_dir().join("frameforge_factory_reset"),
+    }
+}
 
 /// Fails if a root has already been chosen, which is why tests share one.
 #[cfg(test)]
@@ -67,6 +81,9 @@ pub struct Roots {
 /// that it ran. A root deleted mid-session comes back through the write
 /// helpers, which recreate the parent of whatever they write.
 pub fn init() -> Result<Roots, PathError> {
+    if let Some(root) = std::env::var_os("FRAMEFORGE_ROOT").filter(|root| !root.is_empty()) {
+        let _ = ROOT_OVERRIDE.set(PathBuf::from(root));
+    }
     let roots = Roots {
         config: ensure(config_dir()?)?,
         data: ensure(data_dir()?)?,

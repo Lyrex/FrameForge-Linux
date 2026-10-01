@@ -395,6 +395,23 @@ pub(crate) fn load_inventory_state_cache(path: &PathBuf) -> InventoryStateCache 
         .unwrap_or_default()
 }
 
+/// Shared read-modify-write for inventory_state_cache.json: loads via
+/// `load_inventory_state_cache` (so every writer sees the same read-or-default
+/// behavior), applies `mutate`, then serializes and atomically writes back.
+/// Callers that used to hand-roll this (read → mutate → atomic_write) should
+/// go through this instead so there's one place that owns the file's
+/// read/write contract.
+pub(crate) fn persist_inventory_state_cache(
+    path: &PathBuf,
+    mutate: impl FnOnce(&mut InventoryStateCache),
+) -> Result<(), String> {
+    let mut cache = load_inventory_state_cache(path);
+    mutate(&mut cache);
+    serde_json::to_string(&cache)
+        .map_err(|e| e.to_string())
+        .and_then(|json| crate::cache::atomic_write(path, json.as_bytes()).map_err(|e| e.to_string()))
+}
+
 pub(crate) fn persist_complete_inventory(
     blob: &memory_scanner::BlobInventory,
     previous_unique: &HashMap<String, i64>,

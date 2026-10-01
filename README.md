@@ -1,4 +1,4 @@
-# FrameForge `v4.4.0`
+# FrameForge `v4.5.0`
 
 A desktop companion for Warframe — live inventory, market prices, trading, timers, relic overlay, and riven analysis. Read-only, no game modification.
 
@@ -198,6 +198,16 @@ pnpm dev
 # In another terminal:
 cd src-tauri
 cargo run
+```
+
+A development run shares its settings, database, caches, logs and
+warframe.market login with the installed app. To keep them apart, set
+`FRAMEFORGE_ROOT` to an absolute path. FrameForge then keeps everything under
+that directory, titles its window "FrameForge Dev" and skips the update check
+at launch:
+
+```sh
+FRAMEFORGE_ROOT="$HOME/.frameforge-dev" cargo run
 ```
 
 Packages build with the normal command:

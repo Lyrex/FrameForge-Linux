@@ -8,6 +8,7 @@ use crate::resolver::ItemResolver;
 use crate::wfm::{to_wfm_slug, Wfm, WfmItem, WfmRivenAttribute};
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RivenAuctionParams {
     weapon_url_name: String,
     riven_name: String,
@@ -216,6 +217,13 @@ pub(crate) async fn wfm_update_order(state: State<'_, AppState>, order_id: Strin
 #[tauri::command]
 pub(crate) async fn wfm_delete_order(state: State<'_, AppState>, order_id: String) -> Result<(), String> {
     off_main(&state, move |wfm| wfm.delete_order(&order_id)).await
+}
+
+/// Complete part or all of an order and record the transaction on WFM.
+#[tracing::instrument(level = "debug", skip_all)]
+#[tauri::command]
+pub(crate) async fn wfm_close_order(state: State<'_, AppState>, order_id: String, quantity: u32) -> Result<serde_json::Value, String> {
+    off_main(&state, move |wfm| wfm.close_order(&order_id, quantity)).await
 }
 
 /// Post a revealed riven as an auction on warframe.market.

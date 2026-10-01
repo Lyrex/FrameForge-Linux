@@ -3,6 +3,7 @@ use tauri::{Emitter, State};
 use crate::app_state::AppState;
 use crate::cache::atomic_write;
 use crate::credentials::wfm_delete_credentials;
+use crate::events;
 use crate::paths;
 
 // ==============================================================================
@@ -28,7 +29,7 @@ pub(crate) async fn factory_reset(app: tauri::AppHandle, state: State<'_, AppSta
     let _ = std::fs::remove_dir_all(cache_dir);
 
     // Ask the next launch to delete the DB once it can (before opening a connection).
-    let marker = std::env::temp_dir().join("frameforge_factory_reset");
+    let marker = paths::factory_reset_marker();
     std::fs::write(&marker, b"").map_err(|e| e.to_string())?;
 
     app.restart();
@@ -84,7 +85,7 @@ pub(crate) fn save_settings(app: tauri::AppHandle, state: State<AppState>, json:
             for (k, v) in new_map { existing.insert(k, v); }
         }
     })?;
-    app.emit("settings-updated", ()).ok();
+    app.emit(events::SETTINGS_UPDATED, ()).ok();
     Ok(())
 }
 

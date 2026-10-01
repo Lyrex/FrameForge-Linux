@@ -47,6 +47,7 @@ interface UseSettingsReturn {
   wfmInvisibleOnClose: boolean;
   wfmAutoInvisible: boolean;
   wfmAutoInvisibleMins: number;
+  wfmRecordSales: boolean;
   arbFavorites: string[];
   arbLeadMins: number;
   arbTierFilter: TierKey[];
@@ -75,6 +76,7 @@ interface UseSettingsReturn {
   setWfmInvisibleOnClose: React.Dispatch<React.SetStateAction<boolean>>;
   setWfmAutoInvisible: React.Dispatch<React.SetStateAction<boolean>>;
   setWfmAutoInvisibleMins: React.Dispatch<React.SetStateAction<number>>;
+  setWfmRecordSales: React.Dispatch<React.SetStateAction<boolean>>;
   setArbFavorites: React.Dispatch<React.SetStateAction<string[]>>;
   setArbLeadMins: React.Dispatch<React.SetStateAction<number>>;
   setArbTierFilter: React.Dispatch<React.SetStateAction<TierKey[]>>;
@@ -130,6 +132,7 @@ export function useSettings(
   const [wfmInvisibleOnClose, setWfmInvisibleOnClose] = useState(false);
   const [wfmAutoInvisible, setWfmAutoInvisible] = useState(false);
   const [wfmAutoInvisibleMins, setWfmAutoInvisibleMins] = useState(30);
+  const [wfmRecordSales, setWfmRecordSales] = useState(false);
   const [arbFavorites, setArbFavorites] = useState<string[]>([]);
   const [arbLeadMins, setArbLeadMins] = useState(DEFAULT_LEAD_MINS);
   // The filter starts wide and the alert rule starts empty: showing every hour
@@ -169,6 +172,7 @@ export function useSettings(
     wfmInvisibleOnClose: false,
     wfmAutoInvisible: false,
     wfmAutoInvisibleMins: 30,
+    wfmRecordSales: false,
     relicPickEnabled: true,
     relicPickPriority: DEFAULT_RELIC_PICK_PRIORITY,
     relicPickRefinement: DEFAULT_RELIC_PICK_REFINEMENT,
@@ -256,6 +260,7 @@ export function useSettings(
         }
         if (typeof s.wfmAutoInvisible === "boolean") setWfmAutoInvisible(s.wfmAutoInvisible);
         if (typeof s.wfmAutoInvisibleMins === "number") setWfmAutoInvisibleMins(s.wfmAutoInvisibleMins);
+        if (typeof s.wfmRecordSales === "boolean") setWfmRecordSales(s.wfmRecordSales);
         if (Array.isArray(s.arbitrationFavorites)) setArbFavorites(s.arbitrationFavorites.filter((x: unknown) => typeof x === "string"));
         if (typeof s.arbitrationLeadMins === "number") setArbLeadMins(clampLead(s.arbitrationLeadMins));
         const storedFilter = sanitizeTierKeys(s.arbitrationTierFilter);
@@ -316,6 +321,7 @@ export function useSettings(
     wfmInvisibleOnClose,
     wfmAutoInvisible,
     wfmAutoInvisibleMins,
+    wfmRecordSales,
     arbFavorites,
     arbLeadMins,
     arbTierFilter,
@@ -344,6 +350,7 @@ export function useSettings(
     setWfmInvisibleOnClose,
     setWfmAutoInvisible,
     setWfmAutoInvisibleMins,
+    setWfmRecordSales,
     setArbFavorites,
     setArbLeadMins,
     setArbTierFilter,

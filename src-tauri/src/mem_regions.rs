@@ -1,72 +1,344 @@
 //! Memory-region sources for the blob-stitch engine.
 //!
-//! `LinuxRegionSource` (declared in `memory_scanner_linux`) walks a live
-//! process via `/proc`; `RecordedRegions` replays recorded regions, so tests
-//! can run without the game.
+//! `ProcessRegions` reads regions from a running game via the platform
+//! abstraction. `RecordedRegions` replays recorded regions for tests.
+
+use crate::platform::{MemoryRegionInfo, Platform, ProcessAccess, ProcessHandle};
+use std::cell::Cell;
+
+/// Statistics from a region walk, returned by `RegionSource::stats`.
+#[derive(Debug, Default, Clone)]
+pub struct RegionStats {
+    pub regions_skipped: usize,
+    pub enumerate_ms: f64,
+    pub read_ms: f64,
+}
+
+/// Cell-based stats for interior mutability in `&self` methods.
+#[derive(Debug, Default)]
+struct Stats {
+    regions_skipped: Cell<usize>,
+    enumerate_ms: Cell<f64>,
+    read_ms: Cell<f64>,
+}
+
+impl Stats {
+    fn snapshot(&self) -> RegionStats {
+        RegionStats {
+            regions_skipped: self.regions_skipped.get(),
+            enumerate_ms: self.enumerate_ms.get(),
+            read_ms: self.read_ms.get(),
+        }
+    }
+}
 
 /// Streams a target's readable memory regions in ascending-address order.
 ///
-/// Each `next_region` yields `(base_address, bytes)` for one region, and
-/// `None` ends the walk. The engine relies only on ascending addresses and
-/// on `bytes` starting at `base_address`. Filtering (protection, size, image
-/// sections), read caps, and skipping unreadable regions are the source's
-/// own policy.
+/// Each `next_region` yields `(base_address, bytes)` for one chunk of a
+/// region, and `None` ends the walk. Large regions are yielded in
+/// `chunk`-sized pieces so the caller never misses data beyond `read_cap`.
 ///
-/// The bytes are lent, valid until the next call. The walk copies what it
-/// keeps anyway, and lending lets a source reuse one read buffer instead of
-/// allocating and zeroing up to a chunk-cap-sized `Vec` per region.
+/// ## Contract
 ///
-/// `read_at` serves the cached-blob fast path. It returns up to `max_len`
-/// bytes starting at `addr` itself, not at the containing region's base. It
-/// also returns the address the stitch should continue at. The size filter
-/// of `next_region` does not apply: a caller probing a known address only
-/// cares whether it is still readable. Either empty bytes or `None` ends the
-/// stitch. A source can report an unreadable address as whichever of the two
-/// suits how it enumerates memory.
+/// The stitch splices what `read_at` returns into one contiguous blob, so a
+/// source must never paper over a hole: the bytes it returns for `addr` have
+/// to live at `addr`, and an address it cannot vouch for ends the stitch
+/// rather than skipping forward to the next readable mapping.
 ///
-/// The stitch splices the returned bytes into one contiguous blob, so a
-/// source must never paper over a hole. Bytes it returns for `addr` must
-/// actually live at `addr`. An address it cannot vouch for ends the stitch
-/// instead of skipping forward to the next readable mapping. Whether the
-/// answers come from live queries or from a snapshot taken at open is the
-/// source's own policy. A snapshot only ages by the milliseconds a probe
-/// runs.
+/// On Linux, `process_vm_readv` returns a short read (not an error) when a
+/// read crosses from a mapped page into an unmapped one. The source must
+/// return only the bytes that were actually read and let the caller decide
+/// whether to continue.
+///
+/// `read_at` serves the cached-blob fast path. It returns the bytes starting
+/// at `addr` itself, plus the address just past the bytes read. `max_len` is
+/// how many bytes the caller can still use.
 pub trait RegionSource {
+    /// Yields the next readable chunk. The bytes are valid until the next
+    /// call to `next_region`. Returns `None` when the walk is done or the
+    /// deadline has passed.
     fn next_region(&mut self) -> Option<(usize, &[u8])>;
+
+    /// The region containing `addr`, or `None` when nothing is mapped there.
+    /// On Windows, free address space is reported as a region with
+    /// `is_committed: false`; callers must check `is_committed` rather than
+    /// reading `Some` as "readable".
+    fn region_at(&self, _addr: usize) -> Option<MemoryRegionInfo> {
+        // Default: query one region from the handle.
+        // Overridden by ProcessRegions which owns the handle.
+        None
+    }
+
+    /// Read at most `max_len` bytes starting at `addr`. The returned bytes
+    /// live at `addr`; a short read means the address is partially unmapped.
     fn read_at(&self, addr: usize, max_len: usize) -> Option<(usize, Vec<u8>)>;
+
+    fn stats(&self) -> RegionStats { RegionStats::default() }
 }
+
+/// Caller-supplied predicate for skipping uninteresting memory regions.
+pub type RegionFilter = Box<dyn Fn(&MemoryRegionInfo) -> bool + Send>;
+
+/// Open a region source for the given process. Returns `None` on unsupported
+/// platforms or when the process cannot be opened.
+///
+/// The Linux scanner opens its sources from handles it already holds, so
+/// nothing on Linux calls this.
+#[allow(dead_code)]
+pub fn open_region_source(
+    pid: u32,
+    min_region: usize,
+    read_cap: usize,
+    chunk: usize,
+    deadline: Option<std::time::Instant>,
+    filter: Option<RegionFilter>,
+) -> Option<Box<dyn RegionSource>> {
+    let handle = Platform::open_process(pid).ok()?;
+    Some(Box::new(ProcessRegions::new(handle, min_region, read_cap, chunk, deadline, filter)))
+}
+
+// ─── ProcessRegions ───────────────────────────────────────────────────────────
+
+/// Platform-independent region source that reads through a `ProcessHandle`.
+/// The handle is owned so `Box<dyn RegionSource>` needs no lifetime parameter.
+///
+/// Large regions are yielded in `chunk`-sized pieces. The walk advances to
+/// the next region only after all chunks of the current region have been
+/// handed out, so no data is lost beyond `read_cap`.
+pub struct ProcessRegions {
+    handle: Box<dyn ProcessHandle>,
+    /// The walk reads the map once, on the first `next_region`. Linux
+    /// `regions_from` re-parses `/proc/pid/maps` on every call, and a Proton
+    /// game has thousands of mappings.
+    regions: Option<std::vec::IntoIter<MemoryRegionInfo>>,
+    min_region: usize,
+    read_cap: usize,
+    chunk: usize,
+    deadline: Option<std::time::Instant>,
+    filter: Option<RegionFilter>,
+    /// Current region being yielded in chunks.
+    current: Option<MemoryRegionInfo>,
+    /// Byte offset within the current region for the next chunk.
+    offset: usize,
+    buf: Vec<u8>,
+    stats: Stats,
+}
+
+impl ProcessRegions {
+    pub fn new(
+        handle: Box<dyn ProcessHandle>,
+        min_region: usize,
+        read_cap: usize,
+        chunk: usize,
+        deadline: Option<std::time::Instant>,
+        filter: Option<RegionFilter>,
+    ) -> Self {
+        Self {
+            handle,
+            regions: None,
+            min_region,
+            read_cap,
+            chunk,
+            deadline,
+            filter,
+            current: None,
+            offset: 0,
+            buf: Vec::new(),
+            stats: Stats::default(),
+        }
+    }
+
+    /// Check whether the deadline has been exceeded.
+    fn expired(&self) -> bool {
+        self.deadline.is_some_and(|d| std::time::Instant::now() >= d)
+    }
+
+    fn next_passing_region(&mut self) -> Option<MemoryRegionInfo> {
+        if self.regions.is_none() {
+            let t = std::time::Instant::now();
+            let regions: Vec<_> = self.handle.regions_from(0).collect();
+            self.regions = Some(regions.into_iter());
+            self.stats.enumerate_ms.set(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        loop {
+            if self.expired() { return None; }
+            let region = self.regions.as_mut()?.next()?;
+
+            if !region.is_committed || !region.is_readable {
+                self.stats.regions_skipped.set(self.stats.regions_skipped.get() + 1);
+                continue;
+            }
+            if let Some(ref f) = self.filter {
+                if !f(&region) {
+                    self.stats.regions_skipped.set(self.stats.regions_skipped.get() + 1);
+                    continue;
+                }
+            }
+            if region.region_size < self.min_region {
+                self.stats.regions_skipped.set(self.stats.regions_skipped.get() + 1);
+                continue;
+            }
+            return Some(region);
+        }
+    }
+}
+
+impl RegionSource for ProcessRegions {
+    fn next_region(&mut self) -> Option<(usize, &[u8])> {
+        loop {
+            if self.expired() { return None; }
+
+            // If we have a current region, yield the next chunk from it.
+            if let Some(ref region) = self.current {
+                if self.offset < region.region_size {
+                    let base = region.base_address + self.offset;
+                    let remaining = region.region_size - self.offset;
+                    let len = self.chunk.min(self.read_cap).min(remaining);
+
+                    let t = std::time::Instant::now();
+                    // The buffer only grows. Resizing it down and back up
+                    // would zero up to `chunk` bytes again after every small
+                    // region.
+                    if self.buf.len() < len {
+                        self.buf.resize(len, 0);
+                    }
+                    let n = self.handle.read_into(base, &mut self.buf[..len]);
+                    self.stats.read_ms.set(
+                        self.stats.read_ms.get() + t.elapsed().as_secs_f64() * 1000.0,
+                    );
+
+                    self.offset += len;
+
+                    // A failed or short chunk does not end the region, because
+                    // pages past a fault can still be mapped and the blob may
+                    // sit in them.
+                    return Some((base, &self.buf[..n]));
+                }
+                // Region fully consumed.
+                self.current = None;
+                self.offset = 0;
+            }
+
+            // Fetch the next passing region.
+            let region = self.next_passing_region()?;
+            self.current = Some(region);
+            self.offset = 0;
+        }
+    }
+
+    fn region_at(&self, addr: usize) -> Option<MemoryRegionInfo> {
+        // Check if addr falls within the current region first.
+        if let Some(ref region) = self.current {
+            let region_end = region.base_address + region.region_size;
+            if region.base_address <= addr && addr < region_end {
+                return Some(region.clone());
+            }
+        }
+        // Otherwise query the handle. The borrow is short-lived.
+        self.handle.regions_from(addr)
+            .next()
+            .filter(|r| r.base_address <= addr)
+    }
+
+    fn read_at(&self, addr: usize, max_len: usize) -> Option<(usize, Vec<u8>)> {
+        let read_len = self.read_cap.min(max_len);
+        let mut buf = vec![0u8; read_len];
+        let t = std::time::Instant::now();
+        let n = self.handle.read_into(addr, &mut buf);
+        self.stats.read_ms.set(
+            self.stats.read_ms.get() + t.elapsed().as_secs_f64() * 1000.0,
+        );
+
+        if n == 0 {
+            return Some((addr, Vec::new()));
+        }
+        buf.truncate(n);
+        Some((addr + n, buf))
+    }
+
+    fn stats(&self) -> RegionStats {
+        self.stats.snapshot()
+    }
+}
+
+// ─── RecordedRegions (test only) ─────────────────────────────────────────────
 
 #[cfg(test)]
 pub struct RecordedRegions {
     regions: Vec<(usize, Vec<u8>)>,
     pos: usize,
+    buf: Vec<u8>,
 }
 
 #[cfg(test)]
 impl RecordedRegions {
     pub fn new(regions: Vec<(usize, Vec<u8>)>) -> Self {
-        Self { regions, pos: 0 }
+        Self { regions, pos: 0, buf: Vec::new() }
     }
 }
 
 #[cfg(test)]
 impl RegionSource for RecordedRegions {
     fn next_region(&mut self) -> Option<(usize, &[u8])> {
-        let pos = self.pos;
+        let (base, bytes) = self.regions.get(self.pos)?;
+        self.buf.clear();
+        self.buf.extend_from_slice(bytes);
         self.pos += 1;
-        let (base, bytes) = self.regions.get(pos)?;
-        Some((*base, bytes.as_slice()))
+        Some((*base, &self.buf))
     }
 
     fn read_at(&self, addr: usize, max_len: usize) -> Option<(usize, Vec<u8>)> {
         for (base, bytes) in &self.regions {
             let end = base + bytes.len();
             if (*base..end).contains(&addr) {
-                let bytes = &bytes[addr - base..];
-                let bytes = &bytes[..bytes.len().min(max_len)];
-                return Some((addr + bytes.len(), bytes.to_vec()));
+                let avail = (end - addr).min(max_len);
+                return Some((addr + avail, bytes[addr - base..][..avail].to_vec()));
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::RegionBacking;
+
+    struct FaultInMiddle {
+        map_reads: std::rc::Rc<Cell<usize>>,
+    }
+
+    impl ProcessHandle for FaultInMiddle {
+        fn read_into(&self, addr: usize, buf: &mut [u8]) -> usize {
+            if addr == 0x1001 { return 0; }
+            buf[0] = addr as u8;
+            1
+        }
+
+        fn regions_from(&self, _from: usize) -> Box<dyn Iterator<Item = MemoryRegionInfo> + '_> {
+            self.map_reads.set(self.map_reads.get() + 1);
+            Box::new(std::iter::once(MemoryRegionInfo {
+                base_address: 0x1000,
+                region_size: 3,
+                is_committed: true,
+                is_readable: true,
+                is_writable: true,
+                is_executable: false,
+                backing: RegionBacking::Anonymous,
+            }))
+        }
+    }
+
+    #[test]
+    fn walk_reads_past_a_faulted_chunk_and_reads_the_map_once() {
+        let map_reads = std::rc::Rc::new(Cell::new(0));
+        let handle = FaultInMiddle { map_reads: map_reads.clone() };
+        let mut source = ProcessRegions::new(Box::new(handle), 0, 1, 1, None, None);
+        let mut chunks = Vec::new();
+        while let Some((addr, bytes)) = source.next_region() {
+            chunks.push((addr, bytes.to_vec()));
+        }
+        assert_eq!(chunks, vec![(0x1000, vec![0x00]), (0x1001, vec![]), (0x1002, vec![0x02])]);
+        assert_eq!(map_reads.get(), 1);
     }
 }

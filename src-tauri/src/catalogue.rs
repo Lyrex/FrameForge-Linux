@@ -2,11 +2,10 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use tauri::{Emitter, Manager, State};
 use crate::app_state::AppState;
-use crate::cache::atomic_write;
-use crate::inventory_state::{load_inventory_state_cache, CachedItem};
+use crate::inventory_state::{persist_inventory_state_cache, CachedItem};
 use crate::monitor::CraftingJob;
 use crate::wfcd::{RecipeComponent, WfcdItem};
-use crate::{cache, mastery_recipe, mastery_rules, wfcd};
+use crate::{cache, events, mastery_recipe, mastery_rules, wfcd};
 
 // ─── Item catalog ─────────────────────────────────────────────────────────────
 
@@ -63,7 +62,7 @@ pub struct DebugUnmatched {
 /// Split a PascalCase path segment into space-separated words.
 /// e.g. "GarudaSystemsBlueprint" → "Garuda Systems Blueprint"
 ///      "ChromaBeaconCComponent"  → "Chroma Beacon C Component"
-fn camel_to_words(s: &str) -> String {
+pub(crate) fn camel_to_words(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len() + 8);
     for (i, &c) in chars.iter().enumerate() {
@@ -651,7 +650,7 @@ pub(crate) fn refresh_catalogue(app: &tauri::AppHandle, force: bool) -> Result<(
         Some(result) if warning.is_none() => {
             let count = apply_catalogue(&app.state::<AppState>(), result);
             tracing::info!(items = count, "catalogue refreshed in background");
-            let _ = app.emit("catalogue-updated", count);
+            let _ = app.emit(events::CATALOGUE_UPDATED, count);
             Ok(())
         }
         _ => Err(warning.unwrap_or_else(|| "catalogue unavailable".into())),
@@ -665,8 +664,7 @@ fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> usize {
 
     // Write mod_max_rank into inventory_state_cache.json for every mod/arcane so it is
     // available at startup without requiring wfcd_items to be loaded first.
-    {
-        let mut inv = load_inventory_state_cache(&state.inventory_state_cache_path);
+    let _ = persist_inventory_state_cache(&state.inventory_state_cache_path, |inv| {
         for item in deduped.iter().filter(|i| i.fusion_limit.is_some() || i.max_level_cap.is_some() || {
             let cat = fix_category(&i.name, &i.item_type, &i.product_category, &i.category, &i.unique_name);
             matches!(cat.as_str(), "Warframes" | "Primary" | "Secondary" | "Melee"
@@ -684,10 +682,7 @@ fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> usize {
                 entry.max_level_cap = Some(mastery_rules::rank_cap(state.corrections.get(&item.unique_name), &item.unique_name, item.max_level_cap));
             }
         }
-        if let Ok(json) = serde_json::to_string(&inv) {
-            let _ = atomic_write(&state.inventory_state_cache_path, json.as_bytes());
-        }
-    }
+    });
 
     *state.wfcd_items.lock().unwrap_or_else(|e| e.into_inner()) = deduped;
     *state.recipe_consumers.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(mastery_recipe::recipe_consumers(&result.recipes));

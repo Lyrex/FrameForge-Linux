@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import type { RivenAnalysis, RivenAnalysisUpdate, RivenStat } from "../types/rivens";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
@@ -14,14 +15,12 @@ async function saveOverlayRoll(
   verdict: string, score: number, rollCount: number
 ) {
   if (!weapon || stats.length === 0) return;
-  const { invoke } = await import("@tauri-apps/api/core");
   const now = new Date();
   const label = `${weapon.charAt(0).toUpperCase() + weapon.slice(1)} · Roll #${rollCount} · ${now.getDate()} ${now.toLocaleString("en",{month:"short"})}`;
   const args: SaveRivenRollArgs = {
     weapon, label, statsJson: JSON.stringify(stats), verdict, score,
   };
   await invoke(TAURI_COMMANDS.SAVE_RIVEN_ROLL, args).catch(() => {});
-  const { emit } = await import("@tauri-apps/api/event");
   await emit(TAURI_EVENTS.RIVEN_ROLL_SAVED).catch(() => {});
 }
 
