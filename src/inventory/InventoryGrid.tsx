@@ -113,8 +113,10 @@ interface InvModCardProps {
   changedAt?: number;
   recentDelta?: number | null;
   rankDeltas?: { rank: number; delta: number }[];
+  isFavorite: boolean;
+  onToggleFavorite: (id: string) => void;
 }
-const InvModCard = memo(function InvModCard({ unique_name, name, category, image_name, ranks, total, plat, ducats, view, changedAt, recentDelta, rankDeltas }: InvModCardProps) {
+const InvModCard = memo(function InvModCard({ unique_name, name, category, image_name, ranks, total, plat, ducats, view, changedAt, recentDelta, rankDeltas, isFavorite, onToggleFavorite }: InvModCardProps) {
   const nowSec = Date.now() / 1000;
   const secAgo = changedAt != null ? nowSec - changedAt : null;
   const isRecent = secAgo !== null && secAgo < 300;
@@ -133,6 +135,11 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
   if (view === "list" || view === "list-compact") {
     return (
       <div key={unique_name} className={`${baseClass} inv-card-row`}>
+        <button className={`inv-fav-star-row ${isFavorite ? "active" : ""}`}
+          title={isFavorite ? "Remove from Modular Window" : "Add to Modular Window"}
+          onClick={e => { e.stopPropagation(); onToggleFavorite(unique_name); }}>
+          {isFavorite ? "★" : "☆"}
+        </button>
         {view === "list" && <div className="inv-row-icon"><ItemImg imageName={image_name ?? undefined} category={category} size={20} /></div>}
         <div className="inv-row-name">{name}</div>
         <ValueChips plat={plat} ducats={ducats} className="inv-row-values" />
@@ -144,6 +151,11 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
   }
   return (
     <div key={unique_name} className={`${baseClass} inv-card-mod`}>
+      <button
+        className={`inv-fav-star ${isFavorite ? "active" : ""}`}
+        title={isFavorite ? "Remove from Modular Window" : "Add to Modular Window"}
+        onClick={e => { e.stopPropagation(); onToggleFavorite(unique_name); }}
+      >{isFavorite ? "★" : "☆"}</button>
       {view !== "text-cards" && (
         <div className="inv-card-img-wrap">
           <ItemImg imageName={image_name ?? undefined} category={category} size={40} />
@@ -180,6 +192,7 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
   prev.total === next.total &&
   prev.plat === next.plat &&
   prev.ducats === next.ducats &&
+  prev.isFavorite === next.isFavorite &&
   prev.image_name === next.image_name &&
   prev.ranks.length === next.ranks.length &&
   prev.ranks.every((r, i) => r.rank === next.ranks[i].rank && r.count === next.ranks[i].count) &&
@@ -354,6 +367,8 @@ export default memo(function InventoryGrid({
                 category={item.category} image_name={item.image_name}
                 ranks={ranks} total={total}
                 plat={item.plat ?? null} ducats={item.ducats ?? null} view={view}
+                isFavorite={favorites.has(item.unique_name)}
+                onToggleFavorite={onToggleFavorite}
                 changedAt={lastChanged[item.unique_name]}
                 recentDelta={totalDelta || null}
                 rankDeltas={rankDeltas} />

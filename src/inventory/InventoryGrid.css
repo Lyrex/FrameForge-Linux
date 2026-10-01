@@ -128,7 +128,7 @@
 
 /* ── Mod rank breakdown card ───────────────────────────────────────────────── */
 
-.inv-card-mod { align-items: flex-start; padding: 8px 10px 8px; }
+.inv-card-mod { align-items: flex-start; padding: 16px 10px 8px; }
 .inv-card-mod .inv-card-img-wrap { width: 40px; height: 40px; }
 .inv-card-mod .inv-card-name { text-align: left; font-size: 12px; }
 .inv-card-mod .inv-card-cat  { text-align: left; }
