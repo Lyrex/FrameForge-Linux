@@ -195,8 +195,7 @@
 .item-grid-icons .inv-card-icon-only img,
 .item-grid-icons .inv-card-icon-only .img { width: 56px !important; height: 56px !important; }
 
-/* text-cards keep the image area as an empty spacer so toggling images does
-   not move the rest of the card content. */
+/* text-cards use the same card structure without reserving image space. */
 
 /* list + list-compact */
 .item-grid.item-grid-list,

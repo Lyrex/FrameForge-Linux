@@ -27,6 +27,9 @@ export default function InventoryToolbar({
   filters, onFiltersChange, onToggleRecent, availableRanks, showRankFilters, itemCount, view, onViewChange, cardColumns, onCardColumnsChange, filterPresets, onFilterPresetsChange, onOpenSettings,
 }: InventoryToolbarProps) {
   const { search, filterOwned, filterRecent, filterPrime, filterVaulted, filterUnvaulted, filterTradeable, filterDucats, filterRank, sortMode } = filters;
+  const isCardView = view === "cards" || view === "text-cards";
+  const isListView = view === "list" || view === "list-compact";
+  const imagesVisible = view === "cards" || view === "list";
   return (
     <>
       <div className="toolbar">
@@ -62,24 +65,28 @@ export default function InventoryToolbar({
         <button className={`fchip ${sortMode === "name-desc" ? "fchip-on" : ""}`} onClick={() => onFiltersChange(previous => ({ ...previous, sortMode: "name-desc" }))}>Z-A</button>
         <span className="item-count-label" style={{ marginLeft: "auto" }}>{itemCount} item{itemCount !== 1 ? "s" : ""}{itemCount === 1000 ? " (capped)" : ""}</span>
         <ViewToggle
-          view={view === "text-cards" ? "cards" : view}
+          view={view === "text-cards" ? "cards" : view === "list-compact" ? "list" : view}
           onChange={onViewChange}
-          modes={["cards", "icons", "list", "list-compact"]}
+          modes={["cards", "icons", "list"]}
         />
-        {(view === "cards" || view === "text-cards") && (
+        {(isCardView || isListView) && (
           <>
             <label className="inventory-image-toggle">
-              <input type="checkbox" checked={view === "cards"}
-                onChange={event => onViewChange(event.target.checked ? "cards" : "text-cards")} />
+              <input type="checkbox" checked={imagesVisible}
+                onChange={event => onViewChange(isCardView
+                  ? (event.target.checked ? "cards" : "text-cards")
+                  : (event.target.checked ? "list" : "list-compact"))} />
               Images
             </label>
-            <div className="inventory-column-control" aria-label="Maximum card columns">
-              <button title="Fewer columns" aria-label="Fewer columns" disabled={cardColumns <= 5}
-                onClick={() => onCardColumnsChange(cardColumns - 1)}>−</button>
-              <span>{cardColumns} cols</span>
-              <button title="More columns" aria-label="More columns" disabled={cardColumns >= 12}
-                onClick={() => onCardColumnsChange(cardColumns + 1)}>+</button>
-            </div>
+            {isCardView && (
+              <div className="inventory-column-control" aria-label="Maximum card columns">
+                <button title="Fewer columns" aria-label="Fewer columns" disabled={cardColumns <= 5}
+                  onClick={() => onCardColumnsChange(cardColumns - 1)}>−</button>
+                <span>{cardColumns} cols</span>
+                <button title="More columns" aria-label="More columns" disabled={cardColumns >= 12}
+                  onClick={() => onCardColumnsChange(cardColumns + 1)}>+</button>
+              </div>
+            )}
           </>
         )}
         <HelpTip items={[
