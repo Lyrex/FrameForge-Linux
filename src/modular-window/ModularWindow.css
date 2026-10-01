@@ -9,6 +9,10 @@
   min-height: 0;
 }
 
+.modular-window-docked {
+  max-width: min(500px, max(160px, calc(100vw - 582px)));
+}
+
 .modular-resize-handle {
   position: absolute;
   z-index: 2;
