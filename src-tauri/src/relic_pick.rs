@@ -7,6 +7,19 @@ use crate::events;
 
 // ── Relic pick overlay ────────────────────────────────────────────────────────
 
+/// One overlay's saved x/y offset (logical pixels) from settings.json.
+/// Missing settings or missing axes mean 0, which keeps the built-in placement.
+fn saved_offset(app: &tauri::AppHandle, prefix: &str) -> (f64, f64) {
+    use tauri::Manager;
+    let Some(state) = app.try_state::<AppState>() else { return (0.0, 0.0) };
+    let Ok(map) = crate::settings::read_settings_map(&state.settings_path) else { return (0.0, 0.0) };
+    let Some(obj) = map.get("overlayOffsets").and_then(|v| v.as_object()) else { return (0.0, 0.0) };
+    let axis = |suffix: &str| -> f64 {
+        obj.get(&format!("{prefix}{suffix}")).and_then(|v| v.as_f64()).unwrap_or(0.0)
+    };
+    (axis("X"), axis("Y"))
+}
+
 pub(crate) fn relic_pick_show(app: &tauri::AppHandle) {
     use tauri::Manager;
     let Some(win) = app.get_webview_window("relic-pick-overlay") else { return };
@@ -20,7 +33,9 @@ pub(crate) fn relic_pick_show(app: &tauri::AppHandle) {
             (w - 440.0, dpi)
         })
         .unwrap_or((1920.0 - 440.0, 1.0));
-    let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y: 20.0 }));
+    // User offset on top of that default (issue #73).
+    let (off_x, off_y) = saved_offset(app, "relicPick");
+    let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition { x: x + off_x, y: 20.0 + off_y }));
     let _ = win.show();
 }
 
@@ -47,6 +62,19 @@ pub(crate) fn test_relic_pick_overlay(era: String, app: tauri::AppHandle) -> Str
     relic_pick_show(&app);
     let _ = app.emit(events::RELIC_PICK_OPEN, &payload);
     format!("Emitted relic-pick-open: era={}, {} relics in inventory", era, relic_count)
+}
+
+/// Debug/preview: hide the relic pick overlay again (pairs with test_relic_pick_overlay).
+#[tauri::command]
+pub(crate) fn hide_relic_pick_overlay(app: tauri::AppHandle) {
+    relic_pick_hide(&app);
+}
+
+/// Position and show the pick window without emitting a payload — used by the
+/// outline toggle and by live offset changes, which only need the placement.
+#[tauri::command]
+pub(crate) fn show_relic_pick_window(app: tauri::AppHandle) {
+    relic_pick_show(&app);
 }
 
 /// Debug: return the last ~4 KB of EE.log so we can see what strings appear when
@@ -258,8 +286,15 @@ pub(crate) fn show_overlay_window(
     let _ = win.set_size(tauri::Size::Physical(
         tauri::PhysicalSize { width: w, height: h }
     ));
+    // Caller passes physical pixels, offsets are stored as logical — scale them
+    // with the window's own monitor so the shift reads the same at any DPI.
+    let (off_x, off_y) = saved_offset(&app, "relic");
+    let scale = win.scale_factor().unwrap_or(1.0);
     let _ = win.set_position(tauri::Position::Physical(
-        tauri::PhysicalPosition { x, y }
+        tauri::PhysicalPosition {
+            x: x + (off_x * scale).round() as i32,
+            y: y + (off_y * scale).round() as i32,
+        }
     ));
     let _ = win.show();
     let _ = win.set_always_on_top(true);

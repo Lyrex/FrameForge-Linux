@@ -246,6 +246,9 @@ function RewardCard({ item, left, width }: { item: RewardItem; left: number; wid
 // ─── Main overlay ─────────────────────────────────────────────────────────────
 export default function Overlay() {
   const [rewards, setRewards] = useState<RewardItem[]>([]);
+  // Outline mode (Settings → Overlays → Show Outline): draw an empty frame at
+  // the overlay's current position so offsets can be judged without a fissure run.
+  const [outline, setOutline] = useState(false);
   // winW = the overlay window's own pixel width, which equals the Warframe client
   // width (App.tsx creates the window with width: ww). No URL param needed.
   //
@@ -270,6 +273,14 @@ export default function Overlay() {
     };
     important(document.documentElement);
     important(document.getElementById('root'));
+  }, []);
+
+  useEffect(() => {
+    const unsub = listen<string>(TAURI_EVENTS.OVERLAY_OUTLINE, (e) => {
+      if (e.payload === "relic") setOutline(true);
+      else if (e.payload === "off-relic") setOutline(false);
+    });
+    return () => { unsub.then(fn => fn()); };
   }, []);
 
   useEffect(() => {
@@ -575,7 +586,24 @@ export default function Overlay() {
     return () => { unsub.then(fn => fn()); unsubInv.then(fn => fn()); unsubTrigger.then(fn => fn()); };
   }, []);
 
-  if (rewards.length === 0) return null;
+  if (rewards.length === 0 && !outline) return null;
+
+  if (rewards.length === 0) {
+    // Outline: dashed frame at the window's current position.
+    return (
+      <div className="ov-root">
+        <div style={{
+          position: "absolute", left: 32, right: 32, top: 40, bottom: 40,
+          border: "2px dashed rgba(56,139,253,.85)", borderRadius: 10,
+          background: "rgba(22,27,34,.55)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          color: "#79b8ff", fontSize: 22, fontWeight: 600,
+        }}>
+          Relic Reward Overlay — outline
+        </div>
+      </div>
+    );
+  }
 
   const bestIdx = bestPickIndex(rewards, priority);
 

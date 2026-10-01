@@ -37,6 +37,42 @@
   font-size: 12px; border-radius: 5px; padding: 3px 8px; cursor: pointer; flex-shrink: 0;
 }
 .settings-select:hover { border-color: rgba(56,139,253,.5); }
+.settings-offset-controls { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.settings-offset-axis { width: 9px; color: var(--muted); font-size: 11px; text-align: center; }
+.settings-offset-stepper {
+  display: grid; grid-template-columns: 1fr 16px;
+  width: 56px; height: 26px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 5px;
+  background: var(--bg); transition: border-color .12s;
+}
+.settings-offset-stepper:hover,
+.settings-offset-stepper:focus-within { border-color: rgba(56,139,253,.65); }
+.settings-offset-input {
+  appearance: textfield;
+  width: 100%; min-width: 0; height: 24px; padding: 0 5px;
+  border: 0; background: transparent; color: var(--text);
+  font-size: 12px; font-variant-numeric: tabular-nums; text-align: right;
+  outline: none;
+}
+.settings-offset-input::-webkit-inner-spin-button,
+.settings-offset-input::-webkit-outer-spin-button { appearance: none; margin: 0; }
+.settings-offset-step-buttons {
+  display: grid; grid-template-rows: 1fr 1fr;
+  border-left: 1px solid var(--border);
+}
+.settings-offset-step-buttons button {
+  display: flex; align-items: center; justify-content: center;
+  min-width: 0; padding: 0; border: 0;
+  background: rgba(255,255,255,.03); color: var(--muted);
+  font-size: 6px; line-height: 1; cursor: pointer;
+}
+.settings-offset-step-buttons button:first-child { border-bottom: 1px solid var(--border); }
+.settings-offset-step-buttons button:hover { background: rgba(56,139,253,.18); color: var(--accent); }
+.settings-offset-step-buttons button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.settings-offset-reset {
+  min-width: 56px; height: 26px; padding: 0 8px;
+  background: var(--bg); font-size: 11px;
+}
 .settings-filter-presets { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .settings-filter-presets .inventory-presets-list { flex: 1; }
 .debug-table {

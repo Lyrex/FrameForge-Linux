@@ -15,7 +15,8 @@ import {
   RELIC_PICK_PRIORITY_OPTIONS,
   RELIC_PICK_REFINEMENT_OPTIONS,
 } from "../constants/settings";
-import type { ClockFormat, FissureWatch, FoundryPageSize, RelicOverlayPriority, RelicPickLines, RelicPickPriority, RelicRefinement, SettingsSnapshot } from "../types/settings";
+import type { ClockFormat, FissureWatch, FoundryPageSize, OverlayOffsets, RelicOverlayPriority, RelicPickLines, RelicPickPriority, RelicRefinement, SettingsSnapshot } from "../types/settings";
+import { DEFAULT_OVERLAY_OFFSETS, parseOverlayOffsets } from "../types/settings";
 import type { FilterPresetSettings } from "../types/filterPresets";
 import { parseFilterPresetSettings } from "../types/filterPresets";
 import type { SettingsFile, SettingsPatch } from "../types/tauri";
@@ -28,6 +29,8 @@ interface UseSettingsReturn {
   autoDiagEnabled: boolean;
   overlayEnabled: boolean;
   overlayPriority: RelicOverlayPriority;
+  overlayOffsets: OverlayOffsets;
+  rivenEnabled: boolean;
   textScale: number;
   colorblindMode: boolean;
   clockFormat: ClockFormat;
@@ -53,6 +56,8 @@ interface UseSettingsReturn {
   setAutoDiagEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   setOverlayEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   setOverlayPriority: React.Dispatch<React.SetStateAction<RelicOverlayPriority>>;
+  setOverlayOffsets: React.Dispatch<React.SetStateAction<OverlayOffsets>>;
+  setRivenEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   setTextScale: React.Dispatch<React.SetStateAction<number>>;
   setColorblindMode: React.Dispatch<React.SetStateAction<boolean>>;
   setClockFormat: React.Dispatch<React.SetStateAction<ClockFormat>>;
@@ -77,7 +82,7 @@ interface UseSettingsReturn {
   wfmInvisibleOnCloseRef: React.MutableRefObject<boolean>;
 
   // Callbacks
-  saveAllSettings: () => void;
+  saveAllSettings: () => Promise<void>;
   loadSettings: () => Promise<SettingsFile | null>;
 }
 
@@ -94,6 +99,10 @@ export function useSettings(
   );
   const [overlayPriority, setOverlayPriority] = useState<RelicOverlayPriority>(
     () => (localStorage.getItem(PREFERENCE_KEYS.OVERLAY_PRIORITY) ?? DEFAULT_RELIC_OVERLAY_PRIORITY) as RelicOverlayPriority
+  );
+  const [overlayOffsets, setOverlayOffsets] = useState<OverlayOffsets>(DEFAULT_OVERLAY_OFFSETS);
+  const [rivenEnabled, setRivenEnabled] = useState<boolean>(
+    () => localStorage.getItem(PREFERENCE_KEYS.RIVEN_OVERLAY_ENABLED) !== "false"
   );
   const [textScale, setTextScale] = useState(() => {
     const s = parseFloat(localStorage.getItem(PREFERENCE_KEYS.TEXT_SCALE) ?? "1");
@@ -124,6 +133,8 @@ export function useSettings(
   const settingsRef = useRef<SettingsSnapshot>({
     overlayEnabled: true,
     overlayPriority: DEFAULT_RELIC_OVERLAY_PRIORITY,
+    overlayOffsets: DEFAULT_OVERLAY_OFFSETS,
+    rivenEnabled: true,
     textScale: 1,
     colorblindMode: false,
     clockFormat: DEFAULT_CLOCK_FORMAT,
@@ -160,10 +171,10 @@ export function useSettings(
   const saveAllSettings = useCallback(() => {
     if (!settingsLoadedRef.current) {
       console.error("save_settings skipped: settings not loaded yet, saving now would clobber the file");
-      return;
+      return Promise.resolve();
     }
     const settings: SettingsPatch = { ...settingsRef.current };
-    invoke(TAURI_COMMANDS.SAVE_SETTINGS, { json: JSON.stringify(settings) }).catch((e) => {
+    return invoke(TAURI_COMMANDS.SAVE_SETTINGS, { json: JSON.stringify(settings) }).then(() => {}).catch((e) => {
       console.error("save_settings failed:", e);
     });
   }, []);
@@ -189,6 +200,16 @@ export function useSettings(
         if (typeof s.overlayPriority === "string") {
           setOverlayPriority(s.overlayPriority as RelicOverlayPriority);
           localStorage.setItem(PREFERENCE_KEYS.OVERLAY_PRIORITY, s.overlayPriority);
+        }
+        if (s.overlayOffsets) {
+          const offsets = parseOverlayOffsets(s.overlayOffsets);
+          setOverlayOffsets(offsets);
+          // Mirror for overlay windows, which read localStorage directly.
+          localStorage.setItem(PREFERENCE_KEYS.OVERLAY_OFFSETS, JSON.stringify(offsets));
+        }
+        if (typeof s.rivenEnabled === "boolean") {
+          setRivenEnabled(s.rivenEnabled);
+          localStorage.setItem(PREFERENCE_KEYS.RIVEN_OVERLAY_ENABLED, String(s.rivenEnabled));
         }
         if (typeof s.textScale === "number") {
           setTextScale(s.textScale);
@@ -267,6 +288,8 @@ export function useSettings(
     autoDiagEnabled,
     overlayEnabled,
     overlayPriority,
+    overlayOffsets,
+    rivenEnabled,
     textScale,
     colorblindMode,
     clockFormat,
@@ -292,6 +315,8 @@ export function useSettings(
     setAutoDiagEnabled,
     setOverlayEnabled,
     setOverlayPriority,
+    setOverlayOffsets,
+    setRivenEnabled,
     setTextScale,
     setColorblindMode,
     setClockFormat,

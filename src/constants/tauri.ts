@@ -28,6 +28,7 @@ export const TAURI_EVENTS = {
   WFM_PRICE_UPDATE: "wfm-price-update",
   WFM_TOP_PROGRESS: "wfm-top-progress",
   WFM_TOP_UPDATED: "wfm-top-updated",
+  OVERLAY_OUTLINE: "overlay-outline",
 } as const;
 
 // Feature 3 — api.warframe.com/api/inventory.php

@@ -78,7 +78,10 @@ export function useOverlays(
       if (now - getRivenLastTriggerMs() < 4000) return;
       runRivenCheck().catch(() => {});
     };
-    const unsubAutoDetect = listen(TAURI_EVENTS.RIVEN_SCREEN_OPEN, () => triggerOpen());
+    const unsubAutoDetect = listen(TAURI_EVENTS.RIVEN_SCREEN_OPEN, () => {
+      if (localStorage.getItem(PREFERENCE_KEYS.RIVEN_OVERLAY_ENABLED) === "false") return;
+      triggerOpen();
+    });
 
     const unsubClose   = listen(TAURI_EVENTS.RIVEN_SCREEN_CLOSE,   () => rivenWinHide("screen-close"));
     const unsubHideReq = listen<{ reason?: string }>(TAURI_EVENTS.RIVEN_OVERLAY_HIDE, e => rivenWinHide(e.payload?.reason ?? "overlay-hide"));
