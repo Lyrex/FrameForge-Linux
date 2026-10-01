@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::io::Write;
 
 use tracing::info;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 use app_state::{load_corrections, AppState};
 use catalogue::load_items_cache;
@@ -336,6 +336,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     state.wfm.cache_price(slug, Some(price));
                 }
             }
+            let _ = app_handle.emit(events::BULK_PRICES_UPDATED, ());
         });
     }
 
@@ -604,6 +605,7 @@ pub fn run() {
             wfm_top::get_wfm_top_items,
             wfm_commands::get_item_price,
             pricing::refresh_bulk_prices,
+            pricing::get_bulk_prices,
             updater::check_for_update,
             updater::install_update,
             settings::factory_reset,

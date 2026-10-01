@@ -10,6 +10,7 @@ import { openWiki, copyWikiLink } from "./lib/wiki";
 import { useModularWindow } from "./hooks/useModularWindow";
 import { useSettings } from "./hooks/useSettings";
 import { useInventoryData } from "./hooks/useInventoryData";
+import { useBulkPrices } from "./hooks/useBulkPrices";
 import { useOverlays } from "./hooks/useOverlays";
 import { useTimerPreferences } from "./hooks/useTimerPreferences";
 import { useFissureNotifications } from "./hooks/useFissureNotifications";
@@ -210,7 +211,11 @@ export default function App() {
   const [foundryFilters, setFoundryFilters] = useState<FoundryFilters>(FOUNDRY_FILTERS_DEFAULT);
   const [marketFilters, setMarketFilters] = useState<MarketFilters>(MARKET_FILTERS_DEFAULT);
   const [relicFilters, setRelicFilters] = useState<RelicFilters>(RELIC_FILTERS_DEFAULT);
-  const { category, search, filterOwned, filterRecent, filterPrime, filterVaulted, filterUnvaulted, filterRank, sortMode } = inventoryFilters;
+  const { category, search, filterOwned, filterRecent, filterPrime, filterVaulted, filterUnvaulted, filterTradeable, filterDucats, filterRank, sortMode } = inventoryFilters;
+  const { bulkPrices, refresh: refreshBulkPrices } = useBulkPrices();
+  // Bulk prices refresh hourly in the background — re-fetch on each Inventory
+  // activation so the chips reflect the current map.
+  useEffect(() => { if (activeModule === "inventory") refreshBulkPrices(); }, [activeModule, refreshBulkPrices]);
   const prevSortRef = useRef(sortMode);
   useEffect(() => { if (sortMode !== "recent") prevSortRef.current = sortMode; }, [sortMode]);
   const toggleInventoryRecent = useCallback(() => setInventoryFilters(previous => {
@@ -223,6 +228,24 @@ export default function App() {
   const setInventoryViewPreference = useCallback((view: ViewMode) => {
     setInventoryView(view);
     localStorage.setItem(PREFERENCE_KEYS.INVENTORY_VIEW, view);
+  }, []);
+  const [inventoryCardColumns, setInventoryCardColumns] = useState(() => {
+    const saved = Number(localStorage.getItem(PREFERENCE_KEYS.INVENTORY_CARD_COLUMNS));
+    return Number.isInteger(saved) && saved >= 5 && saved <= 24 ? saved : 9;
+  });
+  const setInventoryCardColumnsPreference = useCallback((columns: number) => {
+    const next = Math.max(5, Math.min(24, columns));
+    setInventoryCardColumns(next);
+    localStorage.setItem(PREFERENCE_KEYS.INVENTORY_CARD_COLUMNS, String(next));
+  }, []);
+  const [inventoryListTextScale, setInventoryListTextScale] = useState(() => {
+    const saved = Number(localStorage.getItem(PREFERENCE_KEYS.INVENTORY_LIST_TEXT_SCALE));
+    return Number.isInteger(saved) && saved >= 80 && saved <= 150 && saved % 10 === 0 ? saved : 100;
+  });
+  const setInventoryListTextScalePreference = useCallback((scale: number) => {
+    const next = Math.max(80, Math.min(150, Math.round(scale / 10) * 10));
+    setInventoryListTextScale(next);
+    localStorage.setItem(PREFERENCE_KEYS.INVENTORY_LIST_TEXT_SCALE, String(next));
   }, []);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'general' | 'overlays' | 'market' | 'filters' | 'accessibility' | 'data' | 'debugging'>('general');
@@ -533,7 +556,7 @@ export default function App() {
     // Changelog order map: lower index = more recent position in changelog
     const changeOrder = new Map<string, number>();
     changeLog.forEach((c, i) => { if (!changeOrder.has(c.unique_name)) changeOrder.set(c.unique_name, i); });
-    const out: (CatalogItem & { qty: number })[] = [];
+    const out: (CatalogItem & { qty: number; plat: number | null })[] = [];
     for (const i of catalog) {
       if (i.name === "Blueprint") continue;
       if (category !== "all" && i.category !== category) continue;
@@ -544,6 +567,14 @@ export default function App() {
       if (filterPrime    && !i.name.includes("Prime") && i.vaulted == null) continue;
       if (filterVaulted  && i.vaulted !== true) continue;
       if (filterUnvaulted && i.vaulted !== false) continue;
+      const plat = bulkPrices.get(i.name.toLowerCase()) ?? null;
+      // Explicit corrections are authoritative; otherwise match the production
+      // heuristic from get_item_price: has a price, ducats, or a mod/arcane category.
+      const isTradeable = i.tradeable_wfm ?? (
+        plat != null || (i.ducats != null && i.ducats > 0) || i.category === "Mods" || i.category === "Arcanes"
+      );
+      if (filterTradeable && !isTradeable) continue;
+      if (filterDucats && !(i.ducats != null && i.ducats > 0)) continue;
       if (filterRank !== null) {
         if (i.category === "Mods" || i.category === "Arcanes") {
           const copies = modCopiesMap[i.unique_name];
@@ -555,7 +586,7 @@ export default function App() {
           }
         }
       }
-      out.push({ ...i, qty });
+      out.push({ ...i, qty, plat });
     }
     out.sort((a, b) => {
       if (sortMode === "recent" || filterRecent) {
@@ -576,7 +607,7 @@ export default function App() {
       return b.qty - a.qty || a.name.localeCompare(b.name);
     });
     return out.slice(0, 1000);
-  }, [catalog, inventory, inventoryFilters, lastChanged, modCopiesMap, changeLog]);
+  }, [catalog, inventory, inventoryFilters, bulkPrices, lastChanged, modCopiesMap, changeLog]);
 
   const resetInventoryFilters = ({
     recent,
@@ -781,6 +812,10 @@ export default function App() {
                 itemCount={visibleItems.length}
                 view={inventoryView}
                 onViewChange={setInventoryViewPreference}
+                cardColumns={inventoryCardColumns}
+                onCardColumnsChange={setInventoryCardColumnsPreference}
+                listTextScale={inventoryListTextScale}
+                onListTextScaleChange={setInventoryListTextScalePreference}
                 filterPresets={filterPresets}
                 onFilterPresetsChange={setFilterPresets}
                 onOpenSettings={openFilterSettings}
@@ -791,6 +826,8 @@ export default function App() {
                 loading={!inventoryReady}
                 monitoring={monitoring}
                 view={inventoryView}
+                cardColumns={inventoryCardColumns}
+                listTextScale={inventoryListTextScale}
                 inventory={inventory}
                 modCopies={modCopiesMap}
                 favorites={favoritesSet}

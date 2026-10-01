@@ -437,6 +437,46 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .view-btn:hover { color: var(--text); background: rgba(255,255,255,.06); }
 .view-btn-active { color: var(--accent); border-color: rgba(56,139,253,.4); background: rgba(56,139,253,.08); }
 
+.inventory-image-toggle {
+  display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+  color: var(--muted); cursor: pointer; font-size: 11px; white-space: nowrap;
+}
+.inventory-image-toggle input {
+  appearance: none; display: grid; place-content: center;
+  width: 14px; height: 14px; flex-shrink: 0; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 3px;
+  background: rgba(255,255,255,.03); transition: border-color .12s, background .12s;
+}
+.inventory-image-toggle input::before {
+  content: ""; width: 6px; height: 3px;
+  border: solid white; border-width: 0 0 2px 2px;
+  transform: rotate(-45deg) scale(0); transition: transform .1s;
+}
+.inventory-image-toggle input:checked { border-color: var(--accent); background: var(--accent); }
+.inventory-image-toggle input:checked::before { transform: rotate(-45deg) scale(1); }
+.inventory-image-toggle:hover { color: var(--text); }
+.inventory-image-toggle:hover input { border-color: var(--accent); }
+.inventory-image-toggle input:focus-visible { outline: 2px solid rgba(56,139,253,.45); outline-offset: 2px; }
+
+.inventory-column-control,
+.inventory-list-text-control {
+  display: flex; align-items: center; flex-shrink: 0;
+  height: 25px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 5px;
+  color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums;
+}
+.inventory-column-control span,
+.inventory-list-text-control span { min-width: 42px; text-align: center; }
+.inventory-column-control button,
+.inventory-list-text-control button {
+  align-self: stretch; width: 24px; border: 0; background: rgba(255,255,255,.03);
+  color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1;
+}
+.inventory-column-control button:hover:not(:disabled),
+.inventory-list-text-control button:hover:not(:disabled) { background: rgba(255,255,255,.08); color: var(--text); }
+.inventory-column-control button:disabled,
+.inventory-list-text-control button:disabled { opacity: .35; cursor: default; }
+
 .item-row {
   display: flex;
   align-items: center;

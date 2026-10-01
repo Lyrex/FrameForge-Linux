@@ -16,15 +16,22 @@ interface InventoryToolbarProps {
   itemCount: number;
   view: ViewMode;
   onViewChange: (view: ViewMode) => void;
+  cardColumns: number;
+  onCardColumnsChange: (columns: number) => void;
+  listTextScale: number;
+  onListTextScaleChange: (scale: number) => void;
   filterPresets: FilterPresetSettings;
   onFilterPresetsChange: Dispatch<SetStateAction<FilterPresetSettings>>;
   onOpenSettings: (module: FilterPresetModule) => void;
 }
 
 export default function InventoryToolbar({
-  filters, onFiltersChange, onToggleRecent, availableRanks, showRankFilters, itemCount, view, onViewChange, filterPresets, onFilterPresetsChange, onOpenSettings,
+  filters, onFiltersChange, onToggleRecent, availableRanks, showRankFilters, itemCount, view, onViewChange, cardColumns, onCardColumnsChange, listTextScale, onListTextScaleChange, filterPresets, onFilterPresetsChange, onOpenSettings,
 }: InventoryToolbarProps) {
-  const { search, filterOwned, filterRecent, filterPrime, filterVaulted, filterUnvaulted, filterRank, sortMode } = filters;
+  const { search, filterOwned, filterRecent, filterPrime, filterVaulted, filterUnvaulted, filterTradeable, filterDucats, filterRank, sortMode } = filters;
+  const isCardView = view === "cards" || view === "text-cards";
+  const isListView = view === "list" || view === "list-compact";
+  const imagesVisible = view === "cards" || view === "list";
   return (
     <>
       <div className="toolbar">
@@ -40,6 +47,8 @@ export default function InventoryToolbar({
         <button className={`fchip ${filterPrime ? "fchip-on" : ""}`} onClick={() => onFiltersChange(previous => ({ ...previous, filterPrime: !previous.filterPrime }))}>Prime</button>
         <button className={`fchip ${filterVaulted ? "fchip-on" : ""}`} onClick={() => onFiltersChange(previous => ({ ...previous, filterVaulted: !previous.filterVaulted }))}>🔒 Vaulted</button>
         <button className={`fchip ${filterUnvaulted ? "fchip-on" : ""}`} onClick={() => onFiltersChange(previous => ({ ...previous, filterUnvaulted: !previous.filterUnvaulted }))}>🔓 Unvaulted</button>
+        <button className={`fchip ${filterTradeable ? "fchip-on" : ""}`} aria-pressed={filterTradeable} onClick={() => onFiltersChange(previous => ({ ...previous, filterTradeable: !previous.filterTradeable }))}>Tradeable</button>
+        <button className={`fchip ${filterDucats ? "fchip-on" : ""}`} aria-pressed={filterDucats} onClick={() => onFiltersChange(previous => ({ ...previous, filterDucats: !previous.filterDucats }))}>Ducats</button>
         {showRankFilters && <>
           <span className="fbar-sep" />
           <span className="fbar-label">Rank:</span>
@@ -57,7 +66,40 @@ export default function InventoryToolbar({
         <button className={`fchip ${sortMode === "name-asc" ? "fchip-on" : ""}`} onClick={() => onFiltersChange(previous => ({ ...previous, sortMode: "name-asc" }))}>A-Z</button>
         <button className={`fchip ${sortMode === "name-desc" ? "fchip-on" : ""}`} onClick={() => onFiltersChange(previous => ({ ...previous, sortMode: "name-desc" }))}>Z-A</button>
         <span className="item-count-label" style={{ marginLeft: "auto" }}>{itemCount} item{itemCount !== 1 ? "s" : ""}{itemCount === 1000 ? " (capped)" : ""}</span>
-        <ViewToggle view={view} onChange={onViewChange} />
+        <ViewToggle
+          view={view === "text-cards" ? "cards" : view === "list-compact" ? "list" : view}
+          onChange={onViewChange}
+          modes={["cards", "icons", "list"]}
+        />
+        {(isCardView || isListView) && (
+          <>
+            <label className="inventory-image-toggle">
+              <input type="checkbox" checked={imagesVisible}
+                onChange={event => onViewChange(isCardView
+                  ? (event.target.checked ? "cards" : "text-cards")
+                  : (event.target.checked ? "list" : "list-compact"))} />
+              Images
+            </label>
+            {isCardView && (
+              <div className="inventory-column-control" aria-label="Maximum card columns">
+                <button title="Fewer columns" aria-label="Fewer columns" disabled={cardColumns <= 5}
+                  onClick={() => onCardColumnsChange(cardColumns - 1)}>−</button>
+                <span>{cardColumns} cols</span>
+                <button title="More columns" aria-label="More columns" disabled={cardColumns >= 24}
+                  onClick={() => onCardColumnsChange(cardColumns + 1)}>+</button>
+              </div>
+            )}
+            {isListView && (
+              <div className="inventory-list-text-control" aria-label="List text size">
+                <button title="Smaller text" aria-label="Smaller text" disabled={listTextScale <= 80}
+                  onClick={() => onListTextScaleChange(listTextScale - 10)}>−</button>
+                <span>{listTextScale}%</span>
+                <button title="Larger text" aria-label="Larger text" disabled={listTextScale >= 150}
+                  onClick={() => onListTextScaleChange(listTextScale + 10)}>+</button>
+              </div>
+            )}
+          </>
+        )}
         <HelpTip items={[
           { icon: "★", label: "★  Mastered", desc: "Shown above image — item levelled to rank 30" },
           { icon: "R5", label: "R{n}  Rank", desc: "Shown above image — current rank, not yet mastered" },

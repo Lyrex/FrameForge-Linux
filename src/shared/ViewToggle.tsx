@@ -52,12 +52,12 @@ function ViewIcon({ mode }: { mode: ViewMode }) {
   }
 }
 
-export function ViewToggle({ view, onChange }: { view: ViewMode; onChange: (v: ViewMode) => void }) {
+export function ViewToggle({ view, onChange, modes }: { view: ViewMode; onChange: (v: ViewMode) => void; modes?: readonly ViewMode[] }) {
   return (
     <div className="view-toggle">
-      {VIEW_MODE_OPTIONS.map(({ mode, label }) => (
+      {VIEW_MODE_OPTIONS.filter(({ mode }) => !modes || modes.includes(mode)).map(({ mode, label }) => (
         <button key={mode} className={`view-btn${view === mode ? " view-btn-active" : ""}`}
-          title={label} onClick={() => onChange(mode)}>
+          title={label} aria-label={label} aria-pressed={view === mode} onClick={() => onChange(mode)}>
           <ViewIcon mode={mode} />
         </button>
       ))}

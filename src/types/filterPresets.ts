@@ -46,6 +46,8 @@ function parseInventoryFilters(value: unknown): InventoryFilters | null {
   return {
     category: value.category, search: value.search, filterOwned: value.filterOwned, filterRecent: value.filterRecent,
     filterPrime: value.filterPrime, filterVaulted: value.filterVaulted, filterUnvaulted: value.filterUnvaulted,
+    // Optional so presets saved before these keys existed still load.
+    filterTradeable: value.filterTradeable === true, filterDucats: value.filterDucats === true,
     filterRank: value.filterRank, sortMode: value.sortMode as InventoryFilters["sortMode"],
   };
 }

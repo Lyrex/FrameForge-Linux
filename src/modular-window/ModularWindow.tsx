@@ -419,7 +419,7 @@ export default function ModularWindow({
 
   return (
     <div
-      className="modular-window"
+      className={`modular-window${width !== undefined ? " modular-window-docked" : ""}`}
       style={width !== undefined ? { width } : { flex: 1 }}
     >
       {onWidthChange && (

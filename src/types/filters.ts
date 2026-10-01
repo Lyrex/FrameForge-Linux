@@ -8,6 +8,8 @@ export interface InventoryFilters {
   filterPrime: boolean;
   filterVaulted: boolean;
   filterUnvaulted: boolean;
+  filterTradeable: boolean;
+  filterDucats: boolean;
   filterRank: number | "unranked" | null;
   sortMode: InventorySortMode;
 }

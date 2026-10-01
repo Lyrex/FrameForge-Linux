@@ -99,6 +99,8 @@ export default function InventoryBatchPreview({ onClose }: InventoryBatchPreview
           loading={false}
           monitoring
           view={view}
+          cardColumns={9}
+          listTextScale={100}
           inventory={{
             "preview-gained": { mastery_rank: 30 },
             "preview-crafting": { mastery_rank: 14 },
