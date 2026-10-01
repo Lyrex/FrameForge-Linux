@@ -227,6 +227,15 @@ export default function App() {
     setInventoryView(view);
     localStorage.setItem(PREFERENCE_KEYS.INVENTORY_VIEW, view);
   }, []);
+  const [inventoryCardColumns, setInventoryCardColumns] = useState(() => {
+    const saved = Number(localStorage.getItem(PREFERENCE_KEYS.INVENTORY_CARD_COLUMNS));
+    return Number.isInteger(saved) && saved >= 5 && saved <= 12 ? saved : 9;
+  });
+  const setInventoryCardColumnsPreference = useCallback((columns: number) => {
+    const next = Math.max(5, Math.min(12, columns));
+    setInventoryCardColumns(next);
+    localStorage.setItem(PREFERENCE_KEYS.INVENTORY_CARD_COLUMNS, String(next));
+  }, []);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'general' | 'overlays' | 'market' | 'filters' | 'accessibility' | 'data' | 'debugging'>('general');
   const [settingsFilterModule, setSettingsFilterModule] = useState<FilterPresetModule>("inventory");
@@ -790,6 +799,8 @@ export default function App() {
                 itemCount={visibleItems.length}
                 view={inventoryView}
                 onViewChange={setInventoryViewPreference}
+                cardColumns={inventoryCardColumns}
+                onCardColumnsChange={setInventoryCardColumnsPreference}
                 filterPresets={filterPresets}
                 onFilterPresetsChange={setFilterPresets}
                 onOpenSettings={openFilterSettings}
@@ -800,6 +811,7 @@ export default function App() {
                 loading={!inventoryReady}
                 monitoring={monitoring}
                 view={inventoryView}
+                cardColumns={inventoryCardColumns}
                 inventory={inventory}
                 modCopies={modCopiesMap}
                 favorites={favoritesSet}

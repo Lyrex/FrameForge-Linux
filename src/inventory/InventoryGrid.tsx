@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, type CSSProperties } from "react";
 import ItemImg from "../ItemImg";
 import type { ViewMode } from "../types/ui";
 import { fmt, deltaClass, deltaText } from "../utils";
@@ -23,6 +23,7 @@ interface InventoryGridProps {
   loading: boolean;
   monitoring: boolean;
   view: ViewMode;
+  cardColumns: number;
   inventory: Record<string, { mastery_rank: number }>;
   modCopies: Record<string, { rank: number | null; count: number }[]>;
   favorites: Set<string>;
@@ -140,7 +141,7 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
           onClick={e => { e.stopPropagation(); onToggleFavorite(unique_name); }}>
           {isFavorite ? "★" : "☆"}
         </button>
-        {view === "list" && <div className="inv-row-icon"><ItemImg imageName={image_name ?? undefined} category={category} size={20} /></div>}
+        {view === "list" && <div className="inv-row-icon"><ItemImg imageName={image_name ?? undefined} category={category} size={28} /></div>}
         <div className="inv-row-name">{name}</div>
         <ValueChips plat={plat} ducats={ducats} className="inv-row-values" />
         <div className="inv-row-cat">{category}</div>
@@ -156,11 +157,11 @@ const InvModCard = memo(function InvModCard({ unique_name, name, category, image
         title={isFavorite ? "Remove from Modular Window" : "Add to Modular Window"}
         onClick={e => { e.stopPropagation(); onToggleFavorite(unique_name); }}
       >{isFavorite ? "★" : "☆"}</button>
-      {view !== "text-cards" && (
-        <div className="inv-card-img-wrap">
-          <ItemImg imageName={image_name ?? undefined} category={category} size={40} />
-        </div>
-      )}
+      <div className="inv-card-img-wrap">
+        {view !== "text-cards" && (
+          <ItemImg imageName={image_name ?? undefined} category={category} size={48} />
+        )}
+      </div>
       <div className="inv-card-name">{name}</div>
       <div className="inv-card-cat">{category}</div>
       <div className="mod-rank-table">
@@ -247,7 +248,7 @@ const InvCard = memo(function InvCard({
         </button>
         {view === "list" && (
           <div className="inv-row-icon">
-            <ItemImg imageName={image_name ?? undefined} category={category} size={20} />
+            <ItemImg imageName={image_name ?? undefined} category={category} size={28} />
             {craftJobName && <span className="inv-foundry-icon-row" title={`Building — ${craftJobName}`}>⚒</span>}
           </div>
         )}
@@ -279,12 +280,14 @@ const InvCard = memo(function InvCard({
             ? <span className="inv-mastery-rank" title={`Rank ${masteryRank}`}>R{masteryRank}</span>
             : null}
       </div>
-      {view !== "text-cards" && (
-        <div className="inv-card-img-wrap">
-          <ItemImg imageName={image_name ?? undefined} category={category} size={48} />
+      <div className="inv-card-img-wrap">
+        {view !== "text-cards" && (
+          <>
+          <ItemImg imageName={image_name ?? undefined} category={category} size={56} />
           {craftJobName && <span className="inv-foundry-icon" title={`Building — ${craftJobName}`}>⚒</span>}
-        </div>
-      )}
+          </>
+        )}
+      </div>
       <div className="inv-card-name">
         {name}
         {isRecent && <span className="item-updated">{recentLabel}</span>}
@@ -322,12 +325,13 @@ const InvCard = memo(function InvCard({
 // ─── Main grid component ────────────────────────────────────────────────────
 
 export default memo(function InventoryGrid({
-  items, loading, monitoring, view,
+  items, loading, monitoring, view, cardColumns,
   inventory, modCopies, favorites, lastChanged, changes, crafting,
   filterRank, onToggleFavorite, onContextMenu,
 }: InventoryGridProps) {
   return (
     <div className={`item-grid item-grid-${view}`}
+         style={{ "--inventory-grid-max-width": `${cardColumns * 180 + 20}px` } as CSSProperties}
          onContextMenu={onContextMenu}>
       {loading ? (
         Array.from({ length: 20 }, (_, i) => (

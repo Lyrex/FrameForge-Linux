@@ -4,9 +4,12 @@
   flex: 1;
   overflow-y: auto;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-  gap: 8px;
-  padding: 10px 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(168px, 100%), 1fr));
+  gap: 12px;
+  padding: 16px 10px;
+  width: 100%;
+  max-width: var(--inventory-grid-max-width);
+  margin-inline: auto;
   align-content: start;
   /* Mod cards can have more rank rows; fill their shared grid row to keep gutters stable. */
   align-items: stretch;
@@ -18,12 +21,12 @@
 .inv-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px 6px 8px;
+  border-radius: 9px;
+  padding: 10px 10px 12px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: 5px;
   cursor: default;
   transition: border-color .12s;
   min-width: 0;
@@ -36,12 +39,12 @@
 
 .inv-fav-star {
   position: absolute;
-  top: 2px;
-  left: 4px;
+  top: 6px;
+  left: 7px;
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 14px;
   color: rgba(255,255,255,.25);
   line-height: 1;
   padding: 0;
@@ -58,31 +61,31 @@
 
 /* ── Mastery row ───────────────────────────────────────────────────────────── */
 
-.inv-mastery-row  { height: 18px; display: flex; align-items: center; justify-content: center; width: 100%; }
-.inv-mastery-star { font-size: 13px; color: #f0c040; line-height: 1; }
-.inv-mastery-rank { font-size: 10px; font-weight: 600; color: var(--muted); background: rgba(255,255,255,.06); border-radius: 3px; padding: 1px 5px; }
+.inv-mastery-row  { height: 20px; display: flex; align-items: center; justify-content: center; width: 100%; }
+.inv-mastery-star { font-size: 14px; color: #f0c040; line-height: 1; }
+.inv-mastery-rank { font-size: 11px; font-weight: 600; color: var(--muted); background: rgba(255,255,255,.06); border-radius: 3px; padding: 2px 6px; }
 
 /* ── Image + foundry icon ──────────────────────────────────────────────────── */
 
-.inv-card-img-wrap { position: relative; width: 48px; height: 48px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.inv-card-img-wrap { position: relative; width: 56px; height: 56px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .inv-foundry-icon  { position: absolute; top: -5px; right: -7px; font-size: 13px; filter: drop-shadow(0 0 3px rgba(0,0,0,.9)); }
 
 /* ── Card text ─────────────────────────────────────────────────────────────── */
 
 .inv-card-name {
-  font-size: 11px; font-weight: 500; text-align: center;
-  line-height: 1.3; overflow: hidden;
+  font-size: 13px; font-weight: 500; text-align: center;
+  line-height: 1.35; overflow: hidden;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   width: 100%;
 }
 .inv-card-cat {
-  font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
   color: rgba(139,148,158,.6); text-align: center; width: 100%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   margin-top: -1px;
 }
 .inv-card-meta { display: flex; gap: 3px; flex-wrap: wrap; justify-content: center; }
-.inv-card-qty      { font-size: 15px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; display: flex; align-items: center; gap: 4px; }
+.inv-card-qty      { font-size: 16px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; display: flex; align-items: center; gap: 5px; }
 .inv-card-qty-zero { color: var(--muted); }
 
 /* ── Value chips + wiki button ─────────────────────────────────────────────── */
@@ -90,22 +93,22 @@
 /* Card view: wiki with plat/ducats stacked below, pinned top-right. Absolute,
    so cards keep identical content flow whether or not values exist. */
 .inv-card-side {
-  position: absolute; top: 2px; right: 4px;
-  display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+  position: absolute; top: 6px; right: 7px;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
   z-index: 2;
 }
 
 .inv-price {
   display: inline-flex; align-items: center; gap: 2px;
-  font-size: 10px; font-weight: 700; line-height: 1.4;
+  font-size: 11px; font-weight: 700; line-height: 1.4;
   font-variant-numeric: tabular-nums;
-  padding: 0 4px; border-radius: 3px;
+  padding: 1px 5px; border-radius: 4px;
 }
 .inv-price-plat  { color: #b39ddb; background: rgba(179,157,219,.10); }
 .inv-price-ducat { color: #f0c040; background: rgba(240,192,64,.10); }
 
 .inv-wiki-btn {
-  font-size: 8px; font-weight: 700; padding: 1px 4px; border-radius: 3px;
+  font-size: 10px; font-weight: 700; padding: 3px 6px; border-radius: 4px;
   border: 1px solid rgba(56,139,253,.4); background: rgba(0,0,0,.4);
   color: #6ea8fe; cursor: pointer; line-height: 1.3;
   transition: background .1s;
@@ -121,36 +124,36 @@
 .inv-wiki-row {
   background: none; cursor: pointer;
   border: 1px solid rgba(56,139,253,.3);
-  font-size: 8px; font-weight: 700; padding: 1px 4px; border-radius: 3px;
+  font-size: 9px; font-weight: 700; padding: 2px 5px; border-radius: 3px;
   color: #6ea8fe; flex-shrink: 0; line-height: 1.3; transition: all .1s;
 }
 .inv-wiki-row:hover { background: rgba(56,139,253,.2); color: #a8c8ff; }
 
 /* ── Mod rank breakdown card ───────────────────────────────────────────────── */
 
-.inv-card-mod { align-items: flex-start; padding: 16px 10px 8px; }
-.inv-card-mod .inv-card-img-wrap { width: 40px; height: 40px; }
-.inv-card-mod .inv-card-name { text-align: left; font-size: 12px; }
+.inv-card-mod { align-items: flex-start; padding: 20px 12px 12px; }
+.inv-card-mod .inv-card-img-wrap { width: 48px; height: 48px; }
+.inv-card-mod .inv-card-name { text-align: left; font-size: 13px; }
 .inv-card-mod .inv-card-cat  { text-align: left; }
 .mod-rank-table {
-  width: 100%; margin-top: 5px;
+  width: 100%; margin-top: 7px;
   display: grid; grid-template-columns: 1fr auto;
-  gap: 1px 6px;
+  gap: 3px 8px;
 }
 .mod-rank-row {
   display: contents;
 }
 .mod-rank-label {
-  font-size: 10px; font-weight: 600; color: var(--muted);
+  font-size: 11px; font-weight: 600; color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 .mod-rank-count {
-  font-size: 10px; font-weight: 700; color: var(--text);
+  font-size: 11px; font-weight: 700; color: var(--text);
   font-variant-numeric: tabular-nums; text-align: right;
 }
 .mod-rank-value { display: flex; align-items: center; gap: 4px; justify-content: flex-end; }
 .mod-rank-delta {
-  font-size: 10px; font-weight: 600;
+  font-size: 11px; font-weight: 600;
   padding: 0 3px; border-radius: 2px;
 }
 .mod-rank-delta.log-positive { color: var(--green); background: rgba(63,185,80,.12); }
@@ -158,11 +161,11 @@
 .mod-rank-zero .mod-rank-label,
 .mod-rank-zero .mod-rank-count { color: rgba(139,148,158,.3); }
 .inv-card-mod .mod-total {
-  font-size: 12px; font-weight: 700; margin-top: 4px;
-  border-top: 1px solid var(--border); padding-top: 3px; width: 100%;
+  font-size: 13px; font-weight: 700; margin-top: 6px;
+  border-top: 1px solid var(--border); padding-top: 5px; width: 100%;
   display: flex; justify-content: space-between; color: var(--text);
 }
-.inv-card-mod .mod-total::before { content: "Total"; font-size: 10px; font-weight: 600; color: var(--muted); }
+.inv-card-mod .mod-total::before { content: "Total"; font-size: 11px; font-weight: 600; color: var(--muted); }
 
 /* ── Empty state ───────────────────────────────────────────────────────────── */
 
@@ -170,7 +173,7 @@
 
 /* ── Delta + recent indicators ─────────────────────────────────────────────── */
 
-.item-updated    { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.item-updated    { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .item-delta { font-size: 12px; font-weight: 600; flex-shrink: 0; padding: 1px 6px; border-radius: 4px; }
 .delta-pos { color: var(--green); background: rgba(63,185,80,.12); }
 .delta-neg { color: var(--red); background: rgba(248,81,73,.12); }
@@ -181,6 +184,8 @@
 .item-grid.item-grid-icons {
   grid-template-columns: repeat(auto-fill, 76px);
   gap: 6px;
+  max-width: none;
+  margin-inline: 0;
 }
 .item-grid-icons .inv-card-icon-only {
   width: 76px; height: 76px; padding: 6px;
@@ -190,16 +195,16 @@
 .item-grid-icons .inv-card-icon-only img,
 .item-grid-icons .inv-card-icon-only .img { width: 56px !important; height: 56px !important; }
 
-/* text-cards: keep grid, just no image area — handled inline.
-   Reserve the top-right corner for the wiki/values stack so it never
-   overlaps the full-width name. */
-.item-grid-text-cards .inv-card { padding-right: 50px; }
+/* text-cards keep the image area as an empty spacer so toggling images does
+   not move the rest of the card content. */
 
 /* list + list-compact */
 .item-grid.item-grid-list,
 .item-grid.item-grid-list-compact {
   display: flex; flex-direction: column; gap: 1px; padding: 4px 0;
   grid-template-columns: none;
+  max-width: none;
+  margin-inline: 0;
 }
 .inv-card-row {
   display: flex; flex-direction: row; align-items: center;
@@ -220,6 +225,20 @@
 .inv-row-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .inv-row-cat  { width: 90px; flex-shrink: 0; font-size: 10px; color: var(--muted); text-align: right; text-transform: uppercase; letter-spacing: .03em; }
 .inv-row-qty  { width: 60px; flex-shrink: 0; text-align: right; font-size: 13px; font-weight: 700; color: var(--text); display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+
+.item-grid-list .inv-card-row {
+  gap: 12px;
+  min-height: 44px;
+  padding: 8px 16px;
+}
+.item-grid-list .inv-fav-star-row { font-size: 14px; }
+.item-grid-list .inv-row-icon { width: 30px; height: 30px; }
+.item-grid-list .inv-row-icon img,
+.item-grid-list .inv-row-icon .img { width: 28px !important; height: 28px !important; }
+.item-grid-list .inv-row-name { font-size: 13px; }
+.item-grid-list .inv-row-cat { width: 110px; font-size: 11px; }
+.item-grid-list .inv-row-qty { width: 70px; font-size: 14px; }
+.item-grid-list .inv-wiki-row { font-size: 10px; padding: 4px 7px; }
 
 /* ── Loading skeleton ──────────────────────────────────────────────────────── */
 

@@ -437,6 +437,26 @@ html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont
 .view-btn:hover { color: var(--text); background: rgba(255,255,255,.06); }
 .view-btn-active { color: var(--accent); border-color: rgba(56,139,253,.4); background: rgba(56,139,253,.08); }
 
+.inventory-image-toggle {
+  display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+  color: var(--muted); cursor: pointer; font-size: 11px; white-space: nowrap;
+}
+.inventory-image-toggle input { accent-color: var(--accent); }
+
+.inventory-column-control {
+  display: flex; align-items: center; flex-shrink: 0;
+  height: 25px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 5px;
+  color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums;
+}
+.inventory-column-control span { min-width: 42px; text-align: center; }
+.inventory-column-control button {
+  align-self: stretch; width: 24px; border: 0; background: rgba(255,255,255,.03);
+  color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1;
+}
+.inventory-column-control button:hover:not(:disabled) { background: rgba(255,255,255,.08); color: var(--text); }
+.inventory-column-control button:disabled { opacity: .35; cursor: default; }
+
 .item-row {
   display: flex;
   align-items: center;

@@ -5,6 +5,7 @@ export const PREFERENCE_KEYS = {
   COLORBLIND_MODE: "ff-colorblind",
   AUTO_DIAGNOSTICS: "ff-auto-diag",
   INVENTORY_VIEW: "ff-view-inventory",
+  INVENTORY_CARD_COLUMNS: "ff-inventory-card-columns",
   FOUNDRY_VIEW: "ff-view-foundry",
   RELIC_VIEW: "ff-view-relic",
   ITEM_REPORT_ORDER: "ff-item-report-order",
