@@ -4,7 +4,7 @@
   flex: 1;
   overflow-y: auto;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(168px, 100%), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(var(--inventory-card-min-width, 168px), 100%), 1fr));
   gap: 12px;
   padding: 16px 10px;
   width: 100%;
@@ -37,14 +37,21 @@
   box-sizing: border-box;
 }
 
+.item-grid-cards .inv-card,
+.item-grid-text-cards .inv-card {
+  padding: .769em .769em .923em;
+  gap: .385em;
+  font-size: var(--inventory-card-base-size, 13px);
+}
+
 .inv-fav-star {
   position: absolute;
-  top: 6px;
-  left: 7px;
+  top: .462em;
+  left: .538em;
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 1.077em;
   color: rgba(255,255,255,.25);
   line-height: 1;
   padding: 0;
@@ -61,31 +68,34 @@
 
 /* ── Mastery row ───────────────────────────────────────────────────────────── */
 
-.inv-mastery-row  { height: 20px; display: flex; align-items: center; justify-content: center; width: 100%; }
-.inv-mastery-star { font-size: 14px; color: #f0c040; line-height: 1; }
-.inv-mastery-rank { font-size: 11px; font-weight: 600; color: var(--muted); background: rgba(255,255,255,.06); border-radius: 3px; padding: 2px 6px; }
+.inv-mastery-row  { height: 1.538em; display: flex; align-items: center; justify-content: center; width: 100%; }
+.inv-mastery-star { font-size: 1.077em; color: #f0c040; line-height: 1; }
+.inv-mastery-rank { font-size: .846em; font-weight: 600; color: var(--muted); background: rgba(255,255,255,.06); border-radius: 3px; padding: .154em .462em; }
 
 /* ── Image + foundry icon ──────────────────────────────────────────────────── */
 
-.inv-card-img-wrap { position: relative; width: 56px; height: 56px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
-.inv-foundry-icon  { position: absolute; top: -5px; right: -7px; font-size: 13px; filter: drop-shadow(0 0 3px rgba(0,0,0,.9)); }
+.inv-card-img-wrap { position: relative; width: var(--inventory-card-image-size, 56px); height: var(--inventory-card-image-size, 56px); flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.item-grid-cards .inv-card-img-wrap .img,
+.item-grid-cards .inv-card-img-wrap .img-fallback { width: var(--inventory-card-image-size, 56px) !important; height: var(--inventory-card-image-size, 56px) !important; }
+.item-grid-cards .inv-card-img-wrap .img-fallback { font-size: 1.508em !important; }
+.inv-foundry-icon  { position: absolute; top: -.385em; right: -.538em; font-size: 1em; filter: drop-shadow(0 0 3px rgba(0,0,0,.9)); }
 
 /* ── Card text ─────────────────────────────────────────────────────────────── */
 
 .inv-card-name {
-  font-size: 13px; font-weight: 500; text-align: center;
+  font-size: 1em; font-weight: 500; text-align: center;
   line-height: 1.35; overflow: hidden;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   width: 100%;
 }
 .inv-card-cat {
-  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+  font-size: .769em; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
   color: rgba(139,148,158,.6); text-align: center; width: 100%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   margin-top: -1px;
 }
 .inv-card-meta { display: flex; gap: 3px; flex-wrap: wrap; justify-content: center; }
-.inv-card-qty      { font-size: 16px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; display: flex; align-items: center; gap: 5px; }
+.inv-card-qty      { font-size: 1.231em; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; display: flex; align-items: center; gap: .313em; }
 .inv-card-qty-zero { color: var(--muted); }
 
 /* ── Value chips + wiki button ─────────────────────────────────────────────── */
@@ -93,22 +103,22 @@
 /* Card view: wiki with plat/ducats stacked below, pinned top-right. Absolute,
    so cards keep identical content flow whether or not values exist. */
 .inv-card-side {
-  position: absolute; top: 6px; right: 7px;
-  display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
+  position: absolute; top: .462em; right: .538em;
+  display: flex; flex-direction: column; align-items: flex-end; gap: .308em;
   z-index: 2;
 }
 
 .inv-price {
   display: inline-flex; align-items: center; gap: 2px;
-  font-size: 11px; font-weight: 700; line-height: 1.4;
+  font-size: .846em; font-weight: 700; line-height: 1.4;
   font-variant-numeric: tabular-nums;
-  padding: 1px 5px; border-radius: 4px;
+  padding: .091em .455em; border-radius: 4px;
 }
 .inv-price-plat  { color: #b39ddb; background: rgba(179,157,219,.10); }
 .inv-price-ducat { color: #f0c040; background: rgba(240,192,64,.10); }
 
 .inv-wiki-btn {
-  font-size: 10px; font-weight: 700; padding: 3px 6px; border-radius: 4px;
+  font-size: .769em; font-weight: 700; padding: .3em .6em; border-radius: 4px;
   border: 1px solid rgba(56,139,253,.4); background: rgba(0,0,0,.4);
   color: #6ea8fe; cursor: pointer; line-height: 1.3;
   transition: background .1s;
@@ -131,41 +141,44 @@
 
 /* ── Mod rank breakdown card ───────────────────────────────────────────────── */
 
-.inv-card-mod { align-items: flex-start; padding: 20px 12px 12px; }
-.inv-card-mod .inv-card-img-wrap { width: 48px; height: 48px; }
-.inv-card-mod .inv-card-name { text-align: left; font-size: 13px; }
+.inv-card-mod { align-items: flex-start; padding: 1.538em .923em .923em; }
+.inv-card-mod .inv-card-img-wrap { width: var(--inventory-mod-image-size, 48px); height: var(--inventory-mod-image-size, 48px); }
+.item-grid-cards .inv-card-mod .inv-card-img-wrap .img,
+.item-grid-cards .inv-card-mod .inv-card-img-wrap .img-fallback { width: var(--inventory-mod-image-size, 48px) !important; height: var(--inventory-mod-image-size, 48px) !important; }
+.item-grid-cards .inv-card-mod .inv-card-img-wrap .img-fallback { font-size: 1.292em !important; }
+.inv-card-mod .inv-card-name { text-align: left; font-size: 1em; }
 .inv-card-mod .inv-card-cat  { text-align: left; }
 .mod-rank-table {
-  width: 100%; margin-top: 7px;
+  width: 100%; margin-top: .538em;
   display: grid; grid-template-columns: 1fr auto;
-  gap: 3px 8px;
+  gap: .231em .615em;
 }
 .mod-rank-row {
   display: contents;
 }
 .mod-rank-label {
-  font-size: 11px; font-weight: 600; color: var(--muted);
+  font-size: .846em; font-weight: 600; color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 .mod-rank-count {
-  font-size: 11px; font-weight: 700; color: var(--text);
+  font-size: .846em; font-weight: 700; color: var(--text);
   font-variant-numeric: tabular-nums; text-align: right;
 }
-.mod-rank-value { display: flex; align-items: center; gap: 4px; justify-content: flex-end; }
+.mod-rank-value { display: flex; align-items: center; gap: .308em; justify-content: flex-end; }
 .mod-rank-delta {
-  font-size: 11px; font-weight: 600;
-  padding: 0 3px; border-radius: 2px;
+  font-size: .846em; font-weight: 600;
+  padding: 0 .231em; border-radius: 2px;
 }
 .mod-rank-delta.log-positive { color: var(--green); background: rgba(63,185,80,.12); }
 .mod-rank-delta.log-negative { color: var(--red); background: rgba(248,81,73,.12); }
 .mod-rank-zero .mod-rank-label,
 .mod-rank-zero .mod-rank-count { color: rgba(139,148,158,.3); }
 .inv-card-mod .mod-total {
-  font-size: 13px; font-weight: 700; margin-top: 6px;
-  border-top: 1px solid var(--border); padding-top: 5px; width: 100%;
+  font-size: 1em; font-weight: 700; margin-top: .462em;
+  border-top: 1px solid var(--border); padding-top: .385em; width: 100%;
   display: flex; justify-content: space-between; color: var(--text);
 }
-.inv-card-mod .mod-total::before { content: "Total"; font-size: 11px; font-weight: 600; color: var(--muted); }
+.inv-card-mod .mod-total::before { content: "Total"; font-size: .846em; font-weight: 600; color: var(--muted); }
 
 /* ── Empty state ───────────────────────────────────────────────────────────── */
 
@@ -173,8 +186,10 @@
 
 /* ── Delta + recent indicators ─────────────────────────────────────────────── */
 
-.item-updated    { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.item-updated    { font-size: .846em; color: var(--muted); white-space: nowrap; }
 .item-delta { font-size: 12px; font-weight: 600; flex-shrink: 0; padding: 1px 6px; border-radius: 4px; }
+.item-grid-cards .item-delta,
+.item-grid-text-cards .item-delta { font-size: .75em; padding: .063em .375em; }
 .delta-pos { color: var(--green); background: rgba(63,185,80,.12); }
 .delta-neg { color: var(--red); background: rgba(248,81,73,.12); }
 
@@ -195,21 +210,29 @@
 .item-grid-icons .inv-card-icon-only img,
 .item-grid-icons .inv-card-icon-only .img { width: 56px !important; height: 56px !important; }
 
-/* text-cards use the same card structure without reserving image space. */
+/* Without an image, controls share one top row and content keeps the full width. */
+.item-grid-text-cards .inv-card { padding-top: 3em; }
+.item-grid-text-cards .inv-mastery-row:empty { display: none; }
+.item-grid-text-cards .inv-card-side {
+  flex-direction: row;
+  align-items: center;
+  gap: .308em;
+}
 
 /* list + list-compact */
 .item-grid.item-grid-list,
 .item-grid.item-grid-list-compact {
   display: flex; flex-direction: column; gap: 1px; padding: 4px 0;
+  font-size: var(--inventory-list-base-size, 13px);
   grid-template-columns: none;
   max-width: none;
   margin-inline: 0;
 }
 .inv-card-row {
   display: flex; flex-direction: row; align-items: center;
-  gap: 8px; padding: 4px 12px; border-radius: 0;
+  gap: 8px; padding: .308em 12px; border-radius: 0;
   border-bottom: 1px solid rgba(48,54,61,.35);
-  min-height: 30px;
+  min-height: 2.308em;
 }
 .inv-fav-star-row {
   background: none; border: none; cursor: pointer;
@@ -221,23 +244,30 @@
 .inv-row-icon { width: 22px; height: 22px; flex-shrink: 0; position: relative; display: flex; align-items: center; }
 .inv-row-icon img, .inv-row-icon .img { width: 20px !important; height: 20px !important; }
 .inv-foundry-icon-row { position: absolute; top: -4px; right: -6px; font-size: 9px; }
-.inv-row-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.inv-row-cat  { width: 90px; flex-shrink: 0; font-size: 10px; color: var(--muted); text-align: right; text-transform: uppercase; letter-spacing: .03em; }
-.inv-row-qty  { width: 60px; flex-shrink: 0; text-align: right; font-size: 13px; font-weight: 700; color: var(--text); display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.inv-row-name { flex: 1; min-width: 0; font-size: 1em; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.inv-row-cat  { width: 10em; flex-shrink: 0; font-size: .846em; color: var(--muted); text-align: right; text-transform: uppercase; letter-spacing: .03em; }
+.inv-row-qty  { width: 5em; flex-shrink: 0; text-align: right; font-size: 1.077em; font-weight: 700; color: var(--text); display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.item-grid-list .inv-row-values,
+.item-grid-list-compact .inv-row-values { width: 7.385em; }
+.item-grid-list .inv-price,
+.item-grid-list-compact .inv-price { font-size: .846em; }
+.item-grid-list .inv-wiki-row,
+.item-grid-list-compact .inv-wiki-row { font-size: .769em; }
+.item-grid-list .item-updated,
+.item-grid-list-compact .item-updated { font-size: .846em; }
+.item-grid-list .item-delta,
+.item-grid-list-compact .item-delta { font-size: .857em; }
 
 .item-grid-list .inv-card-row {
   gap: 12px;
-  min-height: 44px;
-  padding: 8px 16px;
+  min-height: 3.385em;
+  padding: .615em 16px;
 }
 .item-grid-list .inv-fav-star-row { font-size: 14px; }
-.item-grid-list .inv-row-icon { width: 30px; height: 30px; }
+.item-grid-list .inv-row-icon { width: var(--inventory-list-icon-wrap-size, 30px); height: var(--inventory-list-icon-wrap-size, 30px); }
 .item-grid-list .inv-row-icon img,
-.item-grid-list .inv-row-icon .img { width: 28px !important; height: 28px !important; }
-.item-grid-list .inv-row-name { font-size: 13px; }
-.item-grid-list .inv-row-cat { width: 110px; font-size: 11px; }
-.item-grid-list .inv-row-qty { width: 70px; font-size: 14px; }
-.item-grid-list .inv-wiki-row { font-size: 10px; padding: 4px 7px; }
+.item-grid-list .inv-row-icon .img { width: var(--inventory-list-icon-size, 28px) !important; height: var(--inventory-list-icon-size, 28px) !important; }
+.item-grid-list .inv-wiki-row { padding: 4px 7px; }
 
 /* ── Loading skeleton ──────────────────────────────────────────────────────── */
 

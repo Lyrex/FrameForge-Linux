@@ -24,6 +24,7 @@ interface InventoryGridProps {
   monitoring: boolean;
   view: ViewMode;
   cardColumns: number;
+  listTextScale: number;
   inventory: Record<string, { mastery_rank: number }>;
   modCopies: Record<string, { rank: number | null; count: number }[]>;
   favorites: Set<string>;
@@ -323,13 +324,27 @@ const InvCard = memo(function InvCard({
 // ─── Main grid component ────────────────────────────────────────────────────
 
 export default memo(function InventoryGrid({
-  items, loading, monitoring, view, cardColumns,
+  items, loading, monitoring, view, cardColumns, listTextScale,
   inventory, modCopies, favorites, lastChanged, changes, crafting,
   filterRank, onToggleFavorite, onContextMenu,
 }: InventoryGridProps) {
+  const cardScale = Math.max(.72, Math.min(1.08, 1 - (cardColumns - 9) * .0187));
+  const scaledCardMinWidth = Math.round(168 - (cardColumns - 9) * (64 / 15));
+  const cardMinWidth = view === "text-cards"
+    ? Math.max(150, scaledCardMinWidth + 24)
+    : scaledCardMinWidth;
   return (
     <div className={`item-grid item-grid-${view}`}
-         style={{ "--inventory-grid-max-width": `${cardColumns * 180 + 20}px` } as CSSProperties}
+         style={{
+           "--inventory-grid-max-width": `${cardColumns * (cardMinWidth + 12) + 20}px`,
+           "--inventory-card-min-width": `${cardMinWidth}px`,
+           "--inventory-card-base-size": `${13 * cardScale}px`,
+           "--inventory-card-image-size": `${56 * cardScale}px`,
+           "--inventory-mod-image-size": `${48 * cardScale}px`,
+           "--inventory-list-base-size": `${13 * listTextScale / 100}px`,
+           "--inventory-list-icon-wrap-size": `${30 * listTextScale / 100}px`,
+           "--inventory-list-icon-size": `${28 * listTextScale / 100}px`,
+         } as CSSProperties}
          onContextMenu={onContextMenu}>
       {loading ? (
         Array.from({ length: 20 }, (_, i) => (

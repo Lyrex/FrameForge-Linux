@@ -18,13 +18,15 @@ interface InventoryToolbarProps {
   onViewChange: (view: ViewMode) => void;
   cardColumns: number;
   onCardColumnsChange: (columns: number) => void;
+  listTextScale: number;
+  onListTextScaleChange: (scale: number) => void;
   filterPresets: FilterPresetSettings;
   onFilterPresetsChange: Dispatch<SetStateAction<FilterPresetSettings>>;
   onOpenSettings: (module: FilterPresetModule) => void;
 }
 
 export default function InventoryToolbar({
-  filters, onFiltersChange, onToggleRecent, availableRanks, showRankFilters, itemCount, view, onViewChange, cardColumns, onCardColumnsChange, filterPresets, onFilterPresetsChange, onOpenSettings,
+  filters, onFiltersChange, onToggleRecent, availableRanks, showRankFilters, itemCount, view, onViewChange, cardColumns, onCardColumnsChange, listTextScale, onListTextScaleChange, filterPresets, onFilterPresetsChange, onOpenSettings,
 }: InventoryToolbarProps) {
   const { search, filterOwned, filterRecent, filterPrime, filterVaulted, filterUnvaulted, filterTradeable, filterDucats, filterRank, sortMode } = filters;
   const isCardView = view === "cards" || view === "text-cards";
@@ -83,8 +85,17 @@ export default function InventoryToolbar({
                 <button title="Fewer columns" aria-label="Fewer columns" disabled={cardColumns <= 5}
                   onClick={() => onCardColumnsChange(cardColumns - 1)}>−</button>
                 <span>{cardColumns} cols</span>
-                <button title="More columns" aria-label="More columns" disabled={cardColumns >= 12}
+                <button title="More columns" aria-label="More columns" disabled={cardColumns >= 24}
                   onClick={() => onCardColumnsChange(cardColumns + 1)}>+</button>
+              </div>
+            )}
+            {isListView && (
+              <div className="inventory-list-text-control" aria-label="List text size">
+                <button title="Smaller text" aria-label="Smaller text" disabled={listTextScale <= 80}
+                  onClick={() => onListTextScaleChange(listTextScale - 10)}>−</button>
+                <span>{listTextScale}%</span>
+                <button title="Larger text" aria-label="Larger text" disabled={listTextScale >= 150}
+                  onClick={() => onListTextScaleChange(listTextScale + 10)}>+</button>
               </div>
             )}
           </>

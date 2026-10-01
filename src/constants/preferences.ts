@@ -6,6 +6,7 @@ export const PREFERENCE_KEYS = {
   AUTO_DIAGNOSTICS: "ff-auto-diag",
   INVENTORY_VIEW: "ff-view-inventory",
   INVENTORY_CARD_COLUMNS: "ff-inventory-card-columns",
+  INVENTORY_LIST_TEXT_SCALE: "ff-inventory-list-text-scale",
   FOUNDRY_VIEW: "ff-view-foundry",
   RELIC_VIEW: "ff-view-relic",
   ITEM_REPORT_ORDER: "ff-item-report-order",

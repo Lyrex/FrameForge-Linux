@@ -229,12 +229,21 @@ export default function App() {
   }, []);
   const [inventoryCardColumns, setInventoryCardColumns] = useState(() => {
     const saved = Number(localStorage.getItem(PREFERENCE_KEYS.INVENTORY_CARD_COLUMNS));
-    return Number.isInteger(saved) && saved >= 5 && saved <= 12 ? saved : 9;
+    return Number.isInteger(saved) && saved >= 5 && saved <= 24 ? saved : 9;
   });
   const setInventoryCardColumnsPreference = useCallback((columns: number) => {
-    const next = Math.max(5, Math.min(12, columns));
+    const next = Math.max(5, Math.min(24, columns));
     setInventoryCardColumns(next);
     localStorage.setItem(PREFERENCE_KEYS.INVENTORY_CARD_COLUMNS, String(next));
+  }, []);
+  const [inventoryListTextScale, setInventoryListTextScale] = useState(() => {
+    const saved = Number(localStorage.getItem(PREFERENCE_KEYS.INVENTORY_LIST_TEXT_SCALE));
+    return Number.isInteger(saved) && saved >= 80 && saved <= 150 && saved % 10 === 0 ? saved : 100;
+  });
+  const setInventoryListTextScalePreference = useCallback((scale: number) => {
+    const next = Math.max(80, Math.min(150, Math.round(scale / 10) * 10));
+    setInventoryListTextScale(next);
+    localStorage.setItem(PREFERENCE_KEYS.INVENTORY_LIST_TEXT_SCALE, String(next));
   }, []);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'general' | 'overlays' | 'market' | 'filters' | 'accessibility' | 'data' | 'debugging'>('general');
@@ -801,6 +810,8 @@ export default function App() {
                 onViewChange={setInventoryViewPreference}
                 cardColumns={inventoryCardColumns}
                 onCardColumnsChange={setInventoryCardColumnsPreference}
+                listTextScale={inventoryListTextScale}
+                onListTextScaleChange={setInventoryListTextScalePreference}
                 filterPresets={filterPresets}
                 onFilterPresetsChange={setFilterPresets}
                 onOpenSettings={openFilterSettings}
@@ -812,6 +823,7 @@ export default function App() {
                 monitoring={monitoring}
                 view={inventoryView}
                 cardColumns={inventoryCardColumns}
+                listTextScale={inventoryListTextScale}
                 inventory={inventory}
                 modCopies={modCopiesMap}
                 favorites={favoritesSet}
