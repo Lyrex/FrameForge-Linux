@@ -1,4 +1,4 @@
-# FrameForge `v4.4.0`
+# FrameForge `v4.5.0`
 
 A desktop companion for Warframe — live inventory, market prices, trading, timers, relic overlay, and riven analysis. Read-only, no game modification.
 
