@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { LogicalSize } from "@tauri-apps/api/window";
 import { overlayScale } from "./uiScale";
+import { APP_TITLE } from "../constants/app";
 
 // ── Riven overlay — module-level window management ────────────────────────────
 // Stored OUTSIDE React so StrictMode remounts don't destroy/recreate the window.
@@ -67,7 +68,7 @@ export async function ensureRivenWindow(wx: number, wy: number, wh: number): Pro
   try {
     _rivenWin = new WebviewWindow("riven-overlay", {
       url: `index.html#rivenoverlay`,
-      title: "FrameForge Riven",
+      title: `${APP_TITLE} Riven`,
       transparent: true, decorations: false,
       alwaysOnTop: true, skipTaskbar: true,
       resizable: false, focus: false,

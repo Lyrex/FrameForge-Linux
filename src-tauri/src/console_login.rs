@@ -17,6 +17,8 @@
 /// capabilities/console-login.json, and the 6 tagged lines in lib.rs / App.tsx.
 use tauri::{Emitter, Manager};
 
+use crate::events;
+
 /// Injected into the console-login WebView before any page scripts run.
 pub const INIT_SCRIPT: &str = r#"(function () {
     'use strict';
@@ -127,7 +129,7 @@ pub fn emit_console_credentials(app: &tauri::AppHandle, id: String, nonce: Strin
         return;
     }
     let _ = app.emit(
-        "console-login-success",
+        events::CONSOLE_LOGIN_SUCCESS,
         serde_json::json!({ "accountId": id, "nonce": nonce }),
     );
     if let Some(w) = app.get_webview_window("console-login") {

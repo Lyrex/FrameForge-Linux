@@ -22,7 +22,7 @@ export interface SettingsSnapshot {
   blobLogEnabled: boolean; apiLogEnabled: boolean; autoDiagEnabled: boolean; tracked: string[];
   favorites: string[]; timerFavorites: string[]; fissureWatches: FissureWatch[]; fissureNotifications: boolean;
   modularWidth: number; modularSectionOrder: string[]; modularPopout: boolean; wfmInvisibleOnStart: boolean;
-  wfmInvisibleOnClose: boolean; wfmAutoInvisible: boolean; wfmAutoInvisibleMins: number; relicPickEnabled: boolean;
+  wfmInvisibleOnClose: boolean; wfmAutoInvisible: boolean; wfmAutoInvisibleMins: number; wfmRecordSales: boolean; relicPickEnabled: boolean;
   relicPickPriority: RelicPickPriority; relicPickRefinement: RelicRefinement;
   relicPickLines: RelicPickLines; foundryPageSize: FoundryPageSize; memTriggerEnabled: boolean;
   filterPresets: FilterPresetSettings;

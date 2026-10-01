@@ -36,3 +36,6 @@ src-tauri/target/
 *.njsproj
 *.sln
 *.sw?
+
+# Dev build data root (pnpm tauri dev) - separate from the installed app's files
+.frameforge-dev/

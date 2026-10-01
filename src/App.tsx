@@ -14,6 +14,7 @@ import { useOverlays } from "./hooks/useOverlays";
 import { useTimerPreferences } from "./hooks/useTimerPreferences";
 import { useFissureNotifications } from "./hooks/useFissureNotifications";
 import { CATEGORIES } from "./constants/categories";
+import { APP_TITLE, IS_DEV } from "./constants/app";
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -154,6 +155,7 @@ export default function App() {
     wfmInvisibleOnClose, setWfmInvisibleOnClose,
     wfmAutoInvisible, setWfmAutoInvisible,
     wfmAutoInvisibleMins, setWfmAutoInvisibleMins,
+    wfmRecordSales, setWfmRecordSales,
     companionApiEnabled,
     filterPresets, setFilterPresets,
     settingsLoadedRef, settingsRef,
@@ -245,7 +247,7 @@ export default function App() {
     wfmLoggedInRef.current = loggedIn;
   }, []);
 
-  settingsRef.current = { overlayEnabled, overlayPriority, textScale, colorblindMode, clockFormat, companionApiEnabled, memoryScannerEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled, filterPresets };
+  settingsRef.current = { overlayEnabled, overlayPriority, textScale, colorblindMode, clockFormat, companionApiEnabled, memoryScannerEnabled, blobLogEnabled, apiLogEnabled, autoDiagEnabled, tracked, favorites, timerFavorites, fissureWatches, fissureNotifications, modularWidth, modularSectionOrder, modularPopout, wfmInvisibleOnStart, wfmInvisibleOnClose, wfmAutoInvisible, wfmAutoInvisibleMins, wfmRecordSales, relicPickEnabled, relicPickPriority, relicPickRefinement, relicPickLines, foundryPageSize, memTriggerEnabled, filterPresets };
 
   // ── Debug data sizes — reload when the Debugging settings tab opens ─────────
   const reloadDebugSizes = useCallback(() => {
@@ -260,13 +262,6 @@ export default function App() {
   useEffect(() => {
     if (showSettings && settingsTab === "debugging") reloadDebugSizes();
   }, [showSettings, settingsTab]); // eslint-disable-line
-
-  // ── Log watcher — always start regardless of memory scanner toggle ─────────
-  // EE.log is plain file I/O (not memory reading) — handles riven detection,
-  // trade completion, and WFM whisper detection unconditionally.
-  useEffect(() => {
-    invoke("start_log_watcher").catch(() => {});
-  }, []); // eslint-disable-line
 
   // ── WFM auto-login at app start ───────────────────────────────────────────
   // Restores the session into Rust's AppState so the Trading tab is instantly
@@ -358,7 +353,7 @@ export default function App() {
 
   // ── Blob processing status ────────────────────────────────────────────────
   useEffect(() => {
-    const unlisten = listen<BlobStatusPayload>("blob-status", e => {
+    const unlisten = listen<BlobStatusPayload>(TAURI_EVENTS.BLOB_STATUS, e => {
       const { stage } = e.payload;
       if (stage === "scanning") {
         if (blobDoneTimerRef.current) clearTimeout(blobDoneTimerRef.current);
@@ -398,6 +393,8 @@ export default function App() {
 
   // ── Auto-update check ─────────────────────────────────────────────────────
   useEffect(() => {
+    // A dev build must never download a release over itself.
+    if (IS_DEV) return;
     invoke<string | null>("check_for_update")
       .then(v => { if (v) setPendingUpdate(v); })
       .catch(() => {});
@@ -628,7 +625,7 @@ export default function App() {
 
       {/* ── Header ── */}
       <header className="header">
-        <span className="header-title">FrameForge</span>
+        <span className="header-title">{APP_TITLE}</span>
         <HeaderStatusBadges
           masteryRank={masteryRank}
           playerName={playerName}
@@ -740,7 +737,7 @@ export default function App() {
         </div>
       </header>
 
-      <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} {...{ settingsTab, setSettingsTab, settingsFilterModule, setSettingsFilterModule, filterPresets, setFilterPresets, inventoryFilters, setInventoryFilters, foundryFilters, setFoundryFilters, marketFilters, setMarketFilters, relicFilters, setRelicFilters, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, systemLocale, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setApiQuantities, setApiModCopies, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setWfConnected, wfConnectedRef, setItemsRefreshKey, setClearMsg, clearMsg, blobLogEnabled, setBlobLogEnabled, blobLogSize, setBlobLogSize, companionApiEnabled, apiLogEnabled, setApiLogEnabled, apiLogSize, setApiLogSize, setShowInventoryBatchPreview, notifyTestResult, setNotifyTestResult, overlayLogCopied, setOverlayLogCopied, autoDiagEnabled, setAutoDiagEnabled, diagFolderSize, setDiagFolderSize, diagPath, diagCapturing, setDiagCapturing, setDiagPath, reloadDebugSizes, memoryProbing, setMemoryProbing, probeSize, setProbeSize, rawScanning, setRawScanning, rawScanSize, setRawScanSize, memRelicDebugRunning, setMemRelicDebugRunning, relicPickOcrResult, relicPickOcrTesting, setRelicPickOcrTesting, setRelicPickOcrResult, relicPickTestResult, relicPickTestEra, setRelicPickTestEra, setRelicPickTestResult, eeLogTail, setEeLogTail, debugCatEnabled, setDebugCatEnabled, unmatchedPathsSize, setUnmatchedPathsSize, appVersion }} />
+      <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} {...{ settingsTab, setSettingsTab, settingsFilterModule, setSettingsFilterModule, filterPresets, setFilterPresets, inventoryFilters, setInventoryFilters, foundryFilters, setFoundryFilters, marketFilters, setMarketFilters, relicFilters, setRelicFilters, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, wfmRecordSales, setWfmRecordSales, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, systemLocale, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setApiQuantities, setApiModCopies, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setWfConnected, wfConnectedRef, setItemsRefreshKey, setClearMsg, clearMsg, blobLogEnabled, setBlobLogEnabled, blobLogSize, setBlobLogSize, companionApiEnabled, apiLogEnabled, setApiLogEnabled, apiLogSize, setApiLogSize, setShowInventoryBatchPreview, notifyTestResult, setNotifyTestResult, overlayLogCopied, setOverlayLogCopied, autoDiagEnabled, setAutoDiagEnabled, diagFolderSize, setDiagFolderSize, diagPath, diagCapturing, setDiagCapturing, setDiagPath, reloadDebugSizes, memoryProbing, setMemoryProbing, probeSize, setProbeSize, rawScanning, setRawScanning, rawScanSize, setRawScanSize, memRelicDebugRunning, setMemRelicDebugRunning, relicPickOcrResult, relicPickOcrTesting, setRelicPickOcrTesting, setRelicPickOcrResult, relicPickTestResult, relicPickTestEra, setRelicPickTestEra, setRelicPickTestResult, eeLogTail, setEeLogTail, debugCatEnabled, setDebugCatEnabled, unmatchedPathsSize, setUnmatchedPathsSize, appVersion }} />
 
       {showInventoryBatchPreview && <InventoryBatchPreview onClose={closeInventoryBatchPreview} />}
 
@@ -823,7 +820,7 @@ export default function App() {
         {/* Keep mounted at all times so WfmTrading's trade-completed listener
             (auto listing update) fires regardless of which tab is active. */}
         <KeepMountedWhenHidden active={activeModule === "market"}>
-          <MarketHelper inventory={inventory} refreshKey={itemsRefreshKey} crafting={crafting} filters={marketFilters} onFiltersChange={setMarketFilters} filterPresets={filterPresets} onFilterPresetsChange={setFilterPresets} onOpenSettings={openFilterSettings} onWfmLoginChange={handleWfmLoginChange} modCopiesMap={modCopiesMap} />
+          <MarketHelper inventory={inventory} refreshKey={itemsRefreshKey} crafting={crafting} filters={marketFilters} onFiltersChange={setMarketFilters} filterPresets={filterPresets} onFilterPresetsChange={setFilterPresets} onOpenSettings={openFilterSettings} onWfmLoginChange={handleWfmLoginChange} modCopiesMap={modCopiesMap} wfmRecordSales={wfmRecordSales} />
         </KeepMountedWhenHidden>
 
         {/* ── Relics module ── */}

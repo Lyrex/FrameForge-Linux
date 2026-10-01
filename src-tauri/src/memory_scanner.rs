@@ -275,11 +275,10 @@ pub fn scan_steam_id(data: &[u8]) -> Option<String> {
 
 // ─── Public helpers ──────────────────────────────────────────────────────────
 
-#[cfg(target_os = "windows")]
-pub fn find_warframe_pid_pub() -> Option<u32> { find_warframe_pid() }
-
-#[cfg(not(target_os = "windows"))]
-pub fn find_warframe_pid_pub() -> Option<u32> { None }
+pub fn find_warframe_pid_pub() -> Option<u32> {
+    use crate::platform::{ProcessAccess, Platform};
+    Platform::find_warframe_pid()
+}
 
 // ─── Raw memory format probe ──────────────────────────────────────────────────
 //
@@ -287,19 +286,9 @@ pub fn find_warframe_pid_pub() -> Option<u32> { None }
 // of a set of known strings.  Capped at max_hits total.  Used to reverse-engineer
 // the actual JSON format for inventory items without any parsing assumptions.
 
-#[cfg(target_os = "windows")]
 #[tracing::instrument(level = "info", skip_all, fields(max_hits = max_hits))]
 pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
-    use std::ffi::c_void;
-    use std::mem;
-    use windows_sys::Win32::{
-        Foundation::CloseHandle,
-        System::{
-            Diagnostics::Debug::ReadProcessMemory,
-            Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS},
-            Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
-        },
-    };
+    use crate::platform::{Platform, ProcessAccess};
 
     // Patterns to search for — ordered by diagnostic value.
     // "MiscItems":[{ marks the beginning of the actual inventory JSON array from DE's API
@@ -318,99 +307,92 @@ pub fn dump_inventory_regions(max_hits: usize) -> Vec<String> {
         None => return vec!["Warframe not running".to_string()],
     };
 
-    let process = unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, 0, pid) };
-    if process == 0 { return vec!["OpenProcess failed".to_string()]; }
+    let handle = match Platform::open_process(pid) {
+        Ok(h) => h,
+        Err(e) => return vec![format!("OpenProcess failed: {}", e)],
+    };
 
     let mut results: Vec<String> = Vec::new();
     let mut addr: usize = 0x10000;
-    let mbi_size = mem::size_of::<MEMORY_BASIC_INFORMATION>();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
 
+    const MAX_REGION: usize = 256 * 1024 * 1024;
+    const CHUNK_SIZE: usize = 64 * 1024 * 1024;
+
     'outer: while std::time::Instant::now() < deadline && results.len() < max_hits {
-        let mut mbi: MEMORY_BASIC_INFORMATION = unsafe { mem::zeroed() };
-        if unsafe { VirtualQueryEx(process, addr as *const c_void, &mut mbi, mbi_size) } == 0 { break; }
-        let region_end = (mbi.BaseAddress as usize).saturating_add(mbi.RegionSize);
-        if region_end <= addr { break; }
-        addr = region_end;
+        let regions: Vec<_> = handle.regions_from(addr).collect();
+        if regions.is_empty() { break; }
 
-        if mbi.State != MEM_COMMIT { continue; }
-        let p = mbi.Protect;
-        if p & PAGE_NOACCESS != 0 || p & PAGE_GUARD != 0 { continue; }
-        if p == 0x10 || p == 0x20 { continue; }    // skip executable (code) pages
-        // Skip tiny or enormous regions; read large regions in 64 MB chunks
-        const MAX_REGION: usize = 256 * 1024 * 1024;
-        const CHUNK_SIZE: usize =  64 * 1024 * 1024;
-        if mbi.RegionSize < 4096 || mbi.RegionSize > MAX_REGION { continue; }
-
-        let chunks = if mbi.RegionSize > CHUNK_SIZE {
-            mbi.RegionSize.div_ceil(CHUNK_SIZE)
-        } else { 1 };
-
-        'chunk: for chunk_idx in 0..chunks {
+        for region in &regions {
             if results.len() >= max_hits { break 'outer; }
             if std::time::Instant::now() >= deadline { break 'outer; }
 
-            let chunk_offset = chunk_idx * CHUNK_SIZE;
-            let read_size    = CHUNK_SIZE.min(mbi.RegionSize - chunk_offset);
-            let chunk_addr   = mbi.BaseAddress as usize + chunk_offset;
+            addr = region.base_address + region.region_size;
+            if !region.is_committed || !region.is_readable || region.is_executable { continue; }
+            if region.region_size < 4096 || region.region_size > MAX_REGION { continue; }
 
-            let mut buf = vec![0u8; read_size];
-            let mut bytes_read = 0usize;
-            let ok = unsafe {
-                ReadProcessMemory(process, chunk_addr as *const c_void,
-                    buf.as_mut_ptr() as *mut c_void, read_size, &mut bytes_read)
-            };
-            if ok == 0 || bytes_read < 8 { continue 'chunk; }
-            let data = &buf[..bytes_read];
+            let chunks = if region.region_size > CHUNK_SIZE {
+                region.region_size.div_ceil(CHUNK_SIZE)
+            } else { 1 };
 
-        for needle in NEEDLES {
-            if results.len() >= max_hits { break 'outer; }
-            if let Some(pos) = data.windows(needle.len()).position(|w| w == *needle) {
-                let ctx_start = pos.saturating_sub(80);
-                let ctx_end   = data.len().min(pos + 200);
-                let snip: String = data[ctx_start..ctx_end].iter()
-                    .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '·' })
-                    .collect();
-                results.push(format!(
-                    "0x{:012x}  needle=\"{}\"  ctx: {}",
-                    chunk_addr + ctx_start,
-                    String::from_utf8_lossy(needle),
-                    snip
-                ));
-                // Also grab up to 2 more occurrences of the same needle in this chunk
-                let mut search = pos + needle.len();
-                let mut extra = 0;
-                while extra < 2 && search + needle.len() <= data.len() {
-                    if let Some(rel) = data[search..].windows(needle.len()).position(|w| w == *needle) {
-                        let p2 = search + rel;
-                        let s2 = p2.saturating_sub(80);
-                        let e2 = data.len().min(p2 + 200);
-                        let snip2: String = data[s2..e2].iter()
+            'chunk: for chunk_idx in 0..chunks {
+                if results.len() >= max_hits { break 'outer; }
+                if std::time::Instant::now() >= deadline { break 'outer; }
+
+                let chunk_offset = chunk_idx * CHUNK_SIZE;
+                let read_size    = CHUNK_SIZE.min(region.region_size - chunk_offset);
+                let chunk_addr   = region.base_address + chunk_offset;
+
+                let buf = match handle.read(chunk_addr, read_size) {
+                    Some(r) => r,
+                    None => continue 'chunk,
+                };
+                if buf.len() < 8 { continue 'chunk; }
+                let data = &buf;
+
+                for needle in NEEDLES {
+                    if results.len() >= max_hits { break 'outer; }
+                    if let Some(pos) = data.windows(needle.len()).position(|w| w == *needle) {
+                        let ctx_start = pos.saturating_sub(80);
+                        let ctx_end   = data.len().min(pos + 200);
+                        let snip: String = data[ctx_start..ctx_end].iter()
                             .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '·' })
                             .collect();
                         results.push(format!(
                             "0x{:012x}  needle=\"{}\"  ctx: {}",
-                            chunk_addr + s2,
+                            chunk_addr + ctx_start,
                             String::from_utf8_lossy(needle),
-                            snip2
+                            snip
                         ));
-                        search = p2 + needle.len();
-                        extra += 1;
-                    } else { break; }
+                        // Also grab up to 2 more occurrences of the same needle in this chunk
+                        let mut search = pos + needle.len();
+                        let mut extra = 0;
+                        while extra < 2 && search + needle.len() <= data.len() {
+                            if let Some(rel) = data[search..].windows(needle.len()).position(|w| w == *needle) {
+                                let p2 = search + rel;
+                                let s2 = p2.saturating_sub(80);
+                                let e2 = data.len().min(p2 + 200);
+                                let snip2: String = data[s2..e2].iter()
+                                    .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '·' })
+                                    .collect();
+                                results.push(format!(
+                                    "0x{:012x}  needle=\"{}\"  ctx: {}",
+                                    chunk_addr + s2,
+                                    String::from_utf8_lossy(needle),
+                                    snip2
+                                ));
+                                search = p2 + needle.len();
+                                extra += 1;
+                            } else { break; }
+                        }
+                    }
                 }
-            }
+            } // end 'chunk loop
         }
-        } // end 'chunk loop
     }
 
-    unsafe { CloseHandle(process); }
     if results.is_empty() { results.push("No matches found".to_string()); }
     results
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn dump_inventory_regions(_max_hits: usize) -> Vec<String> {
-    vec!["Only supported on Windows".to_string()]
 }
 
 // Scan all Warframe process memory and save every relevant blob found into `blob_dir`.
@@ -901,6 +883,14 @@ pub fn parse_full_account_blob(raw: &[u8]) -> Option<BlobInventory> {
 /// genuinely gone (~2 min at the 10 s scan interval).
 pub const MAX_MISSING_STREAK: u32 = 12;
 
+/// Top-level JSON sections that appear and disappear from memory depending on
+/// game state (e.g. after a vendor interaction or inventory sync). These should
+/// never trigger a truncated-capture rejection because their absence is normal.
+const VOLATILE_SECTIONS: &[&str] = &[
+    "RecentVendorPurchases",
+    "MiscAccountData",
+];
+
 /// Per-account memory of which top-level sections a complete blob contains.
 ///
 /// The monitor applies each accepted blob as a full replacement, so a blob that
@@ -930,6 +920,7 @@ impl SectionBaseline {
         let current: std::collections::BTreeSet<&str> = sections.iter().map(String::as_str).collect();
         let missing: Vec<String> = self.known.iter()
             .filter(|k| !current.contains(k.as_str()))
+            .filter(|k| !VOLATILE_SECTIONS.contains(&k.as_str()))
             .cloned()
             .collect();
 
@@ -942,10 +933,14 @@ impl SectionBaseline {
         }
 
         self.missing_streak = 0;
-        let changed = self.known.len() != current.len()
-            || self.known.iter().any(|k| !current.contains(k.as_str()));
+        // Filter volatile sections from the baseline so they are never tracked.
+        let new_known: std::collections::BTreeSet<String> = sections.iter()
+            .filter(|k| !VOLATILE_SECTIONS.contains(&k.as_str()))
+            .cloned()
+            .collect();
+        let changed = self.known != new_known;
         if changed {
-            self.known = sections.iter().cloned().collect();
+            self.known = new_known;
         }
         Ok(changed)
     }
@@ -1016,29 +1011,41 @@ const ANCHORS: &[&[u8]] = &[
 ///
 /// When `save=true` also writes the raw text to `blob_dir` for debugging.
 /// Returns the number of files written (always 0 when `save=false`).
-#[cfg(target_os = "windows")]
 #[tracing::instrument(level = "debug", skip_all, fields(save = save))]
 pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::sync::mpsc::Sender<BlobInventory>, save: bool) -> usize {
+    use crate::mem_regions;
     const MIN_REGION: usize = 64_000;
 
     let pid = match find_warframe_pid_pub() { Some(p) => p, None => return 0 };
-    let mut src = match crate::mem_regions::WindowsRegionSource::open(pid, MIN_REGION, MAX_READ) {
+    let mut src = match mem_regions::open_region_source(
+        pid,
+        MIN_REGION,
+        MAX_READ,
+        MAX_SCAN,
+        None, // no deadline — one-shot caller
+        Some(Box::new(|r| {
+            // Skip executable pages (code, JIT) and file-backed mappings
+            // (PE image sections whose string constants false-trigger the
+            // anchor check). Only anonymous heap/stack memory is useful.
+            !r.is_executable && r.backing != crate::platform::RegionBacking::File
+        })),
+    ) {
         Some(s) => s,
         None => return 0,
     };
 
     let cached_addr = LAST_BLOB_REGION.load(std::sync::atomic::Ordering::Relaxed) as usize;
-    if !save && cached_addr != 0 && try_cached_blob(&src, cached_addr, &blob_tx) {
+    if !save && cached_addr != 0 && try_cached_blob(&*src, cached_addr, &blob_tx) {
         return 0;
     }
 
-    let saved = stitch_blobs(&mut src, blob_dir, ts, blob_tx, save);
-    let (regions_skipped, vquery_ms, read_ms) = src.stats();
+    let saved = stitch_blobs(&mut *src, blob_dir, ts, blob_tx, save);
+    let stats = src.stats();
     debug!(
         target: "frameforge::blob_capture",
-        regions_skipped,
-        vquery_ms,
-        read_ms,
+        regions_skipped = stats.regions_skipped,
+        vquery_ms = stats.enumerate_ms,
+        read_ms = stats.read_ms,
         "source stats"
     );
     saved
@@ -1046,17 +1053,25 @@ pub fn capture_all_blobs(blob_dir: &std::path::Path, ts: &str, blob_tx: std::syn
 
 /// Fast path: re-read the cached address from the last successful scan.
 /// Returns true if a valid blob was found and sent, false if the fast path missed.
-#[cfg(target_os = "windows")]
 fn try_cached_blob(
-    src: &crate::mem_regions::WindowsRegionSource,
+    src: &dyn crate::mem_regions::RegionSource,
     cached_addr: usize,
     blob_tx: &std::sync::mpsc::Sender<BlobInventory>,
 ) -> bool {
-    use crate::mem_regions::RegionSource as _;
-    let (mut next_addr, first_bytes) = match src.read_at(cached_addr) {
+    // Quick check: is the cached address still mapped? Avoids a costly read_at
+    // on a region that has been unmapped since the last scan.
+    match src.region_at(cached_addr) {
+        Some(r) if r.is_committed && r.is_readable => {}
+        _ => {
+            debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path miss — region gone or unmapped");
+            return false;
+        }
+    }
+
+    let (mut next_addr, first_bytes) = match src.read_at(cached_addr, MAX_SCAN) {
         Some(r) => r,
         None => {
-            debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path miss — region gone");
+            debug!(addr = format_args!("0x{cached_addr:012x}"), "fast-path miss — read failed");
             return false;
         }
     };
@@ -1076,7 +1091,8 @@ fn try_cached_blob(
 
     let mut stitched = first_bytes;
     while stitched.len() < MAX_SCAN && find_blob_end(&stitched).is_none() {
-        match src.read_at(next_addr) {
+        let remaining = MAX_SCAN - stitched.len();
+        match src.read_at(next_addr, remaining) {
             Some((end, bytes)) => {
                 next_addr = end;
                 if bytes.is_empty() { break; }
@@ -1113,6 +1129,15 @@ fn stitch_blobs(
     save: bool,
 ) -> usize {
     const MAX_BLOBS: usize = 25;
+    // Outside save mode: cap on how many distinct candidate seeds (start-marker
+    // occurrences) we'll open scans for, and how much further (in bytes read)
+    // we'll keep walking after the first candidate resolves, looking for a second,
+    // competing one. Bounded so the common case (exactly one blob in memory) still
+    // exits about as fast as before, while a stale-vs-live pair — which sits in the
+    // same general heap area, not scattered across the whole address space — still
+    // gets caught. See `candidate_at_bytes`/`completed` below for why this matters.
+    const MAX_CANDIDATE_SEEDS: usize = 6;
+    const EXTRA_SEED_BUDGET: u64 = 64 * 1024 * 1024;
 
     struct ActiveScan {
         data: Vec<u8>,
@@ -1144,11 +1169,31 @@ fn stitch_blobs(
     // Active scans already in progress are still stitched to completion (or dropped).
     // The loop exits as soon as all active scans are gone.
     let mut found_result = false;
+    // Multiple copies of the FULL_ACCOUNT blob can be readable in memory at once
+    // (e.g. a buffer from before a re-serialize, not yet reclaimed/overwritten —
+    // `blob_seed_offsets`'s `{"` check only catches a copy whose brace was already
+    // clobbered, not one that's merely stale but still fully intact). Taking
+    // whichever candidate happens to finish stitching first is a race that can pick
+    // that stale-but-intact copy over the live one, silently rolling the displayed
+    // inventory back. So outside `save` mode we don't commit to the first candidate:
+    // every scan already in flight is left to resolve (succeed or get dropped for
+    // growing too large) and the most complete one is chosen once none are left.
+    // `save` mode is unaffected — it's a diagnostic dump of every candidate found,
+    // not the live inventory feed, and keeps sending on each completion as before.
+    // `candidate_at_bytes` is set the moment the first candidate resolves and drives
+    // the EXTRA_SEED_BUDGET window below (see also MAX_CANDIDATE_SEEDS above).
+    let mut candidate_at_bytes: Option<u64> = None;
+    let mut completed: Vec<(usize, BlobInventory)> = Vec::new();
 
     loop {
         if saved >= MAX_BLOBS { break; }
-        // Early exit: we have a result and no active scans left to finish.
-        if found_result && scans.is_empty() && !save { break; }
+        let seed_budget_exhausted = candidate_at_bytes
+            .is_some_and(|b| bytes_read.saturating_sub(b) > EXTRA_SEED_BUDGET);
+        let no_more_seeds = found_result
+            || starts_found >= MAX_CANDIDATE_SEEDS
+            || (!save && seed_budget_exhausted);
+        // Early exit: we won't open any more candidate seeds and none are still in flight.
+        if no_more_seeds && scans.is_empty() { break; }
 
         let (region_addr, buf) = match src.next_region() {
             Some(r) => r,
@@ -1156,7 +1201,7 @@ fn stitch_blobs(
         };
         let n = buf.len();
         bytes_read += n as u64;
-        let chunk = &buf[..];
+        let chunk = buf;
         regions_read += 1;
 
         // ── Step 1: append this chunk to every active scan and check for completion ──
@@ -1167,10 +1212,13 @@ fn stitch_blobs(
         // Longest marker length drives the overlap window for straddled-boundary detection.
         const END_MARKER_MAX_LEN: usize = 21; // len("\"HWIDProtectEnabled\":")
         scans.retain_mut(|scan| {
-            // A previous scan in this same retain_mut pass already succeeded.
-            // Drop this one immediately — applying a second blob overwrites correct data
-            // with a stale/parallel copy from a different memory region.
-            if found_result && !save { return false; }
+            // Every scan already in flight is left to run to its own completion (or
+            // get dropped below for growing too large) regardless of whether another
+            // scan already completed — in save mode that's always been true (each
+            // completion is its own diagnostic dump); outside save mode it's now true
+            // too, so the decision between multiple valid candidates (see
+            // `completed` above) is made once, after every in-flight scan has
+            // resolved, not by which one merely finishes stitching first.
             // Advance the search cursor before appending so the overlap catches split markers.
             let search_from = scan.search_from;
             scan.search_from = scan.data.len().saturating_sub(END_MARKER_MAX_LEN - 1);
@@ -1193,19 +1241,22 @@ fn stitch_blobs(
                             mods = inv.mods.len(),
                             "scan SUCCESS"
                         );
-                        LAST_BLOB_REGION.store(scan.seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                         if save {
-                            let name = format!("Actual_inventory_FULL_ACCOUNT_{}_{:02}.txt", ts, saved + 1);
+                            LAST_BLOB_REGION.store(scan.seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
+                            let name = format!("Actual_inventory_FULL_ACCOUNT_v{}_{}_{:02}.txt", env!("CARGO_PKG_VERSION"), ts, saved + 1);
                             let path = blob_dir.join(&name);
                             if let Some(json) = extract_blob_json(&scan.data) {
                                 if std::fs::write(&path, &json).is_ok() { saved += 1; }
                             }
+                            blob_tx.send(inv).ok();
+                            found_result = true;
+                        } else {
+                            if candidate_at_bytes.is_none() { candidate_at_bytes = Some(bytes_read); }
+                            completed.push((scan.seed_addr, inv));
                         }
-                        blob_tx.send(inv).ok();
-                        found_result = true;
                     }
                     None => {
-                        warn!(scan_id = scan.id, "end marker found but JSON parse failed — dropped");
+                        warn!(scan_id = scan.id, addr = format_args!("0x{:012x}", scan.seed_addr), "end marker found but JSON parse failed — dropped");
                     }
                 }
                 false // remove completed (or failed) scan
@@ -1215,8 +1266,13 @@ fn stitch_blobs(
         });
 
         // ── Step 2: check if this chunk opens a new scan ──
-        // Don't open new scans once we already have a result — drain the active ones then exit.
-        if found_result { continue; }
+        // Reuses `no_more_seeds` computed at the top of the loop (found_result, the
+        // seed cap, or the post-first-candidate search budget). Deliberately *not*
+        // gated on merely having one candidate already — a single realized candidate
+        // must not stop us from also opening the one true live copy if it happens to
+        // sit at a later address than a stale-but-still-intact one, which is exactly
+        // the race this whole restructure exists to close.
+        if no_more_seeds { continue; }
 
         let t2 = std::time::Instant::now();
         let has_start     = memchr::memmem::find(chunk, START_MARKER).is_some();
@@ -1311,18 +1367,21 @@ fn stitch_blobs(
                             stackable = inv.stackable_items.len(),
                             "scan immediate SUCCESS"
                         );
-                        LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
                         if save {
-                            let name = format!("Actual_inventory_FULL_ACCOUNT_{}_{:02}.txt", ts, saved + 1);
+                            LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
+                            let name = format!("Actual_inventory_FULL_ACCOUNT_v{}_{}_{:02}.txt", env!("CARGO_PKG_VERSION"), ts, saved + 1);
                             if let Some(json) = extract_blob_json(&seed) {
                                 if std::fs::write(blob_dir.join(&name), &json).is_ok() { saved += 1; }
                             }
+                            blob_tx.send(inv).ok();
+                            found_result = true;
+                        } else {
+                            if candidate_at_bytes.is_none() { candidate_at_bytes = Some(bytes_read); }
+                            completed.push((seed_addr, inv));
                         }
-                        blob_tx.send(inv).ok();
-                        found_result = true;
                     }
                     None => {
-                        warn!(scan_id = id, "immediate end found but parse failed — dropping");
+                        warn!(scan_id = id, addr = format_args!("0x{seed_addr:012x}"), "immediate end found but parse failed — dropped");
                     }
                 }
             } else {
@@ -1331,11 +1390,35 @@ fn stitch_blobs(
         }
     }
 
+    // Among every candidate this pass resolved, keep the most complete one — a
+    // still-intact stale copy of the blob is a full, validly-parsing snapshot too,
+    // just an older one, so item/mod/riven count (which only grows in the very
+    // common case, since players rarely lose most of their account at once) is a
+    // far better signal of "current" than "which one finished stitching first".
+    // Ties (e.g. a single candidate) keep the last one, which is fine — it's the
+    // only one, or an arbitrary but deterministic pick among truly-identical data.
+    let candidates = completed.len();
+    if let Some((seed_addr, inv)) = completed.into_iter().max_by_key(|(_, inv)| {
+        inv.unique_items.len() + inv.stackable_items.len() + inv.mods.len()
+    }) {
+        LAST_BLOB_REGION.store(seed_addr as u64, std::sync::atomic::Ordering::Relaxed);
+        info!(
+            addr = format_args!("0x{seed_addr:012x}"),
+            candidates,
+            unique = inv.unique_items.len(),
+            stackable = inv.stackable_items.len(),
+            mods = inv.mods.len(),
+            "picked most-complete candidate of this capture pass"
+        );
+        blob_tx.send(inv).ok();
+    }
+
     debug!(
         target: "frameforge::blob_capture",
         regions_read,
         starts_found,
         saved,
+        candidates,
         bytes_mb = bytes_read / 1_000_000,
         search_ms = t_search.as_secs_f64() * 1000.0,
         "capture done"
@@ -1345,9 +1428,6 @@ fn stitch_blobs(
     }
     saved
 }
-
-#[cfg(not(target_os = "windows"))]
-pub fn capture_all_blobs(_blob_dir: &std::path::Path, _ts: &str, _blob_tx: std::sync::mpsc::Sender<BlobInventory>, _save: bool) -> usize { 0 }
 
 
 // ─── Continuous raw memory string dump ───────────────────────────────────────
@@ -1362,227 +1442,80 @@ pub fn capture_all_blobs(_blob_dir: &std::path::Path, _ts: &str, _blob_tx: std::
 // Large regions (>64 MB) are read in 64 MB chunks so the heap stays bounded.
 // The caller is responsible for not holding the file lock across sleeps.
 
-#[cfg(target_os = "windows")]
 pub fn raw_scan_pass(out: &mut impl std::io::Write) -> Result<usize, String> {
-    use std::ffi::c_void;
-    use std::mem;
-    use windows_sys::Win32::{
-        Foundation::CloseHandle,
-        System::{
-            Diagnostics::Debug::ReadProcessMemory,
-            Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS},
-            Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
-        },
-    };
+    use crate::platform::{Platform, ProcessAccess};
 
     const MIN_LEN:  usize = 8;
     const CHUNK:    usize = 64 * 1024 * 1024;
     const TIMEOUT:  u64   = 600; // 10 minutes — full coverage over full scan
 
     let pid = find_warframe_pid().ok_or("Warframe not running")?;
-    let process = unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, 0, pid) };
-    if process == 0 { return Err("OpenProcess failed".into()); }
+    let handle = Platform::open_process(pid)
+        .map_err(|e| format!("OpenProcess failed: {}", e))?;
 
     let mut addr: usize = 0x10000;
-    let mbi_size = mem::size_of::<MEMORY_BASIC_INFORMATION>();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TIMEOUT);
     let mut count = 0usize;
 
     while std::time::Instant::now() < deadline {
-        let mut mbi: MEMORY_BASIC_INFORMATION = unsafe { mem::zeroed() };
-        if unsafe { VirtualQueryEx(process, addr as *const c_void, &mut mbi, mbi_size) } == 0 { break; }
-        let region_end = (mbi.BaseAddress as usize).saturating_add(mbi.RegionSize);
-        if region_end <= addr { break; }
-        addr = region_end;
+        let regions: Vec<_> = handle.regions_from(addr).collect();
+        if regions.is_empty() { break; }
 
-        if mbi.State != MEM_COMMIT { continue; }
-        let p = mbi.Protect;
-        if p & PAGE_NOACCESS != 0 || p & PAGE_GUARD != 0 { continue; }
-        // Only skip pure-execute (no read bit) — PAGE_EXECUTE_READ (0x20) is kept
-        // because game DLL const-string sections use that protection.
-        if p == 0x10 { continue; }
-
-        let chunks = mbi.RegionSize.div_ceil(CHUNK);
-        for ci in 0..chunks {
+        for region in &regions {
             if std::time::Instant::now() >= deadline { break; }
-            let off        = ci * CHUNK;
-            let read_size  = CHUNK.min(mbi.RegionSize - off);
-            let chunk_base = mbi.BaseAddress as usize + off;
 
-            let mut buf = vec![0u8; read_size];
-            let mut bytes_read = 0usize;
-            let ok = unsafe {
-                ReadProcessMemory(process, chunk_base as *const c_void,
-                    buf.as_mut_ptr() as *mut c_void, read_size, &mut bytes_read)
-            };
-            if ok == 0 || bytes_read < MIN_LEN { continue; }
+            addr = region.base_address + region.region_size;
+            if !region.is_committed || !region.is_readable { continue; }
 
-            // Extract printable ASCII runs of MIN_LEN+
-            let data = &buf[..bytes_read];
-            let mut run_start: Option<usize> = None;
-            for (i, &b) in data.iter().enumerate() {
-                let printable = (0x20..0x7f).contains(&b);
-                if printable {
-                    if run_start.is_none() { run_start = Some(i); }
-                } else {
-                    if let Some(s) = run_start.take() {
-                        let len = i - s;
-                        if len >= MIN_LEN {
-                            let s_str = std::str::from_utf8(&data[s..i]).unwrap_or("?");
-                            let _ = writeln!(out, "0x{:012x}  {}", chunk_base + s, s_str);
-                            count += 1;
+            let chunks = region.region_size.div_ceil(CHUNK);
+            for ci in 0..chunks {
+                if std::time::Instant::now() >= deadline { break; }
+                let off        = ci * CHUNK;
+                let read_size  = CHUNK.min(region.region_size - off);
+                let chunk_base = region.base_address + off;
+
+                let buf = match handle.read(chunk_base, read_size) {
+                    Some(r) => r,
+                    None => continue,
+                };
+                if buf.len() < MIN_LEN { continue; }
+
+                // Extract printable ASCII runs of MIN_LEN+
+                let data = &buf;
+                let mut run_start: Option<usize> = None;
+                for (i, &b) in data.iter().enumerate() {
+                    let printable = (0x20..0x7f).contains(&b);
+                    if printable {
+                        if run_start.is_none() { run_start = Some(i); }
+                    } else {
+                        if let Some(s) = run_start.take() {
+                            let len = i - s;
+                            if len >= MIN_LEN {
+                                let s_str = std::str::from_utf8(&data[s..i]).unwrap_or("?");
+                                let _ = writeln!(out, "0x{:012x}  {}", chunk_base + s, s_str);
+                                count += 1;
+                            }
                         }
                     }
                 }
-            }
-            // flush any run that reaches end of chunk
-            if let Some(s) = run_start {
-                let len = bytes_read - s;
-                if len >= MIN_LEN {
-                    let s_str = std::str::from_utf8(&data[s..bytes_read]).unwrap_or("?");
-                    let _ = writeln!(out, "0x{:012x}  {}", chunk_base + s, s_str);
-                    count += 1;
+                // flush any run that reaches end of chunk
+                if let Some(s) = run_start {
+                    let len = data.len() - s;
+                    if len >= MIN_LEN {
+                        let s_str = std::str::from_utf8(&data[s..]).unwrap_or("?");
+                        let _ = writeln!(out, "0x{:012x}  {}", chunk_base + s, s_str);
+                        count += 1;
+                    }
                 }
             }
         }
     }
 
-    unsafe { CloseHandle(process); }
     Ok(count)
 }
 
-#[cfg(not(target_os = "windows"))]
-pub fn raw_scan_pass(_out: &mut impl std::io::Write) -> Result<usize, String> {
-    Err("Only supported on Windows".into())
-}
-
-// ─── Riven validity flag scanner ──────────────────────────────────────────────
-//
-// GEP (gep_warframeext.dll) uses Pattern D-2 to locate a single byte in
-// Warframe's .text section that acts as an open/closed flag for the riven
-// reroll UI. The byte is non-zero while the screen is shown, zero when closed.
-//
-// Pattern D-2 (13 bytes):
-//   80 3d ?? ?? ?? ?? 00  48 8b ?? ??  0f 85
-//   CMP byte ptr [RIP+disp32], 0   MOV ...   JNZ ...
-//
-// Resolving the flag VA:
-//   The CMP instruction is 7 bytes. RIP at execution = match_va + 7.
-//   flag_va = (match_va + 7) + i32::from_le_bytes(bytes[2..6])
-
-#[cfg(target_os = "windows")]
-fn find_pattern_d2(data: &[u8], base_va: usize) -> Option<usize> {
-    let len = data.len();
-    if len < 13 { return None; }
-    for i in 0..len - 13 {
-        if data[i]    != 0x80 || data[i+1]  != 0x3d { continue; }
-        if data[i+6]  != 0x00 { continue; }
-        if data[i+7]  != 0x48 || data[i+8]  != 0x8b { continue; }
-        if data[i+11] != 0x0f || data[i+12] != 0x85 { continue; }
-        let disp = i32::from_le_bytes([data[i+2], data[i+3], data[i+4], data[i+5]]);
-        let flag_va = (base_va + i + 7) as i64 + disp as i64;
-        if flag_va > 0x10000 && flag_va < 0x7fff_ffff_ffff {
-            return Some(flag_va as usize);
-        }
-    }
-    None
-}
-
-/// Scan Warframe's executable image sections for the riven screen validity flag VA.
-/// Returns the virtual address of the single byte: non-zero = screen open, 0 = closed.
-/// Scans once; caller should cache the result and re-scan only on PID change.
-#[cfg(target_os = "windows")]
-pub fn find_riven_validity_va(pid: u32) -> Option<usize> {
-    use std::ffi::c_void;
-    use std::mem;
-    use windows_sys::Win32::{
-        Foundation::CloseHandle,
-        System::{
-            Diagnostics::Debug::ReadProcessMemory,
-            Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT},
-            Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
-        },
-    };
-
-    let process = unsafe { OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, 0, pid) };
-    if process == 0 { return None; }
-
-    let mut result: Option<usize> = None;
-    let mut addr: usize = 0x10000;
-    let mbi_size = mem::size_of::<MEMORY_BASIC_INFORMATION>();
-    let start_time = std::time::Instant::now();
-
-    while start_time.elapsed().as_secs() < 60 && result.is_none() {
-        let mut mbi: MEMORY_BASIC_INFORMATION = unsafe { mem::zeroed() };
-        if unsafe { VirtualQueryEx(process, addr as *const c_void, &mut mbi, mbi_size) } == 0 { break; }
-        let region_end = (mbi.BaseAddress as usize).saturating_add(mbi.RegionSize);
-        if region_end <= addr { break; }
-        addr = region_end;
-
-        // Only scan committed, executable, memory-mapped PE image regions (MEM_IMAGE = 0x1000000).
-        // 0x20 = PAGE_EXECUTE_READ (normal .text), 0x40 = PAGE_EXECUTE_READWRITE (patched pages).
-        let is_exec_image = mbi.State == MEM_COMMIT
-            && matches!(mbi.Protect, 0x20 | 0x40)
-            && mbi.Type == 0x1000000
-            && mbi.RegionSize >= 13
-            && mbi.RegionSize <= 64 * 1024 * 1024;
-
-        if !is_exec_image { continue; }
-
-        let mut buf = vec![0u8; mbi.RegionSize];
-        let mut bytes_read = 0usize;
-        let ok = unsafe {
-            ReadProcessMemory(
-                process, mbi.BaseAddress as *const c_void,
-                buf.as_mut_ptr() as *mut c_void, mbi.RegionSize, &mut bytes_read,
-            )
-        };
-        if ok == 0 || bytes_read < 13 { continue; }
-
-        result = find_pattern_d2(&buf[..bytes_read], mbi.BaseAddress as usize);
-    }
-
-    unsafe { CloseHandle(process); }
-    result
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn find_riven_validity_va(_pid: u32) -> Option<usize> { None }
-
-#[cfg(target_os = "windows")]
 fn find_warframe_pid() -> Option<u32> {
-    use std::mem;
-    use windows_sys::Win32::{
-        Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
-        System::Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, Process32First, Process32Next,
-            PROCESSENTRY32, TH32CS_SNAPPROCESS,
-        },
-    };
-    // CreateToolhelp32Snapshot gives process names without needing OpenProcess,
-    // so EAC blocking read access on the game process doesn't prevent detection.
-    unsafe {
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snapshot == INVALID_HANDLE_VALUE { return None; }
-
-        let mut entry: PROCESSENTRY32 = mem::zeroed();
-        entry.dwSize = mem::size_of::<PROCESSENTRY32>() as u32;
-
-        let mut found = None;
-        if Process32First(snapshot, &mut entry) != 0 {
-            loop {
-                let name_len = entry.szExeFile.iter().position(|&b| b == 0).unwrap_or(260);
-                let name = String::from_utf8_lossy(&entry.szExeFile[..name_len]).to_lowercase();
-                if name.starts_with("warframe") && !name.contains("launcher") && !name.contains("companion") {
-                    found = Some(entry.th32ProcessID);
-                    break;
-                }
-                if Process32Next(snapshot, &mut entry) == 0 { break; }
-            }
-        }
-        CloseHandle(snapshot);
-        found
-    }
+    <crate::platform::Platform as crate::platform::ProcessAccess>::find_warframe_pid()
 }
 
 #[cfg(test)]
@@ -1852,6 +1785,39 @@ mod stitch_engine_tests {
         let real = make_blob(r#""RegularCredits":42"#);
         let inv = run(vec![(0x1000, open), (0x9000_0000, real)]).expect("real blob should parse");
         assert_eq!(inv.credits, 42);
+    }
+
+    // Regression coverage for: two independently-valid, independently-complete
+    // copies of the FULL_ACCOUNT blob exist in memory at once (e.g. a buffer from
+    // before a re-serialize, still fully intact and not yet overwritten, alongside
+    // the live one). Taking whichever one finishes stitching first is a race that
+    // can silently apply the stale, smaller copy over the live one. The fix: every
+    // candidate this capture pass finds is left to resolve, and the most complete
+    // one (by item/mod count) is the one actually sent — regardless of which
+    // address it was found at or which one happened to finish first.
+
+    #[test]
+    fn stale_copy_at_a_lower_address_does_not_beat_the_live_one() {
+        let stale = make_blob(r#""RegularCredits":1"#); // 1 Suit, from the template default
+        let live = make_blob(
+            r#""RegularCredits":2,"Suits":[{"ItemType":"/Lotus/Powersuits/A/A"},{"ItemType":"/Lotus/Powersuits/B/B"},{"ItemType":"/Lotus/Powersuits/C/C"}]"#,
+        );
+        let inv = run(vec![(0x1000, stale), (0x9000, live)]).expect("should pick a candidate");
+        assert_eq!(inv.credits, 2, "the more-complete candidate should win even though the smaller one was found first");
+        assert_eq!(inv.unique_items.len(), 3);
+    }
+
+    #[test]
+    fn stale_copy_at_a_higher_address_does_not_beat_the_live_one() {
+        // Same scenario with addresses swapped — the outcome must not depend on
+        // which candidate the region walk happens to encounter first.
+        let live = make_blob(
+            r#""RegularCredits":2,"Suits":[{"ItemType":"/Lotus/Powersuits/A/A"},{"ItemType":"/Lotus/Powersuits/B/B"},{"ItemType":"/Lotus/Powersuits/C/C"}]"#,
+        );
+        let stale = make_blob(r#""RegularCredits":1"#);
+        let inv = run(vec![(0x1000, live), (0x9000, stale)]).expect("should pick a candidate");
+        assert_eq!(inv.credits, 2, "the more-complete candidate should win regardless of scan order");
+        assert_eq!(inv.unique_items.len(), 3);
     }
 }
 

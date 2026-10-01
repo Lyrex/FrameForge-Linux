@@ -16,6 +16,7 @@ use tauri::{AppHandle, Emitter};
 use tracing::warn;
 
 use crate::cache;
+use crate::events;
 
 /// Seconds to wait after the 1st, 2nd, 3rd and any later consecutive failure.
 const BACKOFF: [u64; 4] = [5, 30, 120, 300];
@@ -31,7 +32,21 @@ fn backoff_delay(failures: usize) -> Duration {
 struct Task {
     name: &'static str,
     interval: Duration,
+    /// `false` = the first run is one full `interval` after launch instead of at
+    /// the launch tick. The catalogue is the only such task: the frontend probes
+    /// all 25 sources itself at mount, and a second pass seconds later would
+    /// only walk them again.
+    due_at_launch: bool,
     run: fn(&AppHandle, bool) -> Result<(), String>,
+}
+
+/// When `task` first becomes due, measured from launch.
+fn first_due(task: &Task, now: Instant) -> Instant {
+    if task.due_at_launch {
+        now
+    } else {
+        now + task.interval
+    }
 }
 
 const TASKS: &[Task] = &[
@@ -40,32 +55,38 @@ const TASKS: &[Task] = &[
     Task {
         name: "worldstate",
         interval: Duration::from_secs(55),
-        run: crate::refresh_worldstate,
+        due_at_launch: true,
+        run: crate::worldstate::refresh_worldstate,
     },
     Task {
         name: "bulk-prices",
         interval: Duration::from_secs(3600),
-        run: crate::refresh_bulk_prices_task,
+        due_at_launch: true,
+        run: crate::pricing::refresh_bulk_prices_task,
     },
     Task {
         name: "catalogue",
         interval: Duration::from_secs(24 * 3600),
-        run: crate::refresh_catalogue,
+        due_at_launch: false,
+        run: crate::catalogue::refresh_catalogue,
     },
     Task {
         name: "drop-data",
         interval: Duration::from_secs(24 * 3600),
+        due_at_launch: true,
         run: crate::wfcd::refresh_drop_data,
     },
     Task {
         name: "riven-db",
         interval: Duration::from_secs(24 * 3600),
-        run: crate::refresh_riven_db_task,
+        due_at_launch: true,
+        run: crate::rivens::refresh_riven_db_task,
     },
     Task {
         name: "wfm-top",
         interval: Duration::from_secs(3 * 3600),
-        run: crate::refresh_wfm_top,
+        due_at_launch: true,
+        run: crate::wfm_top::refresh_wfm_top,
     },
 ];
 
@@ -79,7 +100,8 @@ pub fn force_all() {
 
 pub fn spawn(app: AppHandle) {
     std::thread::spawn(move || {
-        let mut due: Vec<Instant> = TASKS.iter().map(|_| Instant::now()).collect();
+        let now = Instant::now();
+        let mut due: Vec<Instant> = TASKS.iter().map(|t| first_due(t, now)).collect();
         let mut failures: Vec<usize> = TASKS.iter().map(|_| 0).collect();
 
         loop {
@@ -108,7 +130,7 @@ pub fn spawn(app: AppHandle) {
                     }
                 }
 
-                let _ = app.emit("cache-status", cache::statuses());
+                let _ = app.emit(events::CACHE_STATUS, cache::statuses());
             }
         }
     });

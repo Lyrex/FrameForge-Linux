@@ -1,4 +1,4 @@
-# FrameForge `v4.4.0`
+# FrameForge `v4.5.0`
 
 A desktop companion for Warframe — live inventory, market prices, trading, timers, relic overlay, and riven analysis. Read-only, no game modification.
 
@@ -173,6 +173,7 @@ pnpm tauri build    # installer → src-tauri/target/release/bundle/
 - No account required for most features
 - No telemetry — no FrameForge server
 - All data stored locally — settings/database at `%APPDATA%\frameforge\`, caches at `%LOCALAPPDATA%\frameforge\`
+- Debug builds (`pnpm tauri dev`) keep a completely separate settings/database/caches in `.frameforge-dev\` next to the project and are titled **FrameForge Dev**, so development never reads or writes the installed app's files. Release builds compile that path out entirely.
 - WFM session token stored in Windows Credential Manager if "Stay logged in" is enabled
 
 ---

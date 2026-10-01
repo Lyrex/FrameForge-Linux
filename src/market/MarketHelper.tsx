@@ -7,7 +7,7 @@ import FilterPresets from "../shared/FilterPresets";
 import WfmTrading from "./WfmTrading";
 import ItemMarketPopup from "./ItemMarketPopup";
 import { matchesSearchTerms, splitSearchTerms } from "../lib/search";
-import { TAURI_COMMANDS } from "../constants/tauri";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import { useCatalog } from "../hooks/useCatalog";
 import { useMarketData } from "../hooks/useMarketData";
 import type { CatalogItem, CraftingJob, InventoryItem, RecipeComponent, RecipeMap } from "../types/items";
@@ -35,6 +35,7 @@ interface Props {
   filterPresets: FilterPresetSettings;
   onFilterPresetsChange: Dispatch<SetStateAction<FilterPresetSettings>>;
   onOpenSettings: (module: FilterPresetModule) => void;
+  wfmRecordSales: boolean;
 }
 
 function toggle<T>(arr: T[], val: T): T[] {
@@ -164,7 +165,7 @@ function SetCard({ setKey, parts, parentItem, setPrice, setPriceLoading, pricesF
 
 // ─── Market Helper ────────────────────────────────────────────────────────────
 
-export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLoginChange, modCopiesMap = {}, filters, onFiltersChange, filterPresets, onFilterPresetsChange, onOpenSettings }: Props) {
+export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLoginChange, modCopiesMap = {}, filters, onFiltersChange, filterPresets, onFilterPresetsChange, onOpenSettings, wfmRecordSales }: Props) {
   const { catalog } = useCatalog();
   const { wfmItems, wfmPrices: sharedPrices } = useMarketData();
   const [prices, setPrices]               = useState<Map<string, WfmPrice>>(new Map());
@@ -222,7 +223,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
   const priceRafRef   = useRef<number | null>(null);
   useEffect(() => {
     const unlisten = listen<WfmPriceUpdate>(
-      "wfm-price-update",
+      TAURI_EVENTS.WFM_PRICE_UPDATE,
       ({ payload }) => {
         pendingPrices.current.set(payload.url_name, { url_name: payload.url_name, sell_median: payload.sell_median ?? undefined, tradeable: payload.tradeable });
         if (!priceRafRef.current) {
@@ -500,6 +501,7 @@ export default function MarketHelper({ inventory, refreshKey, crafting, onWfmLog
           onNewWhisper={() => { if (activeMarketTab !== "trading") setWfmBadge(n => n + 1); }}
           onLoginChange={u => setWfmUsername(u)}
           auctionRefreshKey={auctionRefreshKey}
+          recordSales={wfmRecordSales}
         />
       </div>
 
@@ -1227,7 +1229,7 @@ function RivenSellModal({ riven, weaponName, disposition, category, onClose, onS
         visible,
         isDirectSell:        saleType === "direct",
       };
-      await invoke("wfm_create_riven_auction", args);
+      await invoke("wfm_create_riven_auction", { params: args });
       onSuccess();
       onClose();
     } catch (e: unknown) {

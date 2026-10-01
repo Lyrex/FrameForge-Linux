@@ -63,6 +63,7 @@ export interface WfmPublicOrder {
 export interface WfmManagedOrder {
   id: string;
   itemId?: string;
+  rank?: number;
   type: "sell" | "buy";
   platinum: number;
   quantity: number;
@@ -84,6 +85,7 @@ export interface WfmWhisper {
     originalQty: number;
     newQty: number;
     visible: boolean;
+    modRank?: number;
   };
 }
 

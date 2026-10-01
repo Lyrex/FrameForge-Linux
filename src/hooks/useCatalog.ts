@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { TAURI_COMMANDS } from "../constants/tauri";
+import { listen } from "@tauri-apps/api/event";
+import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import type { CatalogItem, RelicDropMap } from "../types/items";
 
 // ─── Singleton ────────────────────────────────────────────────────────────────
@@ -16,6 +17,7 @@ type Snapshot = {
 
 let current: Snapshot = { catalog: [], relicDropMap: {}, loaded: false };
 let inFlight: Promise<void> | null = null;
+let listenerStarted = false;
 const subscribers = new Set<(s: Snapshot) => void>();
 
 function publish(next: Snapshot) {
@@ -40,6 +42,19 @@ function fetchOnce(): Promise<void> {
   return inFlight;
 }
 
+// The explicit startup/manual refresh emits after rebuilding the Rust catalogue.
+// Without this, an early consumer can stay on the tiny hardcoded fallback for the session.
+function ensureListener() {
+  if (listenerStarted) return;
+  listenerStarted = true;
+  listen(TAURI_EVENTS.CATALOGUE_UPDATED, () => {
+    inFlight = null;
+    fetchOnce();
+  }).catch(() => {
+    listenerStarted = false;
+  });
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export interface UseCatalogReturn {
@@ -55,6 +70,7 @@ export function useCatalog(): UseCatalogReturn {
   useEffect(() => {
     subscribers.add(setSnapshot);
     if (subscribers.size === 1) {
+      ensureListener();
       fetchOnce();
     } else {
       setSnapshot(current);

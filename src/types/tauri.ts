@@ -112,6 +112,11 @@ export interface WfmUpdateOrderArgs extends Record<string, unknown> {
   visible: boolean;
 }
 
+export interface WfmCloseOrderArgs extends Record<string, unknown> {
+  orderId: string;
+  quantity: number;
+}
+
 export interface WfmSetAuctionVisibleArgs extends Record<string, unknown> {
   auctionId: string;
   visible: boolean;
