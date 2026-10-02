@@ -1112,7 +1112,6 @@ pub(crate) fn log_reward_no_match(
     cat: &mut std::sync::Arc<Vec<(String, String)>>,
     fallback_cat: &std::sync::Arc<Vec<(String, String)>>,
     paths: RewardPaths<'_>,
-    diag_dir: &std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
 ) -> u64 {
     let RewardAttempt { attempt, ts, items, dbg } = attempt_info;
     let RewardPaths { session_log_path, last_path } = paths;
@@ -1142,15 +1141,21 @@ pub(crate) fn log_reward_no_match(
         format!("=== {} ===\nno match (catalog={}): {:?}\n{}\n", ts, cur_cat_len, items, dbg),
     );
     let _ = app.emit(events::FF_STATUS, "❌ No catalog match, retrying...");
-    if attempt == 1 {
-        let frame = app.state::<AppState>().last_ocr_frame.lock()
-            .ok().and_then(|g| g.clone());
-        let diag_snap = diag_dir.lock().ok().and_then(|g| g.clone());
-        if let (Some((px, w, h)), Some(folder)) = (frame, diag_snap) {
-            let _ = write_bmp(&folder.join("screenshot.bmp"), &px, w, h);
-        }
-    }
     700
+}
+
+/// Call this only after a capture succeeded. `last_ocr_frame` is shared across
+/// sessions and still holds the previous relic run's frame after a failed capture.
+pub(crate) fn save_reward_screenshot(
+    app: &tauri::AppHandle,
+    diag_dir: &std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
+) {
+    let frame = app.state::<AppState>().last_ocr_frame.lock()
+        .ok().and_then(|g| g.clone());
+    let diag_snap = diag_dir.lock().ok().and_then(|g| g.clone());
+    if let (Some((px, w, h)), Some(folder)) = (frame, diag_snap) {
+        let _ = write_bmp(&folder.join("screenshot.bmp"), &px, w, h);
+    }
 }
 
 pub(crate) fn log_reward_best_result(
