@@ -3,7 +3,6 @@
 
 use std::sync::OnceLock;
 
-use tauri::Manager;
 use tracing_subscriber::{
     EnvFilter, fmt,
     layer::{Layer, SubscriberExt},
@@ -17,7 +16,7 @@ static FILE_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceL
 
 /// Installs the global subscriber, log-crate bridge and panic hook. Safe to
 /// call more than once; later calls do nothing.
-pub fn init(app: &tauri::AppHandle) {
+pub fn init() {
     if FILE_GUARD.get().is_some() {
         return;
     }
@@ -67,7 +66,7 @@ pub fn init(app: &tauri::AppHandle) {
     // After the subscriber is live so the move itself is recorded in the new
     // log file. Release builds only: dev never wrote to the identifier dir.
     if crate::paths::root().is_none() {
-        migrate_legacy_logs(app, &log_dir);
+        migrate_legacy_logs(&log_dir);
     }
 
     let previous = std::panic::take_hook();
@@ -100,8 +99,16 @@ pub fn init(app: &tauri::AppHandle) {
 /// `logs` subfolder on Windows and Linux). Only that logs directory is
 /// addressed; the sibling WebView2 profile stays put. Runs once per launch and
 /// stops as soon as the old directory is gone.
-fn migrate_legacy_logs(app: &tauri::AppHandle, log_dir: &std::path::Path) {
-    let Ok(old_dir) = app.path().app_log_dir() else { return; };
+///
+/// The old identifier is hardcoded rather than read from the live config: every
+/// release before the identifier was renamed to `com.wyrmstudios.frameforge`
+/// shipped as `com.jochem.frameforge`. Deriving this path from Tauri's
+/// `app_log_dir()` would resolve against *today's* identifier and never find
+/// the files an upgrading install actually has on disk.
+fn migrate_legacy_logs(log_dir: &std::path::Path) {
+    const OLD_IDENTIFIER: &str = "com.jochem.frameforge";
+    let Some(base) = dirs::data_local_dir() else { return; };
+    let old_dir = base.join(OLD_IDENTIFIER).join("logs");
     if old_dir == log_dir || !old_dir.is_dir() {
         return;
     }
