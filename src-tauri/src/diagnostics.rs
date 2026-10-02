@@ -23,6 +23,12 @@ pub(crate) fn set_blob_log(enabled: bool, state: State<'_, AppState>) {
     state.blob_log_enabled.store(enabled, Ordering::SeqCst);
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
+#[tauri::command]
+pub(crate) fn set_auto_capture_enabled(enabled: bool, state: State<'_, AppState>) {
+    state.auto_capture_enabled.store(enabled, Ordering::SeqCst);
+}
+
 
 /// Returns "started" or "stopped" so the frontend can update button state.
 #[tauri::command]

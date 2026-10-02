@@ -251,7 +251,8 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
                             prefilter_log: &prefilter_log,
                             catalog_len: filtered_cat.len(),
                         },
-                        &auto_capture_dir,
+                        app.state::<AppState>().auto_capture_enabled.load(Ordering::SeqCst)
+                            .then_some(auto_capture_dir.as_path()),
                         &diag_arc,
                         &last_found_path,
                     );
@@ -319,6 +320,7 @@ fn spawn_reward_ocr(task: RewardOcrTask) {
         let mut cat = cat;
         let mut no_match_streak = 0u32;
         let mut attempt = 0u32;
+        let mut screenshot_saved = false;
         let mut best_item_count = 0usize;
         let mut best_payload: Option<serde_json::Value> = None; // locked when complete
         let mut best_low_confidence = false;
@@ -349,6 +351,10 @@ fn spawn_reward_ocr(task: RewardOcrTask) {
                 Arc::clone(&squad_arc),
                 Arc::clone(&names_arc),
             ).await;
+            if result.is_some() && !screenshot_saved {
+                log_watcher::save_reward_screenshot(&app, &diag_arc);
+                screenshot_saved = true;
+            }
             // Re-read hint for confirm_ready logic below (same mutex, post-capture value).
             let hint_squad = squad_arc.lock().ok().and_then(|g| *g);
 
@@ -473,7 +479,6 @@ fn spawn_reward_ocr(task: RewardOcrTask) {
                             session_log_path: &slog,
                             last_path: &lpath,
                         },
-                        &diag_arc,
                     )
                 }
                 // ⚠️ Warframe window not found

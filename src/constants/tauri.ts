@@ -56,6 +56,7 @@ export const TAURI_COMMANDS = {
   GET_WFM_TOP_ITEMS: "get_wfm_top_items",
   LOAD_SETTINGS: "load_settings",
   LOG_RELIC_FE: "log_relic_fe",
+  SET_AUTO_CAPTURE_ENABLED: "set_auto_capture_enabled",
   SET_MEM_TRIGGER_ENABLED: "set_mem_trigger_enabled",
   SET_RELIC_PICK_ENABLED: "set_relic_pick_enabled",
   START_WFM_QUEUE: "start_wfm_queue",

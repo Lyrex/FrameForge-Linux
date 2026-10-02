@@ -300,6 +300,10 @@ export function useSettings(
     invoke("set_blob_log", { enabled: blobLogEnabled }).catch(() => {});
   }, [blobLogEnabled]); // eslint-disable-line
 
+  useEffect(() => {
+    invoke(TAURI_COMMANDS.SET_AUTO_CAPTURE_ENABLED, { enabled: autoDiagEnabled }).catch(() => {});
+  }, [autoDiagEnabled]);
+
   return {
     // Settings state
     memoryScannerEnabled,
