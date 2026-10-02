@@ -1141,17 +1141,44 @@ fn parse_relics_rewards(
             None => continue,
         };
 
+        // WFCD's rewards[].rarity string never labels the 3-slot Common tier —
+        // across the whole Relics.json it only ever emits "Uncommon" or "Rare",
+        // which silently collapses Common into Uncommon and breaks any Bronze-
+        // tier ducat derivation downstream. Every relic's 6 reward slots always
+        // split 3 Common / 2 Uncommon / 1 Rare sharing an identical `chance`
+        // value, so derive the tier structurally from that grouping instead of
+        // trusting the mislabeled string.
+        let mut chance_counts: HashMap<String, usize> = HashMap::new();
+        for r in rewards_arr {
+            if let Some(chance) = r.get("chance").and_then(|v| v.as_f64()) {
+                *chance_counts.entry(format!("{chance:.2}")).or_insert(0) += 1;
+            }
+        }
+
         let mut reward_list: Vec<RelicReward> = rewards_arr.iter().filter_map(|r| {
             // Relics.json structure: rewards[].item.name (not rewards[].name)
             let item = r.get("item")?;
             let name = item.get("name").and_then(|v| v.as_str())?.to_string();
             if name.is_empty() { return None; }
             let unique_name = item.get("uniqueName").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let rarity_raw = r.get("rarity").and_then(|v| v.as_str()).unwrap_or("Common");
-            let rarity = match rarity_raw.to_lowercase().as_str() {
-                "uncommon" => "Silver",
-                "rare"     => "Gold",
-                _          => "Bronze",
+            let chance = r.get("chance").and_then(|v| v.as_f64());
+            let slot_count = chance.and_then(|c| chance_counts.get(&format!("{c:.2}")).copied());
+            let rarity = match slot_count {
+                Some(3) => "Bronze",
+                Some(2) => "Silver",
+                Some(1) => "Gold",
+                _ => {
+                    // Non-standard relic (e.g. a flat equal-odds reward table) —
+                    // fall back to WFCD's string label (never "Common", but
+                    // harmless here since these relics don't carry standard-
+                    // formula ducat items).
+                    let rarity_raw = r.get("rarity").and_then(|v| v.as_str()).unwrap_or("Common");
+                    match rarity_raw.to_lowercase().as_str() {
+                        "uncommon" => "Silver",
+                        "rare"     => "Gold",
+                        _          => "Bronze",
+                    }
+                }
             }.to_string();
             let image_name = image_by_name.get(&name.to_lowercase()).cloned()
                 .or_else(|| {
@@ -2137,5 +2164,66 @@ mod tests {
         assert_eq!(exceptions.get("forma blueprint"), Some(&0));
         // The "_comment" key must never leak in as a fake exception entry.
         assert!(!exceptions.contains_key("_comment"));
+    }
+
+    // ── parse_relics_rewards: rarity derived from chance grouping, not the
+    // mislabeled WFCD string (real bug: Lex Prime showed 45 ducats for all
+    // three parts because WFCD's `rarity` field never emits "Common") ──────
+
+    fn reward(name: &str, chance: f64) -> serde_json::Value {
+        serde_json::json!({
+            "item": { "name": name, "uniqueName": format!("/Lotus/{name}") },
+            // WFCD mislabels every Common slot as "Uncommon" — the fixture
+            // deliberately keeps that wrong string to prove the fix ignores it.
+            "rarity": "Uncommon",
+            "chance": chance
+        })
+    }
+
+    #[test]
+    fn relic_rarity_comes_from_chance_grouping_not_the_mislabeled_string() {
+        // Mirrors a real relic shape: 3 Common slots sharing one chance value,
+        // 2 Uncommon, 1 Rare — all three tiers wrongly say "Uncommon" upstream.
+        let relics = serde_json::json!([{
+            "name": "Lith A1 Intact",
+            "uniqueName": "/Lotus/Relics/LithA1Intact",
+            "rewards": [
+                reward("Lex Prime Barrel", 25.33),
+                reward("Lex Prime Barrel", 25.33),
+                reward("Lex Prime Barrel", 25.33),
+                reward("Lex Prime Receiver", 11.0),
+                reward("Lex Prime Receiver", 11.0),
+                reward("Lex Prime Blueprint", 2.0),
+            ]
+        }]);
+
+        let result = parse_relics_rewards(Some(&relics), &HashMap::new());
+        let rewards = result.get("Lith A1 Intact").expect("relic should be keyed by name");
+
+        let rarity_of = |name: &str| {
+            rewards.iter().find(|r| r.name == name).map(|r| r.rarity.clone())
+        };
+        assert_eq!(rarity_of("Lex Prime Barrel"), Some("Bronze".to_string()));
+        assert_eq!(rarity_of("Lex Prime Receiver"), Some("Silver".to_string()));
+        assert_eq!(rarity_of("Lex Prime Blueprint"), Some("Gold".to_string()));
+    }
+
+    #[test]
+    fn relic_rarity_falls_back_to_string_label_for_non_standard_relics() {
+        // Requiem Eterna Relic's real shape: 8 equal-chance slots, no 3/2/1
+        // grouping exists, so the chance-based derivation can't apply.
+        let relics = serde_json::json!([{
+            "name": "Requiem Eterna Relic",
+            "uniqueName": "/Lotus/Relics/RequiemEterna",
+            "rewards": [
+                reward("Requiem Mod A", 12.5),
+                reward("Requiem Mod B", 12.5),
+            ]
+        }]);
+
+        let result = parse_relics_rewards(Some(&relics), &HashMap::new());
+        let rewards = result.get("Requiem Eterna Relic").expect("relic should be keyed by name");
+        // Falls back to the (mislabeled) string, matching old behavior for this shape.
+        assert!(rewards.iter().all(|r| r.rarity == "Silver"));
     }
 }
