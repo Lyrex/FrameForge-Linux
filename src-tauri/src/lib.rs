@@ -249,7 +249,7 @@ fn load_initial_state(paths: InitialCachePaths<'_>) -> InitialState {
 fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::Manager;
 
-    logging::init(app.handle());
+    logging::init();
 
     match paths::root() {
         Some(root) => info!("app root: {} (dev)", root.display()),
