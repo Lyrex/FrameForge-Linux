@@ -17,7 +17,7 @@ import type { FoundryFilters, InventoryFilters, MarketFilters, RelicFilters } fr
 import type { SaveApiInventoryArgs } from "./types/tauri";
 import "./SettingsModal.css";
 
-type SettingsTab = "general" | "overlays" | "market" | "filters" | "accessibility" | "data" | "debugging";
+type SettingsTab = "general" | "overlays" | "market" | "filters" | "accessibility" | "notifications" | "data" | "debugging";
 type Setter<T> = Dispatch<SetStateAction<T>>;
 type ScannerMods = Record<string, { total: number; by_rank: Record<string, number> }>;
 type ArchonShards = Record<string, ArchonShard[]>;
@@ -44,6 +44,7 @@ export interface SettingsModalProps {
   wfmInvisibleOnStart: boolean; setWfmInvisibleOnStart: Setter<boolean>; wfmInvisibleOnStartRef: MutableRefObject<boolean>; wfmInvisibleOnClose: boolean; setWfmInvisibleOnClose: Setter<boolean>; wfmInvisibleOnCloseRef: MutableRefObject<boolean>;
   wfmAutoInvisible: boolean; setWfmAutoInvisible: Setter<boolean>; wfmAutoInvisibleMins: number; setWfmAutoInvisibleMins: Setter<number>; wfmRecordSales: boolean; setWfmRecordSales: Setter<boolean>; colorblindMode: boolean; setColorblindMode: Setter<boolean>; textScale: number; setTextScale: Setter<number>;
   clockFormat: ClockFormat; setClockFormat: Setter<ClockFormat>; systemLocale: string; itemCount: number; recipeCount: number; handleFetch: () => Promise<void>; fetching: boolean; fetchMsg: string;
+  fissureNotifications: boolean; onFissureNotificationsChange: (enabled: boolean) => void;
   setQuantities: Setter<QuantityMap>; setApiQuantities: Setter<QuantityMap>; setApiModCopies: Setter<ModCopy[]>; setScannerMods: Setter<ScannerMods>; setMasteryData: Setter<Record<string, number>>; setArchonShards: Setter<ArchonShards>; setFormaData: Setter<QuantityMap>;
   setChangeLog: Setter<ChangeLogEntry[]>; setLastChanged: Setter<Record<string, number>>; setWfConnected: Setter<boolean>; wfConnectedRef: MutableRefObject<boolean>; setItemsRefreshKey: Setter<number>; setClearMsg: Setter<string>; clearMsg: string;
   blobLogEnabled: boolean; setBlobLogEnabled: Setter<boolean>; blobLogSize: number; setBlobLogSize: Setter<number>; companionApiEnabled: boolean; apiLogEnabled: boolean; setApiLogEnabled: Setter<boolean>; apiLogSize: number; setApiLogSize: Setter<number>;
@@ -69,13 +70,14 @@ function BulkPriceRefreshButton() {
 }
 
 export default function SettingsModal(props: SettingsModalProps) {
-  const { settingsTab, setSettingsTab, settingsFilterModule, setSettingsFilterModule, filterPresets, setFilterPresets, inventoryFilters, setInventoryFilters, foundryFilters, setFoundryFilters, marketFilters, setMarketFilters, relicFilters, setRelicFilters, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, overlayOffsets, setOverlayOffsets, rivenEnabled, setRivenEnabled, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, wfmRecordSales, setWfmRecordSales, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, systemLocale, itemCount, recipeCount, handleFetch, fetching, fetchMsg, setQuantities, setApiQuantities, setApiModCopies, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setWfConnected, wfConnectedRef, setItemsRefreshKey, setClearMsg, clearMsg, blobLogEnabled, setBlobLogEnabled, blobLogSize, setBlobLogSize, companionApiEnabled, apiLogEnabled, setApiLogEnabled, apiLogSize, setApiLogSize, setShowInventoryBatchPreview, notifyTestResult, setNotifyTestResult, overlayLogCopied, setOverlayLogCopied, autoDiagEnabled, setAutoDiagEnabled, diagFolderSize, setDiagFolderSize, diagPath, diagCapturing, setDiagCapturing, setDiagPath, reloadDebugSizes, memoryProbing, setMemoryProbing, probeSize, setProbeSize, rawScanning, setRawScanning, rawScanSize, setRawScanSize, memRelicDebugRunning, setMemRelicDebugRunning, relicPickOcrResult, relicPickOcrTesting, setRelicPickOcrTesting, setRelicPickOcrResult, relicPickTestResult, relicPickTestEra, setRelicPickTestEra, setRelicPickTestResult, eeLogTail, setEeLogTail, debugCatEnabled, setDebugCatEnabled, unmatchedPathsSize, setUnmatchedPathsSize, appVersion } = props;
+  const { settingsTab, setSettingsTab, settingsFilterModule, setSettingsFilterModule, filterPresets, setFilterPresets, inventoryFilters, setInventoryFilters, foundryFilters, setFoundryFilters, marketFilters, setMarketFilters, relicFilters, setRelicFilters, foundryPageSize, setFoundryPageSize, settingsRef, saveAllSettings, memoryScannerEnabled, setMemoryScannerEnabled, modularPopout, setModularPopout, overlayStatus, overlayEnabled, setOverlayEnabled, overlayPriority, setOverlayPriority, overlayOffsets, setOverlayOffsets, rivenEnabled, setRivenEnabled, memTriggerEnabled, setMemTriggerEnabled, relicPickEnabled, setRelicPickEnabled, relicPickPriority, setRelicPickPriority, relicPickLines, setRelicPickLines, wfmLoggedIn, wfmInvisibleOnStart, setWfmInvisibleOnStart, wfmInvisibleOnStartRef, wfmInvisibleOnClose, setWfmInvisibleOnClose, wfmInvisibleOnCloseRef, wfmAutoInvisible, setWfmAutoInvisible, wfmAutoInvisibleMins, setWfmAutoInvisibleMins, wfmRecordSales, setWfmRecordSales, colorblindMode, setColorblindMode, textScale, setTextScale, clockFormat, setClockFormat, systemLocale, itemCount, recipeCount, handleFetch, fetching, fetchMsg, fissureNotifications, onFissureNotificationsChange, setQuantities, setApiQuantities, setApiModCopies, setScannerMods, setMasteryData, setArchonShards, setFormaData, setChangeLog, setLastChanged, setWfConnected, wfConnectedRef, setItemsRefreshKey, setClearMsg, clearMsg, blobLogEnabled, setBlobLogEnabled, blobLogSize, setBlobLogSize, companionApiEnabled, apiLogEnabled, setApiLogEnabled, apiLogSize, setApiLogSize, setShowInventoryBatchPreview, notifyTestResult, setNotifyTestResult, overlayLogCopied, setOverlayLogCopied, autoDiagEnabled, setAutoDiagEnabled, diagFolderSize, setDiagFolderSize, diagPath, diagCapturing, setDiagCapturing, setDiagPath, reloadDebugSizes, memoryProbing, setMemoryProbing, probeSize, setProbeSize, rawScanning, setRawScanning, rawScanSize, setRawScanSize, memRelicDebugRunning, setMemRelicDebugRunning, relicPickOcrResult, relicPickOcrTesting, setRelicPickOcrTesting, setRelicPickOcrResult, relicPickTestResult, relicPickTestEra, setRelicPickTestEra, setRelicPickTestResult, eeLogTail, setEeLogTail, debugCatEnabled, setDebugCatEnabled, unmatchedPathsSize, setUnmatchedPathsSize, appVersion } = props;
 
   // Outline toggles for the reward and pick overlays; the riven overlay shows
   // itself directly (Settings → Overlays).
   const [outlineReward, setOutlineReward] = useState(false);
   const [outlinePick,   setOutlinePick]   = useState(false);
   const [rivenShown,    setRivenShown]    = useState(false);
+  const [notifPermissionDenied, setNotifPermissionDenied] = useState(false);
   if (!props.open) return null;
   const onClose = props.onClose;
 
@@ -145,7 +147,7 @@ export default function SettingsModal(props: SettingsModalProps) {
           <div className="settings-layout">
             {/* ── Sidebar nav ── */}
             <nav className="settings-sidebar">
-              {(["general", "overlays", "market", "filters", "accessibility", "data", "debugging"] as const).map(tab => (
+              {(["general", "overlays", "market", "filters", "accessibility", "notifications", "data", "debugging"] as const).map(tab => (
                 <button
                   key={tab}
                   className={`settings-tab-item${settingsTab === tab ? " active" : ""}`}
@@ -668,6 +670,61 @@ export default function SettingsModal(props: SettingsModalProps) {
                 </div>
               </>}
 
+              {/* ════════════ NOTIFICATIONS ════════════ */}
+              {settingsTab === "notifications" && <>
+                <div className="settings-section">
+                  <div className="settings-section-title">Fissure Watches</div>
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <span className="settings-row-label">Enable</span>
+                      <span className="settings-row-desc">Desktop notification when a fissure matching one of your Timers watches appears.</span>
+                    </div>
+                    <button
+                      className="btn-secondary"
+                      style={{ minWidth: 64, background: fissureNotifications ? "rgba(56,139,253,.15)" : undefined, borderColor: fissureNotifications ? "var(--accent)" : undefined, color: fissureNotifications ? "var(--accent)" : undefined }}
+                      onClick={async () => {
+                        if (fissureNotifications) { onFissureNotificationsChange(false); return; }
+                        // Turn it back off when the OS refuses, rather than leaving
+                        // it on promising alerts that cannot arrive.
+                        const granted = await ensurePermission();
+                        onFissureNotificationsChange(granted);
+                        setNotifPermissionDenied(!granted);
+                      }}
+                    >
+                      {fissureNotifications ? "On" : "Off"}
+                    </button>
+                  </div>
+                  {notifPermissionDenied && (
+                    <div style={{ fontSize: 11, color: "var(--red)", marginTop: 6 }}>Notifications are blocked for FrameForge in your system settings.</div>
+                  )}
+                </div>
+
+                <div className="settings-section">
+                  <div className="settings-section-title">Diagnostics</div>
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <span className="settings-row-label">Test Notification</span>
+                      <span className="settings-row-desc">
+                        Send a desktop notification now, to check the OS delivers them at all.
+                        {notifyTestResult && <span style={{ display: "block", marginTop: 2, color: notifyTestResult.startsWith("Sent") ? "var(--green)" : "var(--red)", fontSize: 11 }}>{notifyTestResult}</span>}
+                      </span>
+                    </div>
+                    <button className="btn-secondary" onClick={async () => {
+                      setNotifyTestResult("");
+                      if (!(await ensurePermission())) {
+                        setNotifyTestResult("Permission denied — notifications are blocked for FrameForge in your system settings.");
+                        return;
+                      }
+                      await notify("FrameForge", "Test notification — watched fissure alerts will look like this.");
+                      setNotifyTestResult("Sent. If nothing appeared, the OS notification daemon is dropping it.");
+                    }}>Send</button>
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6, lineHeight: 1.5 }}>
+                    If "Sent" shows but nothing appears, check Windows Settings → System → Notifications and make sure the master "Notifications" toggle at the top is on — Windows drops every toast silently when it's off, with no error here and nothing in Action Center.
+                  </div>
+                </div>
+              </>}
+
               {/* ════════════ DATA ════════════ */}
               {settingsTab === "data" && <>
                 <div className="settings-section">
@@ -784,26 +841,6 @@ export default function SettingsModal(props: SettingsModalProps) {
                 <div className="settings-section">
                   <div className="settings-section-title">Diagnostics</div>
                   <div className="debug-table">
-
-                    {/* Test Notification */}
-                    <div className="settings-row-info">
-                      <span className="settings-row-label">Test Notification</span>
-                      <span className="settings-row-desc">
-                        Send a desktop notification now, to check the OS delivers them at all.
-                        {notifyTestResult && <span style={{ display: "block", marginTop: 2, color: notifyTestResult.startsWith("Sent") ? "var(--green)" : "var(--red)", fontSize: 11 }}>{notifyTestResult}</span>}
-                      </span>
-                    </div>
-                    <div />{/* Go To Folder placeholder */}
-                    <button className="btn-secondary" onClick={async () => {
-                      setNotifyTestResult("");
-                      if (!(await ensurePermission())) {
-                        setNotifyTestResult("Permission denied — notifications are blocked for FrameForge in your system settings.");
-                        return;
-                      }
-                      await notify("FrameForge", "Test notification — watched fissure alerts will look like this.");
-                      setNotifyTestResult("Sent. If nothing appeared, the OS notification daemon is dropping it.");
-                    }}>Send</button>
-                    <div />{/* Clear placeholder */}
 
                     {/* Overlay Log */}
                     <div className="settings-row-info">
