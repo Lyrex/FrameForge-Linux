@@ -251,7 +251,8 @@ pub(crate) fn spawn_reward_watcher_thread(deps: RewardWatcherDeps) {
                             prefilter_log: &prefilter_log,
                             catalog_len: filtered_cat.len(),
                         },
-                        &auto_capture_dir,
+                        app.state::<AppState>().auto_capture_enabled.load(Ordering::SeqCst)
+                            .then_some(auto_capture_dir.as_path()),
                         &diag_arc,
                         &last_found_path,
                     );

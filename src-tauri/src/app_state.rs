@@ -161,6 +161,7 @@ pub struct AppState {
     pub worldstate_cache: Mutex<Option<WorldstateCache>>,
     /// When true, unmatched inventory paths are written to the Unmatched Paths debug folder.
     pub debug_cat_enabled: Arc<AtomicBool>,
+    pub auto_capture_enabled: Arc<AtomicBool>,
     /// Subfolders of `Debugging/` in the state directory.
     pub auto_capture_dir: PathBuf,
     pub manual_capture_dir: PathBuf,

@@ -888,7 +888,7 @@ pub(crate) fn prepare_reward_session(
     session_log_path: &std::path::Path,
     squad_names: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     trigger: RewardTrigger<'_>,
-    auto_capture_dir: &std::path::Path,
+    auto_capture_dir: Option<&std::path::Path>,
     diag_dir: &std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
     last_found_path: &std::path::Path,
 ) {
@@ -929,10 +929,14 @@ pub(crate) fn prepare_reward_session(
     ) {
         warn!(error = %error, "session log write failed");
     }
-    let run_dir = auto_capture_dir.join(chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
-    let _ = std::fs::create_dir_all(&run_dir);
+    // With no folder set, the screenshot and log copies later in the session are skipped.
+    let run_dir = auto_capture_dir.map(|dir| {
+        let run_dir = dir.join(chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
+        let _ = std::fs::create_dir_all(&run_dir);
+        run_dir
+    });
     if let Ok(mut guard) = diag_dir.lock() {
-        *guard = Some(run_dir);
+        *guard = run_dir;
     }
     let _ = std::fs::write(
         last_found_path,
