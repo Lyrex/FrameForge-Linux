@@ -643,7 +643,8 @@ fn apply_catalogue(state: &AppState, result: wfcd::FetchResult) -> Result<usize,
         "item_type": i.item_type, "product_category": i.product_category,
         "image_name": i.image_name, "vaulted": i.vaulted, "ducats": i.ducats,
         "mastery_req": i.mastery_req, "omega_attenuation": i.omega_attenuation,
-        "fusion_limit": i.fusion_limit, "max_level_cap": i.max_level_cap
+        "fusion_limit": i.fusion_limit, "max_level_cap": i.max_level_cap,
+        "ducat_schema": DUCAT_SCHEMA_VERSION
     })).collect::<Vec<_>>()) {
         let _ = std::fs::write(&state.items_cache_path, json);
     }
@@ -956,12 +957,29 @@ fn patch_item_category(name: &str, category: &str, unique_name: &str) -> String 
     if name.contains("Blueprint") { "Blueprints".to_string() } else { category.to_string() }
 }
 
+/// Bump this whenever a parsing-logic change (not an upstream data change) makes
+/// previously-cached `ducats` values wrong, so upgrading users get a forced
+/// one-time recompute instead of carrying stale values forever (the normal
+/// refresh only refetches on an upstream ETag change, which a local logic fix
+/// never triggers). v2: rarity is derived from relic reward chance-grouping
+/// instead of WFCD's `rarity` string, which never labels the Common tier.
+const DUCAT_SCHEMA_VERSION: u32 = 2;
+
 pub(crate) fn load_items_cache(path: &PathBuf) -> Option<Vec<WfcdItem>> {
     let s = std::fs::read_to_string(path).ok()?;
     let arr: Vec<serde_json::Value> = serde_json::from_str(&s).ok()?;
     // If the cache predates the item_type/product_category fields, discard it so
     // a fresh fetch populates the new fields needed by fix_category.
     if arr.first().is_some_and(|v| v.get("item_type").is_none()) {
+        let _ = std::fs::remove_file(path);
+        return None;
+    }
+    // If the cache predates the current ducat-derivation logic, discard it too.
+    let cache_ducat_schema = arr.first()
+        .and_then(|v| v.get("ducat_schema"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if cache_ducat_schema < DUCAT_SCHEMA_VERSION as u64 {
         let _ = std::fs::remove_file(path);
         return None;
     }
