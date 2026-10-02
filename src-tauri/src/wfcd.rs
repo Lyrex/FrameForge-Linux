@@ -182,27 +182,38 @@ fn fetch_wiki_reward_names() -> HashSet<String> {
 
 /// Hand-curated exceptions where a prime part's ducat value doesn't follow the
 /// standard drop-rarity formula (`ducat_value_from_rarities`). Mirrors the Warframe
-/// Wiki's `Module:Void/data` `DUCAT_EXCEPTIONS` table — fetched once and bundled here
-/// rather than queried live, so no per-user runtime dependency on the wiki is added.
+/// Wiki's `Module:Void/data` `DUCAT_EXCEPTIONS` table. The authoritative copy lives
+/// in our own `FrameForgePricing` mirror (`DUCAT_EXCEPTIONS_URL`) — not the wiki
+/// directly, so no per-user runtime dependency on it is added — and gets fetched
+/// through the same catalogue source pipeline as Relics/ExportRecipes/etc, which
+/// means a new exception can ship without a FrameForge release. This bundled copy
+/// is only the offline/first-run fallback for when that fetch fails.
 /// Keys are lowercased full item+part display names.
 const DUCAT_EXCEPTIONS_JSON: &str = include_str!("../resources/ducat_exceptions.json");
 
-fn load_ducat_exceptions() -> HashMap<String, u32> {
-    let parsed: serde_json::Value = match serde_json::from_str(DUCAT_EXCEPTIONS_JSON) {
+fn parse_ducat_exceptions_value(v: &serde_json::Value) -> Option<HashMap<String, u32>> {
+    let obj = v.get("exceptions")?.as_object()?;
+    Some(
+        obj.iter()
+            .filter_map(|(k, v)| v.as_u64().map(|n| (k.to_lowercase(), n as u32)))
+            .collect(),
+    )
+}
+
+fn load_ducat_exceptions(fetched: Option<&serde_json::Value>) -> HashMap<String, u32> {
+    if let Some(map) = fetched.and_then(parse_ducat_exceptions_value) {
+        if !map.is_empty() {
+            return map;
+        }
+    }
+    let bundled: serde_json::Value = match serde_json::from_str(DUCAT_EXCEPTIONS_JSON) {
         Ok(v) => v,
         Err(e) => {
             warn!(error = %e, "failed to parse bundled ducat_exceptions.json");
             return HashMap::new();
         }
     };
-    parsed.get("exceptions")
-        .and_then(|v| v.as_object())
-        .map(|obj| {
-            obj.iter()
-                .filter_map(|(k, v)| v.as_u64().map(|n| (k.to_lowercase(), n as u32)))
-                .collect()
-        })
-        .unwrap_or_default()
+    parse_ducat_exceptions_value(&bundled).unwrap_or_default()
 }
 
 /// Derive a prime part/blueprint's ducat value from the set of rarities it drops as
@@ -276,6 +287,11 @@ const DICT_EN_URLS: [&str; 2] = [
 ];
 const SYNDICATES_URL: &str =
     "https://raw.githubusercontent.com/WFCD/warframe-drop-data/gh-pages/data/syndicates.json";
+/// Our own mirror (not a third-party dependency — same repo `pricing.rs` already
+/// fetches bulk WFM prices from) so the ducat exceptions table can be corrected
+/// between app releases instead of requiring a new build for every entry.
+const DUCAT_EXCEPTIONS_URL: &str =
+    "https://raw.githubusercontent.com/WyrmStudios/FrameForgePricing/main/ducat_exceptions.json";
 
 /// One upstream file, and what its absence costs.
 struct SourceSpec {
@@ -318,6 +334,11 @@ fn source_specs() -> Vec<SourceSpec> {
     specs.push(SourceSpec {
         name: "syndicates".to_string(),
         urls: vec![SYNDICATES_URL.to_string()],
+        required: false,
+    });
+    specs.push(SourceSpec {
+        name: "DucatExceptions".to_string(),
+        urls: vec![DUCAT_EXCEPTIONS_URL.to_string()],
         required: false,
     });
     specs
@@ -591,10 +612,12 @@ fn fetch_items_with(
     let syndicates_json = bodies.get("syndicates");
     let resources_json = bodies.get("ExportResources");
     let dict_json = bodies.get("dict_en");
+    let ducat_exceptions_json = bodies.get("DucatExceptions");
 
     info!(raw_items = all_items.len(), "catalogue sources assembled");
     let result = fetch_from_wfcd(
         &all_items, recipes_json, syndicates_json, relics_json, resources_json, dict_json,
+        ducat_exceptions_json,
     )?;
     info!(
         items = result.items.len(),
@@ -1212,6 +1235,7 @@ fn fetch_from_wfcd(
     relics_json: Option<&serde_json::Value>,
     resources_json: Option<&serde_json::Value>,
     dict_json: Option<&serde_json::Value>,
+    ducat_exceptions_json: Option<&serde_json::Value>,
 ) -> Result<FetchResult, String> {
     let mut items: Vec<WfcdItem> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -1751,7 +1775,7 @@ fn fetch_from_wfcd(
     // see `ducat_value_from_rarities`). This must run before blueprint_names below,
     // which reads item.ducats.
     {
-        let ducat_exceptions = load_ducat_exceptions();
+        let ducat_exceptions = load_ducat_exceptions(ducat_exceptions_json);
         let mut rarities_by_unique: HashMap<String, HashSet<String>> = HashMap::new();
         let mut rarities_by_name: HashMap<String, HashSet<String>> = HashMap::new();
         for rewards in relic_rewards.values() {
@@ -2156,14 +2180,35 @@ mod tests {
     }
 
     #[test]
-    fn ducat_exceptions_load_and_contain_known_entries() {
-        let exceptions = load_ducat_exceptions();
+    fn ducat_exceptions_fall_back_to_bundled_copy_when_nothing_was_fetched() {
+        let exceptions = load_ducat_exceptions(None);
         assert!(!exceptions.is_empty(), "bundled ducat_exceptions.json should parse to a non-empty map");
         // Sanity-check a couple of entries against the wiki's DUCAT_EXCEPTIONS table.
         assert_eq!(exceptions.get("akstiletto prime receiver"), Some(&45));
         assert_eq!(exceptions.get("forma blueprint"), Some(&0));
         // The "_comment" key must never leak in as a fake exception entry.
         assert!(!exceptions.contains_key("_comment"));
+    }
+
+    #[test]
+    fn ducat_exceptions_prefer_the_fetched_mirror_over_the_bundled_copy() {
+        let fetched = serde_json::json!({ "exceptions": { "soma prime blueprint": 999 } });
+        let exceptions = load_ducat_exceptions(Some(&fetched));
+        assert_eq!(exceptions.get("soma prime blueprint"), Some(&999));
+        // Only the fetched map is used — it does not merge with the bundled one.
+        assert!(!exceptions.contains_key("akstiletto prime receiver"));
+    }
+
+    #[test]
+    fn ducat_exceptions_fall_back_when_the_fetched_body_is_empty_or_malformed() {
+        assert_eq!(
+            load_ducat_exceptions(Some(&serde_json::json!({ "exceptions": {} }))).get("forma blueprint"),
+            Some(&0)
+        );
+        assert_eq!(
+            load_ducat_exceptions(Some(&serde_json::json!({ "not_exceptions": {} }))).get("forma blueprint"),
+            Some(&0)
+        );
     }
 
     // ── parse_relics_rewards: rarity derived from chance grouping, not the
