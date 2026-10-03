@@ -44,6 +44,7 @@ import HeaderActions from "./header/HeaderActions";
 import ErrorBoundary from "./shared/ErrorBoundary";
 import HeaderStatusBadges from "./header/HeaderStatusBadges";
 import ConnectionStatusChip from "./header/ConnectionStatusChip";
+import { CONN_CHIP, CONN_DOT, CONN_STATUS } from "./header/connStatus";
 import KeepMountedWhenHidden from "./KeepMountedWhenHidden";
 import { FOUNDRY_FILTERS_DEFAULT, INVENTORY_FILTERS_DEFAULT, MARKET_FILTERS_DEFAULT, RELIC_FILTERS_DEFAULT } from "./constants/filters";
 import { PREFERENCE_KEYS } from "./constants/preferences";
@@ -55,8 +56,7 @@ import { formatUnixTime } from "./lib/formatters";
 import type { CatalogItem, CraftingJob, InventoryItem } from "./types/items";
 import type { ChangeLogEntry, ModCopy } from "./types/inventory";
 import type { BlobStatusPayload, SettingsFile, SettingsPatch, WarframeCredentials, WarframeInventoryRequest, WfmCredentials, WfmSession } from "./types/tauri";
-import "./App.css";
-import "./images.css";
+import "./styles/App.css";
 
 const _winLabel = getCurrentWindow().label;
 // Support all URL formats: query string (?overlay), hash (#overlay), or window label.
@@ -89,21 +89,14 @@ function OverlayTestPage() {
   }, []);
 
   return (
-    <div style={{
-      width: '100vw', height: '100vh', boxSizing: 'border-box',
-      background: '#00cc55',
-      border: '4px solid #00ff88',
-      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-      gap: 12, fontFamily: 'sans-serif', color: '#fff',
-    }}>
-      <div style={{ fontSize: 22, fontWeight: 700, textShadow: '0 2px 6px #000' }}>
+    <div className="box-border flex h-screen w-screen flex-col items-center justify-center gap-3 border-4 border-[#00ff88] bg-[#00cc55] font-sans text-white">
+      <div className="text-[22px] font-bold drop-shadow-[0_2px_6px_#000]">
         FrameForge Overlay Test
       </div>
-      <div style={{ fontSize: 13, opacity: 0.85 }}>If you see green: window + React are working</div>
+      <div className="text-[13px] opacity-85">If you see green: window + React are working</div>
       <button
         onClick={() => getCurrentWindow().close().catch(() => {})}
-        style={{ marginTop: 8, padding: '8px 24px', cursor: 'pointer', fontSize: 14,
-          background: '#00ff88', color: '#000', border: 'none', borderRadius: 6, fontWeight: 700 }}
+        className="mt-2 cursor-pointer rounded-md border-0 bg-[#00ff88] px-6 py-2 text-sm font-bold text-black"
       >
         Close
       </button>
@@ -654,11 +647,11 @@ export default function App() {
 
   return (
     <ImgCacheDirContext.Provider value={imgCacheDir}>
-    <div className="shell">
+    <div className="flex h-full flex-col overflow-hidden">
 
       {/* ── Header ── */}
-      <header className="header">
-        <span className="header-title">{APP_TITLE}</span>
+      <header className="flex h-[var(--header-h)] shrink-0 items-center gap-[12px] border-b border-border bg-surface px-[16px]">
+        <span className="text-[15px] font-semibold text-foreground">{APP_TITLE}</span>
         <HeaderStatusBadges
           masteryRank={masteryRank}
           playerName={playerName}
@@ -672,7 +665,7 @@ export default function App() {
           }}
           onDismissUpdate={() => setPendingUpdate(null)}
         />
-        <div className="header-right">
+        <div className="ml-auto flex items-center gap-[6px]">
           {/* ── Connection status chips ── */}
           {(() => {
             // Memory chip
@@ -750,9 +743,9 @@ export default function App() {
                   onClick={!wfmLoggedIn ? () => activateModule("market") : undefined}
                 />
                 {overlayStatus && (
-                  <span className="conn-chip conn-overlay">
-                    <span className="conn-dot" />
-                    <span className="conn-detail">{overlayStatus}</span>
+                  <span className={`${CONN_CHIP} ${CONN_STATUS.overlay.chip}`}>
+                    <span className={`${CONN_DOT} ${CONN_STATUS.overlay.dot}`} />
+                    <span className={CONN_STATUS.overlay.detail}>{overlayStatus}</span>
                   </span>
                 )}
                 <CacheStatusChip />
@@ -774,12 +767,12 @@ export default function App() {
 
       {showInventoryBatchPreview && <InventoryBatchPreview onClose={closeInventoryBatchPreview} />}
 
-      <div className="body">
+      <div className="flex flex-1 overflow-hidden min-h-0">
 
         <AppNavigation activeModule={activeModule} onModuleChange={activateModule} />
 
-        <div className="app-content">
-        <div className="module-content">
+        <div className="flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-w-0 min-h-0 flex-1">
         {/* ── Inventory module ── */}
         {visitedModules.has("inventory") && (
         <KeepMountedWhenHidden active={activeModule === "inventory"}>
@@ -796,9 +789,9 @@ export default function App() {
               fetchMsg={fetchMsg}
             />
 
-            <div className="main">
+            <div className="flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden">
               {monitoring && warframeRunning && !inventorySynced && (
-                <div className="sync-banner">
+                <div className="shrink-0 border-b border-[#e3b341]/20 bg-[#e3b341]/[.08] px-4 py-2 text-xs text-[#e3b341]">
                   Inventory not synced yet — complete a mission or visit a relay to load your inventory
                 </div>
               )}
@@ -875,7 +868,7 @@ export default function App() {
         {visitedModules.has("rivens") && (
         <KeepMountedWhenHidden active={activeModule === "rivens"}>
           <ErrorBoundary>
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
               <RivenAnalyzer />
             </div>
           </ErrorBoundary>

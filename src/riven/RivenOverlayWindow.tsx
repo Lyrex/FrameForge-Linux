@@ -26,6 +26,77 @@ async function saveOverlayRoll(
 
 import "./RivenOverlayWindow.css";
 
+// ── Tailwind class constants (formerly RivenOverlayWindow.css) ────────────────
+
+const ROV_ROOT = "w-full h-full flex items-start justify-center p-2";
+const ROV_CARD =
+  "bg-[rgba(13,17,23,0.93)] border border-[rgba(56,139,253,0.3)] rounded-[10px] px-[14px] py-[12px] w-full flex flex-col gap-[8px] backdrop-blur-[10px] shadow-[0_8px_32px_rgba(0,0,0,0.65)]";
+
+const ROV_HEADER = "flex items-center gap-[6px]";
+const ROV_TITLE = "text-[14px] font-bold text-[#e6edf3] flex-1";
+const ROV_COMPARE =
+  "bg-[rgba(56,139,253,0.15)] border border-[rgba(56,139,253,0.35)] text-[#58a6ff] text-[10px] font-semibold cursor-pointer px-[7px] py-[2px] rounded-[4px] leading-[1.4] transition-[background] duration-150 hover:bg-[rgba(56,139,253,0.28)]";
+const ROV_SAVE =
+  "bg-transparent border-0 text-[rgba(139,148,158,0.6)] text-[12px] cursor-pointer px-[4px] py-[2px] rounded-[4px] leading-none transition-colors duration-150 hover:text-[#3fb950]";
+const ROV_CLOSE =
+  "bg-transparent border-0 text-[rgba(139,148,158,0.5)] text-[12px] cursor-pointer px-[4px] py-[2px] rounded-[4px] leading-none transition-[color,background] duration-150 hover:text-[#f85149] hover:bg-[rgba(248,81,73,0.12)]";
+
+const ROV_SCANNING = "text-[12px] text-[rgba(139,148,158,0.8)] text-center py-[6px]";
+const ROV_VERDICT = "text-[13px] font-bold tracking-[0.3px]";
+
+const ROV_SCORE_WRAP = "flex items-center gap-[7px]";
+const ROV_SCORE_TRACK =
+  "flex-1 h-[5px] bg-[rgba(255,255,255,0.08)] rounded-[3px] overflow-hidden";
+const ROV_SCORE_FILL = "h-full rounded-[3px] transition-[width] duration-[400ms] ease-[ease]";
+const ROV_SCORE_PCT = "text-[11px] font-semibold min-w-[30px] text-right";
+
+const ROV_ROLLED =
+  "flex flex-col gap-[4px] border-t border-t-[rgba(255,255,255,0.06)] pt-[8px]";
+const ROV_ROW = "flex items-center gap-[7px] text-[12px] px-[6px] py-[3px] rounded-[5px]";
+const ROV_ICON = "text-[11px] w-[13px] text-center shrink-0";
+const ROV_NAME = "flex-1 text-[#e6edf3]";
+const ROV_VALUE = "text-[12px] font-semibold tabular-nums shrink-0";
+const STAT_TONE: Record<string, { row: string; icon: string; name: string; value: string }> = {
+  wanted: {
+    row: ROV_ROW + " bg-[rgba(63,185,80,0.1)]",
+    icon: ROV_ICON + " text-[#3fb950]",
+    name: ROV_NAME,
+    value: ROV_VALUE + " text-[#3fb950]",
+  },
+  neutral: {
+    row: ROV_ROW + " bg-[rgba(255,255,255,0.04)]",
+    icon: ROV_ICON + " text-[rgba(139,148,158,0.6)]",
+    name: "flex-1 text-[rgba(230,237,243,0.7)]",
+    value: ROV_VALUE + " text-[#f0c040]",
+  },
+  safe_neg: {
+    row: ROV_ROW + " bg-[rgba(56,139,253,0.08)]",
+    icon: ROV_ICON + " text-[#58a6ff]",
+    name: ROV_NAME,
+    value: ROV_VALUE + " text-[#58a6ff]",
+  },
+  harmful: {
+    row: ROV_ROW + " bg-[rgba(248,81,73,0.08)]",
+    icon: ROV_ICON + " text-[#f85149]",
+    name: ROV_NAME,
+    value: ROV_VALUE + " text-[#f85149]",
+  },
+};
+
+const ROV_ORIGINAL = "border-t border-t-[rgba(255,255,255,0.06)] pt-[6px]";
+const ROV_SECTION_LABEL =
+  "text-[10px] font-semibold text-[rgba(139,148,158,0.55)] uppercase tracking-[0.5px] mb-[4px]";
+const ROV_ALT_CARD =
+  "border-t border-t-[rgba(255,255,255,0.06)] pt-[6px] first:border-t-0 first:pt-0";
+const ROV_ALT_LABEL =
+  "text-[9px] font-bold uppercase tracking-[0.05em] text-[rgba(139,148,158,0.55)] bg-[rgba(255,255,255,0.06)] rounded-[3px] px-[5px] py-[1px] inline-block mb-[3px]";
+const ROV_MISSING =
+  "text-[10.5px] text-[rgba(139,148,158,0.65)] border-t border-t-[rgba(255,255,255,0.06)] pt-[6px] leading-[1.6] break-words";
+const ROV_MISSING_LABEL = "font-semibold";
+const ROV_MISSING_STAT = "text-[rgba(139,148,158,0.9)]";
+const ROV_NOTES =
+  "text-[10px] text-[rgba(139,148,158,0.7)] italic border-t border-t-[rgba(255,255,255,0.06)] pt-[5px]";
+
 // No auto-hide — user dismisses with ✕ or the poll detects screen closure.
 // Only a very long emergency fallback (60 min) in case everything else fails.
 
@@ -46,11 +117,11 @@ function ScoreBar({ score }: { score: number }) {
   const pct = Math.round(score * 100);
   const color = score >= 0.8 ? "#3fb950" : score >= 0.6 ? "#a8d8a8" : score >= 0.4 ? "#f0c040" : "#f85149";
   return (
-    <div className="rov-score-wrap">
-      <div className="rov-score-track">
-        <div className="rov-score-fill" style={{ width: `${pct}%`, background: color }} />
+    <div className={ROV_SCORE_WRAP}>
+      <div className={ROV_SCORE_TRACK}>
+        <div className={ROV_SCORE_FILL} style={{ width: `${pct}%`, background: color }} />
       </div>
-      <span className="rov-score-pct" style={{ color }}>{pct}%</span>
+      <span className={ROV_SCORE_PCT} style={{ color }}>{pct}%</span>
     </div>
   );
 }
@@ -143,13 +214,6 @@ export default function RivenOverlayWindow() {
     return allWantedNames.has(stat.name) ? "wanted" : "neutral";
   };
 
-  const statClass = (cls: "wanted" | "neutral" | "safe_neg" | "harmful") => {
-    if (cls === "wanted")    return "rov-stat-wanted";
-    if (cls === "neutral")   return "rov-stat-neutral";
-    if (cls === "safe_neg")  return "rov-stat-safeneg";
-    return "rov-stat-harmful";
-  };
-
   const statIcon = (cls: "wanted" | "neutral" | "safe_neg" | "harmful") => {
     if (cls === "wanted")   return "✓";
     if (cls === "safe_neg") return "✓";
@@ -158,16 +222,16 @@ export default function RivenOverlayWindow() {
   };
 
   return (
-    <div className="rov-root">
-      <div className="rov-card">
+    <div className={ROV_ROOT}>
+      <div className={ROV_CARD}>
         {/* Header */}
-        <div className="rov-header">
-          <span className="rov-title">{displayName}</span>
-          <button className="rov-compare-btn" onClick={() => triggerNewCheck()} title="Re-scan (use after cycling for comparison)">
+        <div className={ROV_HEADER}>
+          <span className={ROV_TITLE}>{displayName}</span>
+          <button className={ROV_COMPARE} onClick={() => triggerNewCheck()} title="Re-scan (use after cycling for comparison)">
             {isComparison ? "🔄 Refresh" : "⚡ New Roll"}
           </button>
           {rolledStats.length > 0 && (
-            <button className="rov-save-btn" title="Save this roll"
+            <button className={ROV_SAVE} title="Save this roll"
               onClick={async () => {
                 await saveOverlayRoll(weaponName, rolledStats, analysis?.verdict ?? "", analysis?.score ?? 0, rollCount);
                 setSaved(true); setTimeout(() => setSaved(false), 2000);
@@ -175,19 +239,19 @@ export default function RivenOverlayWindow() {
               {saved ? "✓" : "💾"}
             </button>
           )}
-          <button className="rov-close-btn" onClick={() => requestHide("x-button")} title="Dismiss">✕</button>
+          <button className={ROV_CLOSE} onClick={() => requestHide("x-button")} title="Dismiss">✕</button>
         </div>
 
         {/* Scanning */}
         {scanning && (
-          <div className="rov-scanning">Scanning stats…</div>
+          <div className={ROV_SCANNING}>Scanning stats…</div>
         )}
 
         {/* No result */}
         {!scanning && rolledStats.length === 0 && !analysis && (
-          <div className="rov-scanning" style={{ color: "#f85149" }}>
+          <div className={ROV_SCANNING + " !text-danger"}>
             Could not read card stats
-            {parsedWeapon && <div style={{ fontSize: 10, marginTop: 3, color: "rgba(139,148,158,.7)" }}>Weapon: "{parsedWeapon}"</div>}
+            {parsedWeapon && <div className="mt-[3px] text-[10px] text-[rgba(139,148,158,.7)]">Weapon: "{parsedWeapon}"</div>}
           </div>
         )}
 
@@ -196,34 +260,34 @@ export default function RivenOverlayWindow() {
           <>
             {/* One analysis card per build alternative */}
             {analysis && analysis.alternatives.map((alt, i) => (
-              <div key={i} className="rov-alt-card">
+              <div key={i} className={ROV_ALT_CARD}>
                 {analysis.alternatives.length > 1 && (
-                  <span className="rov-alt-label">{alt.label}</span>
+                  <span className={ROV_ALT_LABEL}>{alt.label}</span>
                 )}
-                <div className="rov-verdict" style={{ color: verdictColor(alt.verdict) }}>
+                <div className={ROV_VERDICT} style={{ color: verdictColor(alt.verdict) }}>
                   {alt.verdict}
                 </div>
                 <ScoreBar score={alt.score} />
                 {/* Negatives shown once on first card */}
                 {i === 0 && analysis.safe_negatives_present.map(s => (
-                  <div key={s} className="rov-stat-row rov-stat-safeneg">
-                    <span className="rov-stat-icon">✓</span>
-                    <span className="rov-stat-name">−{s}</span>
-                    <span className="rov-stat-value" style={{fontSize:10}}>Safe</span>
+                  <div key={s} className={STAT_TONE.safe_neg.row}>
+                    <span className={STAT_TONE.safe_neg.icon}>✓</span>
+                    <span className={STAT_TONE.safe_neg.name}>−{s}</span>
+                    <span className={STAT_TONE.safe_neg.value + " !text-[10px]"}>Safe</span>
                   </div>
                 ))}
                 {i === 0 && analysis.harmful_negatives.map(s => (
-                  <div key={s} className="rov-stat-row rov-stat-harmful">
-                    <span className="rov-stat-icon">✗</span>
-                    <span className="rov-stat-name">−{s}</span>
-                    <span className="rov-stat-value" style={{fontSize:10}}>Harmful</span>
+                  <div key={s} className={STAT_TONE.harmful.row}>
+                    <span className={STAT_TONE.harmful.icon}>✗</span>
+                    <span className={STAT_TONE.harmful.name}>−{s}</span>
+                    <span className={STAT_TONE.harmful.value + " !text-[10px]"}>Harmful</span>
                   </div>
                 ))}
                 {alt.missing.length > 0 && (
-                  <div className="rov-missing">
-                    <span className="rov-missing-label">Wanted: </span>
+                  <div className={ROV_MISSING}>
+                    <span className={ROV_MISSING_LABEL}>Wanted: </span>
                     {alt.missing.map((s, j) => (
-                      <span key={s} className="rov-missing-stat">
+                      <span key={s} className={ROV_MISSING_STAT}>
                         {s}{j < alt.missing.length - 1 ? ", " : ""}
                       </span>
                     ))}
@@ -234,15 +298,16 @@ export default function RivenOverlayWindow() {
 
             {/* Rolled stats — what's actually on the card */}
             {rolledStats.length > 0 && (
-              <div className="rov-rolled-stats">
-              {isComparison && <div className="rov-new-roll-label">New roll</div>}
+              <div className={ROV_ROLLED}>
+              {isComparison && <div className={ROV_SECTION_LABEL}>New roll</div>}
                 {rolledStats.map((stat, i) => {
                   const cls = classifyStat(stat);
+                  const tone = STAT_TONE[cls];
                   return (
-                    <div key={i} className={`rov-stat-row ${statClass(cls)}`}>
-                      <span className="rov-stat-icon">{statIcon(cls)}</span>
-                      <span className="rov-stat-name">{stat.name}</span>
-                      <span className="rov-stat-value">{stat.value}</span>
+                    <div key={i} className={tone.row}>
+                      <span className={tone.icon}>{statIcon(cls)}</span>
+                      <span className={tone.name}>{stat.name}</span>
+                      <span className={tone.value}>{stat.value}</span>
                     </div>
                   );
                 })}
@@ -251,16 +316,17 @@ export default function RivenOverlayWindow() {
 
             {/* Original roll (comparison mode only) — same quality colors as new roll */}
             {isComparison && originalStats.length > 0 && (
-              <div className="rov-original-section">
-                <div className="rov-section-label">Original roll</div>
-                <div className="rov-rolled-stats">
+              <div className={ROV_ORIGINAL}>
+                <div className={ROV_SECTION_LABEL}>Original roll</div>
+                <div className={ROV_ROLLED}>
                   {originalStats.map((stat, i) => {
                     const cls = classifyOriginalStat(stat);
+                    const tone = STAT_TONE[cls];
                     return (
-                      <div key={i} className={`rov-stat-row ${statClass(cls)}`} style={{ opacity: 0.75 }}>
-                        <span className="rov-stat-icon">{statIcon(cls)}</span>
-                        <span className="rov-stat-name">{stat.name}</span>
-                        <span className="rov-stat-value">{stat.value}</span>
+                      <div key={i} className={tone.row + " opacity-75"}>
+                        <span className={tone.icon}>{statIcon(cls)}</span>
+                        <span className={tone.name}>{stat.name}</span>
+                        <span className={tone.value}>{stat.value}</span>
                       </div>
                     );
                   })}
@@ -271,20 +337,20 @@ export default function RivenOverlayWindow() {
 
             {/* No DB entry */}
             {!analysis && rolledStats.length > 0 && (
-              <div className="rov-missing" style={{ color: "rgba(139,148,158,.6)" }}>
+              <div className={ROV_MISSING + " !text-[rgba(139,148,158,.6)]"}>
                 No database entry for {displayName}
               </div>
             )}
 
             {analysis?.notes && (
-              <div className="rov-notes">ℹ {analysis.notes}</div>
+              <div className={ROV_NOTES}>ℹ {analysis.notes}</div>
             )}
 
             {/* Raw OCR fallback */}
             {!analysis && ocrRaw && (
-              <details style={{ marginTop: 4 }}>
-                <summary style={{ fontSize: 10, color: "rgba(139,148,158,.5)", cursor: "pointer" }}>Raw OCR</summary>
-                <pre style={{ fontSize: 9, color: "rgba(139,148,158,.6)", whiteSpace: "pre-wrap", maxHeight: 100, overflowY: "auto", marginTop: 3 }}>{ocrRaw}</pre>
+              <details className="mt-1">
+                <summary className="cursor-pointer text-[10px] text-[rgba(139,148,158,.5)]">Raw OCR</summary>
+                <pre className="mt-[3px] max-h-[100px] overflow-y-auto whitespace-pre-wrap text-[9px] text-[rgba(139,148,158,.6)]">{ocrRaw}</pre>
               </details>
             )}
           </>

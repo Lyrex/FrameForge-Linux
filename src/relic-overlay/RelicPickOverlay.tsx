@@ -10,12 +10,87 @@ import type { RelicPickPayload, RelicPickRelic, RelicPickReward } from "../types
 import type { RelicPickLines, RelicPickPriority } from "../types/settings";
 import "./RelicPickOverlay.css";
 
-const ERA_LABEL: Record<string, string> = {
-  LITH: "Lith", MESO: "Meso", NEO: "Neo", AXI: "Axi", ALL: "All Eras",
+// ── Tailwind class constants (formerly RelicPickOverlay.css) ──────────────────
+// Note: body transparency stays in RelicPickOverlay.css (document context).
+
+const RPO_ROOT =
+  "flex flex-col gap-[4px] py-[6px] px-[8px] bg-[rgba(13,17,23,0.92)] border border-[rgba(56,139,253,0.4)] rounded-[8px] text-[12px] text-[color:var(--text,#e6edf3)] w-full h-auto backdrop-blur-[4px]";
+
+const RPO_HEADER = "flex items-center gap-[6px] shrink-0";
+const RPO_TITLE =
+  "text-[12px] font-bold text-[#58a6ff] tracking-[0.04em] uppercase flex-1";
+const RPO_CLOSE =
+  "bg-transparent border-0 text-[rgba(230,237,243,0.35)] text-[13px] cursor-pointer px-[2px] py-0 leading-none transition-colors duration-100 hover:text-[rgba(230,237,243,0.85)]";
+const RPO_EMPTY =
+  "px-[8px] py-[12px] text-center text-[rgba(230,237,243,0.4)] text-[11px] whitespace-nowrap";
+const RPO_LIST = "flex flex-col gap-[4px] overflow-y-auto max-h-[460px]";
+
+const RPO_CARD =
+  "bg-[rgba(255,255,255,0.04)] border border-[rgba(48,54,61,0.6)] rounded-[5px] overflow-hidden shrink-0";
+const RPO_CARD_BEST =
+  "bg-[rgba(56,139,253,0.06)] border border-[rgba(56,139,253,0.5)] rounded-[5px] overflow-hidden shrink-0";
+const RPO_CARD_HEADER =
+  "flex items-center gap-[5px] px-[8px] py-[4px] border-b border-b-[rgba(48,54,61,0.5)]";
+const RPO_RANK = "text-[10px] font-bold text-[rgba(230,237,243,0.3)] min-w-[16px]";
+const RPO_RANK_BEST = "text-[10px] font-bold text-[#58a6ff] min-w-[16px]";
+const RPO_RELIC_NAME =
+  "flex-1 font-semibold text-[12px] whitespace-nowrap overflow-hidden text-ellipsis";
+
+const REF_SHAPE =
+  "text-[9px] font-semibold px-[4px] py-[1px] rounded-[3px] whitespace-nowrap";
+const REF_BADGE: Record<string, string> = {
+  intact:
+    REF_SHAPE +
+    " bg-[rgba(255,255,255,0.07)] text-[rgba(230,237,243,0.5)] border border-[rgba(255,255,255,0.1)]",
+  exceptional:
+    REF_SHAPE +
+    " text-[#79c0ff] border border-[rgba(121,192,255,0.3)] bg-[rgba(121,192,255,0.08)]",
+  flawless:
+    REF_SHAPE +
+    " text-[#a371f7] border border-[rgba(163,113,247,0.3)] bg-[rgba(163,113,247,0.08)]",
+  radiant:
+    REF_SHAPE +
+    " text-[#d4a847] border border-[rgba(212,168,71,0.4)] bg-[rgba(212,168,71,0.1)]",
 };
 
-const RARITY_CLASS: Record<string, string> = {
-  Bronze: "rpo-bronze", Silver: "rpo-silver", Gold: "rpo-gold",
+const RPO_COUNT = "text-[11px] text-[rgba(230,237,243,0.45)]";
+const RPO_SCORE = "text-[11px] font-semibold text-[#58a6ff] whitespace-nowrap";
+
+const RPO_ESTIMATED =
+  "flex items-center gap-[2px] px-[8px] py-[3px] text-[10px] text-[rgba(230,237,243,0.55)]";
+const RPO_EST_SEP = "text-[rgba(230,237,243,0.25)]";
+
+const RPO_REWARDS = "flex flex-col";
+const RPO_REWARD =
+  "grid grid-cols-[14px_14px_1fr_auto_auto_auto] items-center gap-[3px] px-[8px] py-[2px] border-b border-b-[rgba(48,54,61,0.25)] text-[10px] last:border-b-0";
+const RPO_VAULT = "text-[9px] text-center leading-none";
+const RPO_OWNED = "text-[10px] font-bold text-center";
+const RPO_OWNED_YES = RPO_OWNED + " text-[rgba(63,185,80,0.85)]";
+const RPO_OWNED_NO = RPO_OWNED + " text-[rgba(230,237,243,0.25)]";
+const RPO_REWARD_NAME = "whitespace-nowrap overflow-hidden text-ellipsis opacity-[0.85]";
+const RARITY_NAME: Record<string, string> = {
+  Bronze: RPO_REWARD_NAME + " text-[#c47d3a]",
+  Silver: RPO_REWARD_NAME + " text-[#9ba8b5]",
+  Gold: RPO_REWARD_NAME + " text-[#d4a847]",
+};
+const RPO_VAL_SHARED = "flex items-center gap-[1px] whitespace-nowrap tabular-nums";
+const RPO_PLAT_VAL = RPO_VAL_SHARED + " text-[rgba(121,192,255,0.8)]";
+const RPO_DUCAT_VAL = RPO_VAL_SHARED + " text-[rgba(212,168,71,0.75)]";
+
+const RPO_REC_SHAPE =
+  "text-[8px] font-bold px-[3px] py-[1px] rounded-[2px] whitespace-nowrap border";
+const RPO_REC: Record<string, string> = {
+  intact: RPO_REC_SHAPE + " text-[rgba(230,237,243,0.4)] border-[rgba(230,237,243,0.15)]",
+  exceptional:
+    RPO_REC_SHAPE +
+    " text-[#79c0ff] border-[rgba(121,192,255,0.3)] bg-[rgba(121,192,255,0.07)]",
+  radiant:
+    RPO_REC_SHAPE +
+    " text-[#d4a847] border-[rgba(212,168,71,0.35)] bg-[rgba(212,168,71,0.08)]",
+};
+
+const ERA_LABEL: Record<string, string> = {
+  LITH: "Lith", MESO: "Meso", NEO: "Neo", AXI: "Axi", ALL: "All Eras",
 };
 
 const REWARD_ORDER: Record<string, number> = { Gold: 0, Silver: 1, Bronze: 2 };
@@ -56,11 +131,11 @@ function getDisplayRewards(relic: RelicPickRelic, lines: RelicPickLines, priorit
 
 function PlatIcon() {
   return <img src="/platinum.webp" alt="p" width={11} height={11}
-    style={{ objectFit: "contain", flexShrink: 0, verticalAlign: "middle", marginBottom: 1 }} />;
+    className="mb-px shrink-0 object-contain align-middle" />;
 }
 function DucatIcon() {
   return <img src="/ducats.webp" alt="d" width={11} height={11}
-    style={{ objectFit: "contain", flexShrink: 0, verticalAlign: "middle", marginBottom: 1 }} />;
+    className="mb-px shrink-0 object-contain align-middle" />;
 }
 
 export default function RelicPickOverlay() {
@@ -136,13 +211,7 @@ export default function RelicPickOverlay() {
 
   if (outline) {
     return (
-      <div ref={rootCallback} style={{
-        width: "100%", height: 300, boxSizing: "border-box",
-        border: "2px dashed rgba(56,139,253,.85)", borderRadius: 10,
-        background: "rgba(22,27,34,.55)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        color: "#79b8ff", fontSize: 16, fontWeight: 600,
-      }}>
+      <div ref={rootCallback} className="box-border flex h-[300px] w-full items-center justify-center rounded-[10px] border-2 border-dashed border-[rgba(56,139,253,.85)] bg-[rgba(22,27,34,.55)] text-base font-semibold text-[#79b8ff]">
         Relic Pick Overlay — outline
       </div>
     );
@@ -156,16 +225,16 @@ export default function RelicPickOverlay() {
   const eraLabel = ERA_LABEL[payload.era] ?? payload.era;
 
   return (
-    <div className="rpo-root" ref={rootCallback}>
-      <div className="rpo-header">
-        <span className="rpo-title">{eraLabel} Fissure</span>
-        <button className="rpo-close" onClick={hide} title="Close">✕</button>
+    <div className={RPO_ROOT} ref={rootCallback}>
+      <div className={RPO_HEADER}>
+        <span className={RPO_TITLE}>{eraLabel} Fissure</span>
+        <button className={RPO_CLOSE} onClick={hide} title="Close">✕</button>
       </div>
 
       {sorted.length === 0 ? (
-        <div className="rpo-empty">No {eraLabel} relics in inventory</div>
+        <div className={RPO_EMPTY}>No {eraLabel} relics in inventory</div>
       ) : (
-        <div className="rpo-list">
+        <div className={RPO_LIST}>
           {sorted.map((relic, i) => {
             const displayRewards = getDisplayRewards(relic, lines, priority);
             const score = scoreOf(relic, priority);
@@ -176,45 +245,45 @@ export default function RelicPickOverlay() {
               : `${(score * 100).toFixed(0)}% new`;
 
             return (
-              <div key={relic.name} className={`rpo-card${i === 0 ? " best" : ""}`}>
-                <div className="rpo-card-header">
-                  <span className="rpo-rank">#{i + 1}</span>
-                  <span className="rpo-relic-name">{relic.base_name}</span>
-                  <span className={`rpo-ref-badge rpo-ref-${relic.refinement}`}>
+              <div key={relic.name} className={i === 0 ? RPO_CARD_BEST : RPO_CARD}>
+                <div className={RPO_CARD_HEADER}>
+                  <span className={i === 0 ? RPO_RANK_BEST : RPO_RANK}>#{i + 1}</span>
+                  <span className={RPO_RELIC_NAME}>{relic.base_name}</span>
+                  <span className={REF_BADGE[relic.refinement] ?? REF_BADGE.intact}>
                     {relic.refinement.charAt(0).toUpperCase() + relic.refinement.slice(1, relic.refinement === "exceptional" ? 5 : 4)}.
                   </span>
-                  <span className="rpo-count">×{relic.count}</span>
-                  <span className="rpo-score">{scoreLabel}</span>
+                  <span className={RPO_COUNT}>×{relic.count}</span>
+                  <span className={RPO_SCORE}>{scoreLabel}</span>
                 </div>
 
                 {lines === "estimated" ? (
-                  <div className="rpo-estimated">
+                  <div className={RPO_ESTIMATED}>
                     <span>{relic.plat_score.toFixed(0)}</span><PlatIcon />
-                    <span className="rpo-est-sep"> · </span>
+                    <span className={RPO_EST_SEP}> · </span>
                     <span>{relic.ducat_score.toFixed(0)}</span><DucatIcon />
-                    <span className="rpo-est-sep"> · </span>
+                    <span className={RPO_EST_SEP}> · </span>
                     <span>{relic.rewards.filter(r => !r.owned).length}/{relic.rewards.length} new</span>
                   </div>
                 ) : (
-                  <div className="rpo-rewards">
+                  <div className={RPO_REWARDS}>
                     {displayRewards.map(reward => (
-                      <div key={reward.name} className={`rpo-reward ${RARITY_CLASS[reward.rarity] ?? ""}`}>
-                        <span className="rpo-vault">{reward.vaulted ? "🔒" : " "}</span>
-                        <span className={`rpo-owned-icon ${reward.owned ? "yes" : "no"}`}>
+                      <div key={reward.name} className={RPO_REWARD}>
+                        <span className={RPO_VAULT}>{reward.vaulted ? "🔒" : " "}</span>
+                        <span className={reward.owned ? RPO_OWNED_YES : RPO_OWNED_NO}>
                           {reward.owned ? "✓" : "✗"}
                         </span>
-                        <span className="rpo-reward-name">{reward.name}</span>
+                        <span className={RARITY_NAME[reward.rarity] ?? RPO_REWARD_NAME}>{reward.name}</span>
                         {reward.plat > 0 && (
-                          <span className="rpo-plat-val">
+                          <span className={RPO_PLAT_VAL}>
                             {reward.plat}<PlatIcon />
                           </span>
                         )}
                         {reward.ducats > 0 && (
-                          <span className="rpo-ducat-val">
+                          <span className={RPO_DUCAT_VAL}>
                             {reward.ducats}<DucatIcon />
                           </span>
                         )}
-                        <span className={`rpo-rec rpo-rec-${recRefinement(reward.rarity).toLowerCase()}`}>
+                        <span className={RPO_REC[recRefinement(reward.rarity).toLowerCase()] ?? RPO_REC.intact}>
                           {recRefinement(reward.rarity)}
                         </span>
                       </div>

@@ -9,7 +9,62 @@ import type { CraftingJob, QuantityMap, ShallowRecipeComponent } from "../types/
 import type { RelicOverlayPriority } from "../types/settings";
 import type { PendingRelicRewards, RelicRewardsPayload } from "../types/tauri";
 import type { InventoryUpdate } from "../types/inventory";
-import "./Overlay.css";
+import "../styles/Overlay.css";
+
+// ── Tailwind class constants (formerly Overlay.css) ───────────────────────────
+// Note: :root vars + body transparency stay in Overlay.css (document context).
+
+const OV_ROOT = "relative w-full h-full";
+const OV_ARROW =
+  "absolute top-[2px] w-[36px] h-[28px] pointer-events-none opacity-[0.65] drop-shadow-[0_2px_4px_rgba(0,0,0,0.6)]";
+
+const OV_CARD =
+  "absolute top-[34px] bg-[rgba(22,27,34,0.82)] border border-[var(--border)] rounded-[8px] pt-[7px] pb-[6px] px-[8px] flex flex-col gap-[4px] shadow-[0_4px_16px_rgba(0,0,0,0.55)]";
+const OV_CARD_UNKNOWN =
+  "absolute top-[34px] bg-[rgba(30,24,14,0.82)] border border-[rgba(180,140,60,0.6)] rounded-[8px] pt-[7px] pb-[6px] px-[8px] flex flex-col gap-[4px] shadow-[0_4px_16px_rgba(0,0,0,0.55)]";
+
+const OV_NAME =
+  "text-[14px] font-bold text-[#f0e0a0] leading-[1.25] text-center overflow-hidden text-ellipsis line-clamp-2";
+
+const OV_PRICE_ROW = "flex items-center justify-between gap-[4px]";
+const OV_PRICE_SHARED =
+  "flex items-center gap-[2px] text-[13px] font-bold whitespace-nowrap";
+const OV_PRICE_PLAT = OV_PRICE_SHARED + " text-[#c7b3ff]";
+const OV_PRICE_DUCAT = OV_PRICE_SHARED + " text-[#f0c040]";
+const OV_PRICE_NA = "text-muted font-normal";
+const OV_LOCK =
+  "text-[13px] leading-none bg-[rgba(248,81,73,0.15)] border border-[rgba(248,81,73,0.35)] rounded-[4px] px-[4px] py-[1px] shrink-0";
+
+const OV_OWN_BAR =
+  "text-center text-[11px] font-bold uppercase tracking-[0.05em] px-[4px] py-[3px] rounded-[4px]";
+const OV_OWN_YES =
+  OV_OWN_BAR +
+  " bg-[rgba(240,192,64,0.15)] border border-[rgba(240,192,64,0.35)] text-[#f0c040]";
+const OV_OWN_NO =
+  OV_OWN_BAR +
+  " bg-[rgba(248,81,73,0.1)] border border-[rgba(248,81,73,0.28)] text-[#f85149]";
+
+const OV_SET_PRICE =
+  "flex items-center justify-center gap-[2px] text-[13px] font-bold text-[#c7b3ff]";
+
+const OV_COMP_GRID = "grid grid-cols-2 gap-[3px]";
+const OV_GRID_CELL =
+  "flex flex-col items-center justify-center px-[4px] py-[3px] rounded-[4px] border border-transparent min-w-0 text-center";
+const OV_GRID_CELL_OWNED =
+  OV_GRID_CELL + " bg-[rgba(240,192,64,0.12)] border-[rgba(240,192,64,0.3)]";
+const OV_GRID_CELL_MISS =
+  OV_GRID_CELL + " bg-[rgba(255,255,255,0.02)] border-[rgba(255,255,255,0.06)]";
+const OV_GRID_NAME =
+  "text-[11px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis max-w-full leading-[1.3]";
+const OV_GRID_NAME_OWNED = OV_GRID_NAME + " text-[#f0c040]";
+const OV_GRID_NAME_MISS = OV_GRID_NAME + " text-muted";
+const OV_GRID_QTY =
+  "text-[10px] font-bold leading-none tabular-nums";
+const OV_GRID_QTY_OWNED = OV_GRID_QTY + " text-[rgba(240,192,64,0.65)]";
+const OV_GRID_QTY_MISS = OV_GRID_QTY + " text-[rgba(139,148,158,0.6)]";
+
+const OV_CAT =
+  "text-[10px] font-bold uppercase text-[rgba(139,148,158,0.5)] tracking-[0.05em] text-center";
 
 interface ComponentRow {
   unique_name: string;
@@ -146,10 +201,10 @@ function bestPickIndex(items: RewardItem[], priority: RelicOverlayPriority): num
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 function PlatIcon({ size = 14 }: { size?: number }) {
-  return <img src="/platinum.webp" alt="p" width={size} height={size} style={{ objectFit: "contain", flexShrink: 0, verticalAlign: "middle" }} />;
+  return <img src="/platinum.webp" alt="p" width={size} height={size} className="shrink-0 object-contain align-middle" />;
 }
 function DucatIcon({ size = 14 }: { size?: number }) {
-  return <img src="/ducats.webp" alt="d" width={size} height={size} style={{ objectFit: "contain", flexShrink: 0, verticalAlign: "middle" }} />;
+  return <img src="/ducats.webp" alt="d" width={size} height={size} className="shrink-0 object-contain align-middle" />;
 }
 
 // ─── Column layout ────────────────────────────────────────────────────────────
@@ -172,7 +227,7 @@ export function columnCenters(layoutW: number, n: number): number[] {
 function PickArrow({ slotX, winW }: { slotX: number; winW: number }) {
   const cx = Math.round(winW * slotX);
   return (
-    <svg className="ov-arrow" style={{ left: cx - 18 }} viewBox="0 0 36 28" fill="none">
+    <svg className={OV_ARROW} style={{ left: cx - 18 }} viewBox="0 0 36 28" fill="none">
       <polygon points="18,2 34,26 2,26" fill="#f0d060" />
     </svg>
   );
@@ -185,41 +240,41 @@ function RewardCard({ item, left, width }: { item: RewardItem; left: number; wid
   const isUnknown   = item.category === "Unrecognized";
 
   return (
-    <div className={`ov-card${isUnknown ? " ov-card-unknown" : ""}`} style={{ left, width }}>
+    <div className={isUnknown ? OV_CARD_UNKNOWN : OV_CARD} style={{ left, width }}>
 
       {/* Item name */}
-      <div className="ov-name">{isUnknown ? "? " : ""}{item.name}</div>
+      <div className={OV_NAME}>{isUnknown ? "? " : ""}{item.name}</div>
 
       {/* Plat price | vaulted lock | ducat value */}
-      <div className="ov-price-row">
-        <span className="ov-price-plat">
+      <div className={OV_PRICE_ROW}>
+        <span className={OV_PRICE_PLAT}>
           {item.plat != null
             ? <><PlatIcon size={14} />&nbsp;{item.plat}</>
-            : <span className="ov-price-na">—</span>}
+            : <span className={OV_PRICE_NA}>—</span>}
         </span>
-        {item.vaulted && <span className="ov-lock">🔒</span>}
-        <span className="ov-price-ducat">
+        {item.vaulted && <span className={OV_LOCK}>🔒</span>}
+        <span className={OV_PRICE_DUCAT}>
           {item.ducats != null && item.ducats > 0
             ? <><DucatIcon size={14} />&nbsp;{item.ducats}</>
-            : <span className="ov-price-na">—</span>}
+            : <span className={OV_PRICE_NA}>—</span>}
         </span>
       </div>
 
       {/* Set section — only when recipe data is available */}
       {hasSet && <>
         {/* Ownership status bar */}
-        <div className={`ov-own-bar ${ownedFull ? 'ov-own-yes' : 'ov-own-no'}`}>
+        <div className={ownedFull ? OV_OWN_YES : OV_OWN_NO}>
           {ownedFull ? 'Full Item Owned' : 'Full Item Not Owned'}
         </div>
 
         {/* Total set value */}
-        <div className="ov-set-price">
+        <div className={OV_SET_PRICE}>
           <PlatIcon size={14} />
           &nbsp;{(item.total_plat ?? 0) > 0 ? item.total_plat : '—'}
         </div>
 
         {/* 2×2 component grid */}
-        <div className="ov-comp-grid">
+        <div className={OV_COMP_GRID}>
           {(item.components ?? []).slice(0, 4).map(c => {
             const raw  = shortName(c.name, item.set_name ?? '');
             // Strip trailing " Blueprint" from the cell label (keep "Blueprint" alone as-is)
@@ -228,9 +283,9 @@ function RewardCard({ item, left, width }: { item: RewardItem; left: number; wid
               : raw;
             const owned = c.owned >= c.needed;
             return (
-              <div key={c.unique_name} className={`ov-grid-cell ${owned ? 'ov-grid-owned' : 'ov-grid-miss'}`}>
-                <span className="ov-grid-name">{stripped}</span>
-                <span className="ov-grid-qty">{c.owned}</span>
+              <div key={c.unique_name} className={owned ? OV_GRID_CELL_OWNED : OV_GRID_CELL_MISS}>
+                <span className={owned ? OV_GRID_NAME_OWNED : OV_GRID_NAME_MISS}>{stripped}</span>
+                <span className={owned ? OV_GRID_QTY_OWNED : OV_GRID_QTY_MISS}>{c.owned}</span>
               </div>
             );
           })}
@@ -238,7 +293,7 @@ function RewardCard({ item, left, width }: { item: RewardItem; left: number; wid
       </>}
 
       {/* Category */}
-      {item.category && <div className="ov-cat">{item.category}</div>}
+      {item.category && <div className={OV_CAT}>{item.category}</div>}
     </div>
   );
 }
@@ -591,14 +646,8 @@ export default function Overlay() {
   if (rewards.length === 0) {
     // Outline: dashed frame at the window's current position.
     return (
-      <div className="ov-root">
-        <div style={{
-          position: "absolute", left: 32, right: 32, top: 40, bottom: 40,
-          border: "2px dashed rgba(56,139,253,.85)", borderRadius: 10,
-          background: "rgba(22,27,34,.55)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          color: "#79b8ff", fontSize: 22, fontWeight: 600,
-        }}>
+      <div className={OV_ROOT}>
+        <div className="absolute inset-x-8 top-10 bottom-10 flex items-center justify-center rounded-[10px] border-2 border-dashed border-[rgba(56,139,253,.85)] bg-[rgba(22,27,34,.55)] text-[22px] font-semibold text-[#79b8ff]">
           Relic Reward Overlay — outline
         </div>
       </div>
@@ -614,7 +663,7 @@ export default function Overlay() {
   const cardLeft = (idx: number) => Math.round((colCenters[idx] ?? screenCenter) - cardW / 2);
 
   return (
-    <div className="ov-root">
+    <div className={OV_ROOT}>
       {bestIdx >= 0 && <PickArrow slotX={(colCenters[bestIdx] ?? screenCenter) / winW} winW={winW} />}
       {rewards.map((item, idx) => (
         <RewardCard key={item.unique_name} item={item} left={cardLeft(idx)} width={cardW} />
