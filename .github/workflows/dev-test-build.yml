@@ -40,7 +40,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build test installer (no updater artifacts/signing)
-        run: pnpm tauri build --config "{\"bundle\":{\"createUpdaterArtifacts\":false}}"
+        shell: bash
+        run: |
+          echo '{"bundle":{"createUpdaterArtifacts":false}}' > ci-config.json
+          pnpm tauri build --config ci-config.json
 
       - name: Publish dev test build
         uses: softprops/action-gh-release@v2
