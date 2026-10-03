@@ -5,7 +5,126 @@ import { checkRivenNow } from "../lib/rivenWindow";
 import { TAURI_COMMANDS, TAURI_EVENTS } from "../constants/tauri";
 import type { RivenAnalysis, RivenStat, SavedRiven } from "../types/rivens";
 import type { AnalyzeRivenArgs, SaveRivenRollArgs } from "../types/tauri";
-import "./RivenAnalyzer.css";
+
+// ── Tailwind class constants (formerly RivenAnalyzer.css) ─────────────────────
+
+const RA_ANALYZER =
+  "flex flex-col gap-[10px] px-[14px] py-[12px] h-full min-h-0 overflow-y-auto";
+const RA_HEADER = "flex items-center gap-[8px] shrink-0";
+const RA_TITLE = "text-[13px] font-bold text-foreground";
+const RA_DB_STATUS = "ml-auto text-[10px] text-muted";
+const RA_CREDIT =
+  "bg-transparent border-0 p-0 text-[10px] text-muted cursor-pointer opacity-60 transition-[opacity,color] duration-100 whitespace-nowrap hover:opacity-100 hover:text-accent";
+const RA_CHECK_BTN =
+  "bg-[rgba(56,139,253,0.15)] border border-[rgba(56,139,253,0.4)] text-[#58a6ff] text-[12px] font-semibold cursor-pointer px-[10px] py-[4px] rounded-[5px] transition-[background] duration-150 hover:bg-[rgba(56,139,253,0.28)]";
+const RA_REFRESH_BTN =
+  "bg-transparent border-0 text-muted text-[14px] cursor-pointer px-[2px] py-0 transition-[color] duration-100 hover:text-foreground";
+
+const RA_WEAPON_WRAP = "relative shrink-0";
+const RA_WEAPON_INPUT =
+  "w-full bg-[rgba(0,0,0,0.2)] border border-[rgba(48,54,61,0.8)] rounded-[5px] text-foreground text-[13px] font-semibold px-[10px] py-[7px] outline-none focus:border-accent";
+const RA_SUGGESTIONS =
+  "absolute top-full left-0 right-0 bg-surface border border-t-0 border-[rgba(48,54,61,0.8)] rounded-b-[5px] z-10 max-h-[220px] overflow-y-auto";
+const RA_SUGGESTION =
+  "px-[10px] py-[6px] text-[12px] text-foreground cursor-pointer transition-[background] duration-100 hover:bg-[rgba(56,139,253,0.12)]";
+
+const RA_SECTION_LABEL =
+  "text-[10px] font-bold uppercase tracking-[0.04em] text-muted shrink-0";
+const RA_OPTIONAL = "font-normal normal-case tracking-normal italic";
+const RA_STAT_GRID = "flex flex-wrap gap-[4px] shrink-0";
+const RA_STAT_BTN =
+  "bg-[rgba(255,255,255,0.05)] border border-[rgba(48,54,61,0.6)] text-muted text-[11px] px-[9px] py-[3px] rounded-[4px] cursor-pointer whitespace-nowrap transition-[background,color,border-color] duration-100 hover:bg-[rgba(255,255,255,0.1)] hover:text-foreground";
+const RA_STAT_BTN_SELECTED =
+  "bg-[rgba(255,255,255,0.05)] border border-[rgba(48,54,61,0.6)] text-muted text-[11px] px-[9px] py-[3px] rounded-[4px] cursor-pointer whitespace-nowrap transition-[background,color,border-color] duration-100 hover:bg-[rgba(255,255,255,0.1)] hover:text-foreground bg-[rgba(63,185,80,0.15)]! border-[var(--green)]! text-[var(--green)]!";
+
+const RA_VERDICT = "text-[16px] font-bold tracking-[0.01em]";
+const RA_STATS_BREAKDOWN = "flex flex-col gap-[3px]";
+const RA_STAT_ROW = "flex items-center gap-[8px] text-[12px] py-[3px]";
+const RA_STAT_ICON = "w-[14px] text-center shrink-0 text-[11px]";
+const RA_STAT_TAG =
+  "ml-auto text-[10px] px-[6px] py-[1px] rounded-[3px] shrink-0";
+const STAT_TONE: Record<string, { row: string; tag: string }> = {
+  good: {
+    row: RA_STAT_ROW + " text-success",
+    tag: RA_STAT_TAG + " bg-[rgba(63,185,80,0.12)] text-success",
+  },
+  miss: {
+    row: RA_STAT_ROW + " text-muted",
+    tag: RA_STAT_TAG + " bg-[rgba(255,255,255,0.06)] text-muted",
+  },
+  safe: {
+    row: RA_STAT_ROW + " text-[#6eb6ff]",
+    tag: RA_STAT_TAG + " bg-[rgba(110,182,255,0.12)] text-[#6eb6ff]",
+  },
+  bad: {
+    row: RA_STAT_ROW + " text-danger",
+    tag: RA_STAT_TAG + " bg-[rgba(248,81,73,0.12)] text-danger",
+  },
+};
+
+const RA_NOTES =
+  "text-[11px] text-muted leading-[1.5] border-t border-t-[rgba(48,54,61,0.4)] pt-[8px]";
+const RA_NEXT_ROLL =
+  "bg-[rgba(56,139,253,0.12)] border border-accent text-accent text-[12px] font-semibold px-[16px] py-[7px] rounded-[5px] cursor-pointer self-start transition-[background] duration-100 shrink-0 hover:bg-[rgba(56,139,253,0.25)]";
+
+const RA_VALUE_INPUTS =
+  "bg-[rgba(0,0,0,0.2)] border border-[rgba(48,54,61,0.5)] rounded-[6px] p-[10px] flex flex-col gap-[6px] shrink-0";
+const RA_VALUE_ROW = "flex items-center gap-[8px]";
+const RA_VALUE_LABEL = "flex-1 text-[12px] text-foreground min-w-[160px]";
+const RA_VALUE_INPUT =
+  "w-[72px] bg-[rgba(0,0,0,0.3)] border border-[rgba(48,54,61,0.6)] rounded-[4px] px-[6px] py-[3px] text-foreground text-[12px] text-right focus:outline-none focus:border-accent";
+const RA_SAVE_BTN =
+  "bg-[rgba(56,139,253,0.15)] border border-[rgba(56,139,253,0.4)] text-accent text-[11px] font-semibold px-[12px] py-[4px] rounded-[4px] cursor-pointer transition-[background] duration-100 hover:bg-[rgba(56,139,253,0.28)]";
+const RA_CANCEL_EDIT =
+  "bg-transparent border border-[rgba(48,54,61,0.6)] rounded-[4px] text-muted text-[11px] px-[8px] py-[4px] cursor-pointer transition-[border-color] duration-100 hover:border-danger hover:text-danger";
+
+const RA_SAVED_SECTION =
+  "border-t border-t-[rgba(48,54,61,0.5)] pt-[12px] shrink-0";
+const RA_SAVED_GRID =
+  "grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-[8px]";
+const RA_SAVED_CARD =
+  "bg-[rgba(0,0,0,0.25)] border border-[rgba(48,54,61,0.5)] rounded-[7px] px-[10px] py-[9px] flex flex-col gap-[3px] transition-[border-color] duration-100 hover:border-[rgba(48,54,61,0.9)]";
+const RA_SAVED_CARD_SEL =
+  "bg-[rgba(0,0,0,0.25)] border border-[rgba(48,54,61,0.5)] rounded-[7px] px-[10px] py-[9px] flex flex-col gap-[3px] transition-[border-color] duration-100 hover:border-[rgba(48,54,61,0.9)] border-accent! bg-[rgba(56,139,253,0.06)]!";
+const RA_SAVED_HEADER = "flex items-center gap-[4px] mb-[3px]";
+const RA_LABEL_INPUT =
+  "flex-1 bg-transparent border-0 border-b border-b-transparent text-foreground text-[11px] font-semibold px-[2px] py-0 min-w-0 focus:outline-none focus:border-b-accent";
+const RA_SAVED_ACTIONS = "flex gap-[3px] shrink-0";
+const RA_CMP_BASE =
+  "bg-transparent border border-[rgba(48,54,61,0.6)] rounded-[3px] text-muted text-[10px] w-[20px] h-[20px] cursor-pointer flex items-center justify-center transition-all duration-100 hover:border-accent hover:text-accent";
+const RA_CMP_ACTIVE =
+  "bg-transparent border border-[rgba(48,54,61,0.6)] rounded-[3px] text-muted text-[10px] w-[20px] h-[20px] cursor-pointer flex items-center justify-center transition-all duration-100 hover:border-accent hover:text-accent bg-[rgba(56,139,253,0.2)]! border-accent! text-accent!";
+const RA_DELETE_BTN =
+  "bg-transparent border border-[rgba(48,54,61,0.6)] rounded-[3px] text-muted text-[10px] w-[20px] h-[20px] cursor-pointer transition-all duration-100 hover:border-danger hover:text-danger";
+const RA_EDIT_BTN =
+  "bg-transparent border border-[rgba(48,54,61,0.6)] rounded-[3px] text-muted text-[11px] w-[20px] h-[20px] cursor-pointer transition-all duration-100 hover:border-accent hover:text-accent";
+const RA_SAVED_STATS = "flex flex-col gap-[2px]";
+const RA_SAVED_STAT = "text-[11px] text-muted flex gap-[4px]";
+
+const RA_COMPARE_PANEL =
+  "mt-[12px] bg-[rgba(0,0,0,0.2)] border border-[rgba(56,139,253,0.3)] rounded-[7px] px-[12px] py-[10px]";
+const RA_COMPARE_GRID = "grid grid-cols-2 gap-[12px]";
+const RA_COMPARE_COL = "flex flex-col gap-[3px]";
+const RA_COMPARE_LABEL =
+  "text-[11px] font-bold text-foreground mb-[4px] pb-[4px] border-b border-b-[rgba(48,54,61,0.4)]";
+
+const RA_SIGN_BASE =
+  "min-w-[22px] h-[22px] rounded-[4px] border text-[13px] font-bold cursor-pointer shrink-0 transition-all duration-100";
+const RA_SIGN_POS =
+  RA_SIGN_BASE +
+  " bg-[rgba(63,185,80,0.15)] border-[rgba(63,185,80,0.5)] text-[#3fb950] hover:bg-[rgba(63,185,80,0.3)]";
+const RA_SIGN_NEG =
+  RA_SIGN_BASE +
+  " bg-[rgba(248,81,73,0.12)] border-[rgba(248,81,73,0.5)] text-[#f85149] hover:bg-[rgba(248,81,73,0.25)]";
+const RA_FMT_BTN =
+  "min-w-[24px] h-[22px] bg-[rgba(255,255,255,0.06)] border border-[rgba(48,54,61,0.7)] rounded-[4px] text-muted text-[11px] font-semibold cursor-pointer shrink-0 transition-[background] duration-100 hover:bg-[rgba(255,255,255,0.12)]";
+
+const RA_ALTERNATIVES = "flex flex-col gap-[8px]";
+const RA_ALT_CARD =
+  "bg-[rgba(0,0,0,0.2)] border border-[rgba(48,54,61,0.5)] rounded-[7px] px-[12px] py-[10px] flex flex-col gap-[6px]";
+const RA_ALT_HEADER = "flex items-center gap-[8px] flex-wrap";
+const RA_ALT_LABEL =
+  "text-[10px] font-bold uppercase tracking-[0.05em] text-muted bg-[rgba(255,255,255,0.06)] rounded-[3px] px-[6px] py-[2px]";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -44,9 +163,17 @@ function ScoreBar({ score }: { score: number }) {
   const pct = Math.round(score * 100);
   const color = score >= 0.8 ? "var(--green)" : score >= 0.6 ? "#a8d8a8" : score >= 0.4 ? "#f0c040" : "var(--red)";
   return (
-    <div className="riven-score-bar-wrap">
-      <div className="riven-score-bar" style={{ width: `${pct}%`, background: color }} />
-      <span className="riven-score-pct" style={{ color }}>{pct}%</span>
+    <div className="flex items-center gap-[8px] h-[6px] bg-[rgba(255,255,255,0.08)] rounded-[3px] overflow-visible relative">
+      <div
+        className="h-[6px] rounded-[3px] transition-[width,background] duration-300 min-w-[4px]"
+        style={{ width: `${pct}%`, background: color }}
+      />
+      <span
+        className="text-[11px] font-bold absolute right-0 top-[-2px] tabular-nums"
+        style={{ color }}
+      >
+        {pct}%
+      </span>
     </div>
   );
 }
@@ -264,25 +391,25 @@ export default function RivenAnalyzer() {
   };
 
   return (
-    <div className="riven-analyzer">
+    <div className={RA_ANALYZER}>
       {/* Header */}
-      <div className="riven-header">
-        <span className="riven-title">Riven Analyzer</span>
+      <div className={RA_HEADER}>
+        <span className={RA_TITLE}>Riven Analyzer</span>
         <button
-          className="riven-check-btn"
+          className={RA_CHECK_BTN}
           onClick={() => checkRivenNow()}
           title="Capture current riven card from Warframe screen"
         >
           🔍 Check Riven
         </button>
-        <span className="riven-db-status">{dbStatus}</span>
+        <span className={RA_DB_STATUS}>{dbStatus}</span>
         <button
-          className="riven-credit"
+          className={RA_CREDIT}
           title="Open Riven price database on Google Sheets"
           onClick={() => invoke(TAURI_COMMANDS.OPEN_URL, { url: "https://docs.google.com/spreadsheets/d/1zbaeJBuBn44cbVKzJins_E3hTDpnmvOk8heYN-G8yy8" }).catch(() => {})}
         >data by 44bananas ↗</button>
-        <button className="riven-refresh-btn" onClick={reloadDb} title="Reload database from Google Sheet">↻</button>
-        <button className="riven-refresh-btn" title="View session log" onClick={async () => {
+        <button className={RA_REFRESH_BTN} onClick={reloadDb} title="Reload database from Google Sheet">↻</button>
+        <button className={RA_REFRESH_BTN} title="View session log" onClick={async () => {
           const log = await invoke<string>("get_riven_session_log").catch(() => "Log unavailable");
           setSessionLog(log);
           setShowLog(v => !v);
@@ -290,18 +417,18 @@ export default function RivenAnalyzer() {
       </div>
 
       {/* Weapon search */}
-      <div className="riven-weapon-wrap">
+      <div className={RA_WEAPON_WRAP}>
         <input
           ref={inputRef}
-          className="riven-weapon-input"
+          className={RA_WEAPON_INPUT}
           placeholder="Type weapon name…"
           value={weaponInput}
           onChange={e => { setWeaponInput(e.target.value); setSelectedWeapon(""); setAnalysis(null); }}
         />
         {filtered.length > 0 && (
-          <div className="riven-suggestions">
+          <div className={RA_SUGGESTIONS}>
             {filtered.map(w => (
-              <div key={w} className="riven-suggestion" onClick={() => selectWeapon(w)}>
+              <div key={w} className={RA_SUGGESTION} onClick={() => selectWeapon(w)}>
                 {w.charAt(0).toUpperCase() + w.slice(1)}
               </div>
             ))}
@@ -310,7 +437,7 @@ export default function RivenAnalyzer() {
       </div>
 
       {showLog && (
-        <pre style={{ background: "rgba(0,0,0,.3)", border: "1px solid rgba(48,54,61,.6)", borderRadius: 5, padding: 10, fontSize: 10, color: "var(--muted)", whiteSpace: "pre-wrap", wordBreak: "break-all", maxHeight: 300, overflowY: "auto", flexShrink: 0 }}>
+        <pre className="max-h-[300px] shrink-0 overflow-y-auto whitespace-pre-wrap break-all rounded-[5px] border border-[rgba(48,54,61,.6)] bg-black/30 p-2.5 text-[10px] text-muted">
           {sessionLog}
         </pre>
       )}
@@ -318,14 +445,14 @@ export default function RivenAnalyzer() {
       {selectedWeapon && (
         <>
           {/* Unified stat picker — click to add, sign toggled below */}
-          <div className="riven-section-label">Select stats rolled <span className="riven-optional">(click to add, set + / − below)</span></div>
-          <div className="riven-stat-grid">
+          <div className={RA_SECTION_LABEL}>Select stats rolled <span className={RA_OPTIONAL}>(click to add, set + / − below)</span></div>
+          <div className={RA_STAT_GRID}>
             {ALL_STATS.map(stat => {
               const entry = builtStats.find(s => s.name === stat);
               return (
                 <button
                   key={stat}
-                  className={`riven-stat-btn${entry ? (entry.positive ? " selected" : " selected-neg") : ""}`}
+                  className={entry?.positive ? RA_STAT_BTN_SELECTED : RA_STAT_BTN}
                   onClick={() => toggleStat(stat)}
                 >
                   {entry ? (entry.positive ? "+" : "−") : ""}{stat}
@@ -336,26 +463,26 @@ export default function RivenAnalyzer() {
 
           {/* Per-stat value rows with +/- and %/× toggles */}
           {builtStats.length > 0 && (
-            <div className="riven-value-inputs">
-              <div className="riven-section-label">Stat values</div>
+            <div className={RA_VALUE_INPUTS}>
+              <div className={RA_SECTION_LABEL}>Stat values</div>
               {builtStats.map(stat => (
-                <div key={stat.name} className="riven-value-row">
+                <div key={stat.name} className={RA_VALUE_ROW}>
                   {/* +/- toggle */}
                   <button
-                    className={`riven-sign-btn${stat.positive ? " sign-pos" : " sign-neg"}`}
+                    className={stat.positive ? RA_SIGN_POS : RA_SIGN_NEG}
                     onClick={() => toggleStatSign(stat.name)}
                     title="Toggle positive / negative"
                   >{stat.positive ? "+" : "−"}</button>
-                  <span className="riven-value-label">{stat.name}</span>
+                  <span className={RA_VALUE_LABEL}>{stat.name}</span>
                   <input
-                    className="riven-value-input"
+                    className={RA_VALUE_INPUT}
                     placeholder={stat.useMultiplier ? "e.g. 0.88" : "e.g. 85"}
                     value={stat.value}
                     onChange={e => updateStatValue(stat.name, e.target.value)}
                   />
                   {/* %/× toggle — click to switch format */}
                   <button
-                    className="riven-fmt-btn"
+                    className={RA_FMT_BTN}
                     onClick={() => toggleStatFormat(stat.name)}
                     title="Click to switch between % and × (multiplier)"
                   >
@@ -363,65 +490,65 @@ export default function RivenAnalyzer() {
                   </button>
                 </div>
               ))}
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
-                <button className="riven-save-btn" onClick={saveCurrentRoll}>
+              <div className="mt-1 flex items-center gap-2">
+                <button className={RA_SAVE_BTN} onClick={saveCurrentRoll}>
                   {editingId ? "✓ Update Roll" : "💾 Save Roll"}
                 </button>
-                {editingId && <button className="riven-cancel-edit-btn" onClick={reset}>Cancel</button>}
-                {saveStatus && <span style={{ fontSize: 11, color: saveStatus.includes("!") || saveStatus.includes("✓") ? "var(--green)" : "var(--red)" }}>{saveStatus}</span>}
+                {editingId && <button className={RA_CANCEL_EDIT} onClick={reset}>Cancel</button>}
+                {saveStatus && <span className={`text-[11px] ${saveStatus.includes("!") || saveStatus.includes("✓") ? "text-green" : "text-red"}`}>{saveStatus}</span>}
               </div>
             </div>
           )}
 
           {/* Analysis — one card per build alternative */}
           {analysis && (
-            <div className="riven-alternatives">
+            <div className={RA_ALTERNATIVES}>
               {analysis.alternatives.map((alt, i) => (
-                <div key={i} className="riven-alt-card">
-                  <div className="riven-alt-header">
+                <div key={i} className={RA_ALT_CARD}>
+                  <div className={RA_ALT_HEADER}>
                     {analysis.alternatives.length > 1 && (
-                      <span className="riven-alt-label">{alt.label}</span>
+                      <span className={RA_ALT_LABEL}>{alt.label}</span>
                     )}
-                    <span className="riven-verdict" style={{ color: verdictColor(alt.verdict) }}>
+                    <span className={RA_VERDICT} style={{ color: verdictColor(alt.verdict) }}>
                       {alt.verdict}
                     </span>
                   </div>
                   <ScoreBar score={alt.score} />
-                  <div className="riven-stats-breakdown">
+                  <div className={RA_STATS_BREAKDOWN}>
                     {alt.matched.map(s => (
-                      <div key={s} className="riven-stat-row riven-stat-good">
-                        <span className="riven-stat-icon">✓</span><span>{s}</span>
-                        <span className="riven-stat-tag">Wanted</span>
+                      <div key={s} className={STAT_TONE.good.row}>
+                        <span className={RA_STAT_ICON}>✓</span><span>{s}</span>
+                        <span className={STAT_TONE.good.tag}>Wanted</span>
                       </div>
                     ))}
                     {alt.missing.map(s => (
-                      <div key={s} className="riven-stat-row riven-stat-miss">
-                        <span className="riven-stat-icon">○</span><span>{s}</span>
-                        <span className="riven-stat-tag">Not rolled</span>
+                      <div key={s} className={STAT_TONE.miss.row}>
+                        <span className={RA_STAT_ICON}>○</span><span>{s}</span>
+                        <span className={STAT_TONE.miss.tag}>Not rolled</span>
                       </div>
                     ))}
                     {i === 0 && analysis.safe_negatives_present.map(s => (
-                      <div key={s} className="riven-stat-row riven-stat-safe">
-                        <span className="riven-stat-icon">✓</span><span>−{s}</span>
-                        <span className="riven-stat-tag">Safe neg</span>
+                      <div key={s} className={STAT_TONE.safe.row}>
+                        <span className={RA_STAT_ICON}>✓</span><span>−{s}</span>
+                        <span className={STAT_TONE.safe.tag}>Safe neg</span>
                       </div>
                     ))}
                     {i === 0 && analysis.harmful_negatives.map(s => (
-                      <div key={s} className="riven-stat-row riven-stat-bad">
-                        <span className="riven-stat-icon">✗</span><span>−{s}</span>
-                        <span className="riven-stat-tag">Harmful</span>
+                      <div key={s} className={STAT_TONE.bad.row}>
+                        <span className={RA_STAT_ICON}>✗</span><span>−{s}</span>
+                        <span className={STAT_TONE.bad.tag}>Harmful</span>
                       </div>
                     ))}
                   </div>
                 </div>
               ))}
               {analysis.notes && (
-                <div className="riven-notes">ℹ {analysis.notes}</div>
+                <div className={RA_NOTES}>ℹ {analysis.notes}</div>
               )}
             </div>
           )}
 
-          <button className="riven-next-roll-btn" onClick={reset}>
+          <button className={RA_NEXT_ROLL} onClick={reset}>
             Next roll →
           </button>
         </>
@@ -429,70 +556,70 @@ export default function RivenAnalyzer() {
 
       {/* ── Saved Rolls ──────────────────────────────────────────────────────── */}
       {savedRivens.length > 0 && (
-        <div className="riven-saved-section">
-          <div className="riven-section-label" style={{ marginBottom: 8 }}>
+        <div className={RA_SAVED_SECTION}>
+          <div className={RA_SECTION_LABEL + " mb-2"}>
             Saved Rolls ({savedRivens.length}/50)
-            {compareIds.size > 0 && <span style={{ marginLeft: 8, color: "var(--accent)", fontSize: 11 }}>
+            {compareIds.size > 0 && <span className="ml-2 text-[11px] text-accent">
               {compareIds.size === 1 ? "Select 1 more to compare" : "Comparing ↓"}
             </span>}
           </div>
 
-          <div className="riven-saved-grid">
+          <div className={RA_SAVED_GRID}>
             {savedRivens.map(r => {
               const stats: RivenStat[] = (() => { try { return JSON.parse(r.stats_json); } catch { return []; } })();
               const isSelected = compareIds.has(r.id);
               const isEditing = inlineEditId === r.id;
               return (
-                <div key={r.id} className={`riven-saved-card${isSelected ? " riven-saved-selected" : ""}`}>
+                <div key={r.id} className={isSelected ? RA_SAVED_CARD_SEL : RA_SAVED_CARD}>
                   {/* Card header */}
-                  <div className="riven-saved-header">
+                  <div className={RA_SAVED_HEADER}>
                     <input
-                      className="riven-saved-label-input"
+                      className={RA_LABEL_INPUT}
                       value={isEditing ? inlineEditLabel : r.label}
                       onChange={e => isEditing ? setInlineEditLabel(e.target.value) : setRenameDraft(p => ({ ...p, [r.id]: e.target.value }))}
                       onBlur={() => !isEditing && applyRename(r.id)}
                       onKeyDown={e => !isEditing && e.key === "Enter" && applyRename(r.id)}
                     />
-                    <div className="riven-saved-actions">
+                    <div className={RA_SAVED_ACTIONS}>
                       {isEditing ? (<>
-                        <button className="riven-saved-compare-btn active" onClick={() => saveInlineEdit(r)} title="Save changes">✓</button>
-                        <button className="riven-saved-delete-btn" onClick={() => setInlineEditId(null)} title="Cancel edit">✕</button>
+                        <button className={RA_CMP_ACTIVE} onClick={() => saveInlineEdit(r)} title="Save changes">✓</button>
+                        <button className={RA_DELETE_BTN} onClick={() => setInlineEditId(null)} title="Cancel edit">✕</button>
                       </>) : (<>
                         <button
-                          className={`riven-saved-compare-btn${isSelected ? " active" : ""}`}
+                          className={isSelected ? RA_CMP_ACTIVE : RA_CMP_BASE}
                           onClick={() => toggleCompare(r.id)}
                           title="Select for comparison"
                         >{isSelected ? "✓" : "⚖"}</button>
-                        <button className="riven-saved-edit-btn" onClick={() => startInlineEdit(r)} title="Edit roll">✎</button>
-                        <button className="riven-saved-delete-btn" onClick={() => deleteSaved(r.id)} title="Delete">✕</button>
+                        <button className={RA_EDIT_BTN} onClick={() => startInlineEdit(r)} title="Edit roll">✎</button>
+                        <button className={RA_DELETE_BTN} onClick={() => deleteSaved(r.id)} title="Delete">✕</button>
                       </>)}
                     </div>
                   </div>
 
                   {/* Verdict */}
                   {r.verdict && (
-                    <div style={{ fontSize: 11, fontWeight: 700, color: verdictColor2(r.verdict), marginBottom: 4 }}>
+                    <div className="mb-1 text-[11px] font-bold" style={{ color: verdictColor2(r.verdict) }}>
                       {r.verdict.split("—")[0].trim()} · {Math.round(r.score * 100)}%
                     </div>
                   )}
 
                   {/* Stats — editable in edit mode */}
-                  <div className="riven-saved-stats">
+                  <div className={RA_SAVED_STATS}>
                     {(isEditing ? inlineEditStats : stats).map((s, i) => (
-                      <div key={i} className="riven-saved-stat" style={{ alignItems: "center", gap: 4 }}>
+                      <div key={i} className={RA_SAVED_STAT + " items-center gap-1"}>
                         {isEditing ? (<>
                           <button
-                            className="riven-sign-btn" style={{ width: 18, height: 18, fontSize: 11, padding: 0 }}
+                            className={(s.positive ? RA_SIGN_POS : RA_SIGN_NEG) + " !size-[18px] !min-w-0 !p-0 !text-[11px]"}
                             onClick={() => setInlineEditStats(prev => prev.map((x, j) => j === i ? { ...x, positive: !x.positive } : x))}
                           >{s.positive ? "+" : "−"}</button>
                           <input
-                            style={{ width: 48, background: "rgba(0,0,0,.3)", border: "1px solid rgba(48,54,61,.6)", borderRadius: 3, color: "var(--text)", fontSize: 11, padding: "1px 4px", textAlign: "right" }}
+                            className="w-12 rounded-[3px] border border-[rgba(48,54,61,.6)] bg-black/30 px-1 py-px text-right text-[11px] text-foreground"
                             value={s.value}
                             onChange={e => setInlineEditStats(prev => prev.map((x, j) => j === i ? { ...x, value: e.target.value } : x))}
                           />
-                          <span style={{ fontSize: 11, color: "var(--muted)" }}>% {s.name}</span>
+                          <span className="text-[11px] text-muted">% {s.name}</span>
                         </>) : (<>
-                          <span style={{ color: s.positive ? "rgba(139,148,158,.7)" : "var(--red)" }}>
+                          <span className={s.positive ? "text-[rgba(139,148,158,.7)]" : "text-red"}>
                             {s.positive ? "+" : "−"}
                           </span>
                           <span>{s.value && `${s.value}% `}{s.name}</span>
@@ -501,7 +628,7 @@ export default function RivenAnalyzer() {
                     ))}
                   </div>
 
-                  <div style={{ fontSize: 10, color: "rgba(139,148,158,.4)", marginTop: 4 }}>
+                  <div className="mt-1 text-[10px] text-[rgba(139,148,158,.4)]">
                     {r.saved_at.slice(0, 10)}
                   </div>
                 </div>
@@ -511,22 +638,22 @@ export default function RivenAnalyzer() {
 
           {/* Comparison panel */}
           {compareList.length === 2 && (
-            <div className="riven-compare-panel">
-              <div className="riven-section-label" style={{ marginBottom: 8 }}>Comparison</div>
-              <div className="riven-compare-grid">
+            <div className={RA_COMPARE_PANEL}>
+              <div className={RA_SECTION_LABEL + " mb-2"}>Comparison</div>
+              <div className={RA_COMPARE_GRID}>
                 {compareList.map(r => {
                   const stats: RivenStat[] = (() => { try { return JSON.parse(r.stats_json); } catch { return []; } })();
                   return (
-                    <div key={r.id} className="riven-compare-col">
-                      <div className="riven-compare-label">{r.label}</div>
+                    <div key={r.id} className={RA_COMPARE_COL}>
+                      <div className={RA_COMPARE_LABEL}>{r.label}</div>
                       {r.verdict && (
-                        <div style={{ fontSize: 11, fontWeight: 700, color: verdictColor2(r.verdict), marginBottom: 6 }}>
+                        <div className="mb-1.5 text-[11px] font-bold" style={{ color: verdictColor2(r.verdict) }}>
                           {r.verdict.split("—")[0].trim()} · {Math.round(r.score * 100)}%
                         </div>
                       )}
                       {stats.map((s, i) => (
-                        <div key={i} className="riven-saved-stat">
-                          <span style={{ color: s.positive ? "rgba(139,148,158,.7)" : "var(--red)" }}>
+                        <div key={i} className={RA_SAVED_STAT}>
+                          <span className={s.positive ? "text-[rgba(139,148,158,.7)]" : "text-red"}>
                             {s.positive ? "+" : "−"}
                           </span>
                           <span>{s.value && `${s.value}% `}{s.name}</span>

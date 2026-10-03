@@ -1,0 +1,75 @@
+/* Base lives in the Tailwind `base` layer so utilities can override it.
+   Unlayered declarations outrank layered ones, so an unlayered reset would
+   silently zero every margin/padding utility. Tokens below stay unlayered:
+   no utility competes with them. */
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body, #root { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); font-size: 13px; }
+}
+
+:root {
+  --bg:       #0d1117;
+  --surface:  #161b22;
+  --border:   #30363d;
+  --text:     #e6edf3;
+  --muted:    #8b949e;
+  --accent:   #388bfd;
+  --green:    #3fb950;
+  --red:      #f85149;
+  --header-h: 46px;
+  --sidebar-w: 190px;
+  --log-h:    180px;
+}
+
+/* ── Layout ── */
+/* pulse-ocr keyframe kept: consumed by the overlay status dot in header/connStatus.ts
+   (animate-[pulse-ocr_1.2s_ease-in-out_infinite]). */
+@keyframes pulse-ocr { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+
+/* Text scaling — transform on #root avoids the WebView2 scrollbar hit-test bug
+   that css zoom on html causes (scrollbar renders correctly but can't be dragged
+   to the bottom when zoom > 1). */
+#root {
+  transform: scale(var(--ff-scale, 1));
+  transform-origin: top left;
+  width: calc(100% / var(--ff-scale, 1));
+  height: calc(100% / var(--ff-scale, 1));
+  overflow: hidden;
+}
+
+/* ── Image toggle (inventory): checkbox input + pseudo rules ── */
+
+.inventory-image-toggle input {
+  appearance: none; display: grid; place-content: center;
+  width: 14px; height: 14px; flex-shrink: 0; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 3px;
+  background: rgba(255,255,255,.03); transition: border-color .12s, background .12s;
+}
+.inventory-image-toggle input::before {
+  content: ""; width: 6px; height: 3px;
+  border: solid white; border-width: 0 0 2px 2px;
+  transform: rotate(-45deg) scale(0); transition: transform .1s;
+}
+.inventory-image-toggle input:checked { border-color: var(--accent); background: var(--accent); }
+.inventory-image-toggle input:checked::before { transform: rotate(-45deg) scale(1); }
+.inventory-image-toggle:hover input { border-color: var(--accent); }
+.inventory-image-toggle input:focus-visible { outline: 2px solid rgba(56,139,253,.45); outline-offset: 2px; }
+
+.relic-icon-wrap:hover::after {
+  content: attr(title);
+  position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+  background: #1a1f2e; border: 1px solid rgba(255,220,100,.4);
+  color: rgba(255,220,100,.9); font-size: 10px; white-space: pre;
+  padding: 4px 7px; border-radius: 5px; pointer-events: none;
+  z-index: 100; margin-bottom: 4px; line-height: 1.5;
+}
+/* ── Scrollbars ── */
+::-webkit-scrollbar       { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+/* ── Relic reward-box positional borders (nth-child has no Tailwind equivalent; class relic-rbox kept) ── */
+.relic-rbox:nth-child(3n)   { border-right: none; }
+.relic-rbox:nth-child(n+4)  { border-bottom: none; }

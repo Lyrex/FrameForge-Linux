@@ -3,12 +3,94 @@ import { invoke } from "@tauri-apps/api/core";
 import { ResizeHandle } from "../shared/ResizeHandle";
 import { TAURI_COMMANDS } from "../constants/tauri";
 import { TIMER_LABELS } from "../constants/timers";
-import "./ModularWindow.css";
 import { getTimerInfo, fmtMs, matchesWatch } from "../TimerHelper";
 import type { FissureWatch } from "../types/settings";
 import type { CatalogItem, InventoryItem, RecipeComponent, RecipeComponentStatus } from "../types/items";
+
+const TRACKING_TOGGLE = "flex gap-[2px]";
+const TRACKING_TOGGLE_BTN =
+  "px-[7px] py-[2px] rounded-[4px] border border-border bg-transparent text-muted cursor-pointer text-[10px] transition-all duration-150 hover:border-accent! hover:text-accent!";
+const TRACKING_TOGGLE_ON = "border-accent! text-accent! bg-[rgba(56,139,253,.1)]!";
 import type { MatchedFissure } from "../types/worldstate";
 import { useWorldState } from "../worldstate";
+
+// ── Tailwind class constants (formerly ModularWindow.css) ─────────────────────
+
+const MW_WINDOW =
+  "relative shrink-0 flex flex-row border-l border-l-[var(--border)] bg-surface overflow-hidden min-h-0";
+const MW_WINDOW_DOCKED =
+  "max-w-[min(500px,max(160px,calc(100vw_-_582px)))]";
+const MW_RESIZE =
+  "absolute z-[2] top-0 bottom-0 left-0 w-[8px] cursor-col-resize bg-transparent transition-[background] duration-150 hover:bg-[rgba(56,139,253,0.35)]";
+const MW_INNER =
+  "flex-1 flex flex-col overflow-y-auto overflow-x-hidden min-h-0 min-w-0";
+const MW_HEADER =
+  "flex items-center px-[12px] pt-[8px] pb-[6px] border-b border-b-[var(--border)] shrink-0";
+const MW_TITLE =
+  "text-[11px] font-bold text-muted uppercase tracking-[0.05em] flex-1";
+
+const MW_SECTION_WRAP = "flex flex-col shrink-0";
+const MW_SECTION_HEADER =
+  "flex items-center gap-[5px] pt-[5px] pb-[4px] pr-[8px] pl-[10px] shrink-0 select-none";
+const MW_SECTION_LABEL =
+  "text-[10px] font-bold text-muted uppercase tracking-[0.04em] flex-1";
+const MW_SECTION_ARROWS = "flex gap-[1px] shrink-0";
+const MW_ARROW_BTN =
+  "bg-transparent border-0 cursor-pointer text-muted px-[4px] py-[3px] flex items-center justify-center rounded-[3px] transition-[background,color] duration-100 leading-none enabled:hover:bg-[rgba(255,255,255,0.1)] enabled:hover:text-foreground disabled:opacity-20 disabled:cursor-default";
+const MW_ARROW_BTN_ITEM =
+  "bg-transparent border-0 cursor-pointer text-muted px-[5px] py-[2px] flex items-center justify-center rounded-[3px] transition-[background,color] duration-100 leading-none enabled:hover:bg-[rgba(255,255,255,0.1)] enabled:hover:text-foreground disabled:opacity-20 disabled:cursor-default";
+const MW_ARROW_SVG = "w-[10px] h-[6px] block";
+const MW_ARROW_SVG_ITEM = "w-[13px] h-[8px] block";
+const MW_EMPTY =
+  "px-[12px] py-[8px] text-[11px] text-muted text-center leading-[1.4]";
+const MW_DIVIDER = "h-px bg-[var(--border)] shrink-0";
+
+const MW_TRACKED_LIST = "shrink-0";
+const MW_GROUP =
+  "border-b-2 border-b-[rgba(48,54,61,0.7)] last:border-b-0";
+const MW_TRACKED_ROW =
+  "flex items-center gap-[4px] pt-[3px] pb-[3px] pr-[8px] pl-[4px] bg-[rgba(255,255,255,0.02)] transition-[background] duration-100 hover:bg-[rgba(255,255,255,0.06)]";
+const MW_ITEM_ARROWS = "flex flex-col gap-0 shrink-0";
+const MW_NAME_AREA = "flex items-center gap-[4px] flex-1 min-w-0";
+const MW_NAME_AREA_REQS =
+  "flex items-center gap-[4px] flex-1 min-w-0 cursor-pointer group";
+const MW_CHEVRON =
+  "w-[10px] h-[6px] shrink-0 text-muted transition-transform duration-150";
+const MW_CHEVRON_COLLAPSED =
+  "w-[10px] h-[6px] shrink-0 text-muted transition-transform duration-150 -rotate-90";
+const MW_ITEM_NAME =
+  "text-[11px] text-foreground whitespace-nowrap overflow-hidden text-ellipsis min-w-0";
+const MW_ITEM_STATUS = "text-[10px] font-bold shrink-0 w-[14px] text-center";
+const MW_REMOVE_BTN =
+  "bg-transparent border-0 cursor-pointer text-muted text-[14px] p-0 shrink-0 leading-none transition-colors duration-100 hover:text-danger";
+const MW_INLINE_REQS =
+  "pt-[2px] pb-[5px] pr-[8px] pl-[28px] border-t border-t-[rgba(48,54,61,0.4)] bg-[rgba(0,0,0,0.18)]";
+const MW_REQ_ROW =
+  "flex items-center justify-between gap-[6px] py-[2px] text-[11px]";
+const MW_REQ_NAME =
+  "flex-1 whitespace-nowrap overflow-hidden text-ellipsis min-w-0";
+const MW_REQ_COUNTS = "flex items-center gap-[2px] shrink-0 text-[11px] tabular-nums";
+const MW_REQ_ALL_GOOD = "pt-[3px] pb-[4px] text-[11px] text-success";
+const MW_QTY_HAVE = "text-success";
+const MW_QTY_NEED = "text-danger";
+const MW_QTY_SEP = "text-muted";
+const MW_QTY_REQUIRED = "text-muted";
+const MW_SHORTAGE = "shrink-0 rounded-[4px] bg-[rgba(248,81,73,.12)] px-[5px] py-px text-[11px] font-semibold text-danger";
+
+const MW_FAV_LIST = "shrink-0";
+const MW_FAV_ITEM =
+  "flex items-center gap-[4px] pt-[3px] pb-[3px] pr-[8px] pl-[4px] border-b border-b-[rgba(48,54,61,0.35)] transition-[background] duration-100 last:border-b-0 hover:bg-[rgba(255,255,255,0.03)]";
+const MW_FAV_NAME =
+  "flex-1 text-[11px] text-foreground whitespace-nowrap overflow-hidden text-ellipsis min-w-0";
+const MW_FAV_QTY =
+  "text-[12px] font-bold text-accent shrink-0 tabular-nums min-w-[24px] text-right";
+const MW_FAV_QTY_CD =
+  "text-[11px] font-bold text-accent shrink-0 tabular-nums min-w-[60px] text-right";
+const MW_FAV_STAR =
+  "bg-transparent border-0 cursor-pointer text-[#f0c040] text-[13px] p-0 shrink-0 leading-none transition-colors duration-100 hover:text-[rgba(139,148,158,0.6)]";
+const MW_TIMER_STATE =
+  "text-[10px] font-semibold text-muted shrink-0 px-[5px] py-[1px] rounded-[3px] bg-[rgba(255,255,255,0.06)]";
+const MW_FISSURE_TIER = "text-[11px] font-bold shrink-0 w-[46px]";
 
 function fmt(n: number) { return n.toLocaleString(); }
 
@@ -219,9 +301,9 @@ export default function ModularWindow({
 
   const trackingBody = (
     tracked.length === 0 ? (
-      <div className="modular-empty">Star ☆ items in Foundry to track them.</div>
+      <div className={MW_EMPTY}>Star ☆ items in Foundry to track them.</div>
     ) : (
-      <div className="modular-tracked-list">
+      <div className={MW_TRACKED_LIST}>
         {tracked.map((id, idx) => {
           const item = craftable.find(c => c.unique_name === id);
           if (!item) return null;
@@ -236,46 +318,48 @@ export default function ModularWindow({
           const hasNeeds = needs.length > 0;
 
           return (
-            <div key={id} className={`modular-tracked-group${isOwned ? " tracking-owned" : allDone ? " tracking-ready" : ""}`}>
-              <div className="modular-tracked-row">
-                <div className="modular-item-arrows">
-                  <button className="modular-arrow-btn" disabled={idx === 0} onClick={() => moveTracked(idx, -1)} title="Move up">
-                    <svg viewBox="0 0 10 6" fill="none"><path d="M1 5L5 1L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            <div key={id} className={MW_GROUP}>
+              <div className={MW_TRACKED_ROW}>
+                <div className={MW_ITEM_ARROWS}>
+                  <button className={MW_ARROW_BTN_ITEM} disabled={idx === 0} onClick={() => moveTracked(idx, -1)} title="Move up">
+                    <svg viewBox="0 0 10 6" fill="none" className={MW_ARROW_SVG_ITEM}><path d="M1 5L5 1L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                   </button>
-                  <button className="modular-arrow-btn" disabled={idx === tracked.length - 1} onClick={() => moveTracked(idx, 1)} title="Move down">
-                    <svg viewBox="0 0 10 6" fill="none"><path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  <button className={MW_ARROW_BTN_ITEM} disabled={idx === tracked.length - 1} onClick={() => moveTracked(idx, 1)} title="Move down">
+                    <svg viewBox="0 0 10 6" fill="none" className={MW_ARROW_SVG_ITEM}><path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                   </button>
                 </div>
                 <div
-                  className={`modular-tracked-name-area${hasNeeds ? " has-reqs" : ""}`}
+                  className={hasNeeds ? MW_NAME_AREA_REQS : MW_NAME_AREA}
                   onClick={() => hasNeeds && toggleCollapsedReqs(id)}
                 >
                   {hasNeeds && (
-                    <svg viewBox="0 0 10 6" fill="none" className={`modular-tracked-chevron${collapsed ? " collapsed" : ""}`}>
+                    <svg viewBox="0 0 10 6" fill="none" className={collapsed ? MW_CHEVRON_COLLAPSED : MW_CHEVRON}>
                       <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                     </svg>
                   )}
-                  <span className="modular-item-name">{item.name}</span>
+                  <span className={MW_ITEM_NAME +
+                    (isOwned ? " text-[#f0c040]" : allDone ? " text-success" : "") +
+                    (hasNeeds ? " group-hover:text-foreground" : "")}>{item.name}</span>
                 </div>
-                <span className="modular-item-status">
-                  {isOwned ? "✓" : allDone ? "⚡" : allCovered ? <span style={{ color: "var(--green)" }}>✓</span> : ""}
+                <span className={MW_ITEM_STATUS}>
+                  {isOwned ? "✓" : allDone ? "⚡" : allCovered ? <span className="text-green">✓</span> : ""}
                 </span>
-                <button className="modular-remove-btn" onClick={() => onUntrack(id)}>×</button>
+                <button className={MW_REMOVE_BTN} onClick={() => onUntrack(id)}>×</button>
               </div>
 
               {hasNeeds && !collapsed && (
-                <div className="modular-inline-reqs">
+                <div className={MW_INLINE_REQS}>
                   {rows.length === 0 ? (
-                    <div className="modular-req-all-good">✓ All resources covered</div>
+                    <div className={MW_REQ_ALL_GOOD}>✓ All resources covered</div>
                   ) : (
                     rows.map(r => (
-                      <div key={`${id}-${r.unique_name}`} className={`modular-req-row${r.shortage > 0 ? " req-missing" : " req-ok"}`}>
-                        <span className="modular-req-name">{r.name}</span>
-                        <span className="modular-req-counts">
-                          <span className={r.shortage === 0 ? "qty-have" : "qty-need"}>{fmt(r.owned)}</span>
-                          <span className="qty-sep">/</span>
-                          <span className="qty-required">{fmt(r.needed)}</span>
-                          {r.shortage > 0 && <span className="recipe-shortage">−{fmt(r.shortage)}</span>}
+                      <div key={`${id}-${r.unique_name}`} className={MW_REQ_ROW}>
+                        <span className={MW_REQ_NAME + (r.shortage > 0 ? " text-foreground" : " text-muted")}>{r.name}</span>
+                        <span className={MW_REQ_COUNTS}>
+                          <span className={r.shortage === 0 ? MW_QTY_HAVE : MW_QTY_NEED}>{fmt(r.owned)}</span>
+                          <span className={MW_QTY_SEP}>/</span>
+                          <span className={MW_QTY_REQUIRED}>{fmt(r.needed)}</span>
+                          {r.shortage > 0 && <span className={MW_SHORTAGE}>−{fmt(r.shortage)}</span>}
                         </span>
                       </div>
                     ))
@@ -292,26 +376,26 @@ export default function ModularWindow({
   const favoritesBody = (
     <>
       {favorites.length === 0 ? (
-        <div className="modular-empty">Star ☆ items in Inventory to favorite them.</div>
+        <div className={MW_EMPTY}>Star ☆ items in Inventory to favorite them.</div>
       ) : (
-        <div className="modular-fav-list">
+        <div className={MW_FAV_LIST}>
           {favorites.map((id, idx) => {
             const item = catalog.find(c => c.unique_name === id);
             if (!item) return null;
             const qty = inventory[id]?.quantity ?? 0;
             return (
-              <div key={id} className="modular-fav-item">
-                <div className="modular-item-arrows">
-                  <button className="modular-arrow-btn" disabled={idx === 0} onClick={() => moveFavorite(idx, -1)} title="Move up">
-                    <svg viewBox="0 0 10 6" fill="none"><path d="M1 5L5 1L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              <div key={id} className={MW_FAV_ITEM}>
+                <div className={MW_ITEM_ARROWS}>
+                  <button className={MW_ARROW_BTN_ITEM} disabled={idx === 0} onClick={() => moveFavorite(idx, -1)} title="Move up">
+                    <svg viewBox="0 0 10 6" fill="none" className={MW_ARROW_SVG_ITEM}><path d="M1 5L5 1L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                   </button>
-                  <button className="modular-arrow-btn" disabled={idx === favorites.length - 1} onClick={() => moveFavorite(idx, 1)} title="Move down">
-                    <svg viewBox="0 0 10 6" fill="none"><path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  <button className={MW_ARROW_BTN_ITEM} disabled={idx === favorites.length - 1} onClick={() => moveFavorite(idx, 1)} title="Move down">
+                    <svg viewBox="0 0 10 6" fill="none" className={MW_ARROW_SVG_ITEM}><path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                   </button>
                 </div>
-                <span className="modular-fav-name">{item.name}</span>
-                <span className="modular-fav-qty">{fmt(qty)}</span>
-                <button className="modular-fav-star" title="Remove from favorites" onClick={() => onUnfavorite(id)}>★</button>
+                <span className={MW_FAV_NAME}>{item.name}</span>
+                <span className={MW_FAV_QTY}>{fmt(qty)}</span>
+                <button className={MW_FAV_STAR} title="Remove from favorites" onClick={() => onUnfavorite(id)}>★</button>
               </div>
             );
           })}
@@ -321,35 +405,35 @@ export default function ModularWindow({
   );
 
   const trackingToggle = (
-    <div className="tracking-toggle">
-      <button className={`tracking-toggle-btn${trackingView === "need" ? " active" : ""}`} onClick={e => { e.stopPropagation(); setTrackingView("need"); }}>Missing</button>
-      <button className={`tracking-toggle-btn${trackingView === "all" ? " active" : ""}`} onClick={e => { e.stopPropagation(); setTrackingView("all"); }}>All</button>
+    <div className={TRACKING_TOGGLE}>
+      <button className={`${TRACKING_TOGGLE_BTN}${trackingView === "need" ? ` ${TRACKING_TOGGLE_ON}` : ""}`} onClick={e => { e.stopPropagation(); setTrackingView("need"); }}>Missing</button>
+      <button className={`${TRACKING_TOGGLE_BTN}${trackingView === "all" ? ` ${TRACKING_TOGGLE_ON}` : ""}`} onClick={e => { e.stopPropagation(); setTrackingView("all"); }}>All</button>
     </div>
   );
 
   const timersBody = (
     timerFavorites.length === 0 ? (
-      <div className="modular-empty">Pin ☆ timers in the Timers tab to show them here.</div>
+      <div className={MW_EMPTY}>Pin ☆ timers in the Timers tab to show them here.</div>
     ) : (
-      <div className="modular-fav-list">
+      <div className={MW_FAV_LIST}>
         {timerFavorites.map((id, idx) => {
           const info = worldState ? getTimerInfo(id, worldState) : null;
           const label = TIMER_LABELS[id] ?? id;
           const remaining = info ? fmtMs(new Date(info.expiry).getTime() - timerNow) : "—";
           return (
-            <div key={id} className="modular-fav-item">
-              <div className="modular-item-arrows">
-                <button className="modular-arrow-btn" disabled={idx === 0} onClick={() => moveTimer(idx, -1)} title="Move up">
-                  <svg viewBox="0 0 10 6" fill="none"><path d="M1 5L5 1L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            <div key={id} className={MW_FAV_ITEM}>
+              <div className={MW_ITEM_ARROWS}>
+                <button className={MW_ARROW_BTN_ITEM} disabled={idx === 0} onClick={() => moveTimer(idx, -1)} title="Move up">
+                  <svg viewBox="0 0 10 6" fill="none" className={MW_ARROW_SVG_ITEM}><path d="M1 5L5 1L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 </button>
-                <button className="modular-arrow-btn" disabled={idx === timerFavorites.length - 1} onClick={() => moveTimer(idx, 1)} title="Move down">
-                  <svg viewBox="0 0 10 6" fill="none"><path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                <button className={MW_ARROW_BTN_ITEM} disabled={idx === timerFavorites.length - 1} onClick={() => moveTimer(idx, 1)} title="Move down">
+                  <svg viewBox="0 0 10 6" fill="none" className={MW_ARROW_SVG_ITEM}><path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 </button>
               </div>
-              <span className="modular-fav-name">{label}</span>
-              {info && <span className="modular-timer-state">{info.state}</span>}
-              <span className="modular-fav-qty modular-timer-cd">{remaining}</span>
-              <button className="modular-fav-star" title="Remove" onClick={() => onTimerUnfavorite(id)}>★</button>
+              <span className={MW_FAV_NAME}>{label}</span>
+              {info && <span className={MW_TIMER_STATE}>{info.state}</span>}
+              <span className={MW_FAV_QTY_CD}>{remaining}</span>
+              <button className={MW_FAV_STAR} title="Remove" onClick={() => onTimerUnfavorite(id)}>★</button>
             </div>
           );
         })}
@@ -375,7 +459,7 @@ export default function ModularWindow({
       label: "Watched Fissures",
       body: (() => {
         if (fissureWatches.length === 0) {
-          return <div className="modular-empty">Add fissure watches in the Timers tab.</div>;
+          return <div className={MW_EMPTY}>Add fissure watches in the Timers tab.</div>;
         }
         const TIER_COLOR: Record<string, string> = {
           Lith: "#c8853a", Meso: "#a8a9ad", Neo: "#f0c040",
@@ -389,23 +473,23 @@ export default function ModularWindow({
         ].sort((a, b) => a.f.tierNum - b.f.tierNum);
 
         if (matched.length === 0) {
-          return <div className="modular-empty">No matching fissures active.</div>;
+          return <div className={MW_EMPTY}>No matching fissures active.</div>;
         }
         const variantLabel: Record<string, string> = { normal: "Normal", hard: "Steel Path", storm: "Storm" };
         return (
-          <div className="modular-fav-list">
+          <div className={MW_FAV_LIST}>
             {matched.map(({ f, variant }, i) => {
               const ms = new Date(f.expiry).getTime() - timerNow;
               return (
-                <div key={i} className="modular-fav-item" style={{ flexDirection: "column", alignItems: "stretch", padding: "4px 8px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <span className="modular-fissure-tier" style={{ color: TIER_COLOR[f.tier] ?? "#ccc" }}>{f.tier}</span>
-                    <span className="modular-fav-name">{f.missionType}</span>
-                    <span style={{ fontSize: 10, color: "var(--muted)", flexShrink: 0 }}>{variantLabel[variant]}</span>
-                    <span className="modular-fav-qty modular-timer-cd" style={{ marginLeft: "auto" }}>{fmtMs(ms)}</span>
+                <div key={i} className={`${MW_FAV_ITEM} flex-col items-stretch px-2 py-1`}>
+                  <div className="flex items-center gap-1">
+                    <span className={MW_FISSURE_TIER} style={{ color: TIER_COLOR[f.tier] ?? "#ccc" }}>{f.tier}</span>
+                    <span className={MW_FAV_NAME}>{f.missionType}</span>
+                    <span className="shrink-0 text-[10px] text-muted">{variantLabel[variant]}</span>
+                    <span className={`${MW_FAV_QTY_CD} ml-auto`}>{fmtMs(ms)}</span>
                   </div>
-                  <div style={{ fontSize: 10, color: "var(--muted)", paddingLeft: 2, marginTop: 1 }}>
-                    {f.enemy && <span style={{ marginRight: 6 }}>{f.enemy}</span>}
+                  <div className="mt-px pl-0.5 text-[10px] text-muted">
+                    {f.enemy && <span className="mr-1.5">{f.enemy}</span>}
                     {f.node && <span>{f.node}</span>}
                   </div>
                 </div>
@@ -419,45 +503,45 @@ export default function ModularWindow({
 
   return (
     <div
-      className={`modular-window${width !== undefined ? " modular-window-docked" : ""}`}
-      style={width !== undefined ? { width } : { flex: 1 }}
+      className={`${MW_WINDOW}${width !== undefined ? ` ${MW_WINDOW_DOCKED}` : " flex-1"}`}
+      style={width !== undefined ? { width } : undefined}
     >
       {onWidthChange && (
-        <ResizeHandle className="modular-resize-handle" value={width ?? 240} axis="x" direction={-1} clamp={value => Math.max(160, Math.min(500, value))} onValueChange={onWidthChange} onValueCommit={onWidthCommit} />
+        <ResizeHandle className={MW_RESIZE} value={width ?? 240} axis="x" direction={-1} clamp={value => Math.max(160, Math.min(500, value))} onValueChange={onWidthChange} onValueCommit={onWidthCommit} />
       )}
 
-      <div className="modular-inner">
-        <div className="modular-header">
-          <span className="modular-title">Modular Window</span>
+      <div className={MW_INNER}>
+        <div className={MW_HEADER}>
+          <span className={MW_TITLE}>Modular Window</span>
         </div>
 
         {sectionOrder.map((id, idx) => {
           const sec = sectionData[id];
           if (!sec) return null;
           return (
-            <div key={id} className="modular-section-wrap">
-              {idx > 0 && <div className="modular-divider" />}
-              <div className="modular-section-header">
-                <span className="modular-section-label">{sec.label}</span>
+            <div key={id} className={MW_SECTION_WRAP}>
+              {idx > 0 && <div className={MW_DIVIDER} />}
+              <div className={MW_SECTION_HEADER}>
+                <span className={MW_SECTION_LABEL}>{sec.label}</span>
                 {sec.headerExtra}
-                <div className="modular-section-arrows">
+                <div className={MW_SECTION_ARROWS}>
                   <button
-                    className="modular-arrow-btn"
+                    className={MW_ARROW_BTN}
                     disabled={idx === 0}
                     onClick={e => { e.stopPropagation(); moveSectionUp(idx); }}
                     title="Move up"
                   >
-                    <svg viewBox="0 0 10 6" fill="none">
+                    <svg viewBox="0 0 10 6" fill="none" className={MW_ARROW_SVG}>
                       <path d="M1 5L5 1L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                     </svg>
                   </button>
                   <button
-                    className="modular-arrow-btn"
+                    className={MW_ARROW_BTN}
                     disabled={idx === sectionOrder.length - 1}
                     onClick={e => { e.stopPropagation(); moveSectionDown(idx); }}
                     title="Move down"
                   >
-                    <svg viewBox="0 0 10 6" fill="none">
+                    <svg viewBox="0 0 10 6" fill="none" className={MW_ARROW_SVG}>
                       <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                     </svg>
                   </button>

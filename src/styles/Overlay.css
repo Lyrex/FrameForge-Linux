@@ -1,0 +1,14 @@
+/* Document context for the transparent relic-overlay Tauri window.
+   Component styles moved to Tailwind utilities in Overlay.tsx.
+   Kept here per plan: transparent document context + :root vars (duplicated
+   from App.css so this standalone window has them for var(--border) etc.). */
+:root {
+  --surface:  #161b22;
+  --border:   #30363d;
+  --text:     #e6edf3;
+  --muted:    #8b949e;
+  --accent:   #388bfd;
+  --green:    #3fb950;
+  --red:      #f85149;
+}
+body { background: transparent !important; margin: 0; overflow: hidden; }

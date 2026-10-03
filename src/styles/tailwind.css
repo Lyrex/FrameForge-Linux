@@ -1,0 +1,18 @@
+@layer theme, base, components, utilities;
+
+/* Keep the existing reset while Tailwind is introduced incrementally. */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@theme inline {
+  /* FrameForge uses a 13px root font, so spacing must not inherit rem scaling. */
+  --spacing: 4px;
+  --color-background: var(--bg);
+  --color-surface: var(--surface);
+  --color-border: var(--border);
+  --color-foreground: var(--text);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-success: var(--green);
+  --color-danger: var(--red);
+}

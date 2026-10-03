@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ItemImg from "../ItemImg";
-import "./Weapons.css";
 import type { InventoryItem, WeaponItem } from "../types/items";
+import { FilterChip } from "../shared/ui/FilterControls";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -38,6 +38,36 @@ function effectiveCap(item: WeaponItem): number {
   return LEVELABLE_CATS.has(item.category) ? 30 : 0;
 }
 
+// ── Presentation ──────────────────────────────────────────────────────────────
+
+const WPN_ROOT_CLASS = "flex flex-1 min-h-0 flex-col overflow-hidden bg-background text-foreground";
+const WPN_TABS_CLASS = "flex shrink-0 gap-[2px] border-b border-border px-3 pt-2";
+const WPN_TAB_CLASS = "-mb-px cursor-pointer rounded-t-[6px] border-0 border-b-[3px] px-5 py-1.5 text-[13px] font-medium transition-[background,color] duration-150";
+const WPN_TAB_ACTIVE_CLASS = "border-accent bg-[var(--bg-card)] text-foreground";
+const WPN_TAB_IDLE_CLASS = "border-transparent bg-transparent text-[var(--text-dim)] hover:bg-[var(--hover)] hover:text-foreground";
+const WPN_TOOLBAR_CLASS = "flex shrink-0 items-center gap-3 px-3.5 pb-1.5 pt-2.5";
+const WPN_SEARCH_CLASS = "w-40 shrink-0 rounded-[5px] border border-border bg-[var(--bg-card)] px-2 py-1 text-[12px] text-foreground placeholder:text-[var(--text-dim)] focus:border-accent focus:outline-none";
+const WPN_PROGRESS_WRAP_CLASS = "flex flex-1 items-center gap-2";
+const WPN_PROGRESS_BAR_CLASS = "h-1.5 max-w-[200px] flex-1 overflow-hidden rounded-[3px] bg-border";
+const WPN_PROGRESS_FILL_CLASS = "h-full rounded-[3px] bg-accent transition-[width] duration-300";
+const WPN_PROGRESS_LABEL_CLASS = "whitespace-nowrap text-[12px] text-[var(--text-dim)]";
+const WPN_FILTER_CLASS = "cursor-pointer rounded-[5px] border px-2.5 py-1 text-[12px] transition-all duration-150";
+const WPN_FILTER_ACTIVE_CLASS = "border-accent bg-accent text-white";
+const WPN_FILTER_IDLE_CLASS = "border-border bg-transparent text-[var(--text-dim)]";
+const WPN_BODY_CLASS = "flex-1 overflow-y-auto px-3 pb-4 pt-2";
+const WPN_HEADER_CLASS = "mb-1.5 border-b border-border pb-1.5 pt-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--text-dim)]";
+const WPN_GRID_CLASS = "grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-[3px]";
+const WPN_ITEM_CLASS = "flex items-center gap-2 rounded-[5px] border px-2 py-[5px] transition-[background] duration-100 hover:bg-[var(--hover)]";
+const WPN_ITEM_MASTERED_CLASS = "border-[rgba(80,200,120,0.15)] hover:border-[rgba(80,200,120,0.15)]";
+const WPN_ITEM_IDLE_CLASS = "border-transparent hover:border-border";
+const WPN_NAME_CLASS = "flex-1 truncate text-[12px]";
+const WPN_MR_CLASS = "shrink-0 text-[10px] text-[var(--text-dim)]";
+const WPN_RANK_CLASS = "min-w-9 shrink-0 rounded-[4px] px-1.5 py-[2px] text-center text-[11px] font-bold";
+const WPN_RANK_DONE_CLASS = "bg-[rgba(80,200,120,0.15)] text-[#50c878]";
+const WPN_RANK_PARTIAL_CLASS = "bg-[rgba(240,192,64,0.12)] text-[#f0c040]";
+const WPN_RANK_ZERO_CLASS = "bg-[rgba(180,180,180,0.07)] text-[var(--text-dim)]";
+const WPN_EMPTY_CLASS = "py-10 text-center text-[14px] text-[var(--text-dim)]";
+
 // ── Item row ──────────────────────────────────────────────────────────────────
 
 function WeaponRow({ item, rank }: { item: WeaponItem; rank: number }) {
@@ -46,13 +76,13 @@ function WeaponRow({ item, rank }: { item: WeaponItem; rank: number }) {
   const rankLabel = cap > 0 ? `R${rank}/${cap}` : `R${rank}`;
 
   return (
-    <div className={`wpn-item ${mastered ? "wpn-mastered" : rank > 0 ? "wpn-partial" : "wpn-none"}`}>
+    <div className={`${WPN_ITEM_CLASS} ${mastered ? WPN_ITEM_MASTERED_CLASS : WPN_ITEM_IDLE_CLASS}${!mastered && rank === 0 ? " opacity-[0.45]" : ""}`}>
       <ItemImg imageName={item.image_name} fallbackText={item.name[0]?.toUpperCase() ?? "?"} />
-      <span className="wpn-name">{item.name}</span>
+      <span className={WPN_NAME_CLASS}>{item.name}</span>
       {item.mastery_req != null && item.mastery_req > 0 && (
-        <span className="wpn-mr" title={`Mastery Rank ${item.mastery_req} required`}>MR{item.mastery_req}</span>
+        <span className={WPN_MR_CLASS} title={`Mastery Rank ${item.mastery_req} required`}>MR{item.mastery_req}</span>
       )}
-      <span className={`wpn-rank ${mastered ? "rank-done" : rank > 0 ? "rank-partial" : "rank-zero"}`}>
+      <span className={`${WPN_RANK_CLASS} ${mastered ? WPN_RANK_DONE_CLASS : rank > 0 ? WPN_RANK_PARTIAL_CLASS : WPN_RANK_ZERO_CLASS}`}>
         {mastered ? "✓" : rankLabel}
       </span>
     </div>
@@ -125,13 +155,13 @@ export default function Weapons({ inventory, activeTab, onTabChange }: Props) {
   const isFiltered = search !== "" || unmasteredOnly;
 
   return (
-    <div className="wpn-root">
+    <div className={WPN_ROOT_CLASS}>
       {/* ── Sub-tab bar ── */}
-      <div className="wpn-tabs">
+      <div className={WPN_TABS_CLASS}>
         {WEAPON_TABS.map(tab => (
           <button
             key={tab}
-            className={`wpn-tab ${activeTab === tab ? "active" : ""}`}
+            className={`${WPN_TAB_CLASS} ${activeTab === tab ? WPN_TAB_ACTIVE_CLASS : WPN_TAB_IDLE_CLASS}`}
             onClick={() => onTabChange(tab)}
           >
             {tab}
@@ -140,48 +170,48 @@ export default function Weapons({ inventory, activeTab, onTabChange }: Props) {
       </div>
 
       {/* ── Toolbar ── */}
-      <div className="wpn-toolbar">
+      <div className={WPN_TOOLBAR_CLASS}>
         <input
           ref={inputRef}
-          className="wpn-search"
+          className={WPN_SEARCH_CLASS}
           placeholder="Search…"
           value={search}
           onChange={e => setSearch(e.target.value)}
         />
-        <div className="wpn-progress-wrap">
-          <div className="wpn-progress-bar">
+        <div className={WPN_PROGRESS_WRAP_CLASS}>
+          <div className={WPN_PROGRESS_BAR_CLASS}>
             <div
-              className="wpn-progress-fill"
+              className={WPN_PROGRESS_FILL_CLASS}
               style={{ width: totalCount > 0 ? `${(masteredCount / totalCount) * 100}%` : "0%" }}
             />
           </div>
-          <span className="wpn-progress-label">{masteredCount} / {totalCount} mastered</span>
+          <span className={WPN_PROGRESS_LABEL_CLASS}>{masteredCount} / {totalCount} mastered</span>
         </div>
         <button
-          className={`wpn-filter-btn ${unmasteredOnly ? "active" : ""}`}
+          className={`${WPN_FILTER_CLASS} ${unmasteredOnly ? WPN_FILTER_ACTIVE_CLASS : WPN_FILTER_IDLE_CLASS}`}
           onClick={() => setUnmasteredOnly(v => !v)}
         >
           Unmastered only
         </button>
         {isFiltered && (
-          <button className="fchip fchip-reset" onClick={() => { setSearch(""); setUnmasteredOnly(false); }}>
+          <FilterChip reset onClick={() => { setSearch(""); setUnmasteredOnly(false); }}>
             Show All
-          </button>
+          </FilterChip>
         )}
       </div>
 
       {/* ── Item list ── */}
-      <div className="wpn-body">
-        {loading && <div className="wpn-empty">Loading weapons…</div>}
+      <div className={WPN_BODY_CLASS}>
+        {loading && <div className={WPN_EMPTY_CLASS}>Loading weapons…</div>}
         {!loading && groups.length === 0 && (
-          <div className="wpn-empty">
+          <div className={WPN_EMPTY_CLASS}>
             {unmasteredOnly ? "All weapons mastered — nice!" : "No weapons found."}
           </div>
         )}
         {groups.map(({ group, entries }) => (
-          <div key={group} className="wpn-group">
-            <div className="wpn-group-header">{group}</div>
-            <div className="wpn-group-grid">
+          <div key={group} className="mb-5">
+            <div className={WPN_HEADER_CLASS}>{group}</div>
+            <div className={WPN_GRID_CLASS}>
               {entries.map(({ item, rank }) => (
                 <WeaponRow key={item.unique_name} item={item} rank={rank} />
               ))}

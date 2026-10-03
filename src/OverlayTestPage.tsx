@@ -8,21 +8,14 @@ export default function OverlayTestPage() {
   }, []);
 
   return (
-    <div style={{
-      width: '100vw', height: '100vh', boxSizing: 'border-box',
-      background: '#00cc55',
-      border: '4px solid #00ff88',
-      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-      gap: 12, fontFamily: 'sans-serif', color: '#fff',
-    }}>
-      <div style={{ fontSize: 22, fontWeight: 700, textShadow: '0 2px 6px #000' }}>
+    <div className="box-border flex h-screen w-screen flex-col items-center justify-center gap-3 border-4 border-[#00ff88] bg-[#00cc55] font-sans text-white">
+      <div className="text-[22px] font-bold drop-shadow-[0_2px_6px_#000]">
         FrameForge Overlay Test
       </div>
-      <div style={{ fontSize: 13, opacity: 0.85 }}>If you see green: window + React are working</div>
+      <div className="text-[13px] opacity-85">If you see green: window + React are working</div>
       <button
         onClick={() => getCurrentWindow().close().catch(() => {})}
-        style={{ marginTop: 8, padding: '8px 24px', cursor: 'pointer', fontSize: 14,
-          background: '#00ff88', color: '#000', border: 'none', borderRadius: 6, fontWeight: 700 }}
+        className="mt-2 cursor-pointer rounded-md border-0 bg-[#00ff88] px-6 py-2 text-sm font-bold text-black"
       >
         Close
       </button>

@@ -1,6 +1,12 @@
 import type { ViewMode } from "../types/ui";
 import { VIEW_MODE_OPTIONS } from "../constants/ui";
 
+const VIEW_TOGGLE = "flex items-center gap-[2px] shrink-0";
+const VIEW_BTN =
+  "bg-transparent border border-transparent rounded-[4px] cursor-pointer text-muted px-[5px] py-[3px] flex items-center justify-center transition-[color,border-color,background] duration-120 leading-none";
+const VIEW_BTN_HOVER = "hover:text-foreground! hover:bg-[rgba(255,255,255,.06)]!";
+const VIEW_BTN_ON = "text-accent! border-[rgba(56,139,253,.4)]! bg-[rgba(56,139,253,.08)]!";
+
 
 function ViewIcon({ mode }: { mode: ViewMode }) {
   switch (mode) {
@@ -54,9 +60,9 @@ function ViewIcon({ mode }: { mode: ViewMode }) {
 
 export function ViewToggle({ view, onChange, modes }: { view: ViewMode; onChange: (v: ViewMode) => void; modes?: readonly ViewMode[] }) {
   return (
-    <div className="view-toggle">
+    <div className={VIEW_TOGGLE}>
       {VIEW_MODE_OPTIONS.filter(({ mode }) => !modes || modes.includes(mode)).map(({ mode, label }) => (
-        <button key={mode} className={`view-btn${view === mode ? " view-btn-active" : ""}`}
+        <button key={mode} className={`${VIEW_BTN} ${VIEW_BTN_HOVER}${view === mode ? ` ${VIEW_BTN_ON}` : ""}`}
           title={label} aria-label={label} aria-pressed={view === mode} onClick={() => onChange(mode)}>
           <ViewIcon mode={mode} />
         </button>

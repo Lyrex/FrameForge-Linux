@@ -8,6 +8,20 @@ export interface HelpItem {
   desc: string;
 }
 
+const HT_BTN =
+  "w-[18px] h-[18px] rounded-full border border-border bg-[rgba(255,255,255,.04)] text-muted text-[10px] font-bold leading-none cursor-pointer inline-flex items-center justify-center shrink-0 transition-[color,border-color] duration-[120ms] hover:text-foreground hover:border-accent";
+const HT_POPUP =
+  "absolute top-[26px] bg-[#1a1f2a] border border-border rounded-[8px] px-3 py-[10px] z-[600] min-w-[230px] max-w-[300px] max-h-[calc(60vh_/_var(--ff-scale,1))] overflow-y-auto shadow-[0_8px_28px_rgba(0,0,0,.7)] flex flex-col gap-[7px]";
+const HT_TITLE =
+  "text-[10px] font-bold uppercase tracking-[.07em] text-muted mb-[2px]";
+const HT_ROW = "flex items-start gap-2";
+const HT_SWATCH = "w-[13px] h-[13px] rounded-[3px] shrink-0 mt-px";
+const HT_BORDER_SAMPLE =
+  "w-[13px] h-[13px] shrink-0 mt-px rounded-[2px] bg-[rgba(255,255,255,.04)] border border-border border-t-[3px]";
+const HT_ICON = "text-[13px] w-4 text-center shrink-0 leading-[1.4]";
+const HT_LABEL = "text-[11px] font-semibold text-foreground block";
+const HT_DESC = "text-[10px] text-muted block leading-[1.4]";
+
 export function HelpTip({ items, align = "right" }: { items: HelpItem[]; align?: "left" | "right" }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -22,23 +36,23 @@ export function HelpTip({ items, align = "right" }: { items: HelpItem[]; align?:
   }, [open]);
 
   return (
-    <div ref={ref} style={{ position: "relative", flexShrink: 0 }}>
-      <button className="helptip-btn" onClick={() => setOpen(v => !v)} title="Color legend">?</button>
+    <div ref={ref} className="relative shrink-0">
+      <button className={HT_BTN} onClick={() => setOpen(v => !v)} title="Color legend">?</button>
       {open && (
-        <div className="helptip-popup" style={{ [align === "left" ? "left" : "right"]: 0 }}>
-          <div className="helptip-title">Legend</div>
+        <div className={`${HT_POPUP} ${align === "left" ? "left-0" : "right-0"}`}>
+          <div className={HT_TITLE}>Legend</div>
           {items.map((item, i) => (
-            <div key={i} className="helptip-row">
+            <div key={i} className={HT_ROW}>
               {item.swatch && (
-                <span className="helptip-swatch" style={{ background: item.swatch }} />
+                <span className={HT_SWATCH} style={{ background: item.swatch }} />
               )}
               {item.border && (
-                <span className="helptip-border-sample" style={{ borderTopColor: item.border }} />
+                <span className={HT_BORDER_SAMPLE} style={{ borderTopColor: item.border }} />
               )}
-              {item.icon && <span className="helptip-icon">{item.icon}</span>}
+              {item.icon && <span className={HT_ICON}>{item.icon}</span>}
               <div>
-                <span className="helptip-label">{item.label}</span>
-                <span className="helptip-desc">{item.desc}</span>
+                <span className={HT_LABEL}>{item.label}</span>
+                <span className={HT_DESC}>{item.desc}</span>
               </div>
             </div>
           ))}
